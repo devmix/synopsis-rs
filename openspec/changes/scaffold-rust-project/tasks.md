@@ -4,12 +4,15 @@
 
 ## 1. Workspace-скелет
 
-- [ ] 1.1 Корневой workspace и crate-заглушки по layout design.md (D1)
+- [x] 1.1 Корневой workspace и crate-заглушки по layout design.md (D1) — выполнено, commit 6abd24a
   - **Цель:** `cargo build`/`cargo test` зелёные на пустом workspace; границы модулей зафиксированы.
   - **Scope файлов:** корневой `Cargo.toml` (workspace members + shared deps-палитра), `rust-toolchain.toml`, `.gitignore`, `crates/{config,db,vectors,embedding,ingestion,graph,search,mcp,cli}/src/lib.rs` (+ `main.rs` в cli с print-version заглушкой) — по одному пустому модулю-заглушке на crate.
   - **Зависимости:** нет (первая задача).
   - **Критерии приёмки:** `cargo build`, `cargo test`, `cargo clippy --all-targets` (без замечаний), `cargo fmt --check` — всё чисто; граф зависимостей между crate'ами соответствует design.md D1.
   - **Референс:** layout — design.md D1; маппинг на Go-пакеты — ../synopsis/internal/*, cmd/app.
+  - **История ревизий:**
+    - Ревизия 1 (2026-08-18): по решению человека добавить секцию `[workspace.lints]` в корневой Cargo.toml (`[workspace.lints.rust] missing_docs = "deny"` + базовые onboarding-lint'ы) и применить `lints.workspace = true` во всех 9 crate'ах; гейты (fmt/clippy/test) должны остаться зелёными. Вопрос noyalib vs serde_yaml отложен до config-change — в этой задаче не менять.
+      - Корректировка (2026-08-18, проверка оркестратора): `lints.workspace = true` должен стоять в топ-уровневой таблице `[lints]`, а НЕ внутри `[package]` (иначе cargo warning «unused manifest key: package.lints» и линты не применяются). Пробой на том же тулчейне 1.96.0 подтвердил: топ-уровневый `[lints] workspace = true` наследуется штатно, `missing_docs = "deny"` срабатывает.
 
 ## 2. CI
 
