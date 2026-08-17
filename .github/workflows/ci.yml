@@ -1,0 +1,63 @@
+# CI Pipeline — basic quality gates on the Rust workspace (task 2.1).
+# The cross-platform build matrix (cargo-zigbuild) arrives in task 2.2 as a
+# separate job; keeping dev runs fast until then, like the Go oracle does by
+# not packaging on every push.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a new commit is pushed (oracle style).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Checkout only needs to read the repository.
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # Checks — fmt, clippy and the test suite on Linux x64. One job runs
+  # all three gates sequentially: they share a single toolchain install
+  # and cargo cache, so splitting them would add runner time without
+  # saving any at this stage of the project.
+  # ------------------------------------------------------------------
+  checks:
+    name: Checks (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The toolchain is pinned in rust-toolchain.toml (channel 1.96.0).
+      # The @rev of this action must match that file exactly: rustup
+      # resolves the directory override from the file, and a mismatching
+      # install would make every cargo command fail with "toolchain not
+      # installed". The action installs with --profile minimal, so
+      # clippy and rustfmt have to be requested explicitly.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy, rustfmt
+
+      # Caches ~/.cargo (registry, git deps) and ./target; keyed by the
+      # installed rustc version, so it must run after the toolchain step.
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Gate 1 — formatting. Fails on any unformatted file in any member.
+      - name: Check formatting
+        run: cargo fmt --check
+
+      # Gate 2 — lints. -D warnings promotes every warn-level lint (the
+      # workspace baseline from task 1.1 included) to a hard error.
+      - name: Lint with clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Gate 3 — tests across all workspace members.
+      - name: Run tests
+        run: cargo test
