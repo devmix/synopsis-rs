@@ -1,0 +1,15 @@
+[package]
+name = "search"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# D1 edges; oracle imports: ../synopsis/internal/search (config, embedding, graph).
+# vectors is added per design D5: search consumes the ANN trait.
+[dependencies]
+config = { workspace = true }
+embedding = { workspace = true }
+graph = { workspace = true }
+vectors = { workspace = true }

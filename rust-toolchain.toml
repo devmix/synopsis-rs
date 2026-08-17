@@ -1,0 +1,6 @@
+# Pinned to the latest stable toolchain, verified on releases.rs and
+# blog.rust-lang.org on 2026-08-18 (Rust 1.96.0). Edition 2024 is the current
+# stable edition; no newer edition has been released as of this date.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]

@@ -1,0 +1,11 @@
+[package]
+name = "graph"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# D1 edges; oracle imports: ../synopsis/internal/graph + internal/relations (config).
+[dependencies]
+config = { workspace = true }

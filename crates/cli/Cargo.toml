@@ -1,0 +1,22 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# Binary name matches the Go oracle artifact (../synopsis/bin/synopsis).
+[[bin]]
+name = "synopsis"
+path = "src/main.rs"
+
+# D1 edges; oracle imports: ../synopsis/cmd/app (config, database, onnx/embedding,
+# graph, mcp, search). clap and friends arrive with the CLI-surface change.
+[dependencies]
+config = { workspace = true }
+db = { workspace = true }
+embedding = { workspace = true }
+graph = { workspace = true }
+mcp = { workspace = true }
+search = { workspace = true }

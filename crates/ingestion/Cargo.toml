@@ -1,0 +1,15 @@
+[package]
+name = "ingestion"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# D1 edges; oracle imports: ../synopsis/internal/ingestion (config, database,
+# embedding, relations). Intra-tier edge ingestion -> graph follows the Go oracle.
+[dependencies]
+config = { workspace = true }
+db = { workspace = true }
+embedding = { workspace = true }
+graph = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "embedding"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# D1 edges; oracle imports: ../synopsis/internal/embedding + internal/onnx.
+[dependencies]
+config = { workspace = true }

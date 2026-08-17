@@ -1,0 +1,73 @@
+[workspace]
+# Edition 2024 default resolver (requires Rust >= 1.85).
+resolver = "3"
+members = [
+    "crates/config",
+    "crates/db",
+    "crates/vectors",
+    "crates/embedding",
+    "crates/ingestion",
+    "crates/graph",
+    "crates/search",
+    "crates/mcp",
+    "crates/cli",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+# Workspace lint baseline (task 1.1, revision 1). Every crate opts in via
+# `lints.workspace = true`; the clippy gate runs with `-D warnings`, so warn
+# and deny both fail the build here.
+[workspace.lints.rust]
+missing_docs = "deny" # public API must be documented; fails compilation otherwise
+unsafe_code = "forbid" # frozen stack has no unsafe requirements; relax per-crate if native-seam work needs it
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 } # make the default clippy baseline explicit
+unwrap_used = "warn" # test code may opt out locally: `#![allow(clippy::unwrap_used)]` on the test module
+expect_used = "warn" # same as unwrap_used
+
+# Shared dependency palette (frozen stack: openspec/config.yaml). Members inherit
+# entries via `name = { workspace = true }`. Versions verified on crates.io
+# 2026-08-18; unused entries stay out of the resolve graph until inherited.
+[workspace.dependencies]
+# Internal crates - dependency graph fixed by design.md D1:
+# config, db, vectors -> embedding, ingestion, graph -> search -> mcp -> cli
+config = { path = "crates/config" }
+db = { path = "crates/db" }
+vectors = { path = "crates/vectors" }
+embedding = { path = "crates/embedding" }
+ingestion = { path = "crates/ingestion" }
+graph = { path = "crates/graph" }
+search = { path = "crates/search" }
+mcp = { path = "crates/mcp" }
+
+# Async runtime and HTTP/SSE transport (design D2)
+tokio = { version = "1", features = ["full"] } # 1.53.x is current stable
+axum = "0.8" # latest stable line; 0.9 not yet released on crates.io
+
+# SQLite storage, FTS5 compiled in (design D3)
+rusqlite = { version = "0.40", features = ["bundled", "fts5"] }
+
+# CEL expressions for entity linking (graph crate), NER tokens, file watcher,
+# cron scheduling and progress bars
+cel-interpreter = "0.10"
+tokenizers = "0.23"
+notify = "8"
+tokio-cron-scheduler = "0.15"
+indicatif = "0.18"
+
+# Serialization and config (config crate)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+noyalib = "0.0.23" # YAML: successor of serde_yaml/serde_yml, both deprecated (verified 2026-08-18)
+
+# Intentionally NOT pinned here - decisions deferred to module changes:
+# - ANN engine: usearch vs lance (design D5 -> native-seam-spikes benchmark)
+# - MCP protocol crate: rmcp vs mcp-types (frozen stack lists either/or;
+#   the transport itself is axum per design D2)
+# - ONNX runtime bindings: "onnxruntime-rs" from the frozen stack no longer
+#   exists on crates.io; its successor `ort` has no stable release yet
+#   (newest 2.0.0-rc.13, verified 2026-08-18) - decided in the embedding change

@@ -1,0 +1,15 @@
+[package]
+name = "mcp"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# D1 edges; oracle imports: ../synopsis/internal/mcp + internal/mcp/handlers
+# (config, database, graph, search). axum/serde arrive with the mcp module change.
+[dependencies]
+config = { workspace = true }
+db = { workspace = true }
+graph = { workspace = true }
+search = { workspace = true }

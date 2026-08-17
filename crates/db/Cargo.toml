@@ -1,0 +1,10 @@
+[package]
+name = "db"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# D1 tier 0: no internal dependencies. rusqlite arrives with the db module change.
+[dependencies]

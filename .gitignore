@@ -1,0 +1,5 @@
+/target
+*.rs.bk
+
+# Cargo.lock is committed on purpose: this workspace produces a binary and
+# reproducible builds matter for parity testing against the Go oracle.

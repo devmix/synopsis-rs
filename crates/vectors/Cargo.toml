@@ -1,0 +1,11 @@
+[package]
+name = "vectors"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# D1 tier 0: no internal dependencies. The ANN engine (usearch vs lance) is a
+# new crate dependency chosen by native-seam-spikes; consumers know only the trait (D5).
+[dependencies]
