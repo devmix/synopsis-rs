@@ -18,3 +18,7 @@ workspace = true
 # Task 0.1 one-shot provenance probe (probe_db); task 1.1 reuses it for s1_sqlite.
 rusqlite.workspace = true
 libsqlite3-sys.workspace = true # forces the source-compiled SQLite build (design D3)
+# Spike S1 (task 1.1): compile-time-embedded migrations applied to a fresh DB;
+# PRAGMA user_version is the schema-state source of truth (design D6).
+rusqlite_migration.workspace = true
+include_dir.workspace = true # builds the Dir embedded into rusqlite_migration::from_directory
