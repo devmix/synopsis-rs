@@ -77,6 +77,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 noyalib = "0.0.23" # YAML: successor of serde_yaml/serde_yml, both deprecated (verified 2026-08-18)
 
+# Error types for library crates (config-module D4). Version verified online by the
+# implementer against crates.io, MSRV and CVEs (task config-module 1.1): thiserror 2.x is
+# current stable; locked at 2.0.20 in Cargo.lock; MSRV below our pinned Rust 1.96.0.
+thiserror = "2"
+
 # Intentionally NOT pinned here - decisions deferred to module changes:
 # - ANN engine: decided by ADR 0003 (lancedb, change native-seam-spikes); the pin moves with the
 #   archived spikes crate (.archive/spikes/Cargo.toml) and is re-added when the `vectors` change

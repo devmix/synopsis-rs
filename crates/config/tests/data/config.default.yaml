@@ -1,0 +1,151 @@
+# Synopsis[MEMEX] Configuration
+#
+# Default configuration file. Use flag --config configs/config.default.yaml or use --preset default.
+
+database:
+  path: "./data/knowledge.db"
+  pragma:
+    mmap_size: "268435456"   # 256MB
+    journal_mode: WAL
+    synchronous: NORMAL
+    cache_size: "-64000"     # 64MB
+
+embeddings:
+  mode: "local"
+  local:
+    model_name: "bge-small-en-v1.5"  # auto-download
+    # model_path: "" # legacy: explicit path
+    vector_dim: 384
+  api:
+    base_url: "http://localhost:1234/v1"
+    api_key: ""
+    model_name: "text-embedding-3-large"
+    vector_dim: 3072
+    max_retries: 3
+    timeout_ms: 30000
+
+ingestion:
+  chunking:
+    markdown:
+      strategy: "hybrid"
+      max_chunk_size: 8192
+      overlap_size: 100
+      min_section_size: 500
+    json:
+      text_fields:
+        - "description"
+        - "title"
+        - "details"
+      combine_fields: true
+  ner:
+    llm:
+      api_base_url: "http://192.168.1.7:1234/v1"
+      #      model_name: "qwen3-4b-instruct-2507"
+      #      model_name: "meta-llama-3.1-8b-instruct"
+      model_name: "openai/gpt-oss-20b"
+      api_key: "sk-none"
+      temperature: 0.01
+      seed: 12
+      max_tokens: 4096
+      # Response format mode for LLM output:
+      #   "json_object" — default; sends {"type": "json_object"} and includes JSON example in system prompt
+      #   "json_schema" — sends full JSON Schema in request body, omits example from prompt (requires API support)
+      response_format: "json_schema"
+      # HTTP request timeout in milliseconds (default 60000 = 60s)
+      timeout_ms: 120000
+      # Max retry attempts after initial failure for transient errors (429, 5xx); default 3
+      max_retries: 3
+    prose:
+      enable_pos: true
+      enable_ner: true
+      custom_patterns: [ ]
+      entity_types: [ ]
+      # Confidence thresholds for entity filtering
+      min_confidence: 0.5           # minimum confidence for any entity
+      location_min_confidence: 0.75 # balance: filters obvious noise, keeps real locations
+      # Note: prose NER is trained on news text and misclassifies HR terms as LOCATION.
+      # For better results, consider using LLM provider or rule-based extraction.
+  batch_size: 100
+  resolver:
+    similarity_threshold: 0.85  # Jaro-Winkler similarity threshold for entity deduplication
+
+# Cross-domain entity linker — LLM-based entity resolution between domains.
+# Enable this when the global.xml contains <method>llm</method>.
+linker:
+  disabled: false          # set false to activate LLM cross-domain linking
+  llm:
+    api_base_url: "http://192.168.1.7:1234/v1"     # OpenAI-compatible API endpoint
+    #    model_name: "meta-llama-3.1-8b-instruct"
+    model_name: "openai/gpt-oss-20b"
+    api_key: "sk-none"                        # Bearer token; empty if not required
+    temperature: 0.01
+    seed: 12
+    max_tokens: 2048                          # max tokens per LLM response
+    timeout_ms: 120000                        # HTTP request timeout in ms
+    max_retries: 3                            # retry attempts for transient errors
+    # Response format mode for LLM output:
+    #   "json_object" — default; sends {"type": "json_object"} and includes JSON example in system prompt
+    #   "json_schema" — sends full JSON Schema in request body, omits example from prompt (requires API support)
+    response_format: "json_schema"
+
+search:
+  rrf_k: 20
+  lexical_top_k: 20
+  semantic_top_k: 20
+  final_top_k: 10
+  enable_lexical: true
+  enable_semantic: true
+  timeout_ms: 10000
+  deprecated_boost: 0.2
+  official_boost: 1.5
+  recent_boost: 1.2
+  recent_days: 90
+  authority_boost:
+    policy: 1.5
+    regulation: 1.3
+    default: 1.0
+
+graph:
+  enable_graph: true
+  max_depth: 5
+  max_nodes: 1000
+  load_on_startup: true
+
+auto_update:
+  enabled: true
+  debounce_seconds: 1
+  watch_sources: true
+  initial_sync: true    # full source scan on startup; false to skip
+
+# Universal job scheduler (gocron) — periodic background tasks during serve mode.
+# Jobs are registered by name; each job can be enabled/disabled and given its
+# own interval. The scheduler runs in singleton mode: overlapping executions of
+# the same job are dropped (protects SQLite from concurrent writers).
+scheduler:
+  jobs:
+    orphan_cleanup:
+      enabled: true
+      interval_seconds: 300   # run every 5 minutes; default 300
+
+logging:
+  level: "debug"
+  format: "console"
+  output: "stderr"
+
+paths:
+  data_dir: "data"
+  documents_dir: "documents"
+  migrations_dir: "migrations"
+  # Path to ontology directory (contains global.xml and domains/*.xml).
+  # Can be absolute or relative to executable/CWD.
+  # If empty, cross-domain linking is disabled.
+  global_config_path: "data/ontology"
+  # Path to prompt template files (.tmpl). Templates are loaded at startup;
+  # embedded defaults serve as fallback if files are missing.
+  prompts_path: "configs/prompts"
+
+server:
+  name: "synopsis"
+  version: "0.1.0-dev"
+  host: "0.0.0.0"     # HTTP listen host
+  port: 8080          # HTTP listen port

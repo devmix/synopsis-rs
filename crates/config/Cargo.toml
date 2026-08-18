@@ -7,5 +7,8 @@ edition.workspace = true
 workspace = true
 
 # D1 tier 0: no internal dependencies. External deps (noyalib, serde) arrive
-# with the config module change.
+# with the config module change; thiserror via workspace palette (D4).
 [dependencies]
+serde = { workspace = true }
+noyalib = { workspace = true }
+thiserror = { workspace = true }
