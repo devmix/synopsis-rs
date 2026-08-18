@@ -24,3 +24,9 @@ libsqlite3-sys.workspace = true # forces the source-compiled SQLite build (desig
 # PRAGMA user_version is the schema-state source of truth (design D6).
 rusqlite_migration.workspace = true
 include_dir.workspace = true # builds the Dir embedded into rusqlite_migration::from_directory
+# Spike S3b (task 3.2): ANN engine measurements — LanceDB embedded mode over a local path,
+# IVF-HNSW index family (IvfHnswFlat / IvfHnswSq), async query API; tokio runtime + futures
+# stream consumption for the RecordBatch results.
+lancedb.workspace = true
+tokio.workspace = true
+futures.workspace = true

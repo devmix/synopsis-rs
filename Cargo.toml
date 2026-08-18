@@ -100,6 +100,16 @@ noyalib = "0.0.23" # YAML: successor of serde_yaml/serde_yml, both deprecated (v
 # highest C API level ort exposes.
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "api-28"] }
 
+# ANN engine candidate for spike S3b (task 3.2; human decision 2026-08-18: usearch cancelled,
+# lance is the sole candidate): LanceDB embedded/native mode over a local path. 0.37.1 is current
+# stable on crates.io (verified 2026-08-18); MSRV 1.91 <= pinned toolchain 1.96; internally pins
+# lance =10.0.0. The final engine decision lands in docs/adr/0003-ann-engine.md.
+lancedb = "0.37"
+
+# Consumes the RecordBatch stream returned by lancedb vector searches (StreamExt); unifies with
+# lancedb's own futures 0.3 dependency, so it adds nothing to the build graph.
+futures = "0.3"
+
 # Intentionally NOT pinned here - decisions deferred to module changes:
 # - ANN engine: usearch vs lance (design D5 -> native-seam-spikes benchmark)
 # MCP protocol crate: decision made 2026-08-18 -> rmcp 3.x above (design D8).
