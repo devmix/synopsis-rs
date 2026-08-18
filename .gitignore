@@ -1,5 +1,10 @@
 /target
 *.rs.bk
 
+# knowledge.db fixture binary (2.2 MB) is gitignored; provenance and the
+# regeneration command live in fixtures/README.md, which stays tracked.
+fixtures/*
+!fixtures/README.md
+
 # Cargo.lock is committed on purpose: this workspace produces a binary and
 # reproducible builds matter for parity testing against the Go oracle.

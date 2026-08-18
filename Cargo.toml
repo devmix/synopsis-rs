@@ -58,8 +58,15 @@ axum = "0.8" # latest stable line; 0.9 not yet released on crates.io
 # legacy SSE deliberately NOT preserved. 3.1.3 is current (verified on crates.io).
 rmcp = "3"
 
-# SQLite storage, FTS5 compiled in (design D3)
-rusqlite = { version = "0.40", features = ["bundled", "fts5"] }
+# SQLite storage, FTS5 compiled in (design D3). As of rusqlite 0.40 / libsqlite3-sys
+# 0.38 the defaults inverted: plain default links a system SQLite via pkg-config, and
+# source-compiled bundling is an opt-in `bundled` feature of libsqlite3-sys itself —
+# cargo forbids enabling it transitively through rusqlite (no re-exported feature), so
+# we depend on libsqlite3-sys directly to force the bundled build; standard extensions
+# incl. FTS5 ship in every bundled build, there is no separate `fts5` feature anymore
+# (verified against the crates.io index, 2026-08-18). No CGO flags anywhere.
+rusqlite = "0.40"
+libsqlite3-sys = { version = "0.38", features = ["bundled"] }
 
 # CEL expressions for entity linking (graph crate), NER tokens, file watcher,
 # cron scheduling and progress bars

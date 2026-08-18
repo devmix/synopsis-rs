@@ -12,7 +12,9 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# Spike dependencies land with their tasks: rusqlite bundled+fts5 (task 1.1),
-# ort + tokenizers (task 2.1), usearch (task 3.1), lance (task 3.2). Until then
-# the crate builds dependency-free and its binaries are sealed stubs.
+# Spike dependencies land with their tasks: ort + tokenizers (task 2.1), usearch
+# (task 3.1), lance (task 3.2). Their binaries stay sealed stubs until then.
 [dependencies]
+# Task 0.1 one-shot provenance probe (probe_db); task 1.1 reuses it for s1_sqlite.
+rusqlite.workspace = true
+libsqlite3-sys.workspace = true # forces the source-compiled SQLite build (design D3)
