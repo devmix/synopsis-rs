@@ -1,0 +1,24 @@
+[package]
+name = "parity-harness"
+version.workspace = true
+edition.workspace = true
+
+# Dev-tooling crate (design D6): parity fixtures, MCP client wrapper with p50/p95
+# timing instrumentation, and JSON/text diff utilities. Not part of the product
+# dependency graph (D1); consumed by later module changes' acceptance tests.
+[lints]
+workspace = true
+
+# MCP protocol: official SDK rmcp over Streamable HTTP (design D8, task 3.1).
+# Client path: `client` + reqwest-backed streamable-HTTP transport; the `reqwest`
+# feature selects the rustls TLS provider for that transport's HTTP stack.
+[dependencies]
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
+serde_json = { workspace = true }
+
+# Round-trip integration test (task 3.1 acceptance b): in-process rmcp
+# Streamable HTTP server from the same crates.io release as the client.
+[dev-dependencies]
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
+tokio = { workspace = true }
+axum = { workspace = true }
