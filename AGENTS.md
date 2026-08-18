@@ -16,7 +16,7 @@ Rust rewrite of the Go service "Synopsis" (`../synopsis`): a local RAG + knowled
 ## Frozen stack (from `openspec/config.yaml`)
 
 - Rust + tokio (async runtime) + axum (HTTP/SSE for non-MCP endpoints such as `/health`)
-- rusqlite (`bundled` + `fts5`) — FTS5 always available, no cgo flags; sync driver behind `spawn_blocking`/connection pool
+- rusqlite (`bundled` + `fts5`) — FTS5 always available, no cgo flags; sync driver behind `spawn_blocking`/connection pool. Migrations via `rusqlite_migration` 2.x (`from-directory`) with `PRAGMA user_version` as sole schema-state authority (design D6)
 - ONNX runtime as external `.so`/`.dylib` (bge-m3 int8, 1024-dim embeddings + NER); the download/verify mechanism per `onnx.yaml` is ported from the oracle. **Bindings crate deferred:** the frozen-stack entry "onnxruntime-rs" no longer exists on crates.io and its successor `ort` has no stable release yet — decided in the embedding change
 - usearch or lance — disk-backed / quantized HNSW replacing vec0 brute-force; engine chosen by benchmark in `native-seam-spikes`. Vectors are NOT read from old vec0: they are rebuilt from chunk text
 - rmcp 3.x — official MCP SDK over Streamable HTTP (design D8); wire compatibility with the oracle's legacy SSE transport is **deliberately not preserved**
@@ -26,7 +26,7 @@ Rust rewrite of the Go service "Synopsis" (`../synopsis`): a local RAG + knowled
 
 - Laptop target (16 GB RAM), personal use — NOT a server. At N=1M × 1024-dim full-precision vectors (~4 GB) do not fit in RAM → the ANN index must be disk-backed/mmap + quantized; the query path does **not** load the embedding model.
 - One local binary, no external services.
-- The old `knowledge.db` (SQLite) stays readable: the schema from the Go original's 5 migrations is a contract — new migrations are added as files, shipped ones are never edited.
+- The schema from the Go original's 5 migrations remains the **structural contract** (final v5 shape), but Rust always builds its own DB from scratch: one squashed init migration via `rusqlite_migration` (from-directory, compile-time embedded), `PRAGMA user_version` is the single source of truth for schema state — the `_schema_migrations` table is deliberately NOT created. Legacy Go-created `knowledge.db` is NOT opened, NOT upgraded, and data is NOT migrated (human decisions 2026-08-18; see native-seam-spikes design D6 + task 1.1 revisions). Future migrations are added as numbered directories `<id>-<slug>/up.sql`, shipped ones are never edited, forward-only (no down.sql).
 
 ## Layout
 
