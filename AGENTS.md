@@ -13,6 +13,11 @@ Rust rewrite of the Go service "Synopsis" (`../synopsis`): a local RAG + knowled
 
 `../synopsis` (Go) is the read-only reference implementation for the whole migration: its behavior, tests, and contracts are the source of truth. Never create/modify/delete anything there. Contract sources: `internal/mcp/tools.go`, `cmd/app/*`, `migrations/*.sql`, `configs/*.yaml`, `data/ontology/*.xml`.
 
+## Migration principles (human decisions 2026-08-18)
+
+- **No 1:1 copying.** The oracle is a reference for *behavior and contracts*, not a blueprint to transcribe. Every ported piece must be re-designed architecturally for Rust: do not repeat the original's mistakes; if the Go code is wrong or Rust allows a more optimal/efficient solution, do it — **even at the cost of losing compatibility** with the oracle (contract changes still require an explicit decision per openspec/config.yaml rules).
+- **Verify libraries online.** Before choosing any library/framework, check the internet for the most suitable candidates for the task (e.g., Rust has different template engines, HTTP clients, serialization crates than Go). Do not mechanically carry over the Go stack. Verify versions, MSRV, maintenance status, and CVEs against official sources.
+
 ## Frozen stack (from `openspec/config.yaml`)
 
 - Rust + tokio (async runtime) + axum (HTTP/SSE for non-MCP endpoints such as `/health`)
