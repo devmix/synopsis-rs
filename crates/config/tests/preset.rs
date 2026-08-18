@@ -3,7 +3,8 @@
 //! The fixture `tests/data/config.default.yaml` is copied byte-for-byte from
 //! `../synopsis/configs/config.default.yaml` (see `tests/data/README.md`). These
 //! tests assert that every section of that file parses and that its values match,
-//! which is acceptance criterion (a) for task 1.1.
+//! which is acceptance criterion (a) for task 1.1; the defaulting test covers
+//! criterion (b) of task 1.2.
 
 // Test target: expect on fixture loading is intentional (the files always exist).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -159,7 +160,8 @@ fn fixture_parses_all_sections_with_expected_values() {
     assert_eq!(p.migrations_dir, "migrations");
     assert_eq!(p.global_config_path, "data/ontology");
     assert_eq!(p.prompts_path, "configs/prompts");
-    assert!(p.onnx_config.is_empty()); // absent in the fixture
+    // Absent in the fixture -> normalized to its oracle default at parse time (D12).
+    assert_eq!(p.onnx_config, "configs/onnx.yaml");
 
     // server ----------------------------------------------------------------
     let sv = &cfg.server;
@@ -184,4 +186,65 @@ fn fixture_load_returns_error_for_missing_file() {
         }
         other => panic!("expected Io error for missing file, got: {other:?}"),
     }
+}
+
+#[test]
+fn apply_defaults_does_not_change_explicit_fixture_values() {
+    // Task 1.2 criterion (b): every value explicitly set in the verbatim fixture
+    // survives defaulting; only fields absent from the file get filled in.
+    let mut cfg: Config = load(fixture()).expect("config.default.yaml must parse");
+    cfg.apply_defaults();
+
+    // Explicit values that differ from the oracle defaults (survival checks).
+    assert_eq!(cfg.database.path, "./data/knowledge.db");
+    assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Local);
+    assert_eq!(
+        cfg.embeddings.local.model_name,
+        "bge-small-en-v1.5" // not replaced by bge-m3-int8
+    );
+    let md = &cfg.ingestion.chunking.markdown;
+    assert_eq!(md.strategy, ChunkingStrategy::Hybrid);
+    assert_eq!(md.max_chunk_size, 8192);
+    assert_eq!(md.overlap_size, 100);
+    assert_eq!(
+        cfg.ingestion.chunking.json.text_fields,
+        vec!["description", "title", "details"] // not the default field list
+    );
+    approx(cfg.ingestion.resolver.similarity_threshold, 0.85); // > 0 -> preserved
+
+    let llm = &cfg.ingestion.ner.llm;
+    assert_eq!(llm.response_format, ResponseFormat::JsonSchema);
+    assert_eq!(llm.timeout_ms, 120_000); // not reset to 60000
+    assert_eq!(cfg.linker.llm.timeout_ms, 120_000);
+
+    let s = &cfg.search;
+    assert_eq!(s.rrf_k, 20);
+    approx(*s.authority_boost.get("policy").expect("policy"), 1.5);
+    assert_eq!(s.authority_boost.len(), 3); // non-empty map -> no "default" insertion
+
+    let au = cfg
+        .auto_update
+        .as_ref()
+        .expect("auto_update present in fixture");
+    assert!(au.enabled && au.initial_sync);
+    assert_eq!(au.debounce_seconds, 1); // explicit 1s debounce survives (not reset to 30)
+
+    let job = cfg
+        .scheduler
+        .jobs
+        .get("orphan_cleanup")
+        .expect("orphan_cleanup job");
+    assert!(job.enabled);
+    assert_eq!(job.interval_seconds, 300); // explicit interval respected (not 3600)
+    assert_eq!(cfg.scheduler.jobs.len(), 1);
+
+    assert_eq!(cfg.logging.level, LogLevel::Debug); // not reset to info
+    let p = &cfg.paths;
+    assert_eq!(p.global_config_path, "data/ontology");
+    // Fields ABSENT from the fixture get their defaults:
+    assert_eq!(p.onnx_config, "configs/onnx.yaml");
+
+    // Derived helpers see the explicit values (criterion d on the fixture).
+    assert_eq!(cfg.db_path(), PathBuf::from("./data/knowledge.db"));
+    assert_eq!(cfg.cache_db_path(), PathBuf::from("./data/cache.db"));
 }

@@ -1,12 +1,27 @@
-//! Main YAML preset: typed [`Config`] structures plus `load` / `validate`.
+//! Main YAML preset: typed [`Config`] structures plus load / validate / defaults.
 //!
-//! This module mirrors the Go oracle's `internal/config/config.go` (the
-//! `Load` + `Validate` half; `ApplyDefaults` and the path helpers arrive in
-//! task 1.2). Field names, YAML keys and validation semantics are kept
-//! faithful to the oracle so behaviour is byte-compatible with the original.
+//! This module mirrors the Go oracle's `internal/config/config.go`: YAML
+//! structures, `Load` and `Validate`, and `ApplyDefaults` with the derived
+//! helpers `vector_dim` / `db_path` / `cache_db_path`. Field names, YAML keys
+//! and validation semantics stay faithful to the oracle; defaulting follows
+//! design D12/D13 (revision of task 1.2):
+//!
+//! * **YAML artifacts are normalized at deserialization** ("parse, don't
+//!   validate"): an absent key on a defaulted field yields that field's oracle
+//!   default, and an explicit `""` on the five tolerant enums / eight string
+//!   fields normalizes to the same default. After [`load`](crate::load) those
+//!   values are always valid — no runtime code ever sees an empty artifact.
+//! * **Semantic rules live in [`Config::apply_defaults`]**: numeric `<= 0`
+//!   fallbacks (`overlap_size`: `< 0`, so a configured `0` survives), conditional
+//!   pairs (both search legs off → both on; no local model set → `"bge-m3-int8"`),
+//!   maps/lists (`text_fields`, `authority_boost`, scheduler jobs) and the
+//!   `auto_update:` section-presence rule (design D8).
+//! * **Go's buggy bool defaults are fixed** (D13, BREAKING): `enable_graph`,
+//!   `load_on_startup` and `watch_sources` use presence semantics — absent →
+//!   true, an explicit `false` is respected.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -20,8 +35,30 @@ use crate::error::ConfigError;
 /// original text for unknowns), so round-tripping preserves intent. The second
 /// token names the variant used by [`Default`], chosen as that field's oracle
 /// default so an absent YAML key deserializes straight to the intended value.
+///
+/// A trailing clause selects how an explicit empty string is handled (design D12):
+/// * `empty_to_default` — `""` normalizes to the Default variant at parse time;
+///   used by every enum whose field has an unconditional oracle default (`strategy`,
+///   `level`, `format`, `output`, `response_format`).
+/// * *(clause absent)* — `""` stays `Unknown("")`; used by strict enums without an
+///   oracle default ([`EmbeddingsMode`]): an empty mode must still be rejected by
+///   [`Config::validate`] with the oracle's message, like any other bogus value.
 macro_rules! tolerant_enum {
+    ($(#[$doc:meta])* $name:ident, $default:ident { $($variant:ident => $value:expr),* $(,)? } empty_to_default) => {
+        __tolerant_enum_impl__!($(#[$doc])* $name, $default { $($variant => $value),* }, Self::$default);
+    };
     ($(#[$doc:meta])* $name:ident, $default:ident { $($variant:ident => $value:expr),* $(,)? }) => {
+        __tolerant_enum_impl__!($(#[$doc])* $name, $default { $($variant => $value),* }, Self::Unknown(String::new()));
+    };
+}
+
+// Shared body of [`tolerant_enum`]; `$empty_fallback` is the expression produced for an
+// explicit empty string (design D12): `Self::$default` for enums that normalize to their
+// oracle default, or `Self::Unknown(String::new())` for strict enums without one. It must
+// not reference local variables — tokens passed through fragment slots keep their
+// definition-site span and cannot see locals of the generated function (macro hygiene).
+macro_rules! __tolerant_enum_impl__ {
+    ($(#[$doc:meta])* $name:ident, $default:ident { $($variant:ident => $value:expr),* }, $empty_fallback:expr) => {
         // Caller-supplied doc lines (descriptive); the fixed line below guarantees a
         // doc is always present so `missing_docs` holds even if none are provided.
         $(#[$doc])*
@@ -38,8 +75,8 @@ macro_rules! tolerant_enum {
 
         impl Default for $name {
             fn default() -> Self {
-                // Zero-value equals this field's oracle default; task 1.2's
-                // apply_defaults leaves it untouched (exact Go "absent -> default").
+                // The zero value equals this field's oracle default, so an absent
+                // YAML key deserializes straight to the intended value.
                 Self::$default
             }
         }
@@ -62,16 +99,66 @@ macro_rules! tolerant_enum {
                 D: Deserializer<'de>,
             {
                 let raw = String::deserialize(deserializer)?;
-                // Case-insensitive match on known words (oracle uses lowercase);
-                // unknown values are preserved verbatim for diagnostics.
+                // Case-insensitive match on known words (oracle uses lowercase); unknown
+                // values are preserved verbatim for diagnostics. An explicit "" is a YAML
+                // artifact of an unset field: `$empty_fallback` normalizes it to the
+                // oracle default (design D12) or keeps it as Unknown("") for strict enums.
                 Ok(match raw.to_ascii_lowercase().as_str() {
                     $($value => Self::$variant,)*
+                    "" => $empty_fallback,
                     other => Self::Unknown(other.to_string()),
                 })
             }
         }
     };
 }
+
+/// Serde default for presence-semantics bool fields (design D13): an absent YAML
+/// key means `true`, while an explicit `false` is deserialized and respected.
+fn default_true() -> bool {
+    true
+}
+
+/// Declares the serde helper pair for a config string field with an unconditional
+/// oracle default (design D12): `default_*()` supplies the value when the YAML key is
+/// absent, and `de_*()` normalizes an explicit empty string to it. serde's
+/// `deserialize_with` accepts only a zero-argument path, so each field gets its own
+/// pair even though the logic is identical (the D12 "de_empty_to_default" pattern).
+macro_rules! empty_string_default {
+    ($default_fn:ident, $de_fn:ident, $value:expr) => {
+        /// Oracle default for a config string field (design D12).
+        fn $default_fn() -> String {
+            $value.to_string()
+        }
+
+        /// Deserialize a config string; an explicit `""` becomes the field's oracle
+        /// default so runtime code never sees it (design D12, "parse, don't validate").
+        fn $de_fn<'de, D>(deserializer: D) -> Result<String, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            String::deserialize(deserializer).map(|value| {
+                if value.is_empty() {
+                    $default_fn()
+                } else {
+                    value
+                }
+            })
+        }
+    };
+}
+
+// The eight string fields with unconditional oracle defaults (design D12 list):
+// five paths + three server identification fields. `server_*` helpers are prefixed
+// to keep the names unambiguous at module level.
+empty_string_default!(default_data_dir, de_data_dir, "data");
+empty_string_default!(default_documents_dir, de_documents_dir, "documents");
+empty_string_default!(default_migrations_dir, de_migrations_dir, "migrations");
+empty_string_default!(default_prompts_path, de_prompts_path, "configs/prompts");
+empty_string_default!(default_onnx_config, de_onnx_config, "configs/onnx.yaml");
+empty_string_default!(default_server_name, de_server_name, "synopsis");
+empty_string_default!(default_server_version, de_server_version, "0.1.0-dev");
+empty_string_default!(default_server_host, de_server_host, "0.0.0.0");
 
 // ── Root ──────────────────────────────────────────────────────────────────
 
@@ -150,6 +237,207 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Fills zero-value fields with the oracle's defaults — the **semantic** half of
+    /// the defaulting split (design D12). YAML artifacts are already normalized by
+    /// deserialization: absent keys and explicit `""` on defaulted string/enum fields,
+    /// plus presence-semantics bools (`enable_graph`, `load_on_startup`,
+    /// `watch_sources`, design D13) never reach this method empty or false-by-default.
+    /// What remains here are the oracle's semantic rules:
+    ///
+    /// * Numeric `<= 0` fallbacks — except `markdown.overlap_size`, which Go checks
+    ///   with `< 0`, so a configured `0` survives.
+    /// * Conditional pairs: both search legs force-enabled only when **both** are
+    ///   disabled (an explicit single-leg disable is respected); and the local model
+    ///   fallback — `embeddings.local.model_name` becomes `"bge-m3-int8"` in **both**
+    ///   modes, exactly as Go applies it regardless of `mode`.
+    /// * Maps / lists: an empty `json.text_fields` gains the oracle's four fields; an
+    ///   empty `authority_boost` map gains `"default": 1.0`; the scheduler always
+    ///   gains an `orphan_cleanup` job — **disabled** with a 3600 s interval unless
+    ///   explicitly configured (Go defaults it disabled, not enabled: the job performs
+    ///   full-table scans).
+    /// * Section presence: an `auto_update:` section missing from YAML is materialized
+    ///   fully enabled (`enabled = initial_sync = true`); a present one is respected as
+    ///   parsed. Presence rides on the [`Option`] itself (design D8) instead of Go's
+    ///   hidden `autoUpdateConfigured` flag that scans YAML nodes.
+    /// * `paths.global_config_path` is deliberately NOT defaulted: an empty value
+    ///   disables cross-domain linking (Go parity).
+    pub fn apply_defaults(&mut self) {
+        // Ingestion ------------------------------------------------------------------
+        if self.ingestion.batch_size <= 0 {
+            self.ingestion.batch_size = 100;
+        }
+        let md = &mut self.ingestion.chunking.markdown;
+        if md.max_chunk_size <= 0 {
+            md.max_chunk_size = 1000;
+        }
+        // Go checks `< 0`, not `<= 0`: a configured overlap of 0 is preserved.
+        if md.overlap_size < 0 {
+            md.overlap_size = 100;
+        }
+        if md.min_section_size <= 0 {
+            md.min_section_size = 500;
+        }
+        if self.ingestion.chunking.json.text_fields.is_empty() {
+            self.ingestion.chunking.json.text_fields = vec![
+                "description".to_string(),
+                "title".to_string(),
+                "wikitext".to_string(),
+                "html".to_string(),
+            ];
+        }
+
+        // Search -----------------------------------------------------------------------
+        let s = &mut self.search;
+        if s.rrf_k <= 0 {
+            s.rrf_k = 20; // Calibrated k: lower value increases rank sensitivity (~8x vs k=60).
+        }
+        if s.lexical_top_k <= 0 {
+            s.lexical_top_k = 20;
+        }
+        if s.semantic_top_k <= 0 {
+            s.semantic_top_k = 20;
+        }
+        if s.final_top_k <= 0 {
+            s.final_top_k = 10;
+        }
+        // Force-enable both legs only when neither is requested at all.
+        if !s.enable_lexical && !s.enable_semantic {
+            s.enable_lexical = true;
+            s.enable_semantic = true;
+        }
+        if s.timeout_ms <= 0 {
+            s.timeout_ms = 10_000;
+        }
+
+        // Graph --------------------------------------------------------------------------
+        // `enable_graph` / `load_on_startup` are normalized at deserialization time
+        // (design D13 presence semantics) — nothing to do here.
+        if self.graph.max_depth <= 0 {
+            self.graph.max_depth = 5;
+        }
+        if self.graph.max_nodes <= 0 {
+            self.graph.max_nodes = 1000;
+        }
+
+        // Auto-update ----------------------------------------------------------------------
+        let auto_update_configured = self.auto_update.is_some();
+        let auto = self
+            .auto_update
+            .get_or_insert_with(AutoUpdateConfig::default);
+        if auto.debounce_seconds <= 0 {
+            auto.debounce_seconds = 30;
+        }
+        // `watch_sources` is normalized at deserialization time (design D13).
+        // Absent section defaults to fully enabled; a present one is respected as
+        // parsed (Go: the hidden `autoUpdateConfigured` flag skips this branch).
+        if !auto_update_configured {
+            auto.enabled = true;
+            auto.initial_sync = true;
+        }
+
+        // Scheduler ------------------------------------------------------------------------
+        // An entry missing from YAML decodes to the zero value, so `entry` + default
+        // reproduces Go's nil-map handling. The job is disabled by default (full-table
+        // scans on large databases); a zero-value entry already has `enabled == false`,
+        // so only the interval needs its default and any explicit configuration wins.
+        let orphan_cleanup = self
+            .scheduler
+            .jobs
+            .entry("orphan_cleanup".to_string())
+            .or_default();
+        if orphan_cleanup.interval_seconds <= 0 {
+            orphan_cleanup.interval_seconds = 3600;
+        }
+
+        // Logging and paths are normalized at deserialization time (design D12); the
+        // only field without an oracle default is `paths.global_config_path`, which Go
+        // deliberately leaves empty (empty disables cross-domain linking).
+
+        // NER LLM (Go applies these to the NER provider only; `linker.llm` is untouched) ----
+        let llm = &mut self.ingestion.ner.llm;
+        if llm.timeout_ms <= 0 {
+            llm.timeout_ms = 60_000;
+        }
+        if llm.max_retries <= 0 {
+            llm.max_retries = 3;
+        }
+
+        // Resolver --------------------------------------------------------------------------------
+        if self.ingestion.resolver.similarity_threshold <= 0.0 {
+            self.ingestion.resolver.similarity_threshold = 0.8;
+        }
+
+        // Local embedding (Go applies this fallback in both modes) ---------------------------------
+        let local = &mut self.embeddings.local;
+        if local.model_name.is_empty() && local.model_path.is_empty() {
+            local.model_name = "bge-m3-int8".to_string();
+        }
+
+        // Server (name/version/host are normalized at deserialization time, D12) ------
+        if self.server.port <= 0 {
+            self.server.port = 8080;
+        }
+
+        // Reranker ------------------------------------------------------------------------------------
+        if self.search.deprecated_boost <= 0.0 {
+            self.search.deprecated_boost = 0.2;
+        }
+        if self.search.official_boost <= 0.0 {
+            self.search.official_boost = 1.5;
+        }
+        if self.search.recent_boost <= 0.0 {
+            self.search.recent_boost = 1.2;
+        }
+        if self.search.recent_days <= 0 {
+            self.search.recent_days = 90;
+        }
+        // Go checks `nil`; an explicit empty map is indistinguishable from an absent one here,
+        // so `is_empty` is the closest faithful check.
+        if self.search.authority_boost.is_empty() {
+            self.search
+                .authority_boost
+                .insert("default".to_string(), 1.0);
+        }
+    }
+
+    /// Returns the configured embedding vector dimension for the active mode
+    /// (Go `VectorDim`): local → `local.vector_dim`, api → `api.vector_dim`,
+    /// any unrecognized mode → 0.
+    pub fn vector_dim(&self) -> i32 {
+        match self.embeddings.mode {
+            EmbeddingsMode::Local => self.embeddings.local.vector_dim,
+            EmbeddingsMode::Api => self.embeddings.api.vector_dim,
+            EmbeddingsMode::Unknown(_) => 0,
+        }
+    }
+
+    /// Returns the main SQLite database path (Go `DBPath`): the explicit
+    /// [`DatabaseConfig::path`] when set, otherwise `paths.data_dir/knowledge.db`.
+    /// Call after [`apply_defaults`](Self::apply_defaults) so `data_dir` is populated.
+    pub fn db_path(&self) -> PathBuf {
+        if self.database.path.is_empty() {
+            PathBuf::from(self.paths.data_dir.as_str()).join("knowledge.db")
+        } else {
+            PathBuf::from(self.database.path.as_str())
+        }
+    }
+
+    /// Returns the cache database path (Go `CacheDBPath`): the explicit
+    /// [`DatabaseConfig::cache_path`] when set, otherwise `cache.db` in the
+    /// directory of [`db_path`](Self::db_path).
+    pub fn cache_db_path(&self) -> PathBuf {
+        if self.database.cache_path.is_empty() {
+            // Go: filepath.Dir(DBPath()) — "." for a bare relative file name. `parent()`
+            // agrees, and `join` drops the CurDir component, so the result spells the
+            // same string as Go's cleaned Join(".", "cache.db") == "cache.db".
+            let db = self.db_path();
+            let dir = db.parent().unwrap_or_else(|| Path::new("."));
+            dir.join("cache.db")
+        } else {
+            PathBuf::from(self.database.cache_path.as_str())
+        }
+    }
 }
 
 /// Builds a [`ConfigError::Validation`] from a message.
@@ -182,7 +470,9 @@ tolerant_enum! {
     /// there must load here too. [`Config::validate`] then rejects any non-`local`/
     /// non-`api` value with the oracle's message, which is what makes this "strict"
     /// (invalid values error at validation) versus the purely tolerant enums that are
-    /// preserved without ever failing.
+    /// preserved without ever failing. `mode` has no oracle default, so it does NOT
+    /// opt into D12 empty-string normalization: an explicit `""` stays `Unknown("")`
+    /// and is rejected by [`Config::validate`] exactly like Go rejects it.
     EmbeddingsMode, Local {
         Local => "local",
         Api   => "api",
@@ -263,12 +553,13 @@ pub struct ChunkingConfig {
 }
 
 tolerant_enum! {
-    /// Chunking strategy for the markdown chunker (design D7: tolerant).
+    /// Chunking strategy for the markdown chunker (design D7: tolerant; an explicit
+    /// `""` normalizes to [`ChunkingStrategy::Headers`] at parse time, design D12).
     ChunkingStrategy, Headers {
         Headers => "headers",
         Fixed   => "fixed",
         Hybrid  => "hybrid",
-    }
+    } empty_to_default
 }
 
 /// Markdown chunker settings.
@@ -352,11 +643,12 @@ pub struct LlmConfig {
 }
 
 tolerant_enum! {
-    /// LLM structured-output format (design D7: tolerant).
+    /// LLM structured-output format (design D7: tolerant; an explicit `""` normalizes
+    /// to [`ResponseFormat::JsonObject`] at parse time, design D12).
     ResponseFormat, JsonObject {
         JsonObject => "json_object",
         JsonSchema => "json_schema",
-    }
+    } empty_to_default
 }
 
 /// Entity resolution / deduplication thresholds.
@@ -414,31 +706,71 @@ pub struct SearchConfig {
 // ── Graph / storage ───────────────────────────────────────────────────────
 
 /// Knowledge-graph module settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraphConfig {
-    /// Enable graph traversal in queries.
+    /// Enable graph traversal in queries. Presence semantics (design D13): absent →
+    /// true; an explicit `false` is respected — Go's `if !x { x = true }` pattern that
+    /// forced it back to true was a bug (and its doc comment always said "default true").
+    #[serde(default = "default_true")]
     pub enable_graph: bool,
     /// Maximum BFS depth.
     pub max_depth: i32,
     /// Maximum nodes returned per query.
     pub max_nodes: i32,
-    /// Load the graph into memory on startup.
+    /// Load the graph into memory on startup. Presence semantics (design D13): absent →
+    /// true; an explicit `false` is respected (Go forced it back to true — bug fixed).
+    #[serde(default = "default_true")]
     pub load_on_startup: bool,
 }
 
+impl Default for GraphConfig {
+    fn default() -> Self {
+        // Absent section means enabled / loaded-on-startup: the documented Go intent
+        // ("default true") without its buggy force-enable (design D13). Depth/node
+        // bounds stay zero here; `apply_defaults` fills them.
+        Self {
+            enable_graph: true,
+            max_depth: 0,
+            max_nodes: 0,
+            load_on_startup: true,
+        }
+    }
+}
+
 /// Automatic file-watching / re-indexing settings (serve mode).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AutoUpdateConfig {
-    /// Enable filesystem monitoring.
+    /// Enable filesystem monitoring. Governed by section presence (design D8): an absent
+    /// `auto_update:` section is materialized with `enabled = true` by
+    /// [`Config::apply_defaults`](crate::preset::Config::apply_defaults), while a present
+    /// section keeps its parsed value — a key missing inside a present section stays false,
+    /// matching the oracle.
     pub enabled: bool,
     /// Minimum interval between re-indexings in seconds.
     pub debounce_seconds: i32,
-    /// Watch all sources listed under ingestion.
+    /// Watch all sources listed under ingestion. Presence semantics (design D13): absent →
+    /// true; an explicit `false` is respected (Go forced it back to true — bug fixed).
+    #[serde(default = "default_true")]
     pub watch_sources: bool,
-    /// Run a full source scan on startup.
+    /// Run a full source scan on startup. Same presence rule as [`Self::enabled`].
     pub initial_sync: bool,
+}
+
+impl Default for AutoUpdateConfig {
+    fn default() -> Self {
+        // `watch_sources` follows presence semantics (absent → true, design D13).
+        // `enabled` / `initial_sync` stay zero here on purpose: a materialized absent
+        // section is force-enabled by `apply_defaults` (design D8), and a present
+        // section must keep its parsed values.
+        Self {
+            enabled: false,
+            debounce_seconds: 0,
+            watch_sources: true,
+            initial_sync: false,
+        }
+    }
 }
 
 /// Universal job scheduler settings.
@@ -463,30 +795,33 @@ pub struct JobConfig {
 
 tolerant_enum! {
     /// Log level (design D7: tolerant) — unknown values are preserved rather than
-    /// rejected so an unrecognised value cannot break startup.
+    /// rejected so an unrecognised value cannot break startup. An explicit `""`
+    /// normalizes to [`LogLevel::Info`] at parse time (design D12).
     LogLevel, Info {
         Trace => "trace",
         Debug => "debug",
         Info  => "info",
         Warn  => "warn",
         Error => "error",
-    }
+    } empty_to_default
 }
 
 tolerant_enum! {
-    /// Log output format (`"console"` or `"json"`; design D7: tolerant).
+    /// Log output format (`"console"` or `"json"`; design D7: tolerant). An explicit
+    /// `""` normalizes to [`LogFormat::Console`] at parse time (design D12).
     LogFormat, Console {
         Console => "console",
         Json    => "json",
-    }
+    } empty_to_default
 }
 
 tolerant_enum! {
-    /// Log output destination (`"stderr"` or `"stdout"`; design D7: tolerant).
+    /// Log output destination (`"stderr"` or `"stdout"`; design D7: tolerant). An
+    /// explicit `""` normalizes to [`LogOutput::Stderr`] at parse time (design D12).
     LogOutput, Stderr {
-        Stderr => "stderr",
-        Stdout => "stdout",
-    }
+        Stderr  => "stderr",
+        Stdout  => "stdout",
+    } empty_to_default
 }
 
 /// Logging settings.
@@ -502,35 +837,85 @@ pub struct LoggingConfig {
 }
 
 /// Filesystem paths used by the application.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PathsConfig {
-    /// Data directory for DB / cache.
+    /// Data directory for DB / cache. Absent or `""` → `"data"` at parse time (D12).
+    #[serde(default = "default_data_dir", deserialize_with = "de_data_dir")]
     pub data_dir: String,
-    /// Documents storage directory.
+    /// Documents storage directory. Absent or `""` → `"documents"` (D12).
+    #[serde(
+        default = "default_documents_dir",
+        deserialize_with = "de_documents_dir"
+    )]
     pub documents_dir: String,
-    /// Database migrations directory.
+    /// Database migrations directory. Absent or `""` → `"migrations"` (D12).
+    #[serde(
+        default = "default_migrations_dir",
+        deserialize_with = "de_migrations_dir"
+    )]
     pub migrations_dir: String,
-    /// Ontology directory (contains `global.xml` and `domains/`).
+    /// Ontology directory (contains `global.xml` and `domains/`). No oracle default —
+    /// an empty value deliberately disables cross-domain linking (Go parity).
     pub global_config_path: String,
-    /// Prompt template files directory.
+    /// Prompt template files directory. Absent or `""` → `"configs/prompts"` (D12).
+    #[serde(default = "default_prompts_path", deserialize_with = "de_prompts_path")]
     pub prompts_path: String,
-    /// Path to the external `onnx.yaml` registry file.
+    /// Path to the external `onnx.yaml` registry file. Absent or `""` →
+    /// `"configs/onnx.yaml"` (D12).
+    #[serde(default = "default_onnx_config", deserialize_with = "de_onnx_config")]
     pub onnx_config: String,
 }
 
+impl Default for PathsConfig {
+    fn default() -> Self {
+        // Serde calls this when the whole `paths:` section is absent — per-field D12
+        // attributes do not apply to a missing struct, so the defaults live here too.
+        // `global_config_path` stays empty (no oracle default; Go parity).
+        Self {
+            data_dir: "data".to_string(),
+            documents_dir: "documents".to_string(),
+            migrations_dir: "migrations".to_string(),
+            global_config_path: String::new(),
+            prompts_path: "configs/prompts".to_string(),
+            onnx_config: "configs/onnx.yaml".to_string(),
+        }
+    }
+}
+
 /// MCP server identification / bind settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
-    /// Human-readable service name.
+    /// Human-readable service name. Absent or `""` → `"synopsis"` at parse time (D12).
+    #[serde(default = "default_server_name", deserialize_with = "de_server_name")]
     pub name: String,
-    /// Service version string.
+    /// Service version string. Absent or `""` → `"0.1.0-dev"` (D12).
+    #[serde(
+        default = "default_server_version",
+        deserialize_with = "de_server_version"
+    )]
     pub version: String,
-    /// HTTP listen host.
+    /// HTTP listen host. Absent or `""` → `"0.0.0.0"` (D12).
+    #[serde(default = "default_server_host", deserialize_with = "de_server_host")]
     pub host: String,
-    /// HTTP listen port.
+    /// HTTP listen port; a non-positive value is replaced by 8080 in
+    /// [`Config::apply_defaults`](crate::preset::Config::apply_defaults).
     pub port: i32,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        // See `PathsConfig::default`: the defaults live here because serde uses the
+        // struct's `Default` when the whole `server:` section is absent (D12). Port
+        // stays zero; `apply_defaults` fills it (numeric rule, not a string artifact).
+        Self {
+            name: "synopsis".to_string(),
+            version: "0.1.0-dev".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: 0,
+        }
+    }
 }
 
 // ── Loading ───────────────────────────────────────────────────────────────
@@ -539,8 +924,8 @@ pub struct ServerConfig {
 ///
 /// Unknown keys are ignored (matching the oracle). This performs parsing only —
 /// it does **not** apply defaults or validate; call
-/// [`Config::validate`](Config::validate) (and, from task 1.2, `apply_defaults`)
-/// as separate phases.
+/// [`Config::validate`](Config::validate) and
+/// [`Config::apply_defaults`](Config::apply_defaults) as separate phases.
 pub fn load(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let path = path.as_ref();
     let bytes = std::fs::read(path).map_err(|source| ConfigError::Io {
@@ -735,5 +1120,461 @@ mod tests {
 
         let present = parse("auto_update:\n  enabled: false\n");
         assert!(!present.auto_update.unwrap().enabled);
+    }
+
+    // ── apply_defaults + helpers (task 1.2) ────────────────────────────────
+
+    #[test]
+    fn empty_config_gets_all_oracle_defaults() {
+        // Criterion (a): Config::default() after apply_defaults, checked against
+        // every value in Go's ApplyDefaults (config.go).
+        let mut cfg = Config::default();
+        cfg.apply_defaults();
+
+        // Ingestion.
+        assert_eq!(cfg.ingestion.batch_size, 100);
+        let md = &cfg.ingestion.chunking.markdown;
+        assert_eq!(md.strategy, ChunkingStrategy::Headers);
+        assert_eq!(md.max_chunk_size, 1000);
+        // Go checks `< 0`: a zero overlap is preserved, not defaulted to 100.
+        assert_eq!(md.overlap_size, 0);
+        assert_eq!(md.min_section_size, 500);
+        assert_eq!(
+            cfg.ingestion.chunking.json.text_fields,
+            vec!["description", "title", "wikitext", "html"]
+        );
+
+        // Search (including the reranker factors).
+        let s = &cfg.search;
+        assert_eq!(s.rrf_k, 20);
+        assert_eq!(s.lexical_top_k, 20);
+        assert_eq!(s.semantic_top_k, 20);
+        assert_eq!(s.final_top_k, 10);
+        // Both legs absent -> both force-enabled (Go: only when BOTH are false).
+        assert!(s.enable_lexical && s.enable_semantic);
+        assert_eq!(s.timeout_ms, 10_000);
+        assert_eq!(s.deprecated_boost, 0.2);
+        assert_eq!(s.official_boost, 1.5);
+        assert_eq!(s.recent_boost, 1.2);
+        assert_eq!(s.recent_days, 90);
+        assert_eq!(s.authority_boost.len(), 1);
+        assert_eq!(s.authority_boost.get("default"), Some(&1.0));
+
+        // Graph: presence semantics (design D13) — absent keys mean the documented
+        // default true; Go left enable_graph false despite its "default true" comment.
+        let g = &cfg.graph;
+        assert!(g.enable_graph);
+        assert_eq!(g.max_depth, 5);
+        assert_eq!(g.max_nodes, 1000);
+        assert!(g.load_on_startup);
+
+        // Auto-update: absent section -> fully enabled (D8).
+        let au = cfg
+            .auto_update
+            .as_ref()
+            .expect("absent auto_update becomes Some");
+        assert!(au.enabled && au.initial_sync);
+        assert_eq!(au.debounce_seconds, 30);
+        assert!(au.watch_sources);
+
+        // Scheduler gains exactly one default job: orphan_cleanup, disabled / 3600s.
+        assert_eq!(cfg.scheduler.jobs.len(), 1);
+        let oc = cfg.scheduler.jobs["orphan_cleanup"];
+        assert!(!oc.enabled);
+        assert_eq!(oc.interval_seconds, 3600);
+
+        // Logging / paths (global_config_path is intentionally NOT defaulted).
+        assert_eq!(cfg.logging.level, LogLevel::Info);
+        assert_eq!(cfg.logging.format, LogFormat::Console);
+        assert_eq!(cfg.logging.output, LogOutput::Stderr);
+        let p = &cfg.paths;
+        assert_eq!(p.data_dir, "data");
+        assert_eq!(p.documents_dir, "documents");
+        assert_eq!(p.migrations_dir, "migrations");
+        assert!(p.global_config_path.is_empty());
+        assert_eq!(p.prompts_path, "configs/prompts");
+        assert_eq!(p.onnx_config, "configs/onnx.yaml");
+
+        // NER LLM defaults; linker.llm must stay untouched (Go: NER provider only).
+        let llm = &cfg.ingestion.ner.llm;
+        assert_eq!(llm.response_format, ResponseFormat::JsonObject);
+        assert_eq!(llm.timeout_ms, 60_000);
+        assert_eq!(llm.max_retries, 3);
+        assert_eq!(cfg.linker.llm.timeout_ms, 0); // not defaulted
+        assert_eq!(cfg.linker.llm.max_retries, 0);
+
+        // Resolver + local embedding fallback model (applies in both modes).
+        assert_eq!(cfg.ingestion.resolver.similarity_threshold, 0.8);
+        assert_eq!(cfg.embeddings.local.model_name, "bge-m3-int8");
+
+        // Server.
+        let sv = &cfg.server;
+        assert_eq!(sv.name, "synopsis");
+        assert_eq!(sv.version, "0.1.0-dev");
+        assert_eq!(sv.host, "0.0.0.0");
+        assert_eq!(sv.port, 8080);
+    }
+
+    #[test]
+    fn apply_defaults_preserves_explicitly_set_values() {
+        let mut cfg = parse(
+            r#"
+ingestion:
+  batch_size: 250
+  chunking:
+    markdown:
+      strategy: fixed
+      max_chunk_size: 4096
+      overlap_size: 7
+      min_section_size: 100
+    json:
+      text_fields: [a, b]
+  ner:
+    llm:
+      response_format: json_schema
+      timeout_ms: 5000
+      max_retries: 9
+  resolver:
+    similarity_threshold: 0.42
+search:
+  rrf_k: 60
+  enable_lexical: false   # single leg off -> respected (Go flips only when BOTH are off)
+  enable_semantic: true
+graph:
+  max_depth: 3
+auto_update:
+  enabled: false          # present section -> flags respected as parsed (D8)
+scheduler:
+  jobs:
+    orphan_cleanup:
+      enabled: true
+      interval_seconds: 1800
+logging:
+  level: warn
+paths:
+  data_dir: /var/synopsis
+  global_config_path: ont
+embeddings:
+  mode: local
+  local:
+    model_name: custom-model
+server:
+  port: 9090
+"#,
+        );
+        cfg.apply_defaults();
+
+        assert_eq!(cfg.ingestion.batch_size, 250);
+        let md = &cfg.ingestion.chunking.markdown;
+        assert_eq!(md.strategy, ChunkingStrategy::Fixed);
+        assert_eq!(md.max_chunk_size, 4096);
+        assert_eq!(md.overlap_size, 7);
+        assert_eq!(md.min_section_size, 100);
+        assert_eq!(cfg.ingestion.chunking.json.text_fields, vec!["a", "b"]);
+
+        let llm = &cfg.ingestion.ner.llm;
+        assert_eq!(llm.response_format, ResponseFormat::JsonSchema);
+        assert_eq!(llm.timeout_ms, 5000); // not reset to 60000
+        assert_eq!(llm.max_retries, 9);
+        assert_eq!(cfg.ingestion.resolver.similarity_threshold, 0.42);
+
+        let s = &cfg.search;
+        assert_eq!(s.rrf_k, 60);
+        assert!(!s.enable_lexical); // explicit single-leg disable survives
+        assert!(s.enable_semantic);
+
+        assert_eq!(cfg.graph.max_depth, 3);
+
+        // Present auto_update section: parsed flags respected (D8), field defaults apply.
+        let au = cfg.auto_update.as_ref().expect("auto_update present");
+        assert!(!au.enabled);
+        assert!(!au.initial_sync); // NOT force-enabled: the section is present
+        assert_eq!(au.debounce_seconds, 30);
+        assert!(au.watch_sources);
+
+        let oc = cfg.scheduler.jobs["orphan_cleanup"];
+        assert!(oc.enabled);
+        assert_eq!(oc.interval_seconds, 1800); // explicit interval respected
+
+        assert_eq!(cfg.logging.level, LogLevel::Warn); // not reset to info
+        assert_eq!(cfg.paths.data_dir, "/var/synopsis");
+        assert_eq!(cfg.paths.global_config_path, "ont"); // preserved (Go never defaults it)
+
+        assert_eq!(cfg.embeddings.local.model_name, "custom-model"); // not bge-m3-int8
+
+        assert_eq!(cfg.server.port, 9090);
+    }
+
+    #[test]
+    fn auto_update_absent_section_defaults_to_fully_enabled() {
+        // D8 criterion (c): `auto_update` missing from YAML -> enabled + initial_sync.
+        let mut cfg = parse("server:\n  name: x\n");
+        assert!(cfg.auto_update.is_none()); // load does not invent the section
+        cfg.apply_defaults();
+        let au = cfg
+            .auto_update
+            .expect("defaults must materialize the section");
+        assert!(au.enabled);
+        assert!(au.initial_sync);
+        assert_eq!(au.debounce_seconds, 30);
+        assert!(au.watch_sources);
+    }
+
+    #[test]
+    fn auto_update_present_section_respects_parsed_flags() {
+        // D8 criterion (c): explicit `auto_update:` with enabled=false stays false —
+        // Go's autoUpdateConfigured flag skips the force-enable for present sections.
+        let mut cfg = parse("auto_update:\n  enabled: false\n");
+        cfg.apply_defaults();
+        let au = cfg.auto_update.expect("present section survives as Some");
+        assert!(!au.enabled);
+        assert!(!au.initial_sync); // not force-enabled either (the section was present)
+        assert_eq!(au.debounce_seconds, 30); // field defaults still apply inside it
+        assert!(au.watch_sources);
+    }
+
+    #[test]
+    fn db_path_explicit_wins_over_data_dir_fallback() {
+        // Criterion (d).
+        let mut cfg = Config::default();
+        cfg.paths.data_dir = "mydata".to_string();
+
+        // Fallback: data_dir/knowledge.db.
+        assert_eq!(cfg.db_path(), PathBuf::from("mydata").join("knowledge.db"));
+
+        // Explicit database.path wins.
+        cfg.database.path = "./custom/main.sqlite".to_string();
+        assert_eq!(cfg.db_path(), PathBuf::from("./custom/main.sqlite"));
+    }
+
+    #[test]
+    fn cache_db_path_explicit_wins_over_sibling_fallback() {
+        // Criterion (d).
+        let mut cfg = Config::default();
+        cfg.paths.data_dir = "mydata".to_string();
+
+        // Sibling of the derived main DB.
+        assert_eq!(
+            cfg.cache_db_path(),
+            PathBuf::from("mydata").join("cache.db")
+        );
+
+        // Explicit cache_path wins.
+        cfg.database.cache_path = "/var/synopsis/cache.sqlite".to_string();
+        assert_eq!(
+            cfg.cache_db_path(),
+            PathBuf::from("/var/synopsis/cache.sqlite")
+        );
+    }
+
+    #[test]
+    fn cache_db_path_sibling_of_bare_relative_main_db() {
+        // Go: filepath.Dir("main.sqlite") == "." and Join(".", "cache.db") cleans to
+        // "cache.db"; `Path::push` normalizes the CurDir component away, so this port
+        // spells the same string.
+        let mut cfg = Config::default();
+        cfg.database.path = "main.sqlite".to_string();
+        assert_eq!(cfg.cache_db_path(), PathBuf::from("cache.db"));
+    }
+
+    #[test]
+    fn vector_dim_follows_embeddings_mode() {
+        // Criterion (e).
+        let mut cfg = Config::default(); // mode == Local by the enum default
+        cfg.embeddings.local.vector_dim = 1024;
+        assert_eq!(cfg.vector_dim(), 1024);
+
+        cfg.embeddings.mode = EmbeddingsMode::Api;
+        cfg.embeddings.api.vector_dim = 3072;
+        assert_eq!(cfg.vector_dim(), 3072);
+
+        // Unrecognized mode -> 0 (Go default branch).
+        let bogus = parse("embeddings:\n  mode: bogus\n");
+        assert_eq!(bogus.vector_dim(), 0);
+    }
+
+    #[test]
+    fn orphan_cleanup_explicit_enabled_keeps_default_interval() {
+        // Criterion (f) / Go "explicitly enabled job preserved":
+        // {enabled: true} -> interval still defaults to 3600.
+        let mut cfg = parse("scheduler:\n  jobs:\n    orphan_cleanup:\n      enabled: true\n");
+        cfg.apply_defaults();
+        let oc = cfg.scheduler.jobs["orphan_cleanup"];
+        assert!(oc.enabled);
+        assert_eq!(oc.interval_seconds, 3600);
+    }
+
+    #[test]
+    fn orphan_cleanup_explicit_interval_respected() {
+        // Criterion (f) / Go "explicitly configured interval preserved".
+        let mut cfg = parse(
+            r#"
+scheduler:
+  jobs:
+    nightly:
+      enabled: true
+      interval_seconds: 60
+    orphan_cleanup:
+      enabled: true
+      interval_seconds: 7200
+"#,
+        );
+        cfg.apply_defaults();
+        let oc = cfg.scheduler.jobs["orphan_cleanup"];
+        assert!(oc.enabled);
+        assert_eq!(oc.interval_seconds, 7200);
+        // Unrelated jobs are untouched.
+        let nightly = cfg.scheduler.jobs["nightly"];
+        assert!(nightly.enabled && nightly.interval_seconds == 60);
+    }
+
+    #[test]
+    fn orphan_cleanup_explicit_disabled_with_interval_preserved() {
+        // Criterion (f) / Go "explicitly disabled with custom interval preserved".
+        let mut cfg = parse(
+            r#"
+scheduler:
+  jobs:
+    orphan_cleanup:
+      enabled: false
+      interval_seconds: 1800
+"#,
+        );
+        cfg.apply_defaults();
+        let oc = cfg.scheduler.jobs["orphan_cleanup"];
+        assert!(!oc.enabled);
+        assert_eq!(oc.interval_seconds, 1800);
+    }
+
+    #[test]
+    fn explicit_false_presence_bools_are_respected() {
+        // Design D13 (BREAKING vs Go): an explicit false survives defaulting — Go's
+        // `if !x { x = true }` pattern made these settings non-functional.
+        let mut cfg = parse(
+            r#"
+graph:
+  enable_graph: false
+  load_on_startup: false
+auto_update:
+  enabled: false
+  watch_sources: false
+"#,
+        );
+        cfg.apply_defaults();
+        assert!(!cfg.graph.enable_graph);
+        assert!(!cfg.graph.load_on_startup);
+        let au = cfg.auto_update.expect("present section survives");
+        assert!(!au.enabled);
+        assert!(!au.watch_sources);
+    }
+
+    #[test]
+    fn absent_presence_bools_default_to_true() {
+        // Design D13: an absent key means the documented default (true) — both when
+        // the whole section is missing and when only the key is missing.
+        let cfg = parse("server:\n  name: x\n");
+        assert!(cfg.graph.enable_graph);
+        assert!(cfg.graph.load_on_startup);
+
+        let partial = parse("auto_update:\n  enabled: false\n");
+        assert!(
+            partial.auto_update.expect("present section").watch_sources,
+            "a key absent inside a present section defaults to true"
+        );
+    }
+
+    #[test]
+    fn empty_defaulted_strings_and_enums_normalize_at_parse_time() {
+        // Design D12: an explicit "" is normalized during deserialization — the
+        // assertions below hold WITHOUT calling apply_defaults.
+        let cfg = parse(
+            r#"
+paths:
+  data_dir: ""
+  documents_dir: ""
+  migrations_dir: ""
+  prompts_path: ""
+  onnx_config: ""
+server:
+  name: ""
+  version: ""
+  host: ""
+logging:
+  level: ""
+  format: ""
+  output: ""
+ingestion:
+  chunking:
+    markdown:
+      strategy: ""
+  ner:
+    llm:
+      response_format: ""
+"#,
+        );
+        let p = &cfg.paths;
+        assert_eq!(p.data_dir, "data");
+        assert_eq!(p.documents_dir, "documents");
+        assert_eq!(p.migrations_dir, "migrations");
+        assert_eq!(p.prompts_path, "configs/prompts");
+        assert_eq!(p.onnx_config, "configs/onnx.yaml");
+        let sv = &cfg.server;
+        assert_eq!(sv.name, "synopsis");
+        assert_eq!(sv.version, "0.1.0-dev");
+        assert_eq!(sv.host, "0.0.0.0");
+        assert_eq!(cfg.logging.level, LogLevel::Info);
+        assert_eq!(cfg.logging.format, LogFormat::Console);
+        assert_eq!(cfg.logging.output, LogOutput::Stderr);
+        assert_eq!(
+            cfg.ingestion.chunking.markdown.strategy,
+            ChunkingStrategy::Headers
+        );
+        assert_eq!(
+            cfg.ingestion.ner.llm.response_format,
+            ResponseFormat::JsonObject
+        );
+    }
+
+    #[test]
+    fn absent_sections_default_to_oracle_values_at_parse_time() {
+        // Design D12: a whole section missing from YAML yields the struct's Default —
+        // serde does not run per-field attributes on an absent struct.
+        let cfg = parse("database:\n  path: x\n");
+        assert_eq!(cfg.paths.data_dir, "data");
+        assert_eq!(cfg.paths.onnx_config, "configs/onnx.yaml");
+        assert_eq!(cfg.server.name, "synopsis");
+        assert_eq!(cfg.server.host, "0.0.0.0");
+        assert!(cfg.graph.enable_graph);
+        assert!(cfg.graph.load_on_startup);
+    }
+
+    #[test]
+    fn empty_embeddings_mode_is_still_rejected_by_validate() {
+        // EmbeddingsMode has no oracle default, so it is NOT one of D12's normalized
+        // enums: "" stays Unknown("") and validate() rejects it with the oracle's
+        // exact message (Go parity), like any other unrecognized mode.
+        let cfg = parse("embeddings:\n  mode: \"\"\n");
+        assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Unknown(String::new()));
+        match cfg.validate() {
+            Err(ConfigError::Validation { message }) => {
+                assert_eq!(
+                    message,
+                    "unknown embeddings mode \"\", want \"local\" or \"api\""
+                )
+            }
+            other => panic!("expected Validation error for empty mode, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn negative_overlap_size_defaults_to_100_but_zero_is_kept() {
+        let mut cfg = parse("ingestion:\n  chunking:\n    markdown:\n      overlap_size: -5\n");
+        cfg.apply_defaults();
+        assert_eq!(cfg.ingestion.chunking.markdown.overlap_size, 100);
+
+        // Zero value stays zero (Go checks `< 0`, not `<= 0`).
+        let mut zeroed = Config::default();
+        zeroed.apply_defaults();
+        assert_eq!(zeroed.ingestion.chunking.markdown.overlap_size, 0);
     }
 }
