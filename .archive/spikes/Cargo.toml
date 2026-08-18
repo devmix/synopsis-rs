@@ -1,0 +1,55 @@
+# Empty table: makes this manifest its own workspace root so it builds standalone even
+# though it lives inside the synopsis-rs repo tree (cargo otherwise walks up to the root
+# [workspace] and rejects a package that is not one of its members). When re-integrating,
+# delete this line.
+[workspace]
+
+[package]
+name = "spikes"
+version = "0.1.0"
+edition = "2024"
+
+# One-shot native-seam prototype crate (design D1): bin targets probe_db, s1_sqlite,
+# s2_onnx, s3a_usearch and s3b_lance. Created by change native-seam-spikes (task 0.2),
+# archived here in task 5.1 (human decision 2026-08-18: archive instead of delete — the
+# measurement code may be re-run when the `vectors` change lands). Reusable logic is
+# rewritten in the product crates rather than ported from here; this crate is not part
+# of the product dependency graph (D1) and is NOT a workspace member. See README.md for
+# provenance and how to run / re-integrate it.
+
+# Standalone lint baseline — copied verbatim from the root [workspace.lints] so behavior
+# matches what the crate had while it was a workspace member.
+[lints.rust]
+missing_docs = "deny" # public API must be documented; fails compilation otherwise
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 } # make the default clippy baseline explicit
+unwrap_used = "warn" # test code may opt out locally: `#![allow(clippy::unwrap_used)]` on the test module
+expect_used = "warn" # same as unwrap_used
+
+# Dependency pins moved from the root [workspace.dependencies] palette in task 5.1 (they were
+# used by this crate only). Versions are exactly those verified on crates.io 2026-08-18; the
+# ADRs under docs/adr/ are the reference for re-pinning in db/embedding/vectors when their
+# changes land.
+[dependencies]
+# Spike S1 (task 1.1) + task 0.1 probe — ADR 0001: source-compiled bundled SQLite, rusqlite_migration
+# from-directory loader, PRAGMA user_version as the schema-state source of truth (design D6).
+rusqlite = "0.40"
+libsqlite3-sys = { version = "0.38", features = ["bundled"] } # forces the bundled build (ADR 0001 revision 2)
+rusqlite_migration = { version = "2.6", features = ["from-directory"] }
+include_dir = "0.7" # builds the Dir embedded into rusqlite_migration::from_directory
+
+# Spike S2 (task 2.1) — ADR 0002: ONNX Runtime via `ort` with load-dynamic; the runtime .so is loaded
+# from data/onnxruntime at run time per ../synopsis/configs/onnx.yaml; HF tokenizer.json loading.
+# ort 2.0.0-rc.13 wraps exactly ORT 1.28 (the version pinned in onnx.yaml); default-features off: no
+# build-time binary download, `api-28` is the highest C API level ort exposes.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "api-28"] }
+tokenizers = "0.23"
+
+# Spike S3b (task 3.2) — ADR 0003: ANN engine measurements; LanceDB embedded/native mode over a local
+# path, IVF-HNSW index family (IvfHnswFlat / IvfHnswSq), async query API; tokio runtime + futures
+# stream consumption for the RecordBatch results. lancedb 0.37 internally pins lance =10.0.0.
+lancedb = "0.37"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"

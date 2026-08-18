@@ -13,9 +13,6 @@ members = [
     "crates/cli",
     # Dev-tooling (design D6): not part of the product dependency graph.
     "crates/parity-harness",
-    # Temporary native-seam prototype crate (change native-seam-spikes, design D1);
-    # deleted after its ADRs are written (task 5.x). Not part of the product graph.
-    "crates/spikes",
 ]
 
 [workspace.package]
@@ -68,20 +65,9 @@ rmcp = "3"
 rusqlite = "0.40"
 libsqlite3-sys = { version = "0.38", features = ["bundled"] }
 
-# Schema migration mechanism for spike S1 (task 1.1, design D6): applies SQL from a
-# compile-time-embedded directory; PRAGMA user_version is the single source of truth
-# about schema state (`_schema_migrations` table is deliberately NOT created).
-# MSRV 1.95 <= pinned toolchain 1.96; requires rusqlite ^0.40, unifies with 0.40.2.
-rusqlite_migration = { version = "2.6", features = ["from-directory"] }
-
-# Compile-time directory embedding for the from-directory migration loader (same 0.7 line
-# that rusqlite_migration's `from-directory` feature depends on; needed to build the Dir).
-include_dir = "0.7"
-
-# CEL expressions for entity linking (graph crate), NER tokens, file watcher,
+# CEL expressions for entity linking (graph crate), file watcher,
 # cron scheduling and progress bars
 cel-interpreter = "0.10"
-tokenizers = "0.23"
 notify = "8"
 tokio-cron-scheduler = "0.15"
 indicatif = "0.18"
@@ -91,25 +77,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 noyalib = "0.0.23" # YAML: successor of serde_yaml/serde_yml, both deprecated (verified 2026-08-18)
 
-# ONNX Runtime bindings (S2 spike, task 2.1; human decision 2026-08-18 — frozen-stack entry
-# "onnxruntime-rs" no longer exists on crates.io, replaced by `ort` per the revision history of
-# task 2.1 + ADR 0002). ort 2.0.0-rc.13 wraps exactly ORT 1.28 — the version pinned in
-# ../synopsis/configs/onnx.yaml. default-features off: no build-time binary download;
-# `load-dynamic` loads the runtime .so from data/onnxruntime at run time (libloading) instead of
-# static linking, mirroring the oracle's SetSharedLibraryPath + dlopen mechanism; `api-28` is the
-# highest C API level ort exposes.
-ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "api-28"] }
-
-# ANN engine candidate for spike S3b (task 3.2; human decision 2026-08-18: usearch cancelled,
-# lance is the sole candidate): LanceDB embedded/native mode over a local path. 0.37.1 is current
-# stable on crates.io (verified 2026-08-18); MSRV 1.91 <= pinned toolchain 1.96; internally pins
-# lance =10.0.0. The final engine decision lands in docs/adr/0003-ann-engine.md.
-lancedb = "0.37"
-
-# Consumes the RecordBatch stream returned by lancedb vector searches (StreamExt); unifies with
-# lancedb's own futures 0.3 dependency, so it adds nothing to the build graph.
-futures = "0.3"
-
 # Intentionally NOT pinned here - decisions deferred to module changes:
-# - ANN engine: usearch vs lance (design D5 -> native-seam-spikes benchmark)
+# - ANN engine: decided by ADR 0003 (lancedb, change native-seam-spikes); the pin moves with the
+#   archived spikes crate (.archive/spikes/Cargo.toml) and is re-added when the `vectors` change
+#   lands (design D5). Spike-only pins (ort/tokenizers/lancedb/futures/rusqlite_migration/
+#   include_dir) were removed from this palette in task 5.1; ADRs 0001-0003 are the reference for
+#   re-pinning in db/embedding/vectors.
 # MCP protocol crate: decision made 2026-08-18 -> rmcp 3.x above (design D8).
