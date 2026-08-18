@@ -11,23 +11,29 @@ context: |
   время миграции: его тесты, поведение и контракты — источник истины для паритета.
 
   ## Целевой стек (заморожен)
-  - Rust + tokio (async runtime) + axum (HTTP/SSE для MCP transport)
-  - rusqlite (bundled + fts5) — SQLite-хранилище; FTS5 всегда доступен, без cgo-флагов
-  - onnxruntime-rs — эмбеддинги (bge-m3 int8, 1024-dim) и NER; рантайм .so/.dylib
-    скачивается в data/ по onnx.yaml (механизм переносится из Go оригинала)
-  - usearch или lance — disk-backed / квантованный HNSW для векторного поиска
-    (заменяет vec0 brute-force). Векторы НЕ читаются из старого vec0: пересобираются
-    по тексту чанков.
-  - rmcp / mcp-types — MCP протокол; cel-interpreter — выражения линковки сущностей;
-    tokenizers, notify, tokio-cron-scheduler, indicatif
+  - Rust + tokio (async runtime) + axum (HTTP для не-MCP эндпоинтов, напр. /health)
+  - rusqlite (bundled + fts5) — SQLite-хранилище; FTS5 всегда доступен, без cgo-флагов.
+    Миграции: rusqlite_migration 2.x (from-directory), PRAGMA user_version — единственный
+    источник истины о состоянии схемы; _schema_migrations не создаётся (решения 2026-08-18)
+  - ort (ONNX Runtime, внешний .so/.dylib) — эмбеддинги (bge-m3 int8, 1024-dim) и NER;
+    рантайм скачивается в data/ по onnx.yaml (механизм переносится из Go оригинала).
+    Биндинги-крейт отложен: финальный пин — в change `embedding` (ADR 0002)
+  - lance (IvfHnswSq, disk-backed/квантованный HNSW) — векторный поиск, заменяет vec0
+    brute-force (ADR 0003; usearch отклонён). Векторы НЕ читаются из старого vec0:
+    пересобираются по тексту чанков
+  - rmcp 3.x — MCP протокол (Streamable HTTP, design D8; legacy SSE оракула намеренно
+    не поддерживается); cel-interpreter — выражения линковки сущностей; tokenizers,
+    notify, tokio-cron-scheduler, indicatif
 
   ## Жёсткие ограничения
   - Цель: ноутбук (16 ГБ RAM), личное использование, НЕ сервер. При N=1M × 1024-dim
     full-precision векторы (~4 ГБ) в RAM не помещаются → индекс должен быть
     disk-backed/mmap + квантованный граф. Запросный путь не грузит модель эмбеддингов.
   - Один локальный бинарь, без внешних сервисов.
-  - Старый knowledge.db (SQLite) остаётся читаемым: схема из 5 миграций Go оригинала —
-    контракт, новые миграции добавляются файлами, shipped-файлы не редактируются.
+  - Rust строит свою БД с нуля: один squashed init-миграция; legacy Go-созданный
+    knowledge.db НЕ открывается, НЕ апгрейдится, данные НЕ мигрируются (решения
+    2026-08-18, design D6). Схема из 5 миграций Go оригинала — структурный контракт
+    (финальная форма v5).
 
   ## Модель исполнения (ВАЖНО для декомпозиции задач)
   - Реализацию пишет ИИ; человек отвечает только за ревью процесса и контрактов.
