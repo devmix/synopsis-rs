@@ -16,19 +16,26 @@
 
 ## 2. CI
 
-- [ ] 2.1 Linux job: fmt + clippy + test
+- [x] 2.1 Linux job: fmt + clippy + test — выполнено, commit 1a60326
   - **Цель:** базовые гейты в CI.
   - **Scope файлов:** workflow-файл CI (linux x64): шаги `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
   - **Зависимости:** задача 1.1.
   - **Критерии приёмки:** job зелёный на текущем скелете; red при намеренно сломанном formate/clippy-кейсе (проверить вручную один раз).
   - **Референс:** CI оракула для стилистики — ../synopsis/.github/ (если есть), иначе стандартные GitHub Actions.
 
-- [ ] 2.2 Кросс-матрица: 5 таргетов через cargo-zigbuild
+- [x] 2.2 Кросс-матрица: 5 таргетов через cargo-zigbuild — выполнено, commit f9cb5ab
   - **Цель:** раннее обнаружение платформенных проблем сборки (замена CGO_CFLAGS/darwin-stubs из оракула).
   - **Scope файлов:** CI-job на матрице x86_64-unknown-linux-musl, aarch64-unknown-linux-gnu/musl, x86_64-pc-windows-msvc/gnu (через zig), aarch64-apple-darwin; install cargo-zigbuild + Zig 0.14+.
   - **Зависимости:** задача 2.1.
   - **Критерии приёмки:** все таргеты собираются из CI; бинарь linux-musl запускается в контейнере и печатает версию (`./synopsis --version` → код 0).
   - **Референс:** целевая матрица — ../synopsis/configs/onnx.yaml (platforms) и AGENTS.md оракула (make build-all / scripts/build.sh).
+  - **История ревизий:**
+    - Ревизия 1 (2026-08-18, указание человека «сделать проще» + веб-верификация оркестратора):
+      - Установка cargo-zigbuild — `cargo install --locked cargo-zigbuild` (официально задокументированный способ в README v0.23.0; версия фиксируется crates.io → 0.23.0, latest release от 18.06.2026, проверено на crates.io/lib.rs/Arch). Официального GitHub Action у проекта НЕТ (проверено по .github в репо) — предшествующий черновик с curl+sha256+tar из prebuilt-архива отклонён как избыточный; артефакт `cargo install` кэшируется Swatinem/rust-cache через CARGO_HOME.
+      - Zig — фиксированная версия 0.16.0 (текущий stable на 2026-08-18, релиз 14.04.2026, ziglang.org/news/0.16.0-released) через `mlugg/setup-zig@v2` (action поддерживает GitHub Actions после миграции автора на Codeberg; minisign-верификация и кэш zig между рансами).
+      - Матрица таргетов, шаги тулчейна/кэша и musl smoke-test в Alpine — без изменений относительно тела задачи. windows-gnu вместо msvc: Zig не линкует MSVC ABI с Linux-хоста (cargo-zigbuild CI сам использует gnu для Windows) — оставить x86_64-pc-windows-gnu, msvc не добавлять.
+      - Риск (принят): репозиторий пинится на rustc 1.96.0, а текущий stable на момент ревизии = 1.97.1 (2026-07-16); README cargo-zigbuild тестирует «current stable + nightly». Пин НЕ менять в этой задаче (согласованность с job checks из 2.1, scope discipline) — если кросс-сборка на 1.96.0 упадёт по причине toolchain-age, это отдельное решение человека о bump'e rust-toolchain.toml.
+      - Локальная проверка возможна без GitHub: на этой машине уже стоят zig 0.16.0 и rustc 1.96.0 → `cargo install --locked cargo-zigbuild`, затем `cargo zigbuild --release --target x86_64-unknown-linux-musl` и запуск статического бинаря `./synopsis --version` (де-ризикивает весь путь до реального CI).
 
 ## 3. parity-harness скелет
 
