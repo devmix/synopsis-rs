@@ -27,7 +27,7 @@ synopsis-rs/
     search/             # гибридный поиск, RRF                        ← internal/search
     mcp/                # MCP server + 12 tool handlers               ← internal/mcp
     cli/                # бинарь: subcommands, флаги, config resolve  ← cmd/app
-    parity-harness/     # dev-tooling: MCP SSE-клиент, diff'ер, fixture loader
+    parity-harness/     # dev-tooling: MCP-клиент (rmcp), diff'ер, fixture loader
 ```
 
 **Почему:** (1) границы crate'ов повторяют пакеты оракула — ревьюер видит маппинг «Go-пакет → crate» без усилий; (2) каждый crate ≤ ~3–5k строк = помещается в бюджет контекста одной задачи вместе с тестами и орракул-референсами; (3) независимые compile units ускоряют CI. Граф зависимостей: `config, db, vectors` → `embedding, ingestion, graph` → `search` → `mcp` → `cli`; `parity-harness` зависит от `mcp`-контракта и используется во всех последующих change'ах.
@@ -35,7 +35,7 @@ synopsis-rs/
 
 ### D2. tokio + axum для async/HTTP
 
-Подтверждено как индустриальный стандарт 2026 (axum ведётся командой Tokio; production у Cloudflare/Pomerium). MCP-транспорт = HTTP SSE (`GET /sse`, `POST /message`) поверх axum; гибридный поиск использует параллельные ветки (tokio::join!) как в оракуле.
+Подтверждено как индустриальный стандарт 2026 (axum ведётся командой Tokio; production у Cloudflare/Pomerium). MCP-транспорт = Streamable HTTP через встроенный серверный транспорт официального SDK `rmcp` (решение D8); axum остаётся для вспомогательных эндпоинтов (`/health`) и не-MCP потребностей. Гибридный поиск использует параллельные ветки (tokio::join!) как в оракуле.
 **Альтернативы:** actix-web (отклонено: узкая ниша raw-performance, не нужна для локального сервиса с десятками RPS); синхронный runtime (отклонено: SSE + параллельные ветки поиска).
 
 ### D3. rusqlite (bundled + fts5), sync-драйвер за spawn_blocking
@@ -55,16 +55,25 @@ FTS5 компилируется в бинарь всегда → весь кла
 
 ### D6. Паритетный harness — first-class dev-tooling в репо
 
-`parity-harness`: (а) fixture loader — читает knowledge.db + vectors.bin (экспортируются из Go-оракула одноразово, формат фиксируется change'ом native-seam-spikes); (б) тонкий MCP SSE-клиент с таймингами p50/p95; (в) diff'еры: JSON-diff ответов tools/list и tool-вызовов, text-diff `--help`/usage выводов, effective-config diff. Каждый последующий модульный change добавляет свои parity-кейсы в harness — гейт задачи = «свои кейсы зелёные».
+`parity-harness`: (а) fixture loader — читает knowledge.db + vectors.bin (экспортируются из Go-оракула одноразово, формат фиксируется change'ом native-seam-spikes); (б) MCP-клиент на официальном SDK `rmcp` (Streamable HTTP transport) + слой инструментирования таймингов p50/p95 — паритет = сравнение ответов Rust-сервера с фикстурами, записанными из Go-оракула одноразово; (в) diff'еры: JSON-diff ответов tools/list и tool-вызовов, text-diff `--help`/usage выводов, effective-config diff. Каждый последующий модульный change добавляет свои parity-кейсы в harness — гейт задачи = «свои кейсы зелёные».
 **Причина:** человек ревьюит контракты, а не строки; машина проверяет паритет на каждом шаге, а не один раз в конце.
 
 ### D7. CI
 
-Linux job: `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, `cargo test`. Кросс-проверка 5 таргетов (linux/darwin/windows × amd64/arm64) через cargo-zigbuild — замена Makefile+CGO_CFLAGS+darwin-stubs из оракула. Contract-gate job: поднимает Go-оракул и Rust-бинарь на общей фикстуре, гоняет parity-harness (включается по мере появления кейсов).
+Linux job: `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, `cargo test`. Кросс-проверка 5 таргетов (linux/darwin/windows × amd64/arm64) через cargo-zigbuild — замена Makefile+CGO_CFLAGS+darwin-stubs из оракула. Contract-gate job: запускает Rust-бинарь, гоняет parity-harness (rmcp-клиент) против него и сравнивает ответы с фикстурами, записанными из Go-оракула одноразово (включается по мере появления кейсов).
+
+### D8. MCP-транспорт: Streamable HTTP через официальный SDK rmcp; wire-совместимость с оракулом намеренно не сохраняется (изменение замороженного контракта)
+
+Решение человека от 2026-08-18 («используй rmcp, совместимость с Go не сохранять»): весь MCP в Rust — на официальном SDK `rmcp` (`modelcontextprotocol/rust-sdk`; crates.io 3.1.3, релиз 2026-08-17; реализует spec `2026-07-28`, совместимость ≥ `2025-11-25`). Транспорт — Streamable HTTP (единый endpoint: POST JSON-RPC → plain JSON или SSE-поток). Legacy SSE-транспорт Go-оракула (`mark3labs/mcp-go v0.57.0`: `GET /sse` + `POST /message?sessionId=`, spec 2024-11-05) **намеренно не воспроизводится** — актуальные SDK legacy-SSE транспорта уже не содержат (в rmcp 3.x `client-side-sse` — лишь парсер SSE внутри streamable-HTTP клиента).
+**Почему:** legacy HTTP+SSE deprecated в MCP spec с ревизии 2025-03-26; актуальные клиенты говорят Streamable HTTP; rmcp — официальный SDK с активным релизным циклом (4 версии за месяц на момент решения); пин тулчейна 1.96.0 ≥ MSRV rmcp (1.88).
+**Альтернативы:** сохранить legacy SSE 1:1 с оракулом ради wire-паритета (отклонено решением человека — deprecated протокол, ручная поддержка); собственный axum-SSE клиент/сервер без SDK (отклонено — ручной JSON-RPC/SSE, больше кода и багов).
+**Влияние на паритет:** сравнение «два живых бинаря по одному wire» невозможно; фикстуры ответов инструментов записываются из Go-оракула одноразово и сравниваются с ответами Rust-сервера через rmcp-клиент (harness). Контракты 12 tools (имена, JSON-схемы параметров/ответов, approved-only семантика) остаются эталоном без изменений; `/health` остаётся.
+**Риск:** reqwest/rustls (HTTP-стек rmcp) добавляет native-зависимости в кросс-матрицу 2.2; если cargo-zigbuild упадёт на каком-то таргете — отдельное решение человека о bump'e/замене TLS-providers.
 
 ## Risks / Trade-offs
 
-- **Спеки контрактов — транскрипция оракула на момент планирования.** Дрейф возможен. Митигация: machine-diff'ы сравнивают Rust против ЖИВОГО Go-бинаря, а не только против текстов спеков; спеки — человекочитаемая сводка.
+- **MCP-транспорт несовместим с оракулом (D8)** — клиенты, говорящие только legacy SSE, не подключатся к Rust-серверу. Митигация: локальный личный сервис; актуальные MCP-клиенты используют Streamable HTTP; решение принято человеком 2026-08-18.
+- **Спеки контрактов — транскрипция оракула на момент планирования.** Дрейф возможен. Митигация: machine-diff'ы сравнивают Rust против фикстур ЖИВОГО Go-бинаря (записанных одноразово; wire-совместимость снята D8), а не только против текстов спеков; спеки — человекочитаемая сводка.
 - **sync SQLite в async runtime** требует дисциплины spawn_blocking (заблокированный пул = деградация). Митигация: pool + лимит concurrency в crate `db`, проверяется load-test кейсами.
 - **Границы crate'ов унаследованы от Go.** Некоторые могут оказаться неоптимальными для Rust; перенос/слияние crate'ов разрешается в будущих change'ах при сохранении контрактов и графа зависимостей.
 - **parity-harness зависит от фикстуры из Go-репо** — экспорт vectors.bin требует небольшого добавления в оракул (из scope этого change; выполняется в native-seam-spikes).

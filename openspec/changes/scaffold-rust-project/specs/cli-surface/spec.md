@@ -26,7 +26,7 @@
 
 ### Requirement: Подкоманда serve
 
-Единственный долгоживущий режим: initial sync + MCP over HTTP/SSE + file watching. Флаги: `--no-initial-sync` (пропустить полный scan источников на старте), `--port N` (по умолчанию 8080, переопределяет server.port из конфига), `--auto-rebuild-vectors`.
+Единственный долгоживущий режим: initial sync + MCP over HTTP (Streamable HTTP, design D8) + file watching. Флаги: `--no-initial-sync` (пропустить полный scan источников на старте), `--port N` (по умолчанию 8080, переопределяет server.port из конфига), `--auto-rebuild-vectors`.
 
 #### Scenario: Порт
 - **WHEN** serve --port 9123
