@@ -1,0 +1,18 @@
+[package]
+name = "spikes"
+version.workspace = true
+edition.workspace = true
+
+# One-shot native-seam prototype crate (design D1): bin targets s1_sqlite,
+# s2_onnx, s3a_usearch and s3b_lance. Created by change native-seam-spikes
+# (task 0.2) and deleted after the ADRs are written (task 5.x). Reusable logic
+# is rewritten in the product crates rather than ported from here; this crate
+# is not part of the product dependency graph (D1).
+
+[lints]
+workspace = true
+
+# Spike dependencies land with their tasks: rusqlite bundled+fts5 (task 1.1),
+# ort + tokenizers (task 2.1), usearch (task 3.1), lance (task 3.2). Until then
+# the crate builds dependency-free and its binaries are sealed stubs.
+[dependencies]

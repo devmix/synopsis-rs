@@ -13,6 +13,9 @@ members = [
     "crates/cli",
     # Dev-tooling (design D6): not part of the product dependency graph.
     "crates/parity-harness",
+    # Temporary native-seam prototype crate (change native-seam-spikes, design D1);
+    # deleted after its ADRs are written (task 5.x). Not part of the product graph.
+    "crates/spikes",
 ]
 
 [workspace.package]
