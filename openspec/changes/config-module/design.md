@@ -49,7 +49,22 @@
 Формат YAML не меняется (serde rename), API — на enum'ах:
 - **Строгие** (Go валидирует): `EmbeddingsMode` (local/api — Validate), `NerMethod` (regex/prose/llm), `LinkMethod` (expression/equals/llm).
 - **Толерантные** `Unknown(String)` (Go пропускает любые строки): `ChunkingStrategy`, `LogLevel`, `LogFormat`, `LogOutput`, `ResponseFormat`, `ArchiveFormat`, `SourceType`, `AttributeType`, `RelationType`.
+- Пустая строка `""` при десериализации маппится в Default-вариант макроса (ревизия 1.2) — состояние `Unknown("")` не существует.
 *Почему:* типизация там, где оракул уже валидирует; сохранение толерантности там, где оракул её имеет (незнакомое значение не роняет старт — сценарий спека). *Альтернатива:* все строки как в Go (отклонена человеком).
+
+### D12: Нормализация на границе десериализации (ревизия 1.2, решение человека)
+YAML-артефакты нормализуются при десериализации, а не в apply_defaults:
+- **Строки с безусловным дефолтом** (8 полей: `paths.data_dir/documents_dir/migrations_dir/prompts_path/onnx_config`, `server.name/version/host`): `#[serde(default = "fn", deserialize_with = "de_empty_to_default")]` — absent → дефолт, `""` → дефолт.
+- **Enum'ы** (5 полей): `""` → Default-вариант в макросе `tolerant_enum`.
+- **Bool с presence-семантикой** (3 поля: `graph.load_on_startup`, `auto_update.watch_sources`, `graph.enable_graph`): `#[serde(default = "default_true")]` + Default impl — absent → true, явный false → false.
+- **apply_defaults сохраняет только семантические правила**: числа `<= 0` (0 осмыслен: `max_objects: 0` = unlimited, `overlap_size: 0` сохраняется), условные пары (`model_name`/`model_path`, `enable_lexical`/`enable_semantic`), мапы (`authority_boost`, `orphan_cleanup`), presence секции auto_update.
+*Почему:* «parse, don't validate» — тип после `load()` всегда-валиден для этих полей; дублирование `== ""`-проверок исчезает. *Граница:* YAML-артефакты (absent/empty) → десериализация; семантика (числа, пары, мапы) → apply_defaults.
+
+### D13: Исправление багов Go в bool-дефолтах (ревизия 1.2, BREAKING, решение человека)
+Go-паттерн `if !x { x = true }` делает настройки нерабочими (явный false игнорируется) — это баг оракула, а не контракт:
+- `load_on_startup`, `watch_sources`: явный false теперь уважается (в Go принудительно переворачивался в true).
+- `enable_graph`: absent → true по интенту doc-комментария Go («default true»; в Go код дефолт не ставил — absent давал false).
+Сценарии зафиксированы в дельте спека (BREAKING). *Альтернатива:* сохранить поведение Go (отклонена — повторение бага).
 
 ### D8: auto_update presence — Option вместо node-сканирования
 Go сканирует yaml.Node в поисках ключа `auto_update` (detectAutoUpdatePresence). В Rust: `auto_update: Option<AutoUpdateConfig>`; `None` → дефолты enabled=true/initial_sync=true, `Some` → уважается как есть. Тот же контракт, без хака.

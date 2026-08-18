@@ -44,6 +44,16 @@ Rust-бинарь читает те же `config.{preset}.yaml`, что и Go о
 - **WHEN** в YAML есть auto_update с enabled=false
 - **THEN** enabled=false уважается (не перезаписывается дефолтом)
 
+#### Scenario: Булевы дефолты с presence-семантикой
+- **WHEN** `graph.load_on_startup` или `auto_update.watch_sources` явно установлены в false
+- **THEN** значение false уважается (**BREAKING**: в оракуле явный false принудительно переворачивался в true — настройка была нерабочей)
+- **WHEN** эти ключи отсутствуют в YAML
+- **THEN** применяется дефолт true
+
+#### Scenario: enable_graph по интенту документации
+- **WHEN** `graph.enable_graph` отсутствует в YAML
+- **THEN** применяется true (**BREAKING**: в оракуле отсутствующий ключ давал false вопреки doc-комментарию «default true»)
+
 ### Requirement: Domain-XML онтологии
 
 Каждый файл `domains/*.xml` описывает домен: `<domain name= version= description=>` с `<entity id= name= description=>` (атрибуты `<attribute name= type= required= target=>`, синонимы `<synonym>`), `<relation source= predicate= target=>` (атрибуты), `<extraction><regex id= entity= pattern= confidence=>`, `<confidence auto_publish_threshold= review_threshold= reject_threshold=>`. Правила: отсутствующий domain-файл — ошибка старта; невалидный XML — ошибка старта; невалидный regex-паттерн — ошибка старта (компиляция при загрузке, как в оракуле).
