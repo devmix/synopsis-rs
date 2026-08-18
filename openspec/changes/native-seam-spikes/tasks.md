@@ -44,14 +44,15 @@
 
 ## 2. S2 — шов ONNX Runtime (ort)
 
-- [ ] 2.1 Spike: загрузка bge-m3 int8 из data/, эмбеддинги, детерминизм, RSS
-  - **Цель:** доказать загрузку ORT 1.28 по механизму onnx.yaml; токензацию HF tokenizer.json; валидные эмбеддинги + детерминизм + замер throughput/peak-RSS (бюджет ноутбука).
-  - **Scope файлов:** `crates/spikes/src/bin/s2_onnx.rs` + зависимости (`ort`, tokenizers). Шаги: разобрать реестр из ../synopsis/configs/onnx.yaml; обеспечить наличие рантайма и модели в data/ (скачать существующим механизмом или предзагрузить с пометкой); сессия bge-m3 int8 через ort (runtime ORT 1.28, совпадает с версией из onnx.yaml); эмбеддинг N=50 фиксированных текстов (тексты зашиты в исходник спайка); вывод JSONL-векторов + тайминги (ms/текст) + peak RSS.
-  - **Зависимости:** 0.2. Сеть: модель ~2,3 ГБ (зафиксировано в design).
-  - **Критерии приёмки:** 50 векторов dim=1024, конечные; два запуска бит-идентичны; unit-norm в пределах eps; ОПЦИОНАЛЬНО mean-cos ≥ 0.999 против Go-дампа (не блокирует — design D5); ADR `docs/adr/0002-onnx-runtime.md` с выбором bindings crate и подходом загрузки рантайма + выбранным batch size.
-  - **Референс:** ../synopsis/internal/onnx (механизм загрузки), configs/onnx.yaml; ort — https://ort.pyke.io/.
+- [x] 2.1 Spike: загрузка ВСЕХ моделей реестра onnx.yaml из data/, эмбеддинги, детерминизм, RSS
+  - **Цель:** доказать загрузку ORT 1.28 по механизму onnx.yaml; токензацию HF tokenizer.json; валидные эмбеддинги + детерминизм + замер throughput/peak-RSS (бюджет ноутбука) для КАЖДОЙ из 3 моделей реестра.
+  - **Scope файлов:** `crates/spikes/src/bin/s2_onnx.rs` + зависимости (`ort`, tokenizers). Шаги: разобрать реестр из ../synopsis/configs/onnx.yaml — модели `bge-m3-int8` (vector_dim=1024), `bge-small-en-v1.5` (vector_dim=384; **default** реестра и config.default.yaml), `paraphrase-multilingual-MiniLM-L12-v2` (vector_dim=384); обеспечить наличие рантайма и ВСЕХ трёх моделей в data/ (скачать существующим механизмом или предзагрузить с пометкой — у оракула все три уже предзагружены в ../synopsis/data/models/); для каждой модели: сессия через ort (runtime ORT 1.28, совпадает с версией из onnx.yaml), эмбеддинг N=50 фиксированных текстов (тексты зашиты в исходник спайка; у каждой модели — её собственный pipeline входа/выхода по объявленным I/O, как оракул: selectOutputName sentence_embedding при наличии, иначе token_embeddings), вывод JSONL-векторов + тайминги (ms/текст) + peak RSS.
+  - **Зависимости:** 0.2. Сеть: модель bge-m3-int8 ~2,3 ГБ (зафиксировано в design); остальные две — 133 МБ и 470 МБ (по реестру onnx.yaml).
+  - **Критерии приёмки:** для КАЖДОЙ из 3 моделей: N=50 векторов dim по реестру (1024/384/384), конечные; два запуска бит-идентичны (in-process и cross-run); unit-norm в пределах eps; ОПЦИОНАЛЬНО mean-cos ≥ 0.999 против Go-дампа (не блокирует — design D5); ADR `docs/adr/0002-onnx-runtime.md` с выбором bindings crate и подходом загрузки рантайма + выбранным batch size + таблицей измерений по всем трём моделям.
+  - **Референс:** ../synopsis/internal/onnx (механизм загрузки), configs/onnx.yaml (реестр: name/vector_dim/files/size_bytes каждой модели), configs/config.default.yaml (default-модель); ort — https://ort.pyke.io/.
   - **История ревизий:**
     - Ревизия 1 (2026-08-18, решение человека): bindings crate заменён `onnxruntime-rs` → **`ort`** (pykeio). Факты: onnxruntime-rs неактивен («now-inactive» — по проекту преемника); ort 2.0.0-rc.13 обёртывает ровно ORT 1.28 (версия из нашего onnx.yaml), maintainer декларирует production-ready и рекомендует новым проектам. Замороженный entry `onnxruntime-rs` в openspec/config.yaml НЕ редактируется — отклонение фиксируется здесь + в ADR 0002 (конвенция D8: frozen-текст не меняется внутри задач).
+    - Ревизия 2 (2026-08-18, решение человека): спайк проверял ТОЛЬКО `bge-m3-int8`; **расширен на все 3 модели реестра onnx.yaml** — `bge-small-en-v1.5` (384-dim) является default-моделью реестра и config.default.yaml, `paraphrase-multilingual-MiniLM-L12-v2` (384-dim) — третья реестровая модель; пропуск двух моделей означал бы непроверенность основного (default) пути оракула. Каждая модель — со своим pipeline по объявленным I/O и своими критериями (N=50, dim по реестру, детерминизм, unit-norm, тайминги, RSS).
 
 ## 3. S3 — выбор ANN-движка (usearch vs lance)
 
