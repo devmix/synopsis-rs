@@ -12,9 +12,11 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# Spike dependencies land with their tasks: ort + tokenizers (task 2.1), usearch
-# (task 3.1), lance (task 3.2). Their binaries stay sealed stubs until then.
 [dependencies]
+# Spike S2 (task 2.1): ONNX Runtime via `ort` with load-dynamic — the runtime .so is loaded from
+# data/onnxruntime at run time per ../synopsis/configs/onnx.yaml; HF tokenizer.json loading.
+ort.workspace = true
+tokenizers.workspace = true
 # Task 0.1 one-shot provenance probe (probe_db); task 1.1 reuses it for s1_sqlite.
 rusqlite.workspace = true
 libsqlite3-sys.workspace = true # forces the source-compiled SQLite build (design D3)

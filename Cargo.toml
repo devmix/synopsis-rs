@@ -91,9 +91,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 noyalib = "0.0.23" # YAML: successor of serde_yaml/serde_yml, both deprecated (verified 2026-08-18)
 
+# ONNX Runtime bindings (S2 spike, task 2.1; human decision 2026-08-18 — frozen-stack entry
+# "onnxruntime-rs" no longer exists on crates.io, replaced by `ort` per the revision history of
+# task 2.1 + ADR 0002). ort 2.0.0-rc.13 wraps exactly ORT 1.28 — the version pinned in
+# ../synopsis/configs/onnx.yaml. default-features off: no build-time binary download;
+# `load-dynamic` loads the runtime .so from data/onnxruntime at run time (libloading) instead of
+# static linking, mirroring the oracle's SetSharedLibraryPath + dlopen mechanism; `api-28` is the
+# highest C API level ort exposes.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "api-28"] }
+
 # Intentionally NOT pinned here - decisions deferred to module changes:
 # - ANN engine: usearch vs lance (design D5 -> native-seam-spikes benchmark)
-# - ONNX runtime bindings: "onnxruntime-rs" from the frozen stack no longer
-#   exists on crates.io; its successor `ort` has no stable release yet
-#   (newest 2.0.0-rc.13, verified 2026-08-18) - decided in the embedding change
 # MCP protocol crate: decision made 2026-08-18 -> rmcp 3.x above (design D8).

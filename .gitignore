@@ -6,5 +6,11 @@
 fixtures/*
 !fixtures/README.md
 
+# Runtime artifacts downloaded per ../synopsis/configs/onnx.yaml (task 2.1):
+# ONNX Runtime .so (~24 MB) + bge-m3-int8 model files (~2.3 GB). Preloaded from the
+# oracle's own data/ copy; provenance and verification live in data/README.md, which stays tracked.
+data/*
+!data/README.md
+
 # Cargo.lock is committed on purpose: this workspace produces a binary and
 # reproducible builds matter for parity testing against the Go oracle.
