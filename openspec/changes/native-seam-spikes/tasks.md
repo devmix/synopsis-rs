@@ -77,9 +77,11 @@
 
 ## 5. Завершение
 
-- [ ] 5.1 Удалить crates/spikes, проверить workspace, зафиксировать решения
-  - **Цель:** спайки одноразовы (design D1); ADR остаются единственным источником решений.
-  - **Scope файлов:** удаление `crates/spikes/` + записи в корневом Cargo.toml; проверка сборки оставшегося workspace.
+- [x] 5.1 Архивировать crates/spikes в .archive/spikes, проверить workspace, зафиксировать решения
+  - **Цель:** спайки одноразовы (design D1), но НЕ удаляются — архивируются в `.archive/spikes` (решение человека 2026-08-18: «возможно понадобятся»); ADR остаются единственным источником решений.
+  - **Scope файлов:** `git mv crates/spikes .archive/spikes`; удаление записи spikes из workspace-членов корневого Cargo.toml; удаление из корневого Cargo.toml workspace-зависимостей, используемых ТОЛЬКО спайками (ort, tokenizers, lancedb, futures, rusqlite_migration, include_dir — их пины фиксируются в `.archive/spikes/Cargo.toml` как standalone-зависимости с комментариями-ссылками на ADR 0001/0002/0003); приведение `.archive/spikes/Cargo.toml` к standalone-виду (без `workspace = true` — заменить edition/lints/версии явными значениями); `.archive/spikes/README.md` — provenance (откуда, какие ADR, как вернуть в workspace при необходимости, оговорка про относительные пути ../synopsis и data/); проверка сборки оставшегося workspace.
   - **Зависимости:** все задачи 1.x–3.x завершены, ADR 0001–0003 (+ appendix s3-results) записаны. MCP-транспорт закрыт решением D8 scaffold (rmcp Streamable HTTP; доказан round-trip тестами parity-harness) — отдельного спайка и ADR не требует.
-  - **Критерии приёмки:** `cargo build/test/clippy/fmt --workspace` зелёные без spikes; docs/adr содержит все решения; сводка change (для архивации) перечисляет решения и остаточные риски (в т.ч. оговорку про синтетику S3).
+  - **Критерии приёмки:** `cargo build/test/clippy/fmt --workspace` зелёные без spikes в workspace; `.archive/spikes` собран и закоммичен (включая Cargo.toml standalone + README); docs/adr содержит все решения; сводка change (для архивации) перечисляет решения и остаточные риски (в т.ч. оговорку про синтетику S3).
   - **Референс:** design.md D1/D3.
+  - **История ревизий:**
+    - Ревизия 1 (2026-08-18, решение человека): вместо полного удаления `crates/spikes` — **архивация в `.archive/spikes`** (git mv, standalone Cargo.toml, README с provenance); workspace-зависимости, нужные только спайкам, уходят из корневого Cargo.toml (их пины — в архиве; боевые crate'ы `db`/`embedding`/`vectors` заведут свои пины в своих change'ах по ADR 0001/0002/0003).
