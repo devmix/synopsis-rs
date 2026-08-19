@@ -26,7 +26,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-19): первая версия.
 
-- [ ] 1.3 Document DAO
+- [x] 1.3 Document DAO
   - **Цель:** CRUD + пагинация + доменные операции над таблицей `documents`. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/db/src/document.rs` (`Document` struct (id, path, source_type, metadata_json, content_hash, created_at, updated_at — домен НЕ колонка в v5-схеме, живёт в metadata_json как $.domain; колонок title/indexed_at в v5 нет), `DocumentDao` struct + методы: `create`, `get_by_id`, `get_by_path`, `get_by_ids` (IN-список с плейсхолдерами, батчи ≤ 500), `update_hash`, `list` (пагинация с фильтрами domain через json_each, source_type, name через LIKE с escape_like), `delete`, `count`, `list_paginated`, `documents_by_type`, `unique_domains`), `crates/db/src/lib.rs` (модуль + re-export), тесты в `crates/db/src/document.rs` (`#[cfg(test)]`).
   - **Зависимости:** 1.1 (Db, DbError, DbExecutor, utils::escape_like, test_util).
