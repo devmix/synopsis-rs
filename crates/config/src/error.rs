@@ -37,6 +37,8 @@ pub enum ConfigError {
         /// Human-readable description of the violated invariant.
         message: String,
     },
-    // The `Xml`, `Regex` and ONNX variants are added by tasks 3.x / 2.1 as the
-    // ontology and onnx.yaml loaders land (design D4).
+    // The `Xml` and `Regex` variants are added by task 3.x as the ontology loaders land
+    // (design D4). The onnx.yaml loader reuses `Io` / `Yaml`: design D4's frozen variant
+    // list has no ONNX-specific variant, and both failure modes of that file map onto
+    // these two with the path carried exactly like the main config.
 }

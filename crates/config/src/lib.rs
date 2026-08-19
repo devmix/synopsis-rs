@@ -7,11 +7,14 @@
 //! The main entry point is [`load`](preset::load), which parses a YAML config
 //! file into a typed [`Config`] with no defaults applied and no validation —
 //! callers drive those as separate phases ([`Config::apply_defaults`] /
-//! [`Config::validate`]).
+//! [`Config::validate`]). The external `onnx.yaml` registry loads through
+//! [`load_onnx_config`](onnx::load_onnx_config).
 
 pub mod error;
+pub mod onnx;
 pub mod preset;
 
 // Public re-exports so consumers can write `config::Config`, `config::load`, …
 pub use error::ConfigError;
+pub use onnx::{OnnxConfig, load_onnx_config};
 pub use preset::{Config, load};

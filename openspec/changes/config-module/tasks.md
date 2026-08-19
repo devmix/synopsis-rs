@@ -27,7 +27,7 @@
 
 ## 2. Реестр onnx.yaml
 
-- [ ] 2.1 onnx.yaml: структуры, загрузка, lookup'и
+- [x] 2.1 onnx.yaml: структуры, загрузка, lookup'и
   - **Цель:** реестр моделей ONNX: парсинг `onnx.yaml`, ошибка при отсутствии файла (сценарий спека), lookup платформы и модели.
   - **Scope файлов:** `crates/config/src/onnx.rs` (структуры + `load_onnx_config(path) -> Result<OnnxConfig, ConfigError>` + `platform_for_key(&self, key) -> Option<&OnnxPlatformConfig>` + `model_for_name(&self, name) -> Option<&ModelInfo>`), `crates/config/src/lib.rs` (модуль + re-exports), `crates/config/src/error.rs` (добавить вариант `Onnx { path, source }` при необходимости), фикстура `crates/config/tests/data/onnx.yaml` (копия из `../synopsis/configs/onnx.yaml` verbatim) + дополнение README (provenance).
   - **Структуры (по config.go):** `OnnxConfig` (runtime: `OnnxRuntimeConfig` {version, platforms: Vec<OnnxPlatformConfig>}, models: `OnnxModelsConfig` {default, entries: Vec<ModelInfo>}); `OnnxPlatformConfig` (key, os, arch, archive_url, archive_format: `ArchiveFormat` — толерантный enum zip|tgz|Unknown, library_name, library_path); `ModelInfo` (name, display_name, description, version, vector_dim, files: Vec<ModelFile>, source, repo); `ModelFile` (name, url, size_bytes: i64, checksum: Option<String>). `load_onnx_config`: read + parse; отсутствующий файл → `ConfigError::Io` с путём (как Go: «read onnx config %s»). Lookup'и — по ключу/имени, Option.
