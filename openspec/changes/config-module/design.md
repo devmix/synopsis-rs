@@ -31,6 +31,8 @@
 Решение человека 2026-08-19 (пересмотр: сначала была event-based). Декларативный serde-мэппинг в типизированные структуры через `quick_xml::de::from_str` (feature `serialize`): атрибуты — `#[serde(rename = "@name")]`, элементы — обычные поля, текст — `$text`. Меньше кода, чем ручной event-парсинг; формат ошибок quick-xml декорируется контекстом файла/элемента в `ConfigError::Xml`. Крейт тот же (quick-xml, проверен онлайн; writer для будущей записи сохраняется). Версию/MSRV/CVE реализатор проверяет онлайн перед пином (пин — в `crates/config/Cargo.toml`, крейт не общий).
 *Альтернативы:* roxmltree (read-only DOM, нет writer — отклонён из-за будущей записи), xml-rs (старый, менее активный), event-based quick-xml (отклонена человеком 2026-08-19: потоковое преобразование вручную, больше кода), serde-xml-rs (менее поддерживаемый, проблемы с атрибутами/неймспейсами).
 
+*Дополнение (ревизия 3.1, решение человека 2026-08-19):* **без избыточного Raw*-слоя** — типизированные структуры десериализуются напрямую (отсутствующий атрибут tolerant-enum'а → `Default` = `Unknown("")`; строки — `#[serde(default)]`). Parse-shape-структуры допустимы только там, где XML-форма реально отличается от типизированной: обёртки повторяющихся элементов (`<sources>/<domains>/<expressions>/<entities>/<relations>/<extraction>`) и нескомпилированный regex (поле `compiled` не десериализуется). Каждая — с комментарием-обоснованием.
+
 ### D4: Ошибки — thiserror
 `ConfigError` enum: `Io { path }`, `Yaml { path, source }`, `Xml { path, source }`, `Regex { file, rule, source }`, `Validation { message }`. Добавляется в палитру (версия — онлайн-проверка реализатором).
 *Альтернатива:* hand-rolled Display (отклонена человеком — thiserror).
@@ -80,6 +82,10 @@ Go сканирует yaml.Node в поисках ключа `auto_update` (dete
 ### D11: Зависимости
 - В палитру (`Cargo.toml` workspace): `thiserror`, `regex` — с комментарием «версии проверены реализатором онлайн» (MSRV/CVE).
 - Локально в `crates/config/Cargo.toml`: `quick-xml` (только config использует), `noyalib`, `serde` — через workspace.
+
+### D14: Общий приватный хелпер чтения+парсинга (решение человека 2026-08-19)
+`load` (preset.rs) и `load_onnx_config` (onnx.rs) дублировали ~15 строк (read → UTF-8 → parse → map_err) и каждый имел свой `display_path`. Общий приватный хелпер `read_yaml_file<T: DeserializeOwned>(path, hint) -> Result<T, ConfigError>` (в приватном модуле `io_util.rs` или в error.rs): read → UTF-8 (hint в сообщении об ошибке) → parse → map_err с путём; один `display_path`. Тот же каркас покрывает XML-лоадеры (3.1/3.2): `read_xml_file` с `ConfigError::Xml`.
+*Почему:* DRY; единый формат ошибок с путём; будущие лоадеры (domain-XML, graph) используют готовую обвязку.
 
 ## Risks / Trade-offs
 
