@@ -214,8 +214,8 @@ pub fn load_onnx_config(path: impl AsRef<Path>) -> Result<OnnxConfig, ConfigErro
 }
 
 /// Renders a path for diagnostics (lossy conversion is acceptable in error messages).
-fn display_path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+fn display_path(path: impl AsRef<Path>) -> String {
+    path.as_ref().to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
