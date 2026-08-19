@@ -40,11 +40,11 @@ pub enum ConfigError {
         message: String,
     },
 
-    /// The `global.xml` ontology document could not be parsed or deserialized
-    /// into [`crate::ontology::GlobalConfig`] (malformed XML, unexpected shape).
-    #[error("parse global config {path}: {source}")]
+    /// An ontology XML document (`global.xml` or a `domains/*.xml` file) could not be parsed or
+    /// deserialized into its typed shape (malformed XML, unexpected structure).
+    #[error("parse ontology XML {path}: {source}")]
     Xml {
-        /// Path of the offending `global.xml`.
+        /// Path of the offending XML file.
         path: String,
         /// Underlying parser / type-mismatch error from quick-xml.
         #[source]

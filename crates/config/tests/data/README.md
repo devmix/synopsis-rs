@@ -1,10 +1,10 @@
 # Test fixtures — provenance
 
 The files in this directory are copies of configuration sources from the Go oracle
-(`../synopsis`) — verbatim, except `global.xml`, which is adapted to the D15 XML contract (see
-its section). They are committed so the Rust test suite runs without the oracle present (CI never
-has `../synopsis` on disk). If an oracle file changes, re-copy it and update the SHA-256 below —
-do not edit these files by hand.
+(`../synopsis`) — verbatim, except `global.xml` and the `domains/` fixtures, which are adapted to
+the D15 XML contract (see their sections). They are committed so the Rust test suite runs without
+the oracle present (CI never has `../synopsis` on disk). If an oracle file changes, re-copy it and
+update the SHA-256 below — do not edit these files by hand.
 
 ## `config.default.yaml`
 
@@ -76,6 +76,40 @@ diff <(grep -vE '^[[:space:]]*</?(attributes|synonyms|methods|regex-rules)>[[:sp
 > empty-valued attribute name as the element's string content, so it parses to `"equals"` in
 > both parsers — the fixture keeps this spelling verbatim because it is what the oracle ships
 > and both implementations agree on it (verified against the Go oracle 2026-08-19).
+
+## `domains/domain_hr.xml`, `domains/domain_it.xml`, `domains/domain_product.xml`
+
+**Adapted copies**, not byte-identical: the same D15 XML contract as `global.xml` (revision 4).
+The adaptation **adds** wrapper lines only — `<entities>`, `<relations>` around each run of
+consecutive `<entity>`/`<relation>` items, `<attributes>` and `<synonyms>` inside their owners,
+and `<regex-rules>` around the `<regex/>` line inside `<extraction>` (only `domain_it.xml` has a
+rule; the other two `<extraction>` blocks stay empty). Each added line carries the indent of its
+first wrapped line, so every original byte — element names, attributes, text, XML comments — is
+unchanged. A section comment that separates two sections in the oracle file (e.g.
+`<!-- Relation: salary_of -->`) stays where the oracle had it, i.e. just before the closing
+wrapper tag.
+
+| File | SHA-256 of the adapted fixture | SHA-256 of the oracle original (pre-adaptation) |
+|---|---|---|
+| `domains/domain_hr.xml` | `f9815903dde5c43592d5dd45c1deaa21bf8baf9cb4e52e371f7c544820985f1a` | `1f81dc56ea9d884f2e2e13564fd526fa2846b6c3b580a52643ec003053ceaf31` |
+| `domains/domain_it.xml` | `3869bb6f4bc8ed71c9059053da30fe84bb416d1a7a5862db51079b3c965c32c5` | `b53c90ca17a06a830a62dbc47faa8e67ce143362b2e6f897901e778fb8f5b853` |
+| `domains/domain_product.xml` | `a7583bd13567d0e98652bb000dd944e901a64baa626c6592d469ea169dd2e600` | `a7dea6ec26832fdd47081f9bb7179004387aaf7af047a63517a807d952144898` |
+
+Source: `../synopsis/data/ontology/domains/<file>`; adapted on 2026-08-19 (task config-module
+3.2, revision 1 / design D15).
+
+Regenerate (re-copy, then insert the wrapper pairs described above — a line-based script suffices;
+then verify):
+
+```sh
+cp ../synopsis/data/ontology/domains/domain_hr.xml     crates/config/tests/data/domains/domain_hr.xml
+cp ../synopsis/data/ontology/domains/domain_it.xml     crates/config/tests/data/domains/domain_it.xml
+cp ../synopsis/data/ontology/domains/domain_product.xml crates/config/tests/data/domains/domain_product.xml
+# ... insert the wrapper pairs per the rule above ...
+sha256sum crates/config/tests/data/domains/*.xml   # must match the table; update it if the oracle changed
+diff <(grep -vE '^[[:space:]]*</?(entities|relations|attributes|synonyms|regex-rules)>[[:space:]]*$' \
+  crates/config/tests/data/domains/domain_hr.xml) ../synopsis/data/ontology/domains/domain_hr.xml   # must be empty (repeat per file)
+```
 
 > Note on location: fixtures live under `tests/data/`, not `fixtures/` — the root
 > `.gitignore` ignores `fixtures/*` at any depth, which would drop these files from

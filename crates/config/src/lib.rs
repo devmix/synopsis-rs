@@ -8,9 +8,12 @@
 //! file into a typed [`Config`] with no defaults applied and no validation —
 //! callers drive those as separate phases ([`Config::apply_defaults`] /
 //! [`Config::validate`]). The external `onnx.yaml` registry loads through
-//! [`load_onnx_config`](onnx::load_onnx_config), and the global ontology
-//! (`global.xml`) through [`load_global_config`](ontology::load_global_config).
+//! [`load_onnx_config`](onnx::load_onnx_config), the global ontology
+//! (`global.xml`) through [`load_global_config`](ontology::load_global_config)
+//! and each per-domain ontology (`domains/*.xml`) through
+//! [`load_domain_config`](domain::load_domain_config).
 
+pub mod domain;
 pub mod error;
 pub mod onnx;
 pub mod ontology;
@@ -20,6 +23,7 @@ pub mod preset;
 mod io_util;
 
 // Public re-exports so consumers can write `config::Config`, `config::load`, …
+pub use domain::{ConfidencePolicy, DomainConfig, EffectiveConfidence, load_domain_config};
 pub use error::ConfigError;
 pub use onnx::{OnnxConfig, load_onnx_config};
 pub use ontology::{GlobalConfig, load_global_config};

@@ -579,7 +579,9 @@ impl RegexRuleDef {
 //
 // One private local struct + one `deserialize_with` function per wrapped list (design D15): the
 // public API stays flat while quick-xml consumes each plural wrapper element through its own
-// single-field struct. All are crate-private; they are serde glue, not a second model of the file.
+// single-field struct. All are crate-private except [`de_entities`] and [`de_relations`], which
+// the domain loader reuses for its own wrapper elements (task 3.2); in every case they are serde
+// glue, not a second model of the file.
 
 /// `<sources>` wrapper: one `<source>` item field.
 #[derive(Deserialize)]
@@ -606,7 +608,8 @@ struct EntityList {
 }
 
 /// Unwraps `<entities><entity/></entities>` to the flat [`GlobalConfig::entities`] field.
-fn de_entities<'de, D>(deserializer: D) -> Result<Vec<EntityDef>, D::Error>
+/// `pub(crate)` because the domain loader (task 3.2) reuses it for its own wrapper element.
+pub(crate) fn de_entities<'de, D>(deserializer: D) -> Result<Vec<EntityDef>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -622,7 +625,8 @@ struct RelationList {
 }
 
 /// Unwraps `<relations><relation/></relations>` to the flat [`GlobalConfig::relations`] field.
-fn de_relations<'de, D>(deserializer: D) -> Result<Vec<RelationDef>, D::Error>
+/// `pub(crate)` because the domain loader (task 3.2) reuses it for its own wrapper element.
+pub(crate) fn de_relations<'de, D>(deserializer: D) -> Result<Vec<RelationDef>, D::Error>
 where
     D: Deserializer<'de>,
 {
