@@ -927,24 +927,7 @@ impl Default for ServerConfig {
 /// [`Config::validate`](Config::validate) and
 /// [`Config::apply_defaults`](Config::apply_defaults) as separate phases.
 pub fn load(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
-    let path = path.as_ref();
-    let bytes = std::fs::read(path).map_err(|source| ConfigError::Io {
-        path: display_path(path),
-        source,
-    })?;
-    let text = String::from_utf8(bytes).map_err(|e| ConfigError::Yaml {
-        path: display_path(path),
-        source: noyalib::Error::Custom(format!("config file is not valid UTF-8: {e}")),
-    })?;
-    noyalib::from_str(&text).map_err(|source| ConfigError::Yaml {
-        path: display_path(path),
-        source,
-    })
-}
-
-/// Renders a path for error messages (lossy is fine in diagnostics).
-fn display_path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    crate::io_util::read_yaml_file(path.as_ref(), "config")
 }
 
 #[cfg(test)]

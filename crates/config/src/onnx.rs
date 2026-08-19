@@ -198,24 +198,7 @@ pub struct ModelFile {
 /// registry failed. Unknown keys are ignored, matching the oracle. This performs parsing
 /// only; there is no validation phase for this file in the oracle either.
 pub fn load_onnx_config(path: impl AsRef<Path>) -> Result<OnnxConfig, ConfigError> {
-    let path = path.as_ref();
-    let bytes = std::fs::read(path).map_err(|source| ConfigError::Io {
-        path: display_path(path),
-        source,
-    })?;
-    let text = String::from_utf8(bytes).map_err(|e| ConfigError::Yaml {
-        path: display_path(path),
-        source: noyalib::Error::Custom(format!("onnx config file is not valid UTF-8: {e}")),
-    })?;
-    noyalib::from_str(&text).map_err(|source| ConfigError::Yaml {
-        path: display_path(path),
-        source,
-    })
-}
-
-/// Renders a path for diagnostics (lossy conversion is acceptable in error messages).
-fn display_path(path: impl AsRef<Path>) -> String {
-    path.as_ref().to_string_lossy().into_owned()
+    crate::io_util::read_yaml_file(path.as_ref(), "onnx config")
 }
 
 #[cfg(test)]

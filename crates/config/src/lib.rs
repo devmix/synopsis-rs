@@ -8,13 +8,19 @@
 //! file into a typed [`Config`] with no defaults applied and no validation —
 //! callers drive those as separate phases ([`Config::apply_defaults`] /
 //! [`Config::validate`]). The external `onnx.yaml` registry loads through
-//! [`load_onnx_config`](onnx::load_onnx_config).
+//! [`load_onnx_config`](onnx::load_onnx_config), and the global ontology
+//! (`global.xml`) through [`load_global_config`](ontology::load_global_config).
 
 pub mod error;
 pub mod onnx;
+pub mod ontology;
 pub mod preset;
+
+/// Private read+parse helpers shared by the file loaders above (task 3.1).
+mod io_util;
 
 // Public re-exports so consumers can write `config::Config`, `config::load`, …
 pub use error::ConfigError;
 pub use onnx::{OnnxConfig, load_onnx_config};
+pub use ontology::{GlobalConfig, load_global_config};
 pub use preset::{Config, load};
