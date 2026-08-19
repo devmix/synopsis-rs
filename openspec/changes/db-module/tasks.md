@@ -35,7 +35,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-19): первая версия.
 
-- [ ] 1.4 Chunk DAO + FTS5-поиск
+- [x] 1.4 Chunk DAO + FTS5-поиск
   - **Цель:** CRUD над таблицей `chunks` + FTS5-поиск с bm25-ранжированием и domain-фильтром. **vec0-операции полностью исключены (D7)** — SearchVector, UpsertVector, FormatVector, DeleteVectorsByChunkIDs, DeleteOrphanedVectors НЕ переносятся (переезжают в change `vectors`). **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/db/src/chunk.rs` (`Chunk` struct (id, doc_id, chunk_text, sequence_num, start_offset, end_offset, created_at — поля по v5-схеме; token_count/metadata_json/updated_at/chunk_index в v5 НЕТ), `ChunkDao` struct + методы: `create`, `get_by_id`, `list_by_doc_id`, `update`, `delete`, `count_by_doc_id`, `count`, `search_fts` (FTS5 MATCH + bm25() ранжирование + опциональный domain-фильтр через json_each на documents.metadata_json), `delete_by_ids` (IN-список, батчи ≤ 500), `list_all`), `crates/db/src/lib.rs` (модуль + re-export), тесты в `crates/db/src/chunk.rs` (`#[cfg(test)]`) + интеграционный parity-тест в `crates/db/tests/fts5_parity.rs` (фикстура `fixtures/knowledge.db`).
   - **Зависимости:** 1.1 (Db, DbError, DbExecutor, test_util::fixture_db), 1.3 (Document — для domain-фильтра через documents.metadata_json).
