@@ -21,6 +21,7 @@
 
 pub mod app_kv;
 pub mod connection;
+pub mod document;
 pub mod error;
 pub mod executor;
 pub mod test_util;
@@ -28,8 +29,9 @@ pub mod utils;
 
 pub use app_kv::AppKv;
 pub use connection::Db;
+pub use document::{Document, DocumentDao, DocumentFilter};
 pub use error::DbError;
 pub use executor::{ConnectionOrTx, DbExecutor};
 
 // DAO modules are re-exported at the crate root as their db-module tasks land
-// (`app_kv` now; the document/chunk/entity/fact/relation DAOs follow).
+// (`app_kv` and `document` now; the chunk/entity/fact/relation DAOs follow).
