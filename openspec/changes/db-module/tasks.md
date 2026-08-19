@@ -17,7 +17,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-19): первая версия.
 
-- [ ] 1.2 AppKV DAO
+- [x] 1.2 AppKV DAO
   - **Цель:** простейший CRUD над таблицей `app_kv` (ключ-значение: last_linking_run и пр.). **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/db/src/app_kv.rs` (`AppKv` struct + `get(&self, key) -> Result<Option<String>, DbError>` + `set(&self, key, value) -> Result<(), DbError>`), `crates/db/src/lib.rs` (модуль + re-export), тесты в `crates/db/src/app_kv.rs` (`#[cfg(test)]`).
   - **Зависимости:** 1.1 (Db, DbError, DbExecutor, test_util).
