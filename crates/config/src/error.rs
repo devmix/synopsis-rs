@@ -2,9 +2,9 @@
 //!
 //! `ConfigError` is a [`thiserror`] enum covering I/O failures while reading a
 //! config file, YAML/XML parse failures (each carrying the offending path and
-//! the underlying parser error as `source`), and semantic validation failures
-//! raised by [`crate::preset::Config::validate`]. (A regex-compile variant joins
-//! this list with task 3.1b.)
+//! the underlying parser error as `source`), semantic validation failures
+//! raised by config loaders, and regex-compile failures for extraction rules
+//! (design D5: patterns are compiled at load time).
 
 use thiserror::Error;
 
@@ -49,6 +49,21 @@ pub enum ConfigError {
         /// Underlying parser / type-mismatch error from quick-xml.
         #[source]
         source: quick_xml::DeError,
+    },
+
+    /// A `<regex>` extraction rule's pattern failed to compile at load time (design D5).
+    /// The oracle panics here (`regexp.MustCompile`); the typed error is a deliberate fix —
+    /// see the config-module change report.
+    #[error("invalid regex pattern for rule {rule:?} in {file}: {source}")]
+    Regex {
+        /// Path of the ontology file containing the offending rule.
+        file: String,
+        /// `id` attribute of the `<regex>` element (always non-empty — an empty id fails
+        /// validation before compilation).
+        rule: String,
+        /// Underlying pattern error from the `regex` crate.
+        #[source]
+        source: regex::Error,
     },
     // The onnx.yaml loader reuses `Io` / `Yaml`: design D4's frozen variant list has no
     // ONNX-specific variant, and both failure modes of that file map onto these two with

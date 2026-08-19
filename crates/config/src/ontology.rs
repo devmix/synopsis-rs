@@ -1,10 +1,13 @@
-//! Global ontology (`global.xml`) loading — parsing only (task 3.1, revision 4).
+//! Global ontology (`global.xml`) loading (tasks 3.1 + 3.1b).
 //!
 //! One parser for the whole file (design D6): in the Go oracle this document was parsed twice —
 //! `config.LoadGlobalConfig` (sources / cross-domain links / NER) and `domain.LoadGlobalPool`
 //! (entities / relations / extraction). Here a single [`load_global_config`] returns one
-//! [`GlobalConfig`] with every block. This task performs **parsing only**: no oracle defaults,
-//! no semantic validation, no regex compilation — those land in task 3.1b on top of this parser.
+//! [`GlobalConfig`] with every block, fully normalized: after parsing it applies the oracle's
+//! defaults (`apply_defaults`) and validates + compiles every regex rule in place
+//! (`validate`, design D5), mirroring the oracle's combined startup flow. The public structs are
+//! still deserialized directly from the file; defaults and validation run only inside the loader,
+//! so a raw `quick_xml::de` parse (as in this module's unit tests) yields un-defaulted values.
 //!
 //! Document format (design D15, revision 4): every group of repeated elements sits inside a
 //! plural wrapper element: `<entities><entity/>`, `<relations><relation/>`, `<sources><source/>`,
@@ -31,18 +34,39 @@
 //! - tolerant: [`AttributeType`] is a pure derive + `#[serde(other)]` unit `Unknown` (the value
 //!   is never inspected beyond variant matching; an absent attribute yields
 //!   [`Default::default()`] = `Unknown`). [`SourceType`] keeps a custom `Deserialize` impl that
-//!   preserves the raw word in `Unknown(String)` because task 3.1b's validation needs to tell
+//!   preserves the raw word in `Unknown(String)` because the loader's validation needs to tell
 //!   "absent/empty" (`Unknown("")`) from a non-empty unrecognized word (the oracle checks
 //!   emptiness only: `src.Type == ""`).
 
+use std::collections::HashSet;
+use std::ops::Deref;
 use std::path::Path;
 
+use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::ConfigError;
 
 /// File name of the global ontology inside the ontology directory (oracle convention).
 pub const GLOBAL_XML_FILE: &str = "global.xml";
+
+// Oracle default values (global_config.go `Default*` constants), applied by `apply_defaults`.
+
+/// Default minimum word count for the equals method when absent or non-positive.
+const DEFAULT_EQUALS_MIN_WORDS: i32 = 2;
+/// Default confidence threshold for LLM linking results when absent or non-positive.
+const DEFAULT_LLM_CONFIDENCE_THRESHOLD: f64 = 0.7;
+/// Default number of entity pairs per LLM call when absent or non-positive.
+const DEFAULT_LLM_BATCH_SIZE: i32 = 5;
+/// Default relation type for linking expressions that omit one.
+const DEFAULT_RELATION_TYPE: &str = "same_entity";
+
+/// Builds a [`ConfigError::Validation`] from a message (mirrors the preset module's helper).
+fn validation(message: impl Into<String>) -> ConfigError {
+    ConfigError::Validation {
+        message: message.into(),
+    }
+}
 
 // ── Value enums ────────────────────────────────────────────────────────────
 
@@ -130,7 +154,7 @@ pub enum AttributeType {
     Date,
     /// Numeric value.
     Number,
-    /// Reference to another entity (requires a non-empty `target` — checked by task 3.1b).
+    /// Reference to another entity (requires a non-empty `target` — checked at load time).
     Ref,
     /// Boolean value.
     Boolean,
@@ -143,7 +167,8 @@ pub enum AttributeType {
 /// Ingestion data-source format (`type` attribute of `<source>`): `"markdown"`, `"webpages"`,
 /// `"mediawiki"` or `"unstructured"`. Tolerant enum with a **custom** `Deserialize` impl (design
 /// D15 revision 4): the oracle never validates this word, only its emptiness (`src.Type == ""`)
-/// — task 3.1b turns that into the "type is required" error. The raw word must therefore survive:
+/// — the loader turns an empty value into the "type is required" error. The raw word must
+/// therefore survive:
 /// known words map to named variants (case-insensitively, crate convention), everything else —
 /// including an absent attribute via [`Default`] — stays in `Unknown(String)` verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +187,7 @@ pub enum SourceType {
 
 impl Default for SourceType {
     fn default() -> Self {
-        // Absent `type` attribute: the oracle's empty-string zero value, rejected later by 3.1b.
+        // Absent `type` attribute: the oracle's empty-string zero value, rejected at load time.
         Self::Unknown(String::new())
     }
 }
@@ -189,7 +214,7 @@ impl<'de> Deserialize<'de> for SourceType {
     {
         let raw = String::deserialize(deserializer)?;
         // Case-insensitive match on known words (crate convention); unknown and empty values are
-        // preserved verbatim for 3.1b's validation and diagnostics.
+        // preserved verbatim for the loader's validation and diagnostics.
         Ok(match raw.to_ascii_lowercase().as_str() {
             "markdown" => Self::Markdown,
             "webpages" => Self::Webpages,
@@ -202,31 +227,37 @@ impl<'de> Deserialize<'de> for SourceType {
 
 // ── Public types (flat lists; wrappers handled by the helpers below) ───────
 
-/// The parsed global ontology: every block of one `global.xml` file in a single pass (design D6).
-///
-/// Produced by [`load_global_config`] — parsing only: fields carry the raw values from the file,
-/// no defaults applied and nothing validated yet (task 3.1b layers both on top). Every repeated
-/// block lives inside its plural wrapper element in the D15 revision-4 format; each list field is
-/// flat (`Vec`) with the wrapper consumed by a `deserialize_with` helper.
+/// The loaded global ontology: every block of one `global.xml` file in a single pass (design D6),
+/// fully normalized — after parsing the loader applies the oracle's defaults and validates +
+/// compiles the regex rules before returning it. Every repeated block lives inside its plural
+/// wrapper element in the D15 revision-4 format; each list field is flat (`Vec`) with the wrapper
+/// consumed by a `deserialize_with` helper. Values produced by a raw deserialization (unit tests)
+/// carry none of that normalization.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
-    /// Ingestion data sources (`<sources><source/></sources>`); empty when absent.
+    /// Ingestion data sources (`<sources><source/></sources>`); empty when absent. Every loaded
+    /// source has at least one domain (`["default"]` fallback applied by the loader).
     #[serde(default, deserialize_with = "de_sources")]
     pub sources: Vec<SourceConfig>,
-    /// Cross-domain linking settings; `None` when the file has no `<cross-domain-links>`.
+    /// Cross-domain linking settings; `None` when the file has no `<cross-domain-links>`. When
+    /// present in a loaded config its methods are non-empty and every zero/empty field carries an
+    /// oracle default.
     #[serde(rename = "cross-domain-links")]
     pub cross_domain_links: Option<CrossDomainLinksConfig>,
-    /// NER extraction methods; an absent block parses to empty (task 3.1b applies the oracle
-    /// fallback `["regex", "llm"]`).
+    /// NER extraction methods; loaded configs always carry at least the fallback `["regex",
+    /// "llm"]` (absent block and empty list both parse to an empty vec, which the loader fills).
     #[serde(default)]
     pub ner: GlobalNerConfig,
-    /// Global entity pool (`<entities><entity/></entities>`); empty when absent.
+    /// Global entity pool (`<entities><entity/></entities>`); loaded configs have unique non-empty
+    /// ids and validated attributes. Empty when absent.
     #[serde(default, deserialize_with = "de_entities")]
     pub entities: Vec<EntityDef>,
-    /// Global relation pool (`<relations><relation/></relations>`); empty when absent.
+    /// Global relation pool (`<relations><relation/></relations>`); loaded configs have unique
+    /// non-empty predicates whose source/target reference pooled entities. Empty when absent.
     #[serde(default, deserialize_with = "de_relations")]
     pub relations: Vec<RelationDef>,
-    /// Extraction section with regex patterns as text (task 3.1b compiles them, design D5).
+    /// Extraction section; in a loaded config every rule's pattern has been validated and compiled
+    /// (design D5).
     #[serde(default)]
     pub extraction: ExtractionDef,
 }
@@ -235,7 +266,7 @@ pub struct GlobalConfig {
 /// `<domains><domain/></domains>` wrapper of domain names.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SourceConfig {
-    /// Directory to index (`path` attribute); required — enforced by task 3.1b's validation.
+    /// Directory to index (`path` attribute); required — enforced at load time.
     #[serde(default, rename = "@path")]
     pub path: String,
     /// Parser format (`type` attribute); required — see [`SourceType`] (absent → `Unknown("")`).
@@ -247,8 +278,8 @@ pub struct SourceConfig {
     /// MediaWiki space name (`space` attribute); empty for other formats.
     #[serde(default, rename = "@space")]
     pub space: String,
-    /// Domain names this source belongs to; an empty list stays empty here (task 3.1b defaults
-    /// it to `["default"]`, matching the oracle).
+    /// Domain names this source belongs to; a loaded config always has at least one — sources
+    /// without any `<domain>` item get `["default"]` (oracle fallback, applied by the loader).
     #[serde(default, deserialize_with = "de_domains")]
     pub domains: Vec<String>,
     /// Dataset id for unstructured sources (`dataset` attribute).
@@ -260,17 +291,20 @@ pub struct SourceConfig {
 /// `<equals>`, scalar thresholds and an `<expressions>` wrapper.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CrossDomainLinksConfig {
-    /// Linking methods in priority order; must be non-empty (checked by 3.1b) — unknown values
-    /// already fail the parse ([`LinkMethod`]).
+    /// Linking methods in priority order; a loaded config always has at least one — an empty list
+    /// is rejected by the loader (the oracle's `Validate`). Unknown values already fail the parse
+    /// ([`LinkMethod`]).
     #[serde(default, deserialize_with = "de_link_methods")]
     pub methods: Vec<LinkMethod>,
-    /// Equals-method settings; `None` when the `<equals>` element is absent.
+    /// Equals-method settings; `None` when the `<equals>` element is absent. When present in a
+    /// loaded config, `min_words` carries at least the oracle default (2).
     pub equals: Option<EqualsConfig>,
-    /// Minimum confidence for LLM linking results; an absent element parses to `0.0` (task 3.1b
-    /// applies the oracle default of 0.7).
+    /// Minimum confidence for LLM linking results; an absent element parses to `0.0`, which the
+    /// loader replaces with the oracle default of 0.7.
     #[serde(default, rename = "llm-confidence-threshold")]
     pub llm_confidence_threshold: f64,
-    /// Entity pairs per LLM call; an absent element parses to `0` (task 3.1b applies 5).
+    /// Entity pairs per LLM call; an absent element parses to `0`, which the loader replaces with
+    /// the oracle default of 5.
     #[serde(default, rename = "batch-size")]
     pub batch_size: i32,
     /// CEL expressions used by the `expression` method (`<expressions><expression/></expressions>`).
@@ -282,7 +316,7 @@ pub struct CrossDomainLinksConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct EqualsConfig {
     /// Minimum word count of a name to be considered; an absent or ≤ 0 value is replaced by the
-    /// oracle default (2) in task 3.1b.
+    /// oracle default (2) in a loaded config.
     #[serde(default, rename = "min-words")]
     pub min_words: i32,
 }
@@ -303,7 +337,7 @@ pub struct LinkExpression {
     #[serde(default, rename = "where")]
     pub where_: String,
     /// Relation type created for matched pairs; an empty value is replaced by the oracle default
-    /// (`"same_entity"`) in task 3.1b.
+    /// (`"same_entity"`) in a loaded config.
     #[serde(default, rename = "relation-type")]
     pub relation_type: String,
 }
@@ -311,8 +345,9 @@ pub struct LinkExpression {
 /// NER extraction settings (`<ner>` element) with its `<methods><method/></methods>` wrapper.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct GlobalNerConfig {
-    /// Pipeline stages in order; an absent block or list parses to empty (task 3.1b applies the
-    /// oracle fallback `["regex", "llm"]`).
+    /// Pipeline stages in order; a loaded config always carries at least the oracle fallback
+    /// `["regex", "llm"]` — absent block and empty list both parse to an empty vec, which the
+    /// loader fills.
     #[serde(default, deserialize_with = "de_ner_methods")]
     pub methods: Vec<NerMethod>,
 }
@@ -321,7 +356,7 @@ pub struct GlobalNerConfig {
 /// attributes plus `<attributes>` and `<synonyms>` wrappers.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EntityDef {
-    /// Unique entity id; required — enforced by task 3.1b's validation.
+    /// Unique entity id; required — enforced at load time.
     #[serde(default, rename = "@id")]
     pub id: String,
     /// Display name.
@@ -330,7 +365,7 @@ pub struct EntityDef {
     /// Description.
     #[serde(default, rename = "@description")]
     pub description: String,
-    /// Attribute definitions; names must be unique per entity (checked by 3.1b).
+    /// Attribute definitions; names must be unique per entity (checked at load time).
     #[serde(default, deserialize_with = "de_entity_attributes")]
     pub attributes: Vec<AttributeDef>,
     /// Alternative surface forms used by the linker (`<synonyms><synonym/></synonyms>`).
@@ -341,7 +376,7 @@ pub struct EntityDef {
 /// An attribute of an entity (`<attribute>` element inside `<attributes>`).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AttributeDef {
-    /// Unique within the owning entity; required — enforced by task 3.1b's validation.
+    /// Unique within the owning entity; required — enforced at load time.
     #[serde(default, rename = "@name")]
     pub name: String,
     /// Value kind (see [`AttributeType`]; absent `@type` → `Unknown`).
@@ -350,7 +385,8 @@ pub struct AttributeDef {
     /// Whether ingestion must find this attribute.
     #[serde(default, rename = "@required")]
     pub required: bool,
-    /// Target entity id when `attr_type` is [`AttributeType::Ref`] (must be non-empty then — 3.1b).
+    /// Target entity id when `attr_type` is [`AttributeType::Ref`] (must be non-empty then —
+    /// checked at load time).
     #[serde(default, rename = "@target")]
     pub target: String,
 }
@@ -359,13 +395,13 @@ pub struct AttributeDef {
 /// attributes plus an `<attributes>` wrapper.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RelationDef {
-    /// Source entity id; must exist in the pooled entities (checked by 3.1b).
+    /// Source entity id; must exist in the pooled entities (checked at load time).
     #[serde(default, rename = "@source")]
     pub source: String,
-    /// Unique relation predicate; required — enforced by task 3.1b's validation.
+    /// Unique relation predicate; required — enforced at load time.
     #[serde(default, rename = "@predicate")]
     pub predicate: String,
-    /// Target entity id; must exist in the pooled entities (checked by 3.1b).
+    /// Target entity id; must exist in the pooled entities (checked at load time).
     #[serde(default, rename = "@target")]
     pub target: String,
     /// Description.
@@ -392,29 +428,151 @@ pub struct RelAttrDef {
 /// `<regex-rules><regex/></regex-rules>` wrapper.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ExtractionDef {
-    /// Regex rules with their patterns as text (task 3.1b compiles them, design D5); an empty
-    /// list means "no rules". The field is renamed because quick-xml maps it to the wrapper
-    /// element `<regex-rules>` by name.
+    /// Regex rules; in a loaded config every pattern has been validated and compiled (design D5).
+    /// An empty list means "no rules". The field is renamed because quick-xml maps it to the
+    /// wrapper element `<regex-rules>` by name.
     #[serde(default, rename = "regex-rules", deserialize_with = "de_regex_rules")]
     pub regex_rules: Vec<RegexRuleDef>,
 }
 
-/// A regex-based extraction rule (`<regex>` element inside `<extraction><regex-rules>`). Parse-only:
-/// the pattern is stored as text — task 3.1b compiles it and adds the compiled form (design D5).
+/// A compiled extraction pattern (design D5): wraps [`regex::Regex`] behind serde glue, because
+/// the XML carries only the pattern *text* ([`RegexRuleDef::pattern`]) and `regex::Regex`
+/// implements neither serde trait. Raw deserialization yields an uncompiled placeholder; the
+/// loader replaces it with a real compilation for every rule before returning (see
+/// [`RegexRuleDef::validate_and_compile`]), so values observed through
+/// [`load_global_config`] always carry a compiled pattern. Deref to `regex::Regex` keeps call
+/// sites (`is_match`, …) unchanged.
+#[derive(Debug, Clone)]
+pub struct CompiledPattern(Regex);
+
+impl Default for CompiledPattern {
+    /// The uncompiled placeholder (see the type docs).
+    fn default() -> Self {
+        Self(Self::uncompiled())
+    }
+}
+
+impl Deref for CompiledPattern {
+    type Target = Regex;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq for CompiledPattern {
+    /// Equality on the pattern source text: the compiled form is a deterministic function of it,
+    /// and `regex::Regex` itself provides no comparison traits (1.13.x).
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+
+impl Eq for CompiledPattern {}
+
+impl Serialize for CompiledPattern {
+    /// Serializes the compiled pattern's source text, so a serialized rule round-trips to an
+    /// equivalent one.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.0.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CompiledPattern {
+    /// Ignores the input entirely and returns the uncompiled placeholder: no document in this
+    /// schema carries a compiled form (the `#[serde(default)]` field covers absence, this impl
+    /// covers the impossible presence). The empty pattern is valid by construction, making the
+    /// fallback arm unreachable.
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self(Self::uncompiled()))
+    }
+}
+
+impl CompiledPattern {
+    /// Compiles the empty pattern — always valid, used as the deserialization placeholder.
+    fn uncompiled() -> Regex {
+        match Regex::new("") {
+            Ok(regex) => regex,
+            // `""` compiles in every release of the `regex` crate; failing would be a library bug.
+            Err(_) => panic!("the empty regex pattern must compile"),
+        }
+    }
+}
+
+/// A regex-based extraction rule (`<regex>` element inside `<extraction><regex-rules>`).
+///
+/// The pattern is stored as source text ([`pattern`](Self::pattern)) and compiled in place by the
+/// loader into [`compiled`](Self::compiled) (design D5: patterns are validated at load time, not
+/// first use — the oracle's `regexp.MustCompile` panic becomes a typed error). A raw
+/// deserialization (unit tests) leaves the placeholder; only values returned by
+/// [`load_global_config`] carry a compiled pattern.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RegexRuleDef {
-    /// Rule identifier; required — enforced by task 3.1b's validation.
+    /// Rule identifier; required — enforced at load time by
+    /// [`RegexRuleDef::validate_and_compile`].
     #[serde(default, rename = "@id")]
     pub id: String,
-    /// Entity id that matches are attributed to; required (checked by 3.1b).
+    /// Entity id that matches are attributed to; must be non-empty (checked at load time).
     #[serde(default, rename = "@entity")]
     pub entity: String,
     /// Pattern source text exactly as written in the XML.
     #[serde(default, rename = "@pattern")]
     pub pattern: String,
-    /// Confidence assigned to matches; must lie in `[0, 1]` (checked by 3.1b).
+    /// Confidence assigned to matches; must lie in `[0, 1]` (checked at load time).
     #[serde(default, rename = "@confidence")]
     pub confidence: f64,
+    /// Compiled form of [`pattern`](Self::pattern); populated by the loader via
+    /// [`RegexRuleDef::validate_and_compile`] — never observed uncompiled through
+    /// [`load_global_config`].
+    #[serde(default)]
+    pub compiled: CompiledPattern,
+}
+
+impl RegexRuleDef {
+    /// Validates this rule's fields and compiles [`pattern`](Self::pattern)` into
+    /// [`compiled`](Self::compiled) — the oracle `ValidateAndCompile` (domain_config.go), with the
+    /// check order preserved: id, pattern presence, confidence range, entity, then compilation.
+    ///
+    /// An invalid pattern is a [`ConfigError::Regex`] carrying `file` and this rule's id; the
+    /// oracle panics here (`regexp.MustCompile`) — the typed error is a deliberate fix recorded in
+    /// the config-module change report.
+    pub(crate) fn validate_and_compile(&mut self, file: &str) -> Result<(), ConfigError> {
+        if self.id.is_empty() {
+            return Err(validation("regex rule has empty ID"));
+        }
+        if self.pattern.is_empty() {
+            return Err(validation(format!(
+                "regex rule {:?} has empty pattern",
+                self.id
+            )));
+        }
+        // The oracle prints Go `%f` (6 decimal places); `{:.6}` keeps the message byte-parity.
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err(validation(format!(
+                "regex rule {:?} confidence {:.6} must be in [0, 1]",
+                self.id, self.confidence
+            )));
+        }
+        if self.entity.is_empty() {
+            return Err(validation(format!(
+                "regex rule {:?} entity name is empty",
+                self.id
+            )));
+        }
+        let compiled = Regex::new(&self.pattern).map_err(|source| ConfigError::Regex {
+            file: file.to_string(),
+            rule: self.id.clone(),
+            source,
+        })?;
+        self.compiled = CompiledPattern(compiled);
+        Ok(())
+    }
 }
 
 // ── Wrapper helpers ────────────────────────────────────────────────────────
@@ -480,11 +638,17 @@ struct DomainList {
 }
 
 /// Unwraps `<domains><domain/></domains>` to the flat [`SourceConfig::domains`] field.
+///
+/// Empty items are dropped (parity action, task 3.1b): Go's `encoding/xml` contributes nothing to
+/// a `[]string` for an element without text, while quick-xml yields `""`. Without this filter an
+/// empty `<domain/>` would survive deserialization and block the oracle's "no domains → default"
+/// fallback from firing.
 fn de_domains<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    Ok(DomainList::deserialize(deserializer)?.items)
+    let items = DomainList::deserialize(deserializer)?.items;
+    Ok(items.into_iter().filter(|word| !word.is_empty()).collect())
 }
 
 /// `<methods>` wrapper (inside `<cross-domain-links>`): raw words before strict mapping.
@@ -583,12 +747,14 @@ struct SynonymList {
     items: Vec<String>,
 }
 
-/// Unwraps `<synonyms><synonym/></synonyms>` to the flat [`EntityDef::synonyms`] field.
+/// Unwraps `<synonyms><synonym/></synonyms>` to the flat [`EntityDef::synonyms`] field, dropping
+/// empty items for the same parity reason as [`de_domains`].
 fn de_synonyms<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    Ok(SynonymList::deserialize(deserializer)?.items)
+    let items = SynonymList::deserialize(deserializer)?.items;
+    Ok(items.into_iter().filter(|word| !word.is_empty()).collect())
 }
 
 /// `<attributes>` wrapper (inside a `<relation>`): one `<attribute>` item field.
@@ -625,14 +791,163 @@ where
     Ok(RegexRuleList::deserialize(deserializer)?.items)
 }
 
+// ── Defaults + validation (oracle global_config.go / global_pool.go) ───────
+
+impl GlobalConfig {
+    /// Applies the oracle's defaults (`ApplyDefaults` in both Go config structs): equals min-words
+    /// ≤ 0 → 2, LLM confidence threshold ≤ 0 → 0.7, batch size ≤ 0 → 5, empty expression relation
+    /// types → `"same_entity"`, and each source without any domain gets `["default"]`. Absent
+    /// cross-domain links stay absent (the oracle guards on a non-nil pointer); an absent or
+    /// empty NER method list becomes the fallback `[regex, llm]` (both shapes parse to an empty
+    /// vec here, so one check covers the oracle's two branches).
+    fn apply_defaults(&mut self) {
+        if let Some(cdl) = &mut self.cross_domain_links {
+            // The oracle guards on a non-nil pointer before defaulting min-words.
+            if let Some(equals) = cdl.equals.as_mut()
+                && equals.min_words <= 0
+            {
+                equals.min_words = DEFAULT_EQUALS_MIN_WORDS;
+            }
+            if cdl.llm_confidence_threshold <= 0.0 {
+                cdl.llm_confidence_threshold = DEFAULT_LLM_CONFIDENCE_THRESHOLD;
+            }
+            if cdl.batch_size <= 0 {
+                cdl.batch_size = DEFAULT_LLM_BATCH_SIZE;
+            }
+            for expression in &mut cdl.expressions {
+                if expression.relation_type.is_empty() {
+                    expression.relation_type = DEFAULT_RELATION_TYPE.to_string();
+                }
+            }
+        }
+
+        if self.ner.methods.is_empty() {
+            self.ner.methods = vec![NerMethod::Regex, NerMethod::Llm];
+        }
+
+        // Empty words are already filtered at parse time (parity with Go's encoding/xml), so an
+        // empty list means "no <domain> items with text" — exactly the oracle's `!NonEmpty`.
+        for source in &mut self.sources {
+            if source.domains.is_empty() {
+                source.domains.push("default".to_string());
+            }
+        }
+    }
+
+    /// Validates every section in the oracle's error precedence and compiles the regex rules in
+    /// place (design D5): cross-domain link methods, NER methods, per-source path/type, then the
+    /// entity pool (ids, attribute names, ref targets), relation pool (predicates, endpoint
+    /// existence) and finally each extraction rule ([`RegexRuleDef::validate_and_compile`]).
+    /// `file` names the ontology file in [`ConfigError::Regex`].
+    fn validate(&mut self, file: &str) -> Result<(), ConfigError> {
+        if let Some(cdl) = &self.cross_domain_links {
+            // Method membership is guaranteed at parse time (strict enums); only emptiness —
+            // the oracle's `len(m.Methods) == 0` check — remains.
+            if cdl.methods.is_empty() {
+                return Err(validation(
+                    "cross-domain-links.methods must have at least one method",
+                ));
+            }
+        }
+
+        // Unreachable after apply_defaults (the loader always runs it first); kept for parity
+        // with the oracle's Validate and as a guard against future call sites.
+        if self.ner.methods.is_empty() {
+            return Err(validation("ner.methods must have at least one method"));
+        }
+
+        for (index, source) in self.sources.iter().enumerate() {
+            let position = index + 1; // the oracle numbers sources from 1
+            if source.path.is_empty() {
+                return Err(validation(format!("source {position}: path is required")));
+            }
+            if matches!(source.source_type, SourceType::Unknown(ref word) if word.is_empty()) {
+                return Err(validation(format!("source {position}: type is required")));
+            }
+        }
+
+        let mut entity_ids = HashSet::new();
+        for entity in &self.entities {
+            // Oracle message bug fixed (task-mandated): the Go code says "global entity
+            // Predicate is required" — a copy-paste from the relation check below.
+            if entity.id.is_empty() {
+                return Err(validation("global entity id is required"));
+            }
+            // Same copy-paste bug class in the duplicate message, fixed consistently:
+            // "duplicate global entity Predicate: %s" → "duplicate global entity id: ...".
+            if !entity_ids.insert(entity.id.as_str()) {
+                return Err(validation(format!(
+                    "duplicate global entity id: {}",
+                    entity.id
+                )));
+            }
+
+            let mut attribute_names = HashSet::new();
+            for attribute in &entity.attributes {
+                if attribute.name.is_empty() {
+                    return Err(validation(format!(
+                        "attribute name is required for global entity {}",
+                        entity.id
+                    )));
+                }
+                if !attribute_names.insert(attribute.name.as_str()) {
+                    return Err(validation(format!(
+                        "duplicate attribute name {} in global entity {}",
+                        attribute.name, entity.id
+                    )));
+                }
+                if attribute.attr_type == AttributeType::Ref && attribute.target.is_empty() {
+                    return Err(validation(format!(
+                        "attribute {} in global entity {} has type 'ref' but no target specified",
+                        attribute.name, entity.id
+                    )));
+                }
+            }
+        }
+
+        let mut predicates = HashSet::new();
+        for relation in &self.relations {
+            if relation.predicate.is_empty() {
+                return Err(validation("global relation Predicate is required"));
+            }
+            if !predicates.insert(relation.predicate.as_str()) {
+                return Err(validation(format!(
+                    "duplicate global relation Predicate: {}",
+                    relation.predicate
+                )));
+            }
+            if !entity_ids.contains(relation.source.as_str()) {
+                return Err(validation(format!(
+                    "global relation {} references non-existent source entity {}",
+                    relation.predicate, relation.source
+                )));
+            }
+            if !entity_ids.contains(relation.target.as_str()) {
+                return Err(validation(format!(
+                    "global relation {} references non-existent target entity {}",
+                    relation.predicate, relation.target
+                )));
+            }
+        }
+
+        for rule in &mut self.extraction.regex_rules {
+            rule.validate_and_compile(file)?;
+        }
+        Ok(())
+    }
+}
+
 // ── Loader ─────────────────────────────────────────────────────────────────
 
-/// Loads the global ontology from `ontology_dir/global.xml` — parsing only (task 3.1).
+/// Loads the global ontology from `ontology_dir/global.xml`: parse → oracle defaults →
+/// validation + regex compilation (design D5/D6) in one pass.
 ///
 /// File-presence semantics follow the oracle exactly: an empty directory name or a missing file
-/// yields `Ok(None)`; any other I/O failure, malformed XML, or a structurally unexpected document
-/// is an error ([`ConfigError::Io`] / [`ConfigError::Xml`]). No defaults are applied and no
-/// validation runs — task 3.1b layers both on top of the returned structure.
+/// yields `Ok(None)`; any other I/O failure, malformed XML, a structurally unexpected document,
+/// a violated semantic invariant, or an uncompilable regex pattern is an error
+/// ([`ConfigError::Io`] / [`Xml`](ConfigError::Xml) / [`Validation`](ConfigError::Validation) /
+/// [`Regex`](ConfigError::Regex)). The returned config is fully normalized: defaults applied,
+/// every section validated, every rule compiled.
 pub fn load_global_config(
     ontology_dir: impl AsRef<Path>,
 ) -> Result<Option<GlobalConfig>, ConfigError> {
@@ -644,7 +959,12 @@ pub fn load_global_config(
     let path = dir.join(GLOBAL_XML_FILE);
     match std::fs::metadata(&path) {
         // Existence established; the read/parse pair and its error decoration live in `io_util`.
-        Ok(_) => crate::io_util::read_xml_file::<GlobalConfig>(&path).map(Some),
+        Ok(_) => {
+            let mut config = crate::io_util::read_xml_file::<GlobalConfig>(&path)?;
+            config.apply_defaults();
+            config.validate(&crate::io_util::display_path(&path))?;
+            Ok(Some(config))
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(ConfigError::Io {
             path: crate::io_util::display_path(&path),

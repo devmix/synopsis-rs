@@ -12,7 +12,9 @@ workspace = true
 serde = { workspace = true }
 noyalib = { workspace = true }
 thiserror = { workspace = true }
-# (D5's `regex` dependency arrives with task 3.1b — 3.1 is parse-only.)
+# Extraction-rule patterns compiled at load time (config-module D5, task 3.1b); palette entry
+# carries the version verification comment.
+regex = { workspace = true }
 
 # XML deserialization for global.xml (config-module D3, format per D15 revision 4 of
 # 2026-08-19): typed serde structs instead of the event stream. `serialize` is the core;
