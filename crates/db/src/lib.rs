@@ -19,15 +19,17 @@
 //!
 //! Test support: [`test_util`] (in-memory and read-only fixture databases).
 
+pub mod app_kv;
 pub mod connection;
 pub mod error;
 pub mod executor;
 pub mod test_util;
 pub mod utils;
 
+pub use app_kv::AppKv;
 pub use connection::Db;
 pub use error::DbError;
 pub use executor::{ConnectionOrTx, DbExecutor};
 
-// The `Arc` inside `Db` makes the handle cloneable; no other re-exports are
-// needed at the crate root (DAO modules are added by later db-module tasks).
+// DAO modules are re-exported at the crate root as their db-module tasks land
+// (`app_kv` now; the document/chunk/entity/fact/relation DAOs follow).
