@@ -19,6 +19,15 @@
 //! - `list_by_entity_ids` de-duplicates its input ids: the oracle returned
 //!   the same fact twice in one map slice when the same id appeared twice in
 //!   the input.
+//! - `list_by_entity_ids` binds the two `IN` lists as full-list-then-full-list
+//!   (the oracle's `append(args, args...)`) and de-duplicates facts across
+//!   `IN`-list batches by fact id: a fact whose endpoints land in different
+//!   batches is selected by both queries and is attached to the map exactly
+//!   once. (The first port interleaved the batch parameters —
+//!   `flat_map(|id| [*id, *id])` — which positionally filled the subject list
+//!   with half the batch and the object list with the other half, and it
+//!   double-attached cross-batch facts; both regressions were fixed in task
+//!   1.17.)
 //! - `search_paginated`'s entity-name filter is a correlated `EXISTS`
 //!   subquery instead of the oracle's `INNER JOIN entities`: the join
 //!   returned a fact TWICE in the page when both the subject's and the
@@ -320,7 +329,10 @@ impl<'conn> FactDao<'conn> {
     /// Input ids are de-duplicated (the oracle returned a fact twice when an
     /// id appeared twice in the input), and the two `IN` lists are batched
     /// in chunks of [`ID_BATCH_SIZE`] (design D9: 500 × 2 = 1000 parameters
-    /// per statement).
+    /// per statement). The parameters are bound full-list-then-full-list
+    /// (the oracle's `append(args, args...)`), and a fact selected by more
+    /// than one batch query (endpoints in different batches) is attached to
+    /// the map exactly once, de-duplicated by fact id.
     pub fn list_by_entity_ids(
         &self,
         entity_ids: &[i64],
@@ -335,19 +347,28 @@ impl<'conn> FactDao<'conn> {
             .collect::<HashSet<i64>>()
             .into_iter()
             .collect();
+        // Facts already attached by an earlier batch: a fact whose subject
+        // and object land in different batches is selected by both queries
+        // and must be attached only once.
+        let mut attached: HashSet<i64> = HashSet::new();
         for batch in unique.chunks(ID_BATCH_SIZE) {
             let placeholders = vec!["?"; batch.len()].join(", ");
             let sql = format!(
                 "{SELECT_FACT} WHERE (f.subject_entity_id IN ({placeholders}) \
-                 OR f.object_entity_id IN ({placeholders})) AND f.status = 'approved' \
-                 ORDER BY f.created_at DESC, f.id DESC"
+                  OR f.object_entity_id IN ({placeholders})) AND f.status = 'approved' \
+                  ORDER BY f.created_at DESC, f.id DESC"
             );
+            // Two `IN` lists: the full batch for the subject list, then the
+            // full batch again for the object list (positional binding).
             let facts = self.exec.query(
                 &sql,
-                params_from_iter(batch.iter().flat_map(|id| [*id, *id])),
+                params_from_iter(batch.iter().chain(batch.iter())),
                 row_to_fact,
             )?;
             for fact in facts {
+                if !attached.insert(fact.id) {
+                    continue;
+                }
                 if let Some(subject) = fact.subject_entity_id {
                     grouped.entry(subject).or_default().push(fact.clone());
                 }
@@ -1064,11 +1085,8 @@ mod tests {
     }
 
     // (c1) list_by_entity_ids: a fact is attached to its subject AND its
-    // object entry, approved only (the oracle's ListByEntityIDs scenario).
-    //
-    // Each call uses a SINGLE id: with two or more ids the current production
-    // code is order-dependent (known bug, pinned by the ignored regression
-    // tests below), so multi-id calls are not asserted here.
+    // object entry, approved only (the oracle's ListByEntityIDs scenario);
+    // single-id and multi-id calls are both asserted.
     #[test]
     fn list_by_entity_ids_groups_subject_and_object() {
         let db = in_memory_db();
@@ -1118,6 +1136,26 @@ mod tests {
 
             // Ids with no facts are absent from the map.
             assert!(facts.list_by_entity_ids(&[999_999]).unwrap().is_empty());
+
+            // Multi-id: one call covers every requested id (subject AND
+            // object side) — each entity sees exactly its approved facts,
+            // the draft is still excluded, and a fact-free id has no entry.
+            let map = facts
+                .list_by_entity_ids(&[alice, bob, acme, 999_999])
+                .unwrap();
+            assert_eq!(map.get(&alice).map(Vec::len), Some(1));
+            assert_eq!(map.get(&alice).unwrap()[0].id, works);
+            assert_eq!(map.get(&bob).map(Vec::len), Some(1));
+            assert_eq!(map.get(&bob).unwrap()[0].id, employed);
+            let acme_ids: Vec<i64> = map
+                .get(&acme)
+                .expect("acme must be present")
+                .iter()
+                .map(|f| f.id)
+                .collect();
+            assert_eq!(acme_ids.len(), 2, "both approved facts attach to acme");
+            assert!(acme_ids.contains(&works) && acme_ids.contains(&employed));
+            assert!(!map.contains_key(&999_999), "no facts → no map entry");
         });
     }
 
@@ -1131,17 +1169,20 @@ mod tests {
     }
 
     // (c3) list_by_entity_ids: repeated input ids must not change the result
-    // (ids are de-duplicated before the query). One unique id keeps the test
-    // deterministic — multi-id inputs are affected by the known production
-    // bug pinned by the ignored regression tests below.
+    // (ids are de-duplicated before the query), for single- and multi-id
+    // inputs alike.
     #[test]
     fn list_by_entity_ids_deduplicates_input_ids() {
         let db = in_memory_db();
         let alice = insert_entity(&db, "PERSON", "Alice", "hr");
+        let bob = insert_entity(&db, "PERSON", "Bob", "hr");
         let acme = insert_entity(&db, "ORGANIZATION", "Acme", "hr");
         with_facts(&db, |facts| {
             facts
                 .create(Some(alice), "works_at", Some(acme), "hr", None, None, None)
+                .unwrap();
+            facts
+                .create(Some(bob), "employed_by", Some(acme), "hr", None, None, None)
                 .unwrap();
             let map = facts.list_by_entity_ids(&[alice, alice, alice]).unwrap();
             assert_eq!(
@@ -1149,27 +1190,42 @@ mod tests {
                 Some(1),
                 "repeated input ids must not duplicate the fact"
             );
+            // Multi-id with repeats: the result is identical to the
+            // de-duplicated input — every entity sees each fact exactly once.
+            let map = facts.list_by_entity_ids(&[alice, bob, alice, bob]).unwrap();
+            assert_eq!(
+                map.get(&alice).map(Vec::len),
+                Some(1),
+                "repeated input ids must not duplicate the fact"
+            );
+            assert_eq!(
+                map.get(&bob).map(Vec::len),
+                Some(1),
+                "repeated input ids must not duplicate the fact"
+            );
+            assert_eq!(
+                map.get(&acme).map(Vec::len),
+                Some(2),
+                "both facts attach to acme, once each"
+            );
         });
     }
 
-    // (c4) KNOWN BUG #1 (found by this task's test design, task 1.11): the
-    // batch parameter binding of `list_by_entity_ids` is wrong. The SQL
-    // carries TWO `IN` lists (subject, object) with n placeholders each, but
-    // the parameters are passed INTERLEAVED as [b0, b0, b1, b1, ...]
-    // (`flat_map(|id| [*id, *id])`), so positional binding fills the subject
-    // list with the first half of the batch and the object list with the
-    // second half — half of the requested ids are missing from each list.
-    // The batch order comes from a HashSet (random per call), so EVERY
-    // multi-id call is order-dependent (this is what made the first version
-    // of the (c1)/(c3) tests flake). The oracle bound [args..., args...]
-    // (full list, then full list) — the Rust port regressed it.
+    // (c4) REGRESSION (fixed by task 1.17): the SQL carries TWO `IN` lists
+    // (subject, object) with n placeholders each, and the parameters must be
+    // bound full-list-then-full-list (the oracle's `append(args, args...)`).
+    // The first port passed them INTERLEAVED as [b0, b0, b1, b1, ...]
+    // (`flat_map(|id| [*id, *id])`), so positional binding filled the
+    // subject list with the first half of the batch and the object list with
+    // the second half — half of the requested ids were missing from each
+    // list. The batch order comes from a HashSet (random per call), so EVERY
+    // multi-id call was order-dependent (this is what made the first version
+    // of the (c1)/(c3) tests flake).
     //
     // Deterministic reproduction: facts A→B and B→A; under either batch
     // order exactly one fact is missed, so the map holds 2 entries instead
-    // of 4. Ignored so `cargo test` stays green until the production code is
-    // fixed (out of scope for this tests-only task).
+    // of 4.
     #[test]
-    #[ignore = "known bug: list_by_entity_ids interleaves batch parameters (task 1.11 report)"]
     fn list_by_entity_ids_multi_id_regression() {
         let db = in_memory_db();
         let a = insert_entity(&db, "PERSON", "Alice", "hr");
@@ -1187,14 +1243,13 @@ mod tests {
         });
     }
 
-    // (c5) KNOWN BUG #2 (task 1.11): with more than 500 unique ids,
+    // (c5) REGRESSION (fixed by task 1.17): with more than 500 unique ids,
     // `list_by_entity_ids` runs one query per 500-id batch and a fact whose
     // subject and object land in DIFFERENT batches is selected by both
-    // queries and pushed into the result map twice. It is masked by bug #1
-    // (the parameter interleaving) and will surface once #1 is fixed.
-    // Ignored for the same reason as above.
+    // queries — it must be attached to the result map exactly once
+    // (de-duplicated by fact id). The duplication was masked by bug #1 (the
+    // parameter interleaving) and surfaced once that was fixed.
     #[test]
-    #[ignore = "known bug: cross-batch fact duplication in list_by_entity_ids (task 1.11 report)"]
     fn list_by_entity_ids_batches_over_500_no_duplicates() {
         let db = in_memory_db();
         let mut ids: Vec<i64> = Vec::new();
