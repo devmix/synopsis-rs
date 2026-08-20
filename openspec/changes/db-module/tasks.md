@@ -128,7 +128,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия (решение человека 2026-08-20: чинить баг из 1.10 отдельной задачей).
 
-- [ ] 1.18 Вынести ID_BATCH_SIZE/LINK_BATCH_SIZE в config (устранение дублирования)
+- [x] 1.18 Вынести ID_BATCH_SIZE/LINK_BATCH_SIZE в config (устранение дублирования)
   - **Цель:** устранить дублирование констант батчинга — 7 приватных копий в 7 модулях db (ID_BATCH_SIZE: fact/chunk/chunk_entity/entity_link/document/entity; LINK_BATCH_SIZE: entity_source). Единый источник истины — крейт `config` (решение человека 2026-08-20, перед архивом change). Значение 500 сохраняется (D9: параметр-лимит SQLite 32766). **Изменение графа зависимостей:** db → config (config — лёгкий крейт без обратных зависимостей; решение человека 2026-08-20).
   - **Scope файлов:** `crates/config/src/db.rs` (НОВЫЙ модуль: `pub const ID_BATCH_SIZE: usize = 500;` + `pub const LINK_BATCH_SIZE: usize = 500;` + rustdoc с обоснованием D9 — missing_docs=deny), `crates/config/src/lib.rs` (pub mod db + re-export), `crates/db/Cargo.toml` (+ `config = { workspace = true }`), `crates/db/src/{chunk,chunk_entity,document,entity,entity_link,entity_source,fact}.rs` (удалить локальные `const`, использовать `config::ID_BATCH_SIZE`/`config::LINK_BATCH_SIZE`; поправить intra-doc ссылки `[ID_BATCH_SIZE]` → `[config::ID_BATCH_SIZE]`), корневой `Cargo.toml` (комментарий графа зависимостей: db → config).
   - **Зависимости:** все DAO-задачи (1.1–1.17).
