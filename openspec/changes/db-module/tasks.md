@@ -102,12 +102,13 @@
 
 - [ ] 1.14 FactSource DAO — реализация
   - **Цель:** реализовать модуль `fact_source.rs` (FactSourceDao) + регистрация в lib.rs. Полный тестовый набор — задача 1.15; здесь только smoke-тест. **НЕ транскрибировать Go 1:1** (принцип миграции).
-  - **Scope файлов:** `crates/db/src/fact_source.rs` (`FactSourceDao`: `create`, `get_by_fact_id`, `delete`, `delete_by_fact_id`, `delete_by_document_id`), `crates/db/src/lib.rs` (модуль + re-export), минимальный smoke-тест в `crates/db/src/fact_source.rs` (`#[cfg(test)]`: create + get_by_fact_id round-trip).
+  - **Scope файлов:** `crates/db/src/fact_source.rs` (`FactSourceDao`: `create`, `get_by_fact_id`, `delete`, `delete_by_fact_id`, `delete_by_document_id`), `crates/db/src/lib.rs` (модуль + re-export), `migrations/1-init/up.sql` (строка 84: `document_id TEXT NOT NULL` → `document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE` — решение человека 2026-08-20, см. ревизию 2), минимальный smoke-тест в `crates/db/src/fact_source.rs` (`#[cfg(test)]`: create + get_by_fact_id round-trip).
   - **Зависимости:** 1.1 (Db, DbError, DbExecutor, test_util), 1.3 (Document), 1.10 (Fact), 1.9 (пул API).
   - **Критерии приёмки:** `cargo build -p db` и `cargo test -p db` зелёные (существующие тесты + smoke); fmt/clippy чисто; публичные API документированы (missing_docs=deny); grep-проверка: нет ссылок на vec0.
   - **Референс:** `../synopsis/internal/database/dao/fact_source_dao.go` — семантика операций; текущий `crates/db/src/entity.rs` — паттерн DAO.
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): выделена из 1.8.
+    - Ревизия 2 (2026-08-20): **решение человека: `FactSource.document_id` — i64 (INTEGER), не String.** Оригинал рассогласован: схема (обе версии — наша squash и оракул 001_schema.sql) объявляла `fact_sources.document_id TEXT NOT NULL`, Go-код использовал `int` (type affinity), соседняя `entity_sources.document_id` — `INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE`. Модель исправляется: миграция 1-init правится (TEXT → INTEGER + FK + CASCADE, как entity_sources) — правка до первого деплоя, ни одна БД не развёрнута, правило forward-only не нарушено по духу; `fact_source.rs` переделывается: `document_id: i64`.
 
 - [x] 1.16 Фикс flaky-теста: конкурентные write-тесты на temp-file DB (WAL)
   - **Цель:** устранить флаки `entity::tests::get_or_create_is_atomic_under_concurrency` (SQLITE_LOCKED_SHAREDCACHE 262). Причина (верифицировано реализатором 1.10, A/B): shared-cache `:memory:` + несколько пул-соединений пишут параллельно — busy-handler НЕ работает на shared-cache table-локах (известное ограничение SQLite). Реализация (пул + WAL) корректна для продакшена (file-backed DB, busy_timeout=5000 работает) — чинить ТЕСТ-инфраструктуру, не connection.rs: конкурентные write-тесты должны использовать file-backed DB (WAL), как в проде.
@@ -131,7 +132,8 @@
   - **Цель:** полный тестовый набор для `fact_source.rs` + финальная сборка крейта: re-exports, документация, полный прогон гейтов. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** тесты в `crates/db/src/fact_source.rs` (`#[cfg(test)]`), `crates/db/src/lib.rs` (все модули + re-exports + crate docs), финальная проверка: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, `cargo doc -p db`.
   - **Зависимости:** 1.14 (реализация fact_source.rs), все предыдущие задачи (1.1–1.13).
-  - **Критерии приёмки:** `cargo test -p db` зелёный; тесты: (а) fact_source CRUD round-trip; (б) get_by_fact_id; (в) delete_by_fact_id/delete_by_document_id; (г) полный workspace: fmt/clippy/test чисто; (д) `cargo doc -p db` без ошибок (missing_docs=deny соблюдён на всём публичном API); (е) grep-проверка: в крейте db нет ссылок на vec0. fmt/clippy чисто.
-  - **Референс:** `../synopsis/internal/database/dao/fact_source_dao_test.go` — семантика операций.
+  - **Критерии приёмки:** `cargo test -p db` зелёный; тесты: (а) fact_source CRUD round-trip; (б) get_by_fact_id; (в) delete_by_fact_id/delete_by_document_id; (г) полный workspace: fmt/clippy/test чисто; (д) `cargo doc -p db` без ошибок (missing_docs=deny соблюдён на всём публичном API); (е) grep-проверка: в крейте db нет ссылок на vec0. **API-факт из 1.14 (binding):** `FactSource.document_id: i64` (решение человека 2026-08-20; миграция 1-init: `INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE`). fmt/clippy чисто.
+  - **Референс:** `../synopsis/internal/database/dao/fact_source_dao.go` — семантика операций.
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): выделена из 1.8.
+    - Ревизия 2 (2026-08-20): API-факт document_id: i64 (решение человека).

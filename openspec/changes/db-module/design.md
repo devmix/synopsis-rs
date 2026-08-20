@@ -27,6 +27,7 @@
 
 ### D3. Миграции — rusqlite_migration 2.6 + include_dir 0.7
 `migrations/1-init/up.sql` копируется из `.archive/spikes/migrations/` (squashed v5 DDL, уже проверен в спайке S1); встраивается в бинарь через `include_dir!` (compile-time); применяется через `rusqlite_migration::from_directory`; `PRAGMA user_version` — единственный источник истины (=1 после init); `_schema_migrations` НЕ создаётся; legacy knowledge.db НЕ открывается/НЕ мигрируется. Будущие миграции — `<id>-<slug>/up.sql`, forward-only, shipped не редактируются.
+**Правка схемы (решение человека 2026-08-20):** `fact_sources.document_id` исправлен `TEXT NOT NULL` → `INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE` (как `entity_sources.document_id`). Оригинал рассогласован: схема (001_schema.sql) — TEXT, Go-код — `int` (type affinity). Правка внесена в 1-init ДО первого деплоя (ни одна БД не развёрнута) — правило forward-only не нарушено по духу; `FactSource.document_id: i64`.
 *Альтернативы:* копировать 001..005 оракула (реплей мёртвой истории — отклонено, решение 2026-08-18 D6); ручной `user_version`-менеджмент (дублирует rusqlite_migration — отклонено).
 
 ### D4. DAO-декомпозиция: 10 Go-модулей → 8 Rust-модулей
