@@ -1,6 +1,6 @@
 # Tasks — db-module
 
-Порядок = граф зависимостей: 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → **1.9** → 1.6 → 1.7 → 1.8. Задача 1.9 (пул соединений, решение человека 2026-08-20) реализуется ДО 1.6–1.8 — свежие агенты пишут DAO против финального API. Каждая задача выполняется СВЕЖИМ агентом без памяти предыдущих — тело самодостаточно. Формат: чекбокс + блок деталей (цель / scope / зависимости / критерии приёмки / референс / история ревизий).
+Порядок = граф зависимостей: 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → **1.9** → 1.6 → 1.10 → 1.7 → 1.11 → 1.8 → 1.12. Задача 1.9 (пул соединений, решение человека 2026-08-20) реализуется ДО 1.6–1.8 — свежие агенты пишут DAO против финального API. **Решение человека 2026-08-20:** DAO-задачи разделены на пары «реализация» (1.6/1.7/1.8 — код без тестов) и «тесты» (1.10/1.11/1.12 — тестовые модули + финальная сборка): один агент не может выполнить полную задачу за один контекст (~100k). Каждая задача выполняется СВЕЖИМ агентом без памяти предыдущих — тело самодостаточно. Формат: чекбокс + блок деталей (цель / scope / зависимости / критерии приёмки / референс / история ревизий).
 
 **Решения change (2026-08-19, одобрено человеком):** D1 пул соединений r2d2_sqlite (пересмотрено 2026-08-20: read-heavy нагрузка; max_size=4; PRAGMA на каждом соединении; `Db::lock()`/`conn()` удалены, вместо них `with_conn`); D2 транзакции — нативный rusqlite (`Connection::transaction()`/commit/rollback, авто-rollback через Drop) + closure-паттерн `exec_tx` + абстракция `DbExecutor`/`ConnectionOrTx`; D3 миграции — rusqlite_migration 2.6 (from-directory) + include_dir 0.7, squash `migrations/1-init/up.sql` из `.archive/spikes/migrations/`, user_version — единственный источник истины, `_schema_migrations` НЕ создаётся; D4 декомпозиция 10 Go-DAO → 8 Rust-модулей; D5 атомарные GetOrCreate/CreateOrIgnore через ON CONFLICT (исправление TOCTOU-гонки Go); D6 utils — локальный модуль db::utils (Normalize/EscapeLike); D7 vec0 полностью исключён; D8 PRAGMA-parity (WAL, synchronous=NORMAL, cache_size=-64000, mmap_size=268435456, foreign_keys=ON, busy_timeout=5000); D9 параметр-лимит SQLite 32766 — батчи ≤ 500 строк; D10 вложенный exec_tx → DbError::NestedTransaction (thread-local IN_TX); D11 with_conn вместо lock(); D12 тест-инфраструктура под пул (shared-cache :memory:).
 
@@ -63,29 +63,56 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия (решение человека 2026-08-20: Option B — пул, до задач 1.6–1.8).
 
-- [ ] 1.6 Fact DAO
-  - **Цель:** CRUD + атомарный CreateOrIgnore + batch + валидация доменов + поиск над таблицей `facts`. **НЕ транскрибировать Go 1:1** (принцип миграции).
-  - **Scope файлов:** `crates/db/src/fact.rs` (`Fact` struct (id, subject_entity_id, object_entity_id, predicate, confidence, metadata_json, created_at, updated_at), `FactDao` struct + методы: `create`, `create_or_ignore` (АТОМАРНЫЙ: `INSERT ... ON CONFLICT(subject_entity_id, object_entity_id, predicate) DO NOTHING` + возврат ID — D5), `recompute_weights`, `get_by_id`, `list_by_entity_id`, `list_by_entity_ids` (два IN-списка subject+object, батчи ≤ 500), `list_all`, `find_orphaned_fact_ids`, `delete_orphaned_facts`, `validate_fact_domain` (normalize-сравнение доменов субъекта и объекта), `get_by_ids` (IN-список, батчи ≤ 500), `count`, `search_paginated` (JOIN с entities + фильтры), `delete`), `crates/db/src/lib.rs` (модуль + re-export), тесты в `crates/db/src/fact.rs` (`#[cfg(test)]`).
-  - **Зависимости:** 1.1 (Db, DbError, DbExecutor, utils::normalize, test_util), 1.5 (Entity — для validate_fact_domain).
+- [ ] 1.6 Fact DAO — реализация
+  - **Цель:** реализация CRUD + атомарный CreateOrIgnore + batch + валидация доменов + поиск над таблицей `facts`. **БЕЗ тестов** — тестовый модуль пишется в задаче 1.10 (решение человека 2026-08-20: разделение реализация/тесты). **НЕ транскрибировать Go 1:1** (принцип миграции).
+  - **Scope файлов:** `crates/db/src/fact.rs` (`Fact` struct (id, subject_entity_id, object_entity_id, predicate, confidence, metadata_json, created_at, updated_at), `FactDao` struct + методы: `create`, `create_or_ignore` (АТОМАРНЫЙ: `INSERT ... ON CONFLICT(subject_entity_id, object_entity_id, predicate) DO NOTHING` + возврат ID — D5), `recompute_weights`, `get_by_id`, `list_by_entity_id`, `list_by_entity_ids` (два IN-списка subject+object, батчи ≤ 500), `list_all`, `find_orphaned_fact_ids`, `delete_orphaned_facts`, `validate_fact_domain` (normalize-сравнение доменов субъекта и объекта), `get_by_ids` (IN-список, батчи ≤ 500), `count`, `search_paginated` (JOIN с entities + фильтры), `delete`), `crates/db/src/lib.rs` (модуль + re-export). **НЕ создавать `#[cfg(test)]` модуль** (задача 1.10).
+  - **Зависимости:** 1.1 (Db, DbError, DbExecutor, utils::normalize, test_util), 1.5 (Entity — для validate_fact_domain), 1.9 (пул API: with_conn/exec_tx).
+  - **Критерии приёмки:** `cargo check -p db` и `cargo clippy --all-targets -- -D warnings` чисто; модуль компилируется и публичный API задокументирован (missing_docs=deny); тестовый модуль НЕ создан (grep-проверка `#[cfg(test)]` в fact.rs); fmt чисто.
+  - **Референс:** `../synopsis/internal/database/dao/fact_dao.go` (+ fact_dao_batch_test.go — семантика операций, SQL-паттерны, orphan-cleanup логика), паттерн реализации — текущий `crates/db/src/entity.rs` (ближайший сиблинг).
+  - **История ревизий:**
+    - Ревизия 1 (2026-08-20): разделена на реализацию (1.6) и тесты (1.10) по решению человека 2026-08-20.
+
+- [ ] 1.10 Fact DAO — тесты
+  - **Цель:** тестовый модуль для Fact DAO (реализация — задача 1.6). **НЕ транскрибировать Go 1:1** (принцип миграции).
+  - **Scope файлов:** `crates/db/src/fact.rs` — ТОЛЬКО `#[cfg(test)]` модуль (+ хелперы в `crates/db/src/test_util.rs` при необходимости). Если тесты выявляют баги реализации — исправить в fact.rs и зафиксировать отклонение в отчёте.
+  - **Зависимости:** 1.6 (реализация), 1.1, 1.5, 1.9.
   - **Критерии приёмки:** `cargo test -p db` зелёный; тесты: (а) CRUD round-trip; (б) **create_or_ignore атомарность**: повторный вызов с теми же ключами → одна запись, тот же ID; (в) list_by_entity_ids (subject+object); (г) validate_fact_domain: совпадающие домены → ok, разные → ошибка (normalize); (д) find_orphaned_fact_ids/delete_orphaned_facts (не удаляет факты с живыми сущностями); (е) search_paginated с фильтрами; (ж) count. fmt/clippy чисто.
-  - **Референс:** `../synopsis/internal/database/dao/fact_dao.go` (+ fact_dao_test.go, fact_dao_batch_test.go) — семантика операций, SQL-паттерны, orphan-cleanup логика.
+  - **Референс:** `../synopsis/internal/database/dao/fact_dao_test.go` (+ fact_dao_batch_test.go) — семантика; паттерн тестов — текущий тестовый модуль `crates/db/src/entity.rs`.
   - **История ревизий:**
-    - Ревизия 1 (2026-08-19): первая версия.
+    - Ревизия 1 (2026-08-20): первая версия (разделение реализация/тесты).
 
-- [ ] 1.7 Relation DAOs: chunk_entity + entity_link + entity_source
-  - **Цель:** DAO связей: чанк↔сущность, сущность↔сущность (линки), сущность↔документ (источники). **НЕ транскрибировать Go 1:1** (принцип миграции).
-  - **Scope файлов:** `crates/db/src/chunk_entity.rs` (`ChunkEntityDao`: `link` (INSERT OR IGNORE), `unlink`, `get_entities_by_chunk`, `get_chunks_by_entity`, `is_linked`, `unlink_chunk`, `unlink_entity`, `get_chunk_texts_by_entity`, `get_entities_by_chunks`, `get_entity_ids_by_doc_id`), `crates/db/src/entity_link.rs` (`EntityLinkDao`: `create` (отклоняет self-link), `list_by_entity`, `list_by_method`, `list_all`, `delete`, `count`, `graph_node_count`, `delete_by_entity_ids`), `crates/db/src/entity_source.rs` (`EntitySourceDao`: `create`, `link_batch` (multi-row INSERT OR IGNORE, батчи по 500 строк), `delete_by_document_id` (возвращает затронутые ID до удаления), `get_documents_by_entity_id`, `find_orphaned_entity_ids` (не удаляет EntityType)), `crates/db/src/lib.rs` (модули + re-exports), тесты в каждом модуле (`#[cfg(test)]`).
-  - **Зависимости:** 1.1 (Db, DbError, DbExecutor, test_util), 1.3 (Document), 1.4 (Chunk), 1.5 (Entity).
+- [ ] 1.7 Relation DAOs: chunk_entity + entity_link + entity_source — реализация
+  - **Цель:** реализация DAO связей: чанк↔сущность, сущность↔сущность (линки), сущность↔документ (источники). **БЕЗ тестов** — тестовые модули пишутся в задаче 1.11 (решение человека 2026-08-20). **НЕ транскрибировать Go 1:1** (принцип миграции).
+  - **Scope файлов:** `crates/db/src/chunk_entity.rs` (`ChunkEntityDao`: `link` (INSERT OR IGNORE), `unlink`, `get_entities_by_chunk`, `get_chunks_by_entity`, `is_linked`, `unlink_chunk`, `unlink_entity`, `get_chunk_texts_by_entity`, `get_entities_by_chunks`, `get_entity_ids_by_doc_id`), `crates/db/src/entity_link.rs` (`EntityLinkDao`: `create` (отклоняет self-link), `list_by_entity`, `list_by_method`, `list_all`, `delete`, `count`, `graph_node_count`, `delete_by_entity_ids`), `crates/db/src/entity_source.rs` (`EntitySourceDao`: `create`, `link_batch` (multi-row INSERT OR IGNORE, батчи по 500 строк), `delete_by_document_id` (возвращает затронутые ID до удаления), `get_documents_by_entity_id`, `find_orphaned_entity_ids` (не удаляет EntityType)), `crates/db/src/lib.rs` (модули + re-exports). **НЕ создавать `#[cfg(test)]` модули** (задача 1.11).
+  - **Зависимости:** 1.1 (Db, DbError, DbExecutor, test_util), 1.3 (Document), 1.4 (Chunk), 1.5 (Entity), 1.9 (пул API).
+  - **Критерии приёмки:** `cargo check -p db` и `cargo clippy --all-targets -- -D warnings` чисто; модули компилируются, публичный API задокументирован (missing_docs=deny); тестовые модули НЕ созданы (grep-проверка `#[cfg(test)]`); fmt чисто.
+  - **Референс:** `../synopsis/internal/database/dao/chunk_entity_dao.go`, `../synopsis/internal/database/dao/entity_link_dao.go`, `../synopsis/internal/database/dao/entity_source_dao.go` — семантика операций, SQL-паттерны, batch-логика; паттерн реализации — текущий `crates/db/src/entity.rs`.
+  - **История ревизий:**
+    - Ревизия 1 (2026-08-20): разделена на реализацию (1.7) и тесты (1.11) по решению человека 2026-08-20.
+
+- [ ] 1.11 Relation DAOs — тесты
+  - **Цель:** тестовые модули для DAO связей (реализация — задача 1.7). **НЕ транскрибировать Go 1:1** (принцип миграции).
+  - **Scope файлов:** `crates/db/src/chunk_entity.rs`, `crates/db/src/entity_link.rs`, `crates/db/src/entity_source.rs` — ТОЛЬКО `#[cfg(test)]` модули (+ хелперы в test_util при необходимости). Если тесты выявляют баги реализации — исправить и зафиксировать отклонение в отчёте.
+  - **Зависимости:** 1.7 (реализация), 1.1, 1.3, 1.4, 1.5, 1.9.
   - **Критерии приёмки:** `cargo test -p db` зелёный; тесты: (а) link/unlink/is_linked round-trip; (б) get_entities_by_chunk/get_chunks_by_entity; (в) unlink_chunk/unlink_entity удаляют все связи; (г) get_chunk_texts_by_entity возвращает тексты чанков; (д) entity_link: create + self-link отклоняется; (е) list_by_entity/list_by_method/list_all; (ж) delete/delete_by_entity_ids (двунаправленное удаление); (з) graph_node_count; (и) entity_source: link_batch с 500+ строками (граница батча, параметр-лимит 32766 не нарушен); (к) delete_by_document_id возвращает ID до удаления; (л) find_orphaned_entity_ids не включает EntityType. fmt/clippy чисто.
-  - **Референс:** `../synopsis/internal/database/dao/chunk_entity_dao.go` (+ test), `../synopsis/internal/database/dao/entity_link_dao.go` (+ test), `../synopsis/internal/database/dao/entity_source_dao.go` (+ test) — семантика операций, SQL-паттерны, batch-логика.
+  - **Референс:** `../synopsis/internal/database/dao/chunk_entity_dao_test.go`, `../synopsis/internal/database/dao/entity_link_dao_test.go`, `../synopsis/internal/database/dao/entity_source_dao_test.go` — семантика; паттерн тестов — текущий тестовый модуль `crates/db/src/entity.rs`.
   - **История ревизий:**
-    - Ревизия 1 (2026-08-19): первая версия.
+    - Ревизия 1 (2026-08-20): первая версия (разделение реализация/тесты).
 
-- [ ] 1.8 FactSource DAO + сборка крейта
-  - **Цель:** DAO источников фактов + финальная сборка: re-exports, документация, полный прогон гейтов. **НЕ транскрибировать Go 1:1** (принцип миграции).
-  - **Scope файлов:** `crates/db/src/fact_source.rs` (`FactSourceDao`: `create`, `get_by_fact_id`, `delete`, `delete_by_fact_id`, `delete_by_document_id`), `crates/db/src/lib.rs` (все модули + re-exports + crate docs), финальная проверка: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`.
-  - **Зависимости:** 1.1–1.7 (все модули).
-  - **Критерии приёмки:** `cargo test -p db` зелёный; тесты: (а) fact_source CRUD round-trip; (б) get_by_fact_id; (в) delete_by_fact_id/delete_by_document_id; (г) полный workspace: fmt/clippy/test чисто; (д) `cargo doc -p db` без ошибок (missing_docs=deny соблюдён на всём публичном API); (е) grep-проверка: в крейте db нет ссылок на vec0. fmt/clippy чисто.
-  - **Референс:** `../synopsis/internal/database/dao/fact_source_dao.go` (+ test) — семантика операций.
+- [ ] 1.8 FactSource DAO — реализация
+  - **Цель:** реализация DAO источников фактов + регистрация всех модулей крейта. **БЕЗ тестов** — тестовый модуль и финальная сборка в задаче 1.12 (решение человека 2026-08-20). **НЕ транскрибировать Go 1:1** (принцип миграции).
+  - **Scope файлов:** `crates/db/src/fact_source.rs` (`FactSourceDao`: `create`, `get_by_fact_id`, `delete`, `delete_by_fact_id`, `delete_by_document_id`), `crates/db/src/lib.rs` (все модули + re-exports + crate docs). **НЕ создавать `#[cfg(test)]` модуль** (задача 1.12).
+  - **Зависимости:** 1.1–1.7 (все модули), 1.9 (пул API).
+  - **Критерии приёмки:** `cargo check -p db` и `cargo clippy --all-targets -- -D warnings` чисто; модуль компилируется, публичный API задокументирован (missing_docs=deny); тестовый модуль НЕ создан (grep-проверка `#[cfg(test)]` в fact_source.rs); fmt чисто.
+  - **Референс:** `../synopsis/internal/database/dao/fact_source_dao.go` — семантика операций; паттерн реализации — текущий `crates/db/src/entity.rs`.
   - **История ревизий:**
-    - Ревизия 1 (2026-08-19): первая версия.
+    - Ревизия 1 (2026-08-20): разделена на реализацию (1.8) и тесты+сборку (1.12) по решению человека 2026-08-20.
+
+- [ ] 1.12 FactSource — тесты + финальная сборка крейта
+  - **Цель:** тестовый модуль FactSource + финальная сборка: re-exports, документация, полный прогон гейтов. **НЕ транскрибировать Go 1:1** (принцип миграции).
+  - **Scope файлов:** `crates/db/src/fact_source.rs` — ТОЛЬКО `#[cfg(test)]` модуль (+ хелперы в test_util при необходимости); финальная проверка: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, `cargo doc -p db` (без ошибок), grep-проверка отсутствия ссылок на vec0 в крейте db. Если тесты выявляют баги реализации — исправить и зафиксировать отклонение в отчёте.
+  - **Зависимости:** 1.8 (реализация), 1.1–1.7, 1.9.
+  - **Критерии приёмки:** `cargo test -p db` зелёный; тесты: (а) fact_source CRUD round-trip; (б) get_by_fact_id; (в) delete_by_fact_id/delete_by_document_id; (г) полный workspace: fmt/clippy/test чисто; (д) `cargo doc -p db` без ошибок (missing_docs=deny соблюдён на всём публичном API); (е) grep-проверка: в крейте db нет ссылок на vec0. fmt/clippy чисто.
+  - **Референс:** `../synopsis/internal/database/dao/fact_source_dao_test.go` — семантика; паттерн тестов — текущий тестовый модуль `crates/db/src/entity.rs`.
+  - **История ревизий:**
+    - Ревизия 1 (2026-08-20): первая версия (разделение реализация/тесты).
