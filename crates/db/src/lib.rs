@@ -31,6 +31,7 @@ pub mod document;
 pub mod entity;
 pub mod error;
 pub mod executor;
+pub mod fact;
 pub mod test_util;
 pub mod utils;
 
@@ -41,6 +42,8 @@ pub use document::{Document, DocumentDao, DocumentFilter};
 pub use entity::{Entity, EntityDao, EntityFilter};
 pub use error::DbError;
 pub use executor::{ConnectionOrTx, DbExecutor};
+pub use fact::{Fact, FactDao, FactFilter};
 
 // DAO modules are re-exported at the crate root as their db-module tasks land
-// (`app_kv`, `chunk`, `document` and `entity` now; the fact/relation DAOs follow).
+// (`app_kv`, `chunk`, `document`, `entity` and `fact` now; the relation DAOs
+// follow).
