@@ -179,6 +179,13 @@ mod tests {
     use crate::fact::FactDao;
     use crate::test_util::in_memory_db;
 
+    /// Run `f` with a DAO bound to a pooled connection (checked out for the
+    /// closure's duration).
+    fn with_sources<T>(db: &Db, f: impl FnOnce(&FactSourceDao<'_>) -> T) -> T {
+        db.with_conn(|conn| f(&FactSourceDao::new(ConnectionOrTx::Connection(conn))))
+            .unwrap()
+    }
+
     /// Seed a document (the `document_id` FK requires an existing document;
     /// `original_path` is unique).
     fn seed_document(db: &Db, path: &str) -> i64 {
@@ -190,18 +197,37 @@ mod tests {
         .unwrap()
     }
 
-    /// Seed one fact (the `fact_sources` FK requires an existing fact, and
-    /// the fact FKs require existing entities; `foreign_keys=ON`) and
-    /// return its id.
-    fn seed_fact(db: &Db) -> i64 {
-        db.with_conn(|conn| -> Result<i64, DbError> {
+    /// Seed an endpoint entity pair (one subject, one object, same domain)
+    /// and return their ids; `label` keeps the unique (type, name, domain)
+    /// key fresh across calls.
+    fn seed_entities(db: &Db, label: &str) -> (i64, i64) {
+        db.with_conn(|conn| -> Result<(i64, i64), DbError> {
             let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
-            let subject = entities.create("PERSON", "Alice", "hr", None, None, None)?;
-            let object = entities.create("ORGANIZATION", "Acme", "hr", None, None, None)?;
+            let subject =
+                entities.create("PERSON", &format!("Alice-{label}"), "hr", None, None, None)?;
+            let object = entities.create(
+                "ORGANIZATION",
+                &format!("Acme-{label}"),
+                "hr",
+                None,
+                None,
+                None,
+            )?;
+            Ok((subject, object))
+        })
+        .unwrap()
+        .unwrap()
+    }
+
+    /// Seed one fact over the given endpoint entities (the `fact_sources`
+    /// `fact_id` FK requires an existing fact, and the fact's endpoint FKs
+    /// require existing entities; `foreign_keys=ON`) and return its id.
+    fn seed_fact(db: &Db, subject: i64, predicate: &str, object: i64) -> i64 {
+        db.with_conn(|conn| {
             let facts = FactDao::new(ConnectionOrTx::Connection(conn));
             facts.create(
                 Some(subject),
-                "works_at",
+                predicate,
                 Some(object),
                 "hr",
                 None,
@@ -213,20 +239,23 @@ mod tests {
         .unwrap()
     }
 
-    // Smoke: create + get_by_fact_id round-trip (full suite — task 1.15).
+    // (a1) CRUD round-trip: create + get_by_fact_id, all fields, id order,
+    // a second source of the same fact is allowed (no unique constraint).
     #[test]
     fn create_then_get_by_fact_id_round_trip() {
         let db = in_memory_db();
         let doc1 = seed_document(&db, "/docs/hr.md");
         let doc2 = seed_document(&db, "/docs/it.md");
-        let fact_id = seed_fact(&db);
+        let (subject, object) = seed_entities(&db, "smoke");
+        let fact_id = seed_fact(&db, subject, "works_at", object);
 
-        db.with_conn(|conn| -> Result<(), DbError> {
-            let sources = FactSourceDao::new(ConnectionOrTx::Connection(conn));
-            let id = sources.create(fact_id, doc1, Some("exact quote"), None)?;
+        with_sources(&db, |sources| {
+            let id = sources
+                .create(fact_id, doc1, Some("exact quote"), None)
+                .unwrap();
             assert!(id > 0, "generated id must be positive");
 
-            let got = sources.get_by_fact_id(fact_id)?;
+            let got = sources.get_by_fact_id(fact_id).unwrap();
             assert_eq!(got.len(), 1, "one source for the fact");
             let row = &got[0];
             assert_eq!(row.id, id);
@@ -237,17 +266,341 @@ mod tests {
 
             // A second source of the same fact is allowed (no unique
             // constraint) and keeps the id order.
-            let id2 = sources.create(fact_id, doc2, None, None)?;
-            let got = sources.get_by_fact_id(fact_id)?;
+            let id2 = sources.create(fact_id, doc2, None, None).unwrap();
+            let got = sources.get_by_fact_id(fact_id).unwrap();
             assert_eq!(
                 got.iter().map(|s| s.id).collect::<Vec<_>>(),
                 vec![id, id2],
                 "ordered by id"
             );
             assert_eq!(got[1].quote, None, "None quote → NULL");
+        });
+    }
+
+    // (a2) create: an explicit extracted_at is stored verbatim (the
+    // CURRENT_TIMESTAMP default is only the `None` fallback), and an
+    // empty-string quote is a value, not NULL.
+    #[test]
+    fn create_stores_explicit_extracted_at_and_empty_quote() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let (subject, object) = seed_entities(&db, "explicit");
+        let fact_id = seed_fact(&db, subject, "works_at", object);
+
+        with_sources(&db, |sources| {
+            let id = sources
+                .create(fact_id, doc, Some(""), Some("2026-01-02 03:04:05"))
+                .unwrap();
+            let row = &sources.get_by_fact_id(fact_id).unwrap()[0];
+            assert_eq!(row.id, id);
+            assert_eq!(
+                row.quote.as_deref(),
+                Some(""),
+                "an empty string is a value, not NULL"
+            );
+            assert_eq!(
+                row.extracted_at, "2026-01-02 03:04:05",
+                "the explicit value must be stored verbatim"
+            );
+        });
+    }
+
+    // (a3) create: the schema FKs are enforced (foreign_keys=ON) — a missing
+    // fact or a missing document is a Sqlite error. This pins the i64
+    // `document_id` contract (human decision 2026-08-20): the column is an
+    // INTEGER FK to documents(id), not the oracle's TEXT.
+    #[test]
+    fn create_rejects_missing_fact_or_document() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let (subject, object) = seed_entities(&db, "fk");
+        let fact_id = seed_fact(&db, subject, "works_at", object);
+
+        with_sources(&db, |sources| {
+            let err = sources
+                .create(999_999, doc, None, None)
+                .expect_err("a missing fact must fail");
+            assert!(
+                matches!(err, DbError::Sqlite { .. }),
+                "missing fact_id must be an FK violation, got {err:?}"
+            );
+
+            let err = sources
+                .create(fact_id, 999_999, None, None)
+                .expect_err("a missing document must fail");
+            assert!(
+                matches!(err, DbError::Sqlite { .. }),
+                "missing document_id must be an FK violation, got {err:?}"
+            );
+        });
+    }
+
+    // (b) get_by_fact_id: scoped to the fact (other facts' sources are not
+    // returned), id order, empty for an unknown fact.
+    #[test]
+    fn get_by_fact_id_scopes_to_the_fact() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let (a_subject, a_object) = seed_entities(&db, "a");
+        let (b_subject, b_object) = seed_entities(&db, "b");
+        let fact_a = seed_fact(&db, a_subject, "p_a", a_object);
+        let fact_b = seed_fact(&db, b_subject, "p_b", b_object);
+
+        with_sources(&db, |sources| {
+            let a1 = sources.create(fact_a, doc, Some("a1"), None).unwrap();
+            let a2 = sources.create(fact_a, doc, Some("a2"), None).unwrap();
+            let b1 = sources.create(fact_b, doc, Some("b1"), None).unwrap();
+
+            let got_a: Vec<i64> = sources
+                .get_by_fact_id(fact_a)
+                .unwrap()
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            assert_eq!(got_a, vec![a1, a2], "only fact A's sources, id order");
+
+            let got_b: Vec<i64> = sources
+                .get_by_fact_id(fact_b)
+                .unwrap()
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            assert_eq!(got_b, vec![b1], "only fact B's source");
+
+            assert!(
+                sources.get_by_fact_id(999_999).unwrap().is_empty(),
+                "unknown fact → empty"
+            );
+        });
+    }
+
+    // (c1) delete: true on a hit, false on a miss; only the addressed row
+    // is removed.
+    #[test]
+    fn delete_reports_hit_and_miss() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let (subject, object) = seed_entities(&db, "del");
+        let fact_id = seed_fact(&db, subject, "works_at", object);
+
+        with_sources(&db, |sources| {
+            let id1 = sources.create(fact_id, doc, Some("q1"), None).unwrap();
+            let id2 = sources.create(fact_id, doc, Some("q2"), None).unwrap();
+
+            assert!(sources.delete(id1).unwrap(), "existing id must report true");
+            assert!(
+                !sources.delete(id1).unwrap(),
+                "second delete must report false"
+            );
+            assert!(
+                !sources.delete(999_999).unwrap(),
+                "unknown id must report false"
+            );
+
+            let remaining: Vec<i64> = sources
+                .get_by_fact_id(fact_id)
+                .unwrap()
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            assert_eq!(remaining, vec![id2], "only the other row survives");
+        });
+    }
+
+    // (c2) delete_by_fact_id: removes every source of the fact (true),
+    // leaves other facts' sources alone, false when nothing was removed.
+    #[test]
+    fn delete_by_fact_id() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let (a_subject, a_object) = seed_entities(&db, "a");
+        let (b_subject, b_object) = seed_entities(&db, "b");
+        let fact_a = seed_fact(&db, a_subject, "p_a", a_object);
+        let fact_b = seed_fact(&db, b_subject, "p_b", b_object);
+
+        with_sources(&db, |sources| {
+            sources.create(fact_a, doc, Some("a1"), None).unwrap();
+            sources.create(fact_a, doc, Some("a2"), None).unwrap();
+            let b1 = sources.create(fact_b, doc, Some("b1"), None).unwrap();
+
+            assert!(
+                sources.delete_by_fact_id(fact_a).unwrap(),
+                "the fact had sources"
+            );
+            assert!(
+                sources.get_by_fact_id(fact_a).unwrap().is_empty(),
+                "every source of the fact is gone"
+            );
+            let remaining_b: Vec<i64> = sources
+                .get_by_fact_id(fact_b)
+                .unwrap()
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            assert_eq!(remaining_b, vec![b1], "other facts' sources survive");
+
+            assert!(
+                !sources.delete_by_fact_id(fact_a).unwrap(),
+                "no sources left → false"
+            );
+            assert!(
+                !sources.delete_by_fact_id(999_999).unwrap(),
+                "unknown fact → false"
+            );
+        });
+    }
+
+    // (c3) delete_by_document_id: returns the DISTINCT affected fact ids in
+    // fact-id order BEFORE deletion, removes only that document's sources.
+    #[test]
+    fn delete_by_document_id_returns_affected_fact_ids_ordered() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let other_doc = seed_document(&db, "/docs/it.md");
+        let (a_subject, a_object) = seed_entities(&db, "a");
+        let (b_subject, b_object) = seed_entities(&db, "b");
+        let fact_a = seed_fact(&db, a_subject, "p_a", a_object);
+        let fact_b = seed_fact(&db, b_subject, "p_b", b_object);
+
+        with_sources(&db, |sources| {
+            // Insert in a non-id order (fact B first, twice) to prove the
+            // result is DISTINCT and ordered by fact id, not insertion
+            // order.
+            sources.create(fact_b, doc, Some("b1"), None).unwrap();
+            sources.create(fact_a, doc, Some("a1"), None).unwrap();
+            sources.create(fact_b, doc, Some("b2"), None).unwrap();
+            let other_id = sources
+                .create(fact_a, other_doc, Some("other"), None)
+                .unwrap();
+
+            let affected = sources.delete_by_document_id(doc).unwrap();
+            assert_eq!(
+                affected,
+                vec![fact_a, fact_b],
+                "distinct fact ids, id order"
+            );
+
+            let remaining_a: Vec<i64> = sources
+                .get_by_fact_id(fact_a)
+                .unwrap()
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            assert_eq!(
+                remaining_a,
+                vec![other_id],
+                "the other document's source survives"
+            );
+            assert!(
+                sources.get_by_fact_id(fact_b).unwrap().is_empty(),
+                "every source of the document is gone"
+            );
+
+            assert!(
+                sources.delete_by_document_id(999_999).unwrap().is_empty(),
+                "unknown document → no affected facts"
+            );
+            assert!(
+                sources.delete_by_document_id(doc).unwrap().is_empty(),
+                "already deleted → empty"
+            );
+        });
+    }
+
+    // (d1) deleting a fact cascades to its fact_sources rows (schema FK).
+    #[test]
+    fn fact_delete_cascades_sources() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let (subject, object) = seed_entities(&db, "casc");
+        let fact_id = seed_fact(&db, subject, "works_at", object);
+        with_sources(&db, |sources| {
+            sources.create(fact_id, doc, Some("q1"), None).unwrap();
+            sources.create(fact_id, doc, Some("q2"), None).unwrap();
+        });
+
+        let deleted = db
+            .with_conn(|conn| {
+                let facts = FactDao::new(ConnectionOrTx::Connection(conn));
+                facts.delete(fact_id)
+            })
+            .unwrap()
+            .unwrap();
+        assert!(deleted, "the fact existed");
+
+        with_sources(&db, |sources| {
+            assert!(
+                sources.get_by_fact_id(fact_id).unwrap().is_empty(),
+                "the sources must cascade"
+            );
+        });
+    }
+
+    // (d2) deleting a document cascades to its fact_sources rows (schema FK,
+    // human decision 2026-08-20: INTEGER document_id with ON DELETE CASCADE).
+    #[test]
+    fn document_delete_cascades_sources() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let (subject, object) = seed_entities(&db, "doc-casc");
+        let fact_id = seed_fact(&db, subject, "works_at", object);
+        with_sources(&db, |sources| {
+            sources.create(fact_id, doc, Some("q1"), None).unwrap();
+            sources.create(fact_id, doc, Some("q2"), None).unwrap();
+        });
+
+        let deleted = db
+            .with_conn(|conn| {
+                let docs = DocumentDao::new(ConnectionOrTx::Connection(conn));
+                docs.delete(doc)
+            })
+            .unwrap()
+            .unwrap();
+        assert!(deleted, "the document existed");
+
+        with_sources(&db, |sources| {
+            assert!(
+                sources.get_by_fact_id(fact_id).unwrap().is_empty(),
+                "the sources must cascade"
+            );
+        });
+    }
+
+    // (e) the DAO works over a transaction: commit and rollback paths
+    // (house pattern, as in the sibling DAOs).
+    #[test]
+    fn create_inside_transaction() {
+        let db = in_memory_db();
+        let doc = seed_document(&db, "/docs/hr.md");
+        let (subject, object) = seed_entities(&db, "tx");
+        let fact_id = seed_fact(&db, subject, "works_at", object);
+
+        db.exec_tx(|tx| -> Result<(), DbError> {
+            let sources = FactSourceDao::new(ConnectionOrTx::Transaction(&*tx));
+            sources.create(fact_id, doc, Some("committed"), None)?;
             Ok(())
         })
-        .unwrap()
-        .unwrap();
+        .expect("commit");
+
+        let err = db
+            .exec_tx(|tx| -> Result<(), DbError> {
+                let sources = FactSourceDao::new(ConnectionOrTx::Transaction(&*tx));
+                sources.create(fact_id, doc, Some("rolled back"), None)?;
+                // A genuine failure after a partial write: FK (missing
+                // document).
+                sources.create(fact_id, 999_999, None, None)?;
+                Ok(())
+            })
+            .expect_err("closure error must surface");
+        assert!(matches!(err, DbError::Sqlite { .. }));
+
+        with_sources(&db, |sources| {
+            let rows = sources.get_by_fact_id(fact_id).unwrap();
+            let quotes: Vec<&str> = rows
+                .iter()
+                .map(|s| s.quote.as_deref().expect("the seeded quote"))
+                .collect();
+            assert_eq!(quotes, vec!["committed"], "only the committed source");
+        });
     }
 }
