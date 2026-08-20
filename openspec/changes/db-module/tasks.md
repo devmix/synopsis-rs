@@ -52,6 +52,7 @@
   - **Референс:** `../synopsis/internal/database/dao/entity_dao.go` (+ entity_dao_test.go, entity_dao_batch_test.go) — семантика операций, SQL-паттерны, orphan-cleanup логика.
   - **История ревизий:**
     - Ревизия 1 (2026-08-19): первая версия.
+    - Ревизия 2 (2026-08-19): фикс по замечанию ревьюера (minor, API_consistency) — унифицировать порядок параметров `get_or_create` на `(entity_type, name, domain)` как в `create` (ревьюер: lines 154-161 vs 332-339).
 
 - [ ] 1.6 Fact DAO
   - **Цель:** CRUD + атомарный CreateOrIgnore + batch + валидация доменов + поиск над таблицей `facts`. **НЕ транскрибировать Go 1:1** (принцип миграции).
