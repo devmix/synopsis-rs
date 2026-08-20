@@ -109,7 +109,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): выделена из 1.8.
 
-- [ ] 1.16 Фикс flaky-теста: конкурентные write-тесты на temp-file DB (WAL)
+- [x] 1.16 Фикс flaky-теста: конкурентные write-тесты на temp-file DB (WAL)
   - **Цель:** устранить флаки `entity::tests::get_or_create_is_atomic_under_concurrency` (SQLITE_LOCKED_SHAREDCACHE 262). Причина (верифицировано реализатором 1.10, A/B): shared-cache `:memory:` + несколько пул-соединений пишут параллельно — busy-handler НЕ работает на shared-cache table-локах (известное ограничение SQLite). Реализация (пул + WAL) корректна для продакшена (file-backed DB, busy_timeout=5000 работает) — чинить ТЕСТ-инфраструктуру, не connection.rs: конкурентные write-тесты должны использовать file-backed DB (WAL), как в проде.
   - **Scope файлов:** `crates/db/src/test_util.rs` (добавить `temp_file_db() -> Db` — временный файл в `std::env::temp_dir()` с уникальным именем (pid+счётчик/UUID), `Db::open`, удаление файла после теста (Drop-обёртка или в конце теста); `in_memory_db` НЕ менять — shared-cache остаётся для неконкурентных тестов), `crates/db/src/entity.rs` (тест `get_or_create_is_atomic_under_concurrency` → `temp_file_db()`), аудит остальных конкурентных тестов на `in_memory_db` (из 1.9: параллельные чтения, чтение во время write-транзакции) — если флакают, перевести на `temp_file_db()`.
   - **Зависимости:** 1.9 (пул), 1.5 (entity), 1.10 (fact — не трогать).
