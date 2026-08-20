@@ -26,9 +26,12 @@
 
 pub mod app_kv;
 pub mod chunk;
+pub mod chunk_entity;
 pub mod connection;
 pub mod document;
 pub mod entity;
+pub mod entity_link;
+pub mod entity_source;
 pub mod error;
 pub mod executor;
 pub mod fact;
@@ -37,13 +40,16 @@ pub mod utils;
 
 pub use app_kv::AppKv;
 pub use chunk::{Chunk, ChunkDao, FtsHit};
+pub use chunk_entity::ChunkEntityDao;
 pub use connection::Db;
 pub use document::{Document, DocumentDao, DocumentFilter};
 pub use entity::{Entity, EntityDao, EntityFilter};
+pub use entity_link::{EntityLink, EntityLinkDao};
+pub use entity_source::EntitySourceDao;
 pub use error::DbError;
 pub use executor::{ConnectionOrTx, DbExecutor};
 pub use fact::{Fact, FactDao, FactFilter};
 
 // DAO modules are re-exported at the crate root as their db-module tasks land
-// (`app_kv`, `chunk`, `document`, `entity` and `fact` now; the relation DAOs
-// follow).
+// (`app_kv`, `chunk`, `document`, `entity`, `fact` and the relation DAOs now;
+// `fact_source` follows in task 1.14).
