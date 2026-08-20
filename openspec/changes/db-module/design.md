@@ -17,9 +17,9 @@
 
 ## Decisions
 
-### D1. Одно соединение `Arc<Mutex<Connection>>` за `spawn_blocking`
-Одно общее соединение rusqlite в `Arc<Mutex<>>`; все DAO-вызовы выполняются в `spawn_blocking` (sync-драйвер в async-контексте). WAL допускает конкурентных читателей; писатели сериализуются мутексом — достаточно для ноутбука (один бинарь, ограниченная конкурентность).
-*Альтернативы:* r2d2_sqlite/deadpool-sqlite (оверкилл для одного процесса, лишняя зависимость); несколько соединений (не нужно — WAL + мутекс покрывает сценарий). **Решение человека 2026-08-19.**
+### D1. Пул соединений r2d2_sqlite (пересмотрено 2026-08-20)
+**Решение человека 2026-08-20:** приложение read-heavy (много чтений, мало записей) → одно соединение за `Arc<Mutex>` сериализует ВСЕ чтения и блокирует их на время write-транзакций ингеста. Заменено на **пул соединений** `r2d2_sqlite` (sync-пул, ложится в модель sync-драйвера за `spawn_blocking`): WAL + несколько соединений → конкурентные чтения, писатель не блокирует читателей (архитектура Go-оракула — database/sql pool). `max_size = 4` (константа, ноутбук; настраивается позже при необходимости). PRAGMA применяются на КАЖДОМ соединении при создании (init-колбэк менеджера); миграция выполняется один раз при open на первом соединении (`user_version` хранится в файле). `Db::lock()`/`Db::conn()` удаляются из публичного API (деадлок-футган: нереентерабельный мьютекс + два пути захвата); вместо них — `Db::with_conn(f)` (checkout + closure). DAO-структуры НЕ меняются (остаются на `ConnectionOrTx`).
+*Альтернативы:* deadpool-sqlite (async-пул — checkout асинхронный, не ложится в sync-модель за spawn_blocking; отклонено); один Connection + Mutex (отклонено — сериализация чтений под read-heavy нагрузку); RwLock (отклонено — UB: rusqlite Connection не Sync, RefCell внутри, конкурентные read-guard'ы = data race); гибрид writer+read-пул (оверкилл для ноутбука).
 
 ### D2. Транзакции — нативный API rusqlite + closure-паттерн
 `exec_tx(f)` строит транзакцию через `Connection::transaction()` (никаких ручных `BEGIN`/`COMMIT` строк): успех → `tx.commit()`, ошибка → `tx.rollback()`, паника/ранний return → авто-rollback через `Drop` (DropBehavior::Rollback по умолчанию). Вложенность — через `Transaction::savepoint()` при необходимости (в оракуле вложенных транзакций нет). Абстракция `DbExecutor` (sealed trait: execute/query/query_row) + `ConnectionOrTx<'a>` enum — DAO работают единообразно с соединением и транзакцией (аналог Go DBTX interface, удовлетворяемого *sql.DB и *sql.Tx).
@@ -51,6 +51,15 @@
 ### D9. Параметр-лимит SQLite (32766)
 Batch-операции (GetByIDs, LinkBatch, DeleteByIDs) используют плейсхолдеры с батчами ≤ 500 строк (LinkBatch — 500×2=1000 параметров; GetByIDs — разбиение на чанки по 500). Лимит задокументирован в коде; тест на границе батча.
 
+### D10. Транзакции поверх пула + защита от вложенности
+`exec_tx` чекаутит соединение из пула, выполняет транзакцию на нём и возвращает соединение в пул после commit/rollback (семантика D2 сохраняется: Ok → commit, Err/паника → rollback через Drop, catch_unwind + resume_unwind). **Вложенный `exec_tx` → `Err(DbError::NestedTransaction)`** через thread-local флаг `IN_TX`: с пулом вложенность молча выполнила бы НЕЗАВИСИМУЮ транзакцию на другом соединении (семантическая ловушка хуже деадлока) — явная ошибка. `with_conn` + `exec_tx` внутри — допустимо (разные соединения, не транзакция).
+
+### D11. API: `with_conn` вместо `lock()`
+`Db::lock()` и `Db::conn()` удаляются из публичного API (компилятор ловит всех старых вызывающих). Вместо них: `Db::with_conn<T>(&self, f: impl FnOnce(&Connection) -> T) -> Result<T, DbError>` — checkout из пула, closure, возврат соединения; guard не может «утечь» или быть удержан между вызовами. DAO-структуры и `ConnectionOrTx` НЕ меняются: вызывающий делает `db.with_conn(|conn| { let dao = EntityDao::new(ConnectionOrTx::Connection(conn)); ... })`; tx-bound использование внутри `exec_tx` — как раньше. Класс деадлоков (lock→exec_tx, exec_tx→lock, exec_tx→exec_tx) устраняется по построению: единственный способ удержания соединения между операторами — `exec_tx`, а вложенный `exec_tx` — ошибка (D10).
+
+### D12. Тест-инфраструктура под пул
+`:memory:` с пулом — ловушка: каждое соединение получает СВОЮ отдельную in-memory БД. `test_util::in_memory_db()` переходит на shared-cache URI (`file:memdb1?mode=memory&cache=shared` + SQLITE_OPEN_URI) — все соединения пула разделяют одну БД; либо временный файл. `fixture_db()` — пул `max_size=1` над read-only URI (mode=ro&immutable=1). Тесты мигрируют механически: `db.lock().unwrap()` → `db.with_conn(...).unwrap()`.
+
 ## Risks / Trade-offs
 
 - **FTS5 bm25-скоринги: bundled SQLite vs Go CGO** → bm25() — часть FTS5-спеки, ожидается идентично; parity-тест на фикстуре (17 хитов, top-3 chunk_ids) подтверждает.
@@ -58,6 +67,10 @@ Batch-операции (GetByIDs, LinkBatch, DeleteByIDs) используют �
 - **include_dir API** (embed_dir! возвращает &'static str или Vec<u8>) → проверить в задаче 1.1; rusqlite_migration принимает оба.
 - **json_each domain-фильтр** дорог на больших данных → приемлемо для ноутбука (личное использование); оптимизация — в change `search`.
 - **Мёртвый код в тестах** (fixture read-only) → фикстура открывается в mode=ro/immutable, тесты не пишут в неё.
+- **Пул: PRAGMA на каждом соединении** → init-колбэк менеджера (r2d2_sqlite `with_init` или кастомный ConnectionManager); проверить API в задаче 1.9; тест читает PRAGMA с двух разных checkout'ов.
+- **Пул: `:memory:` ловушка** (каждое соединение — своя БД) → shared-cache URI или temp-файл в test_util (D12).
+- **Пул: checkout-таймаут** → r2d2 timeout маппится в `DbError::PoolTimeout`; busy_timeout=5000 на уровне SQLite остаётся.
+- **Вложенный exec_tx** → явная ошибка `DbError::NestedTransaction` (D10), не деадлок и не молчаливая независимая транзакция.
 
 ## Migration Plan
 
