@@ -44,7 +44,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-19): первая версия.
 
-- [ ] 1.5 Entity DAO
+- [x] 1.5 Entity DAO
   - **Цель:** CRUD + атомарный GetOrCreate + batch + orphan-cleanup + пагинация над таблицей `entities`. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/db/src/entity.rs` (`Entity` struct (id, entity_type, name, domain, description, metadata_json, created_at, updated_at), `EntityDao` struct + методы: `create`, `get_by_id`, `get_by_name` (type+name+domain), `get_by_name_fold` (normalize), `list_by_name_fold`, `list`, `list_by_type`, `update`, `update_name`, `delete`, `count`, `list_paginated` (фильтры type/domain/name), `get_or_create` (АТОМАРНЫЙ: `INSERT ... ON CONFLICT(type,name,domain) DO NOTHING` + возврат ID через RETURNING или повторный SELECT — D5, исправление TOCTOU-гонки Go), `delete_orphaned_entity_ids` (не удаляет EntityType и сущности, на которые ссылаются факты/связи), `delete_orphaned_by_ids`, `get_by_ids` (IN-список, батчи ≤ 500), `types_by_count`, `domains_by_count`, `unique_types`, `list_created_since`), `crates/db/src/lib.rs` (модуль + re-export), тесты в `crates/db/src/entity.rs` (`#[cfg(test)]`).
   - **Зависимости:** 1.1 (Db, DbError, DbExecutor, utils::normalize, test_util).
