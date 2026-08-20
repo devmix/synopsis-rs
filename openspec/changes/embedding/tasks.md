@@ -4,7 +4,7 @@
 
 ## 1. Реализация
 
-- [ ] 1.1 Скаффолдинг крейта embedding: Cargo.toml, trait EmbeddingProvider, ошибки
+- [x] 1.1 Скаффолдинг крейта embedding: Cargo.toml, trait EmbeddingProvider, ошибки
   - **Цель:** подготовить крейт к реализации: зависимости (ort 2.0.0-rc.13 с фичей load-dynamic, tokenizers 0.23.1, ureq, sha2, zip, flate2, tar, serde_json, indicatif — из workspace-палитры, добавить недостающие в корневой Cargo.toml), публичный trait `EmbeddingProvider` (generate_embeddings/vector_dim/name), типы ошибок `EmbeddingError` (thiserror: Ort, Tokenizer, Download, Cache, Model, Io, Config). **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/embedding/Cargo.toml`, корневой `Cargo.toml` (палитра), `crates/embedding/src/lib.rs` (trait + re-exports + crate docs), `crates/embedding/src/error.rs` (новый). Модули-заглушки НЕ создавать (только то, что в scope).
   - **Зависимости:** нет (config-крейт уже готов из config-module).
