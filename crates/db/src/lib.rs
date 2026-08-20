@@ -35,6 +35,7 @@ pub mod entity_source;
 pub mod error;
 pub mod executor;
 pub mod fact;
+pub mod fact_source;
 pub mod test_util;
 pub mod utils;
 
@@ -49,7 +50,4 @@ pub use entity_source::EntitySourceDao;
 pub use error::DbError;
 pub use executor::{ConnectionOrTx, DbExecutor};
 pub use fact::{Fact, FactDao, FactFilter};
-
-// DAO modules are re-exported at the crate root as their db-module tasks land
-// (`app_kv`, `chunk`, `document`, `entity`, `fact` and the relation DAOs now;
-// `fact_source` follows in task 1.14).
+pub use fact_source::{FactSource, FactSourceDao};

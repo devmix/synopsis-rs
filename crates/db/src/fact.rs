@@ -557,6 +557,7 @@ mod tests {
 
     use super::*;
     use crate::Db;
+    use crate::document::DocumentDao;
     use crate::entity::EntityDao;
     use crate::test_util::in_memory_db;
 
@@ -578,9 +579,19 @@ mod tests {
         .unwrap()
     }
 
-    /// Insert a `fact_sources` row (the FactSource DAO lands in task 1.14;
-    /// `document_id` is `TEXT` in the v5 schema, so the ids are strings).
-    fn insert_fact_source(db: &Db, fact_id: i64, document_id: &str) {
+    /// Insert a document row and return its id (the `fact_sources`
+    /// `document_id` FK requires an existing document; `foreign_keys=ON`).
+    fn insert_document(db: &Db, path: &str) -> i64 {
+        db.with_conn(|conn| {
+            let docs = DocumentDao::new(ConnectionOrTx::Connection(conn));
+            docs.create("markdown", path, None, None)
+        })
+        .unwrap()
+        .unwrap()
+    }
+
+    /// Insert a `fact_sources` row (the FactSource DAO lands in task 1.14).
+    fn insert_fact_source(db: &Db, fact_id: i64, document_id: i64) {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO fact_sources (fact_id, document_id, quote) VALUES (?1, ?2, 'q')",
@@ -592,7 +603,7 @@ mod tests {
     }
 
     /// Remove one `fact_sources` row (the weight-decrease path).
-    fn delete_fact_source(db: &Db, fact_id: i64, document_id: &str) {
+    fn delete_fact_source(db: &Db, fact_id: i64, document_id: i64) {
         db.with_conn(|conn| {
             conn.execute(
                 "DELETE FROM fact_sources WHERE fact_id = ?1 AND document_id = ?2",
@@ -773,8 +784,10 @@ mod tests {
                 .create(Some(subj), "works_at", Some(obj), "hr", None, None, None)
                 .unwrap()
         });
-        insert_fact_source(&db, id, "doc-1");
-        insert_fact_source(&db, id, "doc-2");
+        let doc1 = insert_document(&db, "/docs/a.md");
+        let doc2 = insert_document(&db, "/docs/b.md");
+        insert_fact_source(&db, id, doc1);
+        insert_fact_source(&db, id, doc2);
 
         with_facts(&db, |facts| {
             assert!(facts.delete(id).unwrap(), "existing id must report true");
@@ -1344,7 +1357,8 @@ mod tests {
                     .unwrap(),
             )
         });
-        insert_fact_source(&db, sourced, "doc-1");
+        let doc = insert_document(&db, "/docs/a.md");
+        insert_fact_source(&db, sourced, doc);
         set_fact_status(&db, orphan_draft, "draft");
 
         with_facts(&db, |facts| {
@@ -1393,7 +1407,8 @@ mod tests {
                     .unwrap(),
             )
         });
-        insert_fact_source(&db, sourced, "doc-1");
+        let doc = insert_document(&db, "/docs/a.md");
+        insert_fact_source(&db, sourced, doc);
         set_fact_status(&db, orphan2, "draft");
 
         with_facts(&db, |facts| {
@@ -1679,8 +1694,10 @@ mod tests {
                     .unwrap(),
             )
         });
-        insert_fact_source(&db, f1, "doc-1");
-        insert_fact_source(&db, f1, "doc-2");
+        let doc1 = insert_document(&db, "/docs/a.md");
+        let doc2 = insert_document(&db, "/docs/b.md");
+        insert_fact_source(&db, f1, doc1);
+        insert_fact_source(&db, f1, doc2);
 
         with_facts(&db, |facts| {
             assert_eq!(
@@ -1704,7 +1721,7 @@ mod tests {
                 "no sources → weight 0 (the schema default 1 is replaced)"
             );
 
-            delete_fact_source(&db, f1, "doc-1");
+            delete_fact_source(&db, f1, doc1);
             facts.recompute_weights(&[f1]).unwrap();
             assert_eq!(
                 facts.get_by_id(f1).unwrap().unwrap().weight,
@@ -1722,6 +1739,7 @@ mod tests {
         let db = in_memory_db();
         let subj = insert_entity(&db, "PERSON", "Alice", "hr");
         let obj = insert_entity(&db, "ORGANIZATION", "Acme", "hr");
+        let doc = insert_document(&db, "/docs/batch.md");
         let mut fact_ids: Vec<i64> = Vec::new();
         db.exec_tx(|tx| -> Result<(), DbError> {
             let facts = FactDao::new(ConnectionOrTx::Transaction(&*tx));
@@ -1737,7 +1755,7 @@ mod tests {
                 )?;
                 tx.execute(
                     "INSERT INTO fact_sources (fact_id, document_id) VALUES (?1, ?2)",
-                    params![id, format!("doc-{i}")],
+                    params![id, doc],
                 )?;
                 fact_ids.push(id);
             }

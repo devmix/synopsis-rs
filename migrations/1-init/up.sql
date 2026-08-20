@@ -20,6 +20,13 @@
 -- documents.domain and idx_documents_domain (so documents has NO domain column below,
 -- while entities/facts keep theirs); 004 extracted_at backfill (data migration, no DDL);
 -- 005 app_kv. The dump reflects exactly that final state.
+--
+-- Deliberate deviation from the oracle (human decision 2026-08-20, db-module task 1.14
+-- revision 2): fact_sources.document_id is INTEGER with an FK to documents(id) ON DELETE
+-- CASCADE (like entity_sources.document_id), not the oracle's TEXT. The oracle is
+-- self-inconsistent (schema TEXT vs Go `int` field relying on type affinity). The fix
+-- lands in the squashed init migration BEFORE any database was deployed, so the
+-- forward-only rule is not violated in spirit.
 
 CREATE TABLE documents (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +88,7 @@ CREATE TABLE facts (
 CREATE TABLE fact_sources (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     fact_id      INTEGER NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
-    document_id  TEXT NOT NULL,
+    document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     quote        TEXT, -- exact quote from source
     extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
