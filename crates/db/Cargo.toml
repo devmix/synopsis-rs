@@ -12,7 +12,10 @@ workspace = true
 # see the workspace palette comment), rusqlite_migration for the squashed v5
 # init migration, include_dir for the compile-time embedded migration directory,
 # r2d2 + r2d2_sqlite for the connection pool (D1 re-decided 2026-08-20).
+# db → config (task 1.18, human decision 2026-08-20): the SQLite batch-size
+# constants (D9) are a single source of truth in `config::db`.
 [dependencies]
+config = { workspace = true }
 rusqlite = { workspace = true }
 libsqlite3-sys = { workspace = true }
 rusqlite_migration = { workspace = true }

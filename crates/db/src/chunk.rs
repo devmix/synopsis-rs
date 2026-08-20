@@ -23,7 +23,7 @@
 //! - `update`/`delete` return `bool` (`false` = no such id) instead of a
 //!   "chunk not found" error (consistent with `DocumentDao`);
 //! - `delete_by_ids` returns the number of rows deleted (oracle: none) and
-//!   batches the `IN` list in chunks of [`ID_BATCH_SIZE`] (design D9);
+//!   batches the `IN` list in chunks of [`config::ID_BATCH_SIZE`] (design D9);
 //! - the legacy vector-store operations of the oracle (`SearchVector`,
 //!   `UpsertVector`, `FormatVector`, `DeleteVectorsByChunkIDs`,
 //!   `DeleteOrphanedVectors`) are deliberately NOT ported — vector search
@@ -33,14 +33,11 @@
 //! updated_at) does not match the frozen v5 schema, which has exactly the
 //! columns of [`Chunk`]; the schema is the contract.
 
+use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
-
-/// Maximum ids per single `IN (...)` statement (design D9): SQLite bounds
-/// bound parameters per statement at 32766; 500 stays far below it.
-const ID_BATCH_SIZE: usize = 500;
 
 /// Default page size applied when `search_fts` gets an out-of-range limit
 /// (oracle parity: `limit <= 0 || limit > 100 → 20`).
@@ -201,8 +198,8 @@ impl<'conn> ChunkDao<'conn> {
     /// Delete several chunks by id; ids that do not exist are ignored.
     /// Returns the number of rows deleted.
     ///
-    /// The `IN` list is batched in chunks of [`ID_BATCH_SIZE`] to stay far
-    /// below SQLite's 32766 bound on bound parameters (design D9).
+    /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`] to
+    /// stay far below SQLite's 32766 bound on bound parameters (design D9).
     pub fn delete_by_ids(&self, ids: &[i64]) -> Result<usize, DbError> {
         let mut deleted = 0;
         for batch in ids.chunks(ID_BATCH_SIZE) {

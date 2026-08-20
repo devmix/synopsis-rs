@@ -23,7 +23,7 @@
 //!   fact with a NULL endpoint would silently disable the whole cleanup (Go
 //!   bug; regression test below).
 //! - `delete_orphaned_by_ids`/`get_by_ids` batch the `IN` list in chunks of
-//!   [`ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
+//!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
 //!   placeholder list (potential 32766 bound violation).
 //!
 //! **Other deviations (house conventions, as in `document.rs`/`chunk.rs`):**
@@ -46,15 +46,12 @@
 
 use std::collections::HashMap;
 
+use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
 use crate::utils::{escape_like, normalize};
-
-/// Maximum ids per single `IN (...)` statement (design D9): SQLite bounds
-/// bound parameters per statement at 32766; 500 stays far below it.
-const ID_BATCH_SIZE: usize = 500;
 
 /// Shared `SELECT` list for the `entities` row queries (column order is the
 /// contract of [`row_to_entity`]).
@@ -392,7 +389,8 @@ impl<'conn> EntityDao<'conn> {
     /// Delete the subset of `ids` that are orphaned (same rules as
     /// [`Self::delete_orphaned_entity_ids`]); non-orphan candidates are left
     /// untouched. Empty `ids` → `0`. The `IN` list is batched in chunks of
-    /// [`ID_BATCH_SIZE`] (design D9). Returns the number of rows deleted.
+    /// [`config::ID_BATCH_SIZE`] (design D9). Returns the number of rows
+    /// deleted.
     pub fn delete_orphaned_by_ids(&self, ids: &[i64]) -> Result<i64, DbError> {
         let mut deleted = 0;
         for batch in ids.chunks(ID_BATCH_SIZE) {
@@ -415,8 +413,8 @@ impl<'conn> EntityDao<'conn> {
     /// Retrieve several entities by id; ids that do not exist are simply
     /// absent from the result. Empty `ids` yields an empty vec.
     ///
-    /// The `IN` list is batched in chunks of [`ID_BATCH_SIZE`] to stay far
-    /// below SQLite's 32766 bound on bound parameters (design D9).
+    /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`] to
+    /// stay far below SQLite's 32766 bound on bound parameters (design D9).
     pub fn get_by_ids(&self, ids: &[i64]) -> Result<Vec<Entity>, DbError> {
         let mut entities = Vec::new();
         for batch in ids.chunks(ID_BATCH_SIZE) {

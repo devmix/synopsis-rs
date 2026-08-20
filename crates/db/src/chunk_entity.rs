@@ -6,7 +6,7 @@
 //!
 //! **Go bug fixes / conscious deviations:**
 //! - `get_entities_by_chunks` batches the `IN` list in chunks of
-//!   [`ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
+//!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
 //!   placeholder list (potential 32766 bound-parameter violation). It also
 //!   de-duplicates the input chunk ids and reuses
 //!   [`crate::entity::EntityDao::get_by_ids`] for the entity rows (DRY).
@@ -33,15 +33,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use config::ID_BATCH_SIZE;
 use rusqlite::params_from_iter;
 
 use crate::entity::{Entity, EntityDao};
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
-
-/// Maximum ids per single `IN (...)` statement (design D9): SQLite bounds
-/// bound parameters per statement at 32766; 500 stays far below it.
-const ID_BATCH_SIZE: usize = 500;
 
 /// Link management over the `chunk_entities` junction table.
 ///
@@ -166,9 +163,9 @@ impl<'conn> ChunkEntityDao<'conn> {
     /// name, `id` as the tie-break (the oracle's `ORDER BY e.name`, made
     /// deterministic).
     ///
-    /// The `IN` list is batched in chunks of [`ID_BATCH_SIZE`] (design D9);
-    /// input ids are de-duplicated, and the entity rows come from
-    /// [`EntityDao::get_by_ids`] (DRY, full column set).
+    /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`]
+    /// (design D9); input ids are de-duplicated, and the entity rows come
+    /// from [`EntityDao::get_by_ids`] (DRY, full column set).
     pub fn get_entities_by_chunks(
         &self,
         chunk_ids: &[i64],

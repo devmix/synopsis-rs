@@ -28,16 +28,12 @@
 
 use std::collections::HashMap;
 
+use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
 use crate::utils::escape_like;
-
-/// Maximum ids per single `IN (...)` query (design D9): SQLite bounds the
-/// number of bound parameters per statement at 32766; 500 stays far below
-/// it even for statements that combine several `IN` lists.
-const ID_BATCH_SIZE: usize = 500;
 
 /// Shared `SELECT` list for the `documents` row queries (column order is
 /// the contract of [`row_to_document`]).
@@ -176,8 +172,8 @@ impl<'conn> DocumentDao<'conn> {
     /// Retrieve several documents by id; ids that do not exist are simply
     /// absent from the result. Empty `ids` yields an empty vec.
     ///
-    /// The `IN` list is batched in chunks of [`ID_BATCH_SIZE`] to stay far
-    /// below SQLite's 32766 bound on bound parameters (design D9).
+    /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`] to
+    /// stay far below SQLite's 32766 bound on bound parameters (design D9).
     pub fn get_by_ids(&self, ids: &[i64]) -> Result<Vec<Document>, DbError> {
         let mut docs = Vec::new();
         for batch in ids.chunks(ID_BATCH_SIZE) {

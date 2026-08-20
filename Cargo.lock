@@ -300,6 +300,7 @@ dependencies = [
 name = "db"
 version = "0.1.0"
 dependencies = [
+ "config",
  "include_dir",
  "libsqlite3-sys",
  "r2d2",

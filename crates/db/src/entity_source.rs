@@ -7,7 +7,7 @@
 //!
 //! **Go bug fixes / conscious deviations:**
 //! - `link_batch` keeps the oracle's single multi-row `INSERT OR IGNORE`
-//!   shape, batched in rows of [`LINK_BATCH_SIZE`]: 500 × 2 = 1000 bound
+//!   shape, batched in rows of [`config::LINK_BATCH_SIZE`]: 500 × 2 = 1000
 //!   parameters per statement stay far below SQLite's 32766 bound (design
 //!   D9). Duplicates in the input (across or inside a batch) are skipped by
 //!   `OR IGNORE`, so no pre-de-duplication is needed.
@@ -20,14 +20,11 @@
 //! Deletion of an entity or a document cascades to `entity_sources` per the
 //! schema FKs (no explicit cleanup method needed, as in the oracle).
 
+use config::LINK_BATCH_SIZE;
 use rusqlite::params_from_iter;
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
-
-/// Maximum rows per single multi-row `INSERT` statement (design D9): 500
-/// rows × 2 columns = 1000 bound parameters, far below SQLite's 32766.
-const LINK_BATCH_SIZE: usize = 500;
 
 /// Provenance links between entities and the documents they were extracted
 /// from (`entity_sources` table).
@@ -74,9 +71,9 @@ impl<'conn> EntitySourceDao<'conn> {
     }
 
     /// Bulk-link `entity_ids` to `document_id` with multi-row
-    /// `INSERT OR IGNORE` statements of at most [`LINK_BATCH_SIZE`] rows
-    /// each (idempotent: existing pairs are skipped). Empty `entity_ids` is
-    /// a no-op.
+    /// `INSERT OR IGNORE` statements of at most
+    /// [`config::LINK_BATCH_SIZE`] rows each (idempotent: existing pairs are
+    /// skipped). Empty `entity_ids` is a no-op.
     pub fn link_batch(&self, document_id: i64, entity_ids: &[i64]) -> Result<(), DbError> {
         for batch in entity_ids.chunks(LINK_BATCH_SIZE) {
             let rows = vec!["(?, ?)"; batch.len()].join(", ");

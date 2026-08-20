@@ -6,7 +6,7 @@
 //!
 //! **Go bug fixes / conscious deviations:**
 //! - `delete_by_entity_ids` batches its `IN` lists in chunks of
-//!   [`ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
+//!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
 //!   placeholder list (potential 32766 bound-parameter violation). The two
 //!   lists are bound full-list-then-full-list (the oracle's
 //!   `append(args, args...)`), and the input ids are de-duplicated.
@@ -28,15 +28,11 @@
 
 use std::collections::HashSet;
 
+use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
-
-/// Maximum ids per single `IN (...)` statement (design D9): SQLite bounds
-/// bound parameters per statement at 32766; 500 stays far below it even when
-/// one statement carries two `IN` lists (500 × 2 = 1000 parameters).
-const ID_BATCH_SIZE: usize = 500;
 
 /// Shared `SELECT` list for the `entity_links` row queries (column order is
 /// the contract of [`row_to_link`]).
@@ -195,8 +191,8 @@ impl<'conn> EntityLinkDao<'conn> {
     /// `0`. Returns the number of rows deleted.
     ///
     /// The input ids are de-duplicated and the two `IN` lists are batched in
-    /// chunks of [`ID_BATCH_SIZE`] (design D9: 500 × 2 = 1000 parameters per
-    /// statement), bound full-list-then-full-list.
+    /// chunks of [`config::ID_BATCH_SIZE`] (design D9: 500 × 2 = 1000
+    /// parameters per statement), bound full-list-then-full-list.
     pub fn delete_by_entity_ids(&self, entity_ids: &[i64]) -> Result<i64, DbError> {
         let mut deleted = 0;
         let unique: Vec<i64> = entity_ids
