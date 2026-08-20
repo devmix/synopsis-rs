@@ -63,7 +63,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия (решение человека 2026-08-20: Option B — пул, до задач 1.6–1.8).
 
-- [ ] 1.10 Fact DAO — реализация
+- [x] 1.10 Fact DAO — реализация
   - **Цель:** реализовать модуль `fact.rs` (Fact struct + FactDao) и зарегистрировать в lib.rs. Полный тестовый набор — задача 1.11; здесь только smoke-тест (round-trip), доказывающий работоспособность. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/db/src/fact.rs` (`Fact` struct (id, subject_entity_id, object_entity_id, predicate, confidence, metadata_json, created_at, updated_at), `FactDao` struct + методы: `create`, `create_or_ignore` (АТОМАРНЫЙ: `INSERT ... ON CONFLICT(subject_entity_id, object_entity_id, predicate) DO NOTHING` + возврат ID через RETURNING — D5), `recompute_weights`, `get_by_id`, `list_by_entity_id`, `list_by_entity_ids` (два IN-списка subject+object, батчи ≤ 500), `list_all`, `find_orphaned_fact_ids`, `delete_orphaned_facts`, `validate_fact_domain` (normalize-сравнение доменов субъекта и объекта), `get_by_ids` (IN-список, батчи ≤ 500), `count`, `search_paginated` (JOIN с entities + фильтры), `delete`), `crates/db/src/lib.rs` (модуль + re-export), минимальный smoke-тест в `crates/db/src/fact.rs` (`#[cfg(test)]`: create + get_by_id round-trip).
   - **Зависимости:** 1.1 (Db, DbError, DbExecutor, utils::normalize, test_util), 1.5 (Entity — для validate_fact_domain), 1.9 (пул API: with_conn/exec_tx).
