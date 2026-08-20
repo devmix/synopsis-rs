@@ -53,12 +53,12 @@ pub trait DbExecutor: sealed::Sealed {
         F: FnOnce(&Row<'_>) -> Result<T, rusqlite::Error>;
 }
 
-/// A non-owning handle to either the shared connection or an in-flight
+/// A non-owning handle to either the pooled connection or an in-flight
 /// transaction, so DAO methods can accept one type in both cases
 /// (oracle analogue: `DBTX`).
 #[derive(Debug, Clone, Copy)]
 pub enum ConnectionOrTx<'a> {
-    /// The shared connection, used outside a transaction.
+    /// the pooled connection, used outside a transaction.
     Connection(&'a Connection),
     /// An active transaction started by [`Db::exec_tx`](crate::Db::exec_tx).
     Transaction(&'a Transaction<'a>),
