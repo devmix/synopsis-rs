@@ -116,11 +116,40 @@ thiserror = "2"
 # CVEs; resolves below our pinned Rust 1.96.0 toolchain.
 regex = "1"
 
+# ONNX embeddings pipeline (embedding change, design D1/D2/D3/D8; ADR 0002). Versions
+# verified online by the implementer against crates.io, MSRV and CVEs (task embedding 1.1,
+# 2026-08-20); no known CVEs for the locked versions; all MSRVs below our pinned Rust 1.96.0.
+#
+# ort 2.0.0-rc.13 (published 2026-07-28, MIT/Apache-2.0, MSRV 1.88): default features OFF —
+# the default set enables download-binaries, which the frozen stack forbids (the runtime
+# .so/.dylib is downloaded per onnx.yaml and loaded from an explicit path via
+# ort::init_from, design D1/D10); load-dynamic pulls only std + libloading. The pre-release
+# pin is a conscious decision (ADR 0002); all ort API churn is isolated in runtime.rs.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }
+# tokenizers 0.23.1 (HuggingFace, Apache-2.0): tokenizer.json loading for bge-m3 (design
+# D2); default features (progressbar/onig/esaxx_fast) kept as published.
+tokenizers = "0.23.1"
+# ureq 3.4.0 (MSRV 1.85): sync HTTP for the runtime/model downloader (design D8); default
+# rustls+gzip keeps TLS pure-Rust, which matters for the static musl and windows-gnu CI
+# targets (no system OpenSSL).
+ureq = "3"
+# sha2 0.11.0 (MSRV 1.85): cache keys sha256(model|dim|text) (design D3).
+sha2 = "0.11"
+# zip 8.6.0 (MSRV 1.88): ONNX Runtime .zip packages (design D8); deflate-only — ONNX
+# releases use plain deflate, and the default feature set would add zstd/bzip2 C
+# dependencies for no benefit.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+# flate2 1.1.9 (MSRV 1.67): gzip for .tar.gz runtime packages (design D8); default
+# pure-Rust miniz_oxide backend (cross-compile friendly).
+flate2 = "1"
+# tar 0.4.46 (MSRV 1.63): .tar.gz runtime packages (design D8).
+tar = "0.4"
+
 # Intentionally NOT pinned here - decisions deferred to module changes:
 # - ANN engine: decided by ADR 0003 (lancedb, change native-seam-spikes); the pin moves with the
 #   archived spikes crate (.archive/spikes/Cargo.toml) and is re-added when the `vectors` change
 #   lands (design D5). Spike-only pins (ort/tokenizers/lancedb/futures) were removed from this
 #   palette in task 5.1; rusqlite_migration + include_dir came back with the db-module change
-#   (task 1.1, ADR 0001). ADRs 0001-0003 are the reference for re-pinning the rest in
-#   db/embedding/vectors.
+#   (task 1.1, ADR 0001); ort + tokenizers came back with the embedding change (task 1.1,
+#   ADR 0002). ADRs 0001-0003 are the reference for re-pinning the rest (lancedb) in vectors.
 # MCP protocol crate: decision made 2026-08-18 -> rmcp 3.x above (design D8).

@@ -7,5 +7,22 @@ edition.workspace = true
 workspace = true
 
 # D1 edges; oracle imports: ../synopsis/internal/embedding + internal/onnx.
+# All external deps come from the workspace palette (embedding design D1/D2/D3/D8);
+# the palette entries carry the version-verification comments.
 [dependencies]
 config = { workspace = true }
+# Public error type (thiserror, per workspace convention for library crates).
+thiserror = { workspace = true }
+# ONNX Runtime bindings, loaded dynamically from the onnx.yaml-managed .so/.dylib
+# (design D1); tokenizer.json loading for bge-m3 (D2); sync HTTP downloader with
+# progress (D8); sha256 cache keys (D3); archive extraction for runtime packages (D8).
+ort = { workspace = true }
+tokenizers = { workspace = true }
+ureq = { workspace = true }
+sha2 = { workspace = true }
+zip = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+# Model/library cache manifests are JSON; progress bars for downloads.
+serde_json = { workspace = true }
+indicatif = { workspace = true }
