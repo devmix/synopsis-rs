@@ -6,18 +6,28 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags};
+use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::OpenFlags;
 
-use crate::connection::Db;
+use crate::connection::{Db, POOL_MAX_SIZE, apply_pragmas};
 
 /// Open an in-memory database with the full init migration and D8 PRAGMAs
-/// applied (`journal_mode` degrades to `memory`, inherent to `:memory:`;
-/// every other PRAGMA reads back exactly).
+/// applied (`journal_mode` degrades to `memory`, inherent to in-memory
+/// databases; every other PRAGMA reads back exactly).
+///
+/// Every pooled connection shares ONE database (design D12): the manager
+/// opens each connection against the same shared-cache URI
+/// (`file:{id}?mode=memory&cache=shared`; `SQLITE_OPEN_URI` is part of
+/// rusqlite's default open flags) and pins a persistent connection that
+/// keeps the shared cache alive.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub fn in_memory_db() -> Db {
     // In-memory open + embedded migration failure is a test-infra failure:
     // panic with the message rather than force `Result` plumbing everywhere.
-    Db::open(":memory:").expect("open in-memory database")
+    let manager = SqliteConnectionManager::memory().with_init(|conn| apply_pragmas(conn));
+    let db = Db::new(manager, POOL_MAX_SIZE).expect("in-memory pool build");
+    db.run_migrations().expect("migrate in-memory database");
+    db
 }
 
 /// Resolve the repo root from the crate manifest location (robust against
@@ -41,25 +51,24 @@ fn repo_root() -> PathBuf {
 /// immutable: `file:...?mode=ro&immutable=1`, never mutated, no `-wal`/`-shm`
 /// sidecars created next to it.
 ///
+/// A single-connection pool (design D12): the fixture is read-only and
+/// immutable, so one connection suffices and busy contention is impossible.
 /// The fixture skips migration and PRAGMA setup by construction: it is
 /// already at the v5 schema, and the Go oracle tracked schema state in the
-/// `_schema_migrations` table, leaving `PRAGMA user_version` at 0. Tests must
-/// not write through the returned handle.
+/// `_schema_migrations` table, leaving `PRAGMA user_version` at 0. Tests
+/// must not write through the returned handle.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub fn fixture_db() -> Db {
     let path = fixture_path();
     let uri = format!("file:{}?mode=ro&immutable=1", path.display());
-    let conn = Connection::open_with_flags(
-        &uri,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
-    .unwrap_or_else(|source| {
+    let manager = SqliteConnectionManager::file(&uri)
+        .with_flags(OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI);
+    Db::new(manager, 1).unwrap_or_else(|err| {
         panic!(
-            "open fixture {}: {source} (regenerate per fixtures/README.md)",
+            "open fixture {}: {err} (regenerate per fixtures/README.md)",
             path.display()
         )
-    });
-    Db::new(conn)
+    })
 }
 
 /// The fixture path at the repo root (gitignored binary; provenance and the
@@ -85,9 +94,8 @@ mod tests {
         let db = fixture_db();
         // v5 scale per fixtures/README.md.
         let chunks: i64 = db
-            .lock()
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0)))
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(chunks, 270);
     }

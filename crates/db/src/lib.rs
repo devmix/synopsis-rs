@@ -3,16 +3,21 @@
 //!
 //! Oracle mapping: `../synopsis/internal/database` (design.md D1). The module
 //! is re-architected for Rust per the migration principles of 2026-08-19: a
-//! single shared connection behind `Arc<Mutex>` (db-module D1), native
-//! transaction semantics (D2), one squashed v5 init migration with
-//! `PRAGMA user_version` as the sole schema-state authority (D3, ADR 0001),
-//! and D8 PRAGMA parity with the Go oracle.
+//! `r2d2` connection pool over the sync SQLite driver (db-module D1,
+//! re-decided 2026-08-20: read-heavy workload — WAL + concurrent readers,
+//! a write transaction never blocks readers), native transaction semantics
+//! (D2), one squashed v5 init migration with `PRAGMA user_version` as the
+//! sole schema-state authority (D3, ADR 0001), and D8 PRAGMA parity with
+//! the Go oracle applied to every pooled connection.
 //!
 //! Entry points:
-//! - [`Db::open`] — open/create the database, apply the D8 PRAGMAs and run
-//!   the embedded migrations;
+//! - [`Db::open`] — open/create the database, apply the D8 PRAGMAs to every
+//!   pooled connection and run the embedded migrations once;
+//! - [`Db::with_conn`] — checkout + closure: the way reads and single
+//!   writes reach the database (concurrent under WAL);
 //! - [`Db::exec_tx`] — closure transactions: commit on `Ok`, rollback on
-//!   `Err` or panic;
+//!   `Err` or panic; nested on the same thread →
+//!   `DbError::NestedTransaction`;
 //! - [`DbExecutor`] — the command surface DAOs use over a connection or a
 //!   transaction (`ConnectionOrTx` unifies both);
 //! - [`DbError`] — the crate's error type.

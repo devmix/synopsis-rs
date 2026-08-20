@@ -123,7 +123,7 @@ impl EntityFilter {
 /// CRUD + atomic GetOrCreate + orphan cleanup + pagination over the
 /// `entities` table.
 ///
-/// One instance per unit of work, bound to either the shared connection or an
+/// One instance per unit of work, bound to either a pooled connection or an
 /// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
 /// analogue of the oracle's `NewEntityDAO(db DBTX)`.
 ///
@@ -132,10 +132,12 @@ impl EntityFilter {
 /// ```no_run
 /// # use db::{ConnectionOrTx, Db, EntityDao, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
-/// let guard = db.lock()?;
-/// let entities = EntityDao::new(ConnectionOrTx::Connection(&guard));
-/// let id = entities.get_or_create("PERSON", "Alice", "hr", None, Some(0.9), None)?;
-/// assert_eq!(entities.get_by_id(id)?.map(|e| e.id), Some(id));
+/// db.with_conn(|conn| -> Result<(), DbError> {
+///     let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
+///     let id = entities.get_or_create("PERSON", "Alice", "hr", None, Some(0.9), None)?;
+///     assert_eq!(entities.get_by_id(id)?.map(|e| e.id), Some(id));
+///     Ok(())
+/// })??;
 /// # Ok(())
 /// # }
 /// ```
@@ -493,60 +495,63 @@ mod tests {
     use crate::Db;
     use crate::test_util::in_memory_db;
 
-    /// Run `f` with a DAO bound to the shared connection; the connection
-    /// lock is held for the closure's duration.
+    /// Run `f` with a DAO bound to a pooled connection (checked out for the
+    /// closure's duration).
     fn with_entities<T>(db: &Db, f: impl FnOnce(&EntityDao<'_>) -> T) -> T {
-        let guard = db.lock().unwrap();
-        f(&EntityDao::new(ConnectionOrTx::Connection(&guard)))
+        db.with_conn(|conn| f(&EntityDao::new(ConnectionOrTx::Connection(conn))))
+            .unwrap()
     }
 
     /// Insert a document row and return its id (needed for `entity_sources`).
     fn insert_document(db: &Db, path: &str) -> i64 {
-        let guard = db.lock().unwrap();
-        guard
-            .execute(
+        db.with_conn(|conn| {
+            conn.execute(
                 "INSERT INTO documents (source_type, original_path) VALUES ('markdown', ?)",
                 [path],
             )
             .unwrap();
-        guard
-            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
-            .unwrap()
+            conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+                .unwrap()
+        })
+        .unwrap()
     }
 
     /// Insert a fact row directly (the Fact DAO lands in task 1.6).
     fn insert_fact(db: &Db, subject: i64, predicate: &str, object: i64) {
-        db.lock()
-            .unwrap()
-            .execute(
+        db.with_conn(|conn| {
+            conn.execute(
                 "INSERT INTO facts (subject_entity_id, predicate, object_entity_id) \
                  VALUES (?1, ?2, ?3)",
                 rusqlite::params![subject, predicate, object],
             )
-            .unwrap();
+            .unwrap()
+        })
+        .unwrap();
     }
 
     /// Insert a fact with a NULL subject (allowed by the v5 schema) — the
     /// regression trigger for the oracle's `NOT IN` bug.
     fn insert_null_subject_fact(db: &Db, predicate: &str, object: i64) {
-        db.lock()
-            .unwrap()
-            .execute(
+        db.with_conn(|conn| {
+            conn.execute(
                 "INSERT INTO facts (predicate, object_entity_id) VALUES (?1, ?2)",
                 rusqlite::params![predicate, object],
             )
-            .unwrap();
+            .unwrap()
+        })
+        .unwrap();
     }
 
     /// Link an entity to a document via `entity_sources`.
     fn insert_entity_source(db: &Db, entity_id: i64, document_id: i64) {
-        db.lock()
-            .unwrap()
-            .execute(
+        db.with_conn(|conn| {
+            conn.execute(
                 "INSERT INTO entity_sources (entity_id, document_id) VALUES (?1, ?2)",
                 rusqlite::params![entity_id, document_id],
             )
-            .unwrap();
+            .unwrap()
+        })
+        .unwrap();
     }
 
     // (a) create + get_by_id round-trip, all fields.
@@ -999,8 +1004,8 @@ mod tests {
     }
 
     // (c3) get_or_create: concurrent calls with the same key → one row, all
-    // callers get the same id (D5 atomicity; the connection mutex
-    // serializes, the ON CONFLICT clause is the guarantee).
+    // callers get the same id (D5 atomicity; SQLite serializes the writes
+    // across pool connections, the ON CONFLICT clause is the guarantee).
     #[test]
     fn get_or_create_is_atomic_under_concurrency() {
         let db = in_memory_db();
@@ -1008,11 +1013,13 @@ mod tests {
         for _ in 0..8 {
             let db = db.clone();
             handles.push(std::thread::spawn(move || {
-                let guard = db.lock().unwrap();
-                let entities = EntityDao::new(ConnectionOrTx::Connection(&guard));
-                entities
-                    .get_or_create("PERSON", "Raced Entity", "", None, None, None)
-                    .unwrap()
+                db.with_conn(|conn| {
+                    let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
+                    entities
+                        .get_or_create("PERSON", "Raced Entity", "", None, None, None)
+                        .unwrap()
+                })
+                .unwrap()
             }));
         }
         let ids: Vec<i64> = handles
@@ -1263,45 +1270,42 @@ mod tests {
     #[test]
     fn list_created_since_strictly_after() {
         let db = in_memory_db();
-        let alice = {
-            let guard = db.lock().unwrap();
-            guard
-                .execute(
+        let alice = db
+            .with_conn(|conn| {
+                conn.execute(
                     "INSERT INTO entities (type, name, domain, created_at) \
-                     VALUES ('PERSON', 'Alice', 'hr', '2024-01-01 10:00:00')",
+                 VALUES ('PERSON', 'Alice', 'hr', '2024-01-01 10:00:00')",
                     [],
                 )
                 .unwrap();
-            guard
-                .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
-                .unwrap()
-        };
-        let bob = {
-            let guard = db.lock().unwrap();
-            guard
-                .execute(
+                conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .unwrap();
+        let bob = db
+            .with_conn(|conn| {
+                conn.execute(
                     "INSERT INTO entities (type, name, domain, created_at) \
-                     VALUES ('PERSON', 'Bob', 'hr', '2024-01-15 12:00:00')",
+                 VALUES ('PERSON', 'Bob', 'hr', '2024-01-15 12:00:00')",
                     [],
                 )
                 .unwrap();
-            guard
-                .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
-                .unwrap()
-        };
-        let acme = {
-            let guard = db.lock().unwrap();
-            guard
-                .execute(
+                conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .unwrap();
+        let acme = db
+            .with_conn(|conn| {
+                conn.execute(
                     "INSERT INTO entities (type, name, domain, created_at) \
-                     VALUES ('ORGANIZATION', 'Acme', 'it', '2024-02-01 08:00:00')",
+                 VALUES ('ORGANIZATION', 'Acme', 'it', '2024-02-01 08:00:00')",
                     [],
                 )
                 .unwrap();
-            guard
-                .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
-                .unwrap()
-        };
+                conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .unwrap();
 
         with_entities(&db, |entities| {
             for (since, want_ids) in [
@@ -1343,10 +1347,12 @@ mod tests {
             .exec_tx(|tx| -> Result<(), DbError> {
                 let entities = EntityDao::new(ConnectionOrTx::Transaction(&*tx));
                 entities.create("PERSON", "tx-rollback", "hr", None, None, None)?;
-                Err(DbError::Poisoned)
+                // A genuine failure: UNIQUE(type, name, domain).
+                entities.create("PERSON", "tx-rollback", "hr", None, None, None)?;
+                Ok(())
             })
             .expect_err("closure error must surface");
-        assert!(matches!(err, DbError::Poisoned));
+        assert!(matches!(err, DbError::Sqlite { .. }));
 
         with_entities(&db, |entities| {
             assert_eq!(entities.count(&EntityFilter::default()).unwrap(), 1);

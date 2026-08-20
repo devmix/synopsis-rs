@@ -18,7 +18,7 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 
 /// Key-value storage over the `app_kv` table.
 ///
-/// One instance per unit of work, bound to either the shared connection or an
+/// One instance per unit of work, bound to either a pooled connection or an
 /// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
 /// analogue of the oracle's `NewAppKV(db DBTX)`. The instance borrows from
 /// the handle it is given, so the handle must outlive it.
@@ -28,13 +28,12 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 /// ```no_run
 /// # use db::{AppKv, ConnectionOrTx, Db, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
-/// let guard = db.lock()?;
-/// let kv = AppKv::new(ConnectionOrTx::Connection(&guard));
-/// kv.set("last_linking_run", "2024-01-15T12:00:00Z")?;
-/// assert_eq!(
-///     kv.get("last_linking_run")?,
-///     Some("2024-01-15T12:00:00Z".to_string())
-/// );
+/// let value = db.with_conn(|conn| {
+///     let kv = AppKv::new(ConnectionOrTx::Connection(conn));
+///     kv.set("last_linking_run", "2024-01-15T12:00:00Z")?;
+///     kv.get("last_linking_run")
+/// })??;
+/// assert_eq!(value, Some("2024-01-15T12:00:00Z".to_string()));
 /// # Ok(())
 /// # }
 /// ```
@@ -94,11 +93,11 @@ mod tests {
     use crate::Db;
     use crate::test_util::in_memory_db;
 
-    /// Run `f` with a non-transactional DAO bound to the shared connection;
-    /// the connection lock is held for the duration of the closure.
+    /// Run `f` with a non-transactional DAO bound to a pooled connection
+    /// (checked out for the duration of the closure).
     fn with_kv<T>(db: &Db, f: impl FnOnce(&AppKv<'_>) -> T) -> T {
-        let guard = db.lock().unwrap();
-        f(&AppKv::new(ConnectionOrTx::Connection(&guard)))
+        db.with_conn(|conn| f(&AppKv::new(ConnectionOrTx::Connection(conn))))
+            .unwrap()
     }
 
     // (a) set + get round-trip.
@@ -163,10 +162,15 @@ mod tests {
             .exec_tx(|tx| -> Result<(), DbError> {
                 let kv = AppKv::new(ConnectionOrTx::Transaction(&*tx));
                 kv.set("tx_key", "tx_value")?;
-                Err(DbError::Poisoned)
+                // A genuine SQL failure after a partial write (CHECK violation).
+                tx.execute(
+                    "INSERT INTO facts (predicate, status) VALUES ('p', 'bogus')",
+                    [],
+                )?;
+                Ok(())
             })
             .expect_err("closure error must surface");
-        assert!(matches!(err, DbError::Poisoned));
+        assert!(matches!(err, DbError::Sqlite { .. }));
         with_kv(&db, |kv| {
             assert_eq!(
                 kv.get("tx_key").unwrap(),

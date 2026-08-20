@@ -90,6 +90,19 @@ noyalib = "0.0.23" # YAML: successor of serde_yaml/serde_yml, both deprecated (v
 rusqlite_migration = { version = "2.6", features = ["from-directory"] }
 include_dir = "0.7"
 
+# Connection pool for the sync SQLite driver (db-module D1, re-decided
+# 2026-08-20: read-heavy workload, WAL + concurrent readers). Versions verified
+# online by the implementer (task db-module 1.9, 2026-08-20): r2d2 0.8.10 is the
+# current release (MIT/Apache-2.0, edition 2018, MSRV far below our pinned Rust
+# 1.96.0, no known CVEs); its `ManageConnection` bounds the connection type as
+# `Send + 'static` only — deliberately NO `Sync` — which matches rusqlite's
+# `Connection` (Send, not Sync) exactly. r2d2_sqlite 0.35.0 is the current
+# release (2026-07-06, MIT, edition 2018, peer rusqlite ^0.40 matching the
+# palette pin, no known CVEs); it provides the per-connection init callback
+# (D8 PRAGMAs) and the shared-cache in-memory manager (D12).
+r2d2 = "0.8"
+r2d2_sqlite = "0.35"
+
 # Error types for library crates (config-module D4). Version verified online by the
 # implementer against crates.io, MSRV and CVEs (task config-module 1.1): thiserror 2.x is
 # current stable; locked at 2.0.20 in Cargo.lock; MSRV below our pinned Rust 1.96.0.

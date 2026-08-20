@@ -39,8 +39,8 @@ fn with_fixture(f: impl FnOnce(&ChunkDao<'_>)) {
         return;
     }
     let db = fixture_db();
-    let guard = db.lock().expect("fixture lock must not be poisoned");
-    f(&ChunkDao::new(ConnectionOrTx::Connection(&guard)));
+    db.with_conn(|conn| f(&ChunkDao::new(ConnectionOrTx::Connection(conn))))
+        .expect("fixture checkout must not time out");
 }
 
 /// (г) term `knowledge`: 17 hits, top-3 chunk ids and bm25 scores match the

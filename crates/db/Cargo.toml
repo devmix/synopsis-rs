@@ -10,10 +10,13 @@ workspace = true
 # source-compiled bundled SQLite (the direct `libsqlite3-sys` dep forces the
 # `bundled` feature — cargo forbids enabling it transitively through rusqlite;
 # see the workspace palette comment), rusqlite_migration for the squashed v5
-# init migration, include_dir for the compile-time embedded migration directory.
+# init migration, include_dir for the compile-time embedded migration directory,
+# r2d2 + r2d2_sqlite for the connection pool (D1 re-decided 2026-08-20).
 [dependencies]
 rusqlite = { workspace = true }
 libsqlite3-sys = { workspace = true }
 rusqlite_migration = { workspace = true }
 include_dir = { workspace = true }
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
 thiserror = { workspace = true }

@@ -1,14 +1,25 @@
-//! Connection management (design D1), PRAGMA parity (D8) and the embedded
-//! squashed v5 init migration (D3).
+//! Connection pool (design D1, re-decided 2026-08-20), PRAGMA parity (D8)
+//! and the embedded squashed v5 init migration (D3).
 //!
 //! Oracle mapping: `../synopsis/internal/database/database.go` (Open /
-//! applyPRAGMAs / Close) and the migration mechanism, re-anchored on
-//! `PRAGMA user_version` per ADR 0001.
+//! applyPRAGMAs / Close and the `database/sql` pool semantics), re-anchored
+//! on `PRAGMA user_version` per ADR 0001.
+//!
+//! The handle is an `r2d2` pool of `rusqlite::Connection`s: WAL + several
+//! connections give concurrent readers, and a write transaction never
+//! blocks readers (the application is read-heavy — human decision
+//! 2026-08-20). There is deliberately no way to hold a raw connection
+//! between units of work: access goes through [`Db::with_conn`] or
+//! [`Db::exec_tx`] only (design D11), which removes the lock-based deadlock
+//! class by construction. The driver is synchronous — in async code every
+//! call must run inside `spawn_blocking`.
 
+use std::cell::Cell;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
 
 use include_dir::{Dir, include_dir};
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, Transaction};
 use rusqlite_migration::Migrations;
 
@@ -20,23 +31,38 @@ use crate::error::DbError;
 /// forward-only, and shipped files are never edited.
 static MIGRATIONS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../../migrations");
 
-/// A SQLite database handle: ONE shared [`Connection`] behind `Arc<Mutex>`
-/// (design D1).
+/// Pool size (design D1, re-decided 2026-08-20): a laptop, read-heavy
+/// workload; 4 concurrent connections is the agreed default.
+pub(crate) const POOL_MAX_SIZE: u32 = 4;
+
+// Set on the thread while its `Db::exec_tx` closure runs (design D10): a
+// nested `exec_tx` on the same thread is rejected with
+// [`DbError::NestedTransaction`] instead of silently starting an
+// INDEPENDENT transaction on another pooled connection. (Plain comment:
+// rustdoc does not document `thread_local!` items.)
+thread_local! {
+    static IN_TX: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A SQLite database handle: a `r2d2` pool of `rusqlite::Connection`s
+/// (design D1, re-decided 2026-08-20).
 ///
-/// `Db` is cheap to clone; all access serializes on the internal mutex, which
-/// is sufficient for a single-writer laptop process. The driver is
-/// synchronous — in async code every call must run inside `spawn_blocking`.
-/// Dropping the last clone closes the database file (rusqlite `Connection`
-/// drop).
+/// `Db` is cheap to clone (the pool is `Arc`-backed). All access goes
+/// through [`Db::with_conn`] (checkout + closure) or [`Db::exec_tx`]
+/// (checkout + transaction + return); WAL + several connections give
+/// concurrent readers, and a write transaction never blocks readers.
+///
+/// The driver is synchronous — in async code every call must run inside
+/// `spawn_blocking`.
 #[derive(Clone)]
 pub struct Db {
-    conn: Arc<Mutex<Connection>>,
+    pool: Pool<SqliteConnectionManager>,
 }
 
 impl Db {
     /// Open the database at `path` (creating the file and its parent
-    /// directories if absent), apply the D8 PRAGMAs and run the embedded
-    /// migrations.
+    /// directories if absent), apply the D8 PRAGMAs to every pooled
+    /// connection and run the embedded migrations once.
     ///
     /// Only Rust-created databases are supported: reopening one re-checks
     /// `PRAGMA user_version` and applies nothing further (design D3). Legacy
@@ -55,43 +81,51 @@ impl Db {
             })?;
         }
 
-        let mut conn = Connection::open(path).map_err(DbError::from)?;
-        // Migrations first, PRAGMAs last: rusqlite_migration manages
-        // `PRAGMA foreign_keys` itself while migrating and leaves the final
-        // setting to us, and `journal_mode=WAL` must not be set from inside a
-        // transaction — so the (already committed) migration state is final
-        // before we fix the connection's D8 PRAGMA state.
-        migrate(&mut conn)?;
-        apply_pragmas(&conn)?;
-        Ok(Self::new(conn))
+        // The D8 PRAGMAs are applied to EVERY connection via the manager
+        // init callback (D1 re-decided 2026-08-20): `journal_mode=WAL`
+        // persists in the database header, the rest are per-connection.
+        let manager = SqliteConnectionManager::file(path).with_init(|conn| apply_pragmas(conn));
+        let db = Self::new(manager, POOL_MAX_SIZE)?;
+        // Migrations run once, on the first pooled connection (D3): state
+        // lives in the file's `PRAGMA user_version`, so a re-open is a no-op.
+        db.run_migrations()?;
+        Ok(db)
     }
 
-    /// Wrap an already-opened, fully configured connection.
+    /// Build a handle over a ready-made connection manager (test support:
+    /// shared-cache in-memory databases, the read-only parity fixture).
+    pub(crate) fn new(manager: SqliteConnectionManager, max_size: u32) -> Result<Self, DbError> {
+        let pool = Pool::builder()
+            .max_size(max_size)
+            .build(manager)
+            .map_err(DbError::from)?;
+        Ok(Self { pool })
+    }
+
+    /// Run the embedded migrations on a pooled connection (D3). Re-running
+    /// on a migrated database is a no-op.
+    pub(crate) fn run_migrations(&self) -> Result<(), DbError> {
+        let mut conn = self.pool.get().map_err(DbError::from)?;
+        apply_migrations(&mut conn)
+    }
+
+    /// Run `f` on a connection checked out of the pool (design D11).
     ///
-    /// Crate-internal: `test_util` uses it for the read-only fixture database,
-    /// which skips both migration and PRAGMA setup by construction.
-    pub(crate) fn new(conn: Connection) -> Self {
-        Self {
-            conn: Arc::new(Mutex::new(conn)),
-        }
-    }
-
-    /// Lock the shared connection. The guard derefs to [`Connection`] and
-    /// implements [`DbExecutor`](crate::executor::DbExecutor); hold it only
-    /// for the duration of one unit of work.
+    /// The connection is returned to the pool when `f` returns; it is also
+    /// returned if `f` panics (`PooledConnection` drop semantics), so the
+    /// pool never leaks a connection. Multiple `with_conn` calls may run
+    /// concurrently (WAL); a write transaction in flight on another
+    /// connection does not block readers.
     ///
-    /// This call BLOCKS until the mutex is available — run inside
-    /// `spawn_blocking` from async code (design D1).
-    pub fn lock(&self) -> Result<MutexGuard<'_, Connection>, DbError> {
-        self.conn.lock().map_err(|_| DbError::Poisoned)
+    /// Suitable for reads and single-statement writes; multi-statement units
+    /// of work belong to [`Db::exec_tx`].
+    pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> T) -> Result<T, DbError> {
+        let conn = self.pool.get().map_err(DbError::from)?;
+        Ok(f(&conn))
     }
 
-    /// The `Arc`-backed handle, for callers that manage the lock themselves.
-    pub fn conn(&self) -> &Arc<Mutex<Connection>> {
-        &self.conn
-    }
-
-    /// Run `f` inside a single SQLite transaction (design D2).
+    /// Run `f` inside a single SQLite transaction on a pooled connection
+    /// (design D2).
     ///
     /// Transaction lifecycle on the native rusqlite API:
     /// - `f` returns `Ok` → the transaction is **committed** (a commit
@@ -100,29 +134,33 @@ impl Db {
     ///   automatically by `Transaction` drop semantics. No manual
     ///   `BEGIN`/`COMMIT` strings, no leaked open transactions.
     ///
-    /// A panic is captured so it rolls the transaction back and releases the
-    /// shared mutex cleanly *before* being re-thrown — the `Db` stays usable
-    /// afterwards instead of the mutex being poisoned (a deviation that makes
-    /// this handle safer than a bare `Mutex` for a long-lived server).
+    /// The connection is checked out for the whole transaction and returned
+    /// to the pool on every path (commit, error and panic — the panic is
+    /// re-thrown after the rollback and the `IN_TX` flag reset).
     ///
-    /// `E` must be constructible from [`DbError`] (commit failures); closures
-    /// returning [`DbError`] need no extra work.
+    /// A nested `exec_tx` on the same thread is rejected with
+    /// [`DbError::NestedTransaction`] (D10): with a pool it would silently
+    /// start an INDEPENDENT transaction on another connection — a semantic
+    /// trap worse than a deadlock.
+    ///
+    /// `E` must be constructible from [`DbError`] (checkout/commit failures);
+    /// closures returning [`DbError`] need no extra work.
     pub fn exec_tx<T, E>(&self, f: impl FnOnce(&mut Transaction) -> Result<T, E>) -> Result<T, E>
     where
         E: From<DbError>,
     {
-        // The guard (and thus the connection) stays locked for the whole
-        // transaction; `tx` borrows it exclusively until commit/drop.
-        let mut guard = self.lock()?;
-        let mut tx = guard
-            .transaction()
-            .map_err(DbError::from)
-            .map_err(E::from)?;
+        if IN_TX.with(Cell::get) {
+            return Err(E::from(DbError::NestedTransaction));
+        }
+        let mut conn = self.pool.get().map_err(DbError::from).map_err(E::from)?;
+        let mut tx = conn.transaction().map_err(DbError::from).map_err(E::from)?;
+        IN_TX.with(|flag| flag.set(true));
 
         // Run the closure under a panic boundary so a panic cannot unwind
-        // straight through `guard` (which would poison the mutex). On panic we
-        // drop `tx` (→ rollback) and `guard` (→ unlock) first, then re-throw.
+        // straight through `tx`: on panic, drop `tx` (→ rollback) and `conn`
+        // (→ returned to the pool) first, then re-throw the original panic.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut tx)));
+        IN_TX.with(|flag| flag.set(false));
         match outcome {
             Ok(Ok(value)) => tx
                 .commit()
@@ -133,7 +171,6 @@ impl Db {
             Ok(Err(err)) => Err(err),
             Err(panic_payload) => {
                 drop(tx); // roll the transaction back
-                drop(guard); // release the mutex while still unwinding-free
                 std::panic::resume_unwind(panic_payload); // re-throw the original panic
             }
         }
@@ -143,7 +180,7 @@ impl Db {
 /// Apply the embedded migrations; state is tracked in `PRAGMA user_version`
 /// (the sole source of truth, design D3). Re-running on a migrated database
 /// is a no-op.
-fn migrate(conn: &mut Connection) -> Result<(), DbError> {
+fn apply_migrations(conn: &mut Connection) -> Result<(), DbError> {
     let migrations = Migrations::from_directory(&MIGRATIONS).map_err(DbError::from)?;
     migrations.to_latest(conn).map_err(DbError::from)?;
     Ok(())
@@ -151,13 +188,14 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
 
 /// D8 PRAGMA parity with the Go oracle (`database.go`: applyPRAGMAs plus the
 /// DSN-level `busy_timeout`), in this FIXED order — the oracle iterates a Go
-/// map, whose order is non-deterministic (conscious deviation, task report).
+/// map, whose order is non-deterministic (conscious deviation, task 1.1
+/// report).
 ///
-/// Note: `journal_mode=WAL` persists in the database header; the remaining
-/// pragmas are per-connection, which is exact here because the connection is
-/// owned and single (the Go pool applied them to one pooled connection only —
-/// see task report).
-fn apply_pragmas(conn: &Connection) -> Result<(), DbError> {
+/// Applied to EVERY pooled connection via the manager init callback (design
+/// D1, re-decided 2026-08-20): `journal_mode=WAL` persists in the database
+/// header (a no-op after the first connection), the remaining pragmas are
+/// per-connection.
+pub(crate) fn apply_pragmas(conn: &Connection) -> Result<(), rusqlite::Error> {
     const PRAGMAS: &[(&str, &str)] = &[
         ("journal_mode", "WAL"),
         ("synchronous", "NORMAL"),
@@ -167,8 +205,7 @@ fn apply_pragmas(conn: &Connection) -> Result<(), DbError> {
         ("busy_timeout", "5000"),
     ];
     for (name, value) in PRAGMAS {
-        conn.pragma_update(None, name, value)
-            .map_err(DbError::from)?;
+        conn.pragma_update(None, name, value)?;
     }
     Ok(())
 }
@@ -181,6 +218,8 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     use super::*;
     use crate::test_util::in_memory_db;
@@ -189,7 +228,7 @@ mod tests {
     fn temp_db_path() -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "db-task11-{}-{}",
+            "db-task19-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ))
@@ -222,27 +261,44 @@ mod tests {
         (db, TempDb::new(path))
     }
 
-    // (a) open a nonexistent file → fresh v5 schema, user_version = 1,
+    /// Read back the D8 PRAGMA state of one connection (test helper).
+    fn read_pragmas(conn: &Connection) {
+        let read = |name: &str| -> i64 {
+            conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+                .unwrap()
+        };
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(read("synchronous"), 1, "synchronous=NORMAL reads back as 1");
+        assert_eq!(read("foreign_keys"), 1, "foreign_keys=ON reads back as 1");
+        assert_eq!(read("busy_timeout"), 5000);
+        assert_eq!(read("cache_size"), -64_000);
+        assert_eq!(read("mmap_size"), 268_435_456);
+    }
+
+    // (a, 1.1) open a nonexistent file → fresh v5 schema, user_version = 1,
     //     no _schema_migrations table.
     #[test]
     fn open_creates_fresh_v5_schema() {
         let (db, _temp) = open_temp_db();
 
         let user_version: i64 = db
-            .lock()
+            .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(user_version, 1, "PRAGMA user_version must be 1 after init");
 
         let tracking_rows: i64 = db
-            .lock()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = '_schema_migrations'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
             .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name = '_schema_migrations'",
-                [],
-                |r| r.get(0),
-            )
             .unwrap();
         assert_eq!(tracking_rows, 0, "_schema_migrations must not exist (D3)");
 
@@ -250,16 +306,17 @@ mod tests {
         // ordering (byte-lexicographic sort disagrees with SQL ORDER BY on
         // names like `chunk_entities` vs `chunks`).
         let names: HashSet<String> = db
-            .lock()
-            .unwrap()
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-            )
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
+            .with_conn(|conn| {
+                conn.prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+                )
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+            })
+            .unwrap();
         let expected: HashSet<String> = [
             "app_kv",
             "chunk_entities",
@@ -282,45 +339,117 @@ mod tests {
         assert_eq!(names, expected, "fresh DB must have exactly the v5 schema");
 
         let triggers: Vec<String> = db
-            .lock()
-            .unwrap()
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'chunks_fts_%' ORDER BY name")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
+            .with_conn(|conn| {
+                conn.prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' \
+                     AND name LIKE 'chunks_fts_%' ORDER BY name",
+                )
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+            })
+            .unwrap();
         assert_eq!(
             triggers,
             vec!["chunks_fts_ad", "chunks_fts_ai", "chunks_fts_au"]
         );
     }
 
-    // (b) D8 PRAGMA parity read back from a freshly opened database.
-    // All reads happen under ONE lock: the mutex is not reentrant.
+    // (a, 1.9) D8 PRAGMA parity on EVERY pooled connection: POOL_MAX_SIZE
+    // simultaneous checkouts must be all distinct connections, and each one
+    // reads back the full D8 state.
     #[test]
-    fn pragmas_match_oracle_parity() {
+    fn pragmas_applied_to_every_pool_connection() {
         let (db, _temp) = open_temp_db();
 
-        let guard = db.lock().unwrap();
-        let read = |name: &str| -> i64 {
-            guard
-                .query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
-                .unwrap()
-        };
-        let journal_mode: String = guard
-            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(journal_mode, "wal");
-        assert_eq!(read("synchronous"), 1, "synchronous=NORMAL reads back as 1");
-        assert_eq!(read("foreign_keys"), 1, "foreign_keys=ON reads back as 1");
-        assert_eq!(read("busy_timeout"), 5000);
-        assert_eq!(read("cache_size"), -64_000);
-        assert_eq!(read("mmap_size"), 268_435_456);
+        let mut handles = Vec::new();
+        for _ in 0..POOL_MAX_SIZE {
+            let db = db.clone();
+            handles.push(std::thread::spawn(move || {
+                db.with_conn(read_pragmas).unwrap();
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 
-    // (c) reopening the same database does not re-run migrations and data
-    //     survives.
+    // (b, 1.9) parallel reads: 8 threads with_conn at once — all complete
+    // correctly, no deadlock.
+    #[test]
+    fn concurrent_with_conn_reads_do_not_deadlock() {
+        let db = in_memory_db();
+        db.exec_tx(|tx| {
+            tx.execute("INSERT INTO app_kv (key, value) VALUES ('k', 'v')", [])
+                .map_err(DbError::from)
+        })
+        .expect("seed commit");
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let db = db.clone();
+            handles.push(std::thread::spawn(move || {
+                let count: i64 = db
+                    .with_conn(|conn| {
+                        conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0))
+                    })
+                    .unwrap()
+                    .unwrap();
+                count
+            }));
+        }
+        let counts: Vec<i64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(
+            counts.iter().all(|count| *count == 1),
+            "every reader must see the committed row, got {counts:?}"
+        );
+    }
+
+    // (c, 1.9) a read is NOT blocked by an in-flight write transaction
+    // (WAL): the reader completes while the writer still holds its
+    // transaction open.
+    #[test]
+    fn read_not_blocked_by_write_transaction_in_wal() {
+        let (db, _temp) = open_temp_db();
+        db.exec_tx(|tx| {
+            tx.execute("INSERT INTO app_kv (key, value) VALUES ('seed', '1')", [])
+                .map_err(DbError::from)
+        })
+        .expect("seed commit");
+
+        let writer_db = db.clone();
+        let (writer_started, rx_writer_started) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_db.exec_tx(|tx| -> Result<(), DbError> {
+                tx.execute("INSERT INTO app_kv (key, value) VALUES ('w', '1')", [])?;
+                writer_started.send(()).unwrap();
+                // Hold the write transaction open while the reader runs.
+                std::thread::sleep(Duration::from_millis(500));
+                Ok(())
+            })
+        });
+
+        // Wait until the write transaction is open, then read on another
+        // pooled connection: in WAL mode the read must not block on it.
+        rx_writer_started.recv().unwrap();
+        let during: i64 = db
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(during, 1, "the reader sees pre-transaction data, unblocked");
+
+        writer.join().unwrap().expect("writer commits");
+        let after: i64 = db
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(after, 2, "the committed row is visible afterwards");
+    }
+
+    // (c, 1.1) reopening the same database does not re-run migrations and
+    //     data survives.
     #[test]
     fn reopen_is_noop_migration_and_data_survives() {
         let path = temp_db_path();
@@ -333,21 +462,21 @@ mod tests {
                     .map_err(DbError::from)
             })
             .expect("insert");
-        } // db dropped → file closed
+        } // db dropped → pool closed
 
         // A migration re-run would fail on the existing tables, so a clean
         // reopen is proof that to_latest() skipped the init migration.
         let db = Db::open(&path).expect("reopen");
         let user_version: i64 = db
-            .lock()
+            .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(user_version, 1);
         let value: String = db
-            .lock()
+            .with_conn(|conn| {
+                conn.query_row("SELECT value FROM app_kv WHERE key = 'k'", [], |r| r.get(0))
+            })
             .unwrap()
-            .query_row("SELECT value FROM app_kv WHERE key = 'k'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(value, "v");
     }
@@ -365,9 +494,8 @@ mod tests {
         .expect("commit");
 
         let count: i64 = db
-            .lock()
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2, "committed rows must be visible");
     }
@@ -378,17 +506,20 @@ mod tests {
         let db = in_memory_db();
         let err = db
             .exec_tx(|tx| -> Result<(), DbError> {
-                tx.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])
-                    .map_err(DbError::from)?;
-                Err(DbError::Poisoned)
+                tx.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])?;
+                // A genuine SQL failure after a partial write (CHECK violation).
+                tx.execute(
+                    "INSERT INTO facts (predicate, status) VALUES ('p', 'bogus')",
+                    [],
+                )?;
+                Ok(())
             })
             .expect_err("closure error must surface");
-        assert!(matches!(err, DbError::Poisoned));
+        assert!(matches!(err, DbError::Sqlite { .. }));
 
         let count: i64 = db
-            .lock()
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "rolled-back rows must not be visible");
     }
@@ -407,21 +538,103 @@ mod tests {
         assert!(panicked.is_err(), "the panic must propagate");
 
         let count: i64 = db
-            .lock()
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "panicked transaction must be rolled back");
     }
 
-    // (e) in_memory_db yields a working migrated database.
+    // (e, 1.9) a nested exec_tx on the same thread → Err(NestedTransaction),
+    // returned immediately (no checkout, no deadlock); the Db stays usable.
+    #[test]
+    fn nested_exec_tx_is_rejected_without_deadlock() {
+        let db = in_memory_db();
+        db.exec_tx(|tx| -> Result<(), DbError> {
+            tx.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])?;
+            let nested = db.exec_tx(|_| -> Result<(), DbError> { Ok(()) });
+            assert!(
+                matches!(nested, Err(DbError::NestedTransaction)),
+                "nested exec_tx must be rejected, got {nested:?}"
+            );
+            Ok(())
+        })
+        .expect("outer transaction commits");
+
+        let count: i64 = db
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 1, "the outer transaction committed");
+    }
+
+    // (g, 1.9) with_conn serves reads and single-statement writes.
+    #[test]
+    fn with_conn_reads_and_writes() {
+        let db = in_memory_db();
+        let rows: usize = db
+            .with_conn(|conn| conn.execute("INSERT INTO app_kv (key, value) VALUES ('w', '1')", []))
+            .expect("checkout")
+            .expect("single-statement write");
+        assert_eq!(rows, 1);
+
+        let value: String = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT value FROM app_kv WHERE key = 'w'", [], |r| r.get(0))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(value, "1");
+    }
+
+    // (z, 1.9) in_memory_db: one shared database across the pool — a write
+    // through one checkout is visible through another (the reader holds its
+    // connection open, so the writer MUST use a different one).
+    #[test]
+    fn in_memory_db_shares_one_database_across_checkouts() {
+        let db = in_memory_db();
+        let (reader_ready, rx_reader_ready) = mpsc::channel();
+        let (writer_done, rx_writer_done) = mpsc::channel();
+
+        let reader_db = db.clone();
+        let reader = std::thread::spawn(move || {
+            reader_db
+                .with_conn(|conn| {
+                    reader_ready.send(()).unwrap(); // this checkout is held
+                    rx_writer_done.recv().unwrap(); // wait for the writer's commit
+                    let count: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0))
+                        .unwrap();
+                    count
+                })
+                .unwrap()
+        });
+        let writer_db = db.clone();
+        let writer = std::thread::spawn(move || {
+            writer_db
+                .with_conn(|conn| {
+                    conn.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])
+                        .unwrap();
+                    writer_done.send(()).unwrap();
+                })
+                .unwrap()
+        });
+
+        rx_reader_ready.recv().unwrap();
+        let count = reader.join().unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            count, 1,
+            "a write via one checkout must be visible via another"
+        );
+    }
+
+    // (e, 1.1) in_memory_db yields a working migrated database.
     #[test]
     fn in_memory_db_is_migrated_and_writable() {
         let db = in_memory_db();
         let user_version: i64 = db
-            .lock()
+            .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(user_version, 1);
 
@@ -434,9 +647,8 @@ mod tests {
         })
         .expect("insert");
         let count: i64 = db
-            .lock()
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)))
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
     }

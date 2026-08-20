@@ -106,7 +106,7 @@ impl DocumentFilter {
 
 /// CRUD + pagination + domain operations over the `documents` table.
 ///
-/// One instance per unit of work, bound to either the shared connection or an
+/// One instance per unit of work, bound to either a pooled connection or an
 /// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
 /// analogue of the oracle's `NewDocumentDAO(db DBTX)`.
 ///
@@ -115,10 +115,13 @@ impl DocumentFilter {
 /// ```no_run
 /// # use db::{ConnectionOrTx, Db, DocumentDao, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
-/// let guard = db.lock()?;
-/// let docs = DocumentDao::new(ConnectionOrTx::Connection(&guard));
-/// let id = docs.create("markdown", "/docs/hr.md", Some(r#"{"domain":"hr"}"#), None)?;
-/// assert_eq!(docs.get_by_id(id)?.map(|d| d.id), Some(id));
+/// let id = db.with_conn(|conn| -> Result<i64, DbError> {
+///     let docs = DocumentDao::new(ConnectionOrTx::Connection(conn));
+///     let id = docs.create("markdown", "/docs/hr.md", Some(r#"{"domain":"hr"}"#), None)?;
+///     assert_eq!(docs.get_by_id(id)?.map(|d| d.id), Some(id));
+///     Ok(id)
+/// })??;
+/// assert!(id > 0);
 /// # Ok(())
 /// # }
 /// ```
@@ -315,11 +318,11 @@ mod tests {
     use crate::Db;
     use crate::test_util::in_memory_db;
 
-    /// Run `f` with a DAO bound to the shared connection; the connection
-    /// lock is held for the closure's duration.
+    /// Run `f` with a DAO bound to a pooled connection (checked out for the
+    /// closure's duration).
     fn with_docs<T>(db: &Db, f: impl FnOnce(&DocumentDao<'_>) -> T) -> T {
-        let guard = db.lock().unwrap();
-        f(&DocumentDao::new(ConnectionOrTx::Connection(&guard)))
+        db.with_conn(|conn| f(&DocumentDao::new(ConnectionOrTx::Connection(conn))))
+            .unwrap()
     }
 
     /// Create `n` documents with distinct paths and return their ids in
@@ -760,13 +763,14 @@ mod tests {
         // Give each row a distinct created_at (CURRENT_TIMESTAMP has only
         // second resolution, so ties would make the order unobservable).
         for (i, id) in ids.iter().enumerate() {
-            db.lock()
-                .unwrap()
-                .execute(
+            db.with_conn(|conn| {
+                conn.execute(
                     "UPDATE documents SET created_at = ? WHERE id = ?",
                     params![format!("2026-01-{i:02} 00:00:00"), *id],
                 )
-                .unwrap();
+                .unwrap()
+            })
+            .unwrap();
         }
         with_docs(&db, |docs| {
             let all = docs.list().unwrap();
@@ -793,10 +797,13 @@ mod tests {
             .exec_tx(|tx| -> Result<(), DbError> {
                 let docs = DocumentDao::new(ConnectionOrTx::Transaction(&*tx));
                 docs.create("markdown", "/docs/tx-rollback.md", None, None)?;
-                Err(DbError::Poisoned)
+                // A genuine failure: original_path has a unique index
+                // (/docs/tx.md was committed by the previous transaction).
+                docs.create("markdown", "/docs/tx.md", None, None)?;
+                Ok(())
             })
             .expect_err("closure error must surface");
-        assert!(matches!(err, DbError::Poisoned));
+        assert!(matches!(err, DbError::Sqlite { .. }));
 
         with_docs(&db, |docs| {
             assert_eq!(docs.count(&DocumentFilter::default()).unwrap(), 1);

@@ -101,7 +101,7 @@ pub struct FtsHit {
 
 /// CRUD + FTS5 search over the `chunks` table.
 ///
-/// One instance per unit of work, bound to either the shared connection or an
+/// One instance per unit of work, bound to either a pooled connection or an
 /// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
 /// analogue of the oracle's `NewChunkDAO(db DBTX)`.
 ///
@@ -110,10 +110,12 @@ pub struct FtsHit {
 /// ```no_run
 /// # use db::{ChunkDao, ConnectionOrTx, Db, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
-/// let guard = db.lock()?;
-/// let chunks = ChunkDao::new(ConnectionOrTx::Connection(&guard));
-/// let id = chunks.create(1, "full text search works", 0, None, None)?;
-/// assert_eq!(chunks.get_by_id(id)?.map(|c| c.id), Some(id));
+/// db.with_conn(|conn| -> Result<(), DbError> {
+///     let chunks = ChunkDao::new(ConnectionOrTx::Connection(conn));
+///     let id = chunks.create(1, "full text search works", 0, None, None)?;
+///     assert_eq!(chunks.get_by_id(id)?.map(|c| c.id), Some(id));
+///     Ok(())
+/// })??;
 /// # Ok(())
 /// # }
 /// ```
@@ -291,11 +293,11 @@ mod tests {
     use crate::document::DocumentDao;
     use crate::test_util::in_memory_db;
 
-    /// Run `f` with a DAO bound to the shared connection; the connection
-    /// lock is held for the closure's duration.
+    /// Run `f` with a DAO bound to a pooled connection (checked out for the
+    /// closure's duration).
     fn with_chunks<T>(db: &Db, f: impl FnOnce(&ChunkDao<'_>) -> T) -> T {
-        let guard = db.lock().unwrap();
-        f(&ChunkDao::new(ConnectionOrTx::Connection(&guard)))
+        db.with_conn(|conn| f(&ChunkDao::new(ConnectionOrTx::Connection(conn))))
+            .unwrap()
     }
 
     /// Create a document with `metadata_json` and return its id.
@@ -647,7 +649,12 @@ mod tests {
         db.exec_tx(|tx| -> Result<(), DbError> {
             let chunks = ChunkDao::new(ConnectionOrTx::Transaction(&*tx));
             chunks.create(doc, "rolled-back chunk", 1, None, None)?;
-            Err(DbError::Poisoned)
+            // A genuine SQL failure after a partial write (CHECK violation).
+            tx.execute(
+                "INSERT INTO facts (predicate, status) VALUES ('p', 'bogus')",
+                [],
+            )?;
+            Ok(())
         })
         .expect_err("closure error must surface");
 
