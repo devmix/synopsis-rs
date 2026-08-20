@@ -21,6 +21,7 @@
   - **Референс:** `../synopsis/internal/embedding/onnx_provider.go` (SetSharedLibraryPath/InitializeEnvironment/NewDynamicAdvancedSession), `../synopsis/internal/onnx/library.go` (session options).
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия.
+    - Ревизия 2 (2026-08-20): отклонение, зафиксировано реализатором + ревьюером: `error.rs` (вне scope) — вариант `Ort(#[from] ort::Error)` заменён на `Ort(String)` + ручные `From<ort::Error>`/`From<ort::LoadDynamicError>`. Причина: в ort 2.0.0-rc.13 ЛЮБОЙ конструктор ort::Error вызывает C API (CreateStatus), а в load-dynamic без загруженного .so это паника — вариант из 1.1 принципиально не мог представить сбой «библиотека не загружена». Риппла нет (внутренний тип, ноль использований вне error.rs). Минор (на будущее): `Ort(String)` теряет error source chain; при переходе на ort stable 2.0.0 — пересмотреть.
 
 - [ ] 1.3 Модуль downloader: HTTP-загрузка с ретраями, SSRF-защитой, прогрессом
   - **Цель:** sync-загрузчик (ureq): 3 ретрая × 2s, timeout 10m, User-Agent, SSRF-защита (resolve hostname → reject private/loopback/link-local), прогресс через indicatif, верификация размера против ожидаемого (D8; улучшение над Go — там только существование). Частичный файл при ошибке удаляется. **НЕ транскрибировать Go 1:1** (принцип миграции).
