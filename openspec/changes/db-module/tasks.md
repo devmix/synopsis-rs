@@ -100,7 +100,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): выделена из 1.7.
 
-- [ ] 1.14 FactSource DAO — реализация
+- [x] 1.14 FactSource DAO — реализация
   - **Цель:** реализовать модуль `fact_source.rs` (FactSourceDao) + регистрация в lib.rs. Полный тестовый набор — задача 1.15; здесь только smoke-тест. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/db/src/fact_source.rs` (`FactSourceDao`: `create`, `get_by_fact_id`, `delete`, `delete_by_fact_id`, `delete_by_document_id`), `crates/db/src/lib.rs` (модуль + re-export), `migrations/1-init/up.sql` (строка 84: `document_id TEXT NOT NULL` → `document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE` — решение человека 2026-08-20, см. ревизию 2), минимальный smoke-тест в `crates/db/src/fact_source.rs` (`#[cfg(test)]`: create + get_by_fact_id round-trip).
   - **Зависимости:** 1.1 (Db, DbError, DbExecutor, test_util), 1.3 (Document), 1.10 (Fact), 1.9 (пул API).
