@@ -76,10 +76,11 @@
   - **Цель:** полный тестовый набор для `fact.rs` по критериям приёмки исходной задачи 1.6. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** только тесты в `crates/db/src/fact.rs` (`#[cfg(test)]`).
   - **Зависимости:** 1.10 (реализация fact.rs), 1.1 (test_util), 1.5 (Entity — для validate_fact_domain), 1.9 (пул API).
-  - **Критерии приёмки:** `cargo test -p db` зелёный; тесты: (а) CRUD round-trip; (б) **create_or_ignore атомарность**: повторный вызов с теми же ключами → одна запись, тот же ID; (в) list_by_entity_ids (subject+object); (г) validate_fact_domain: совпадающие домены → ok, разные → ошибка (normalize); (д) find_orphaned_fact_ids/delete_orphaned_facts (не удаляет факты с живыми сущностями); (е) search_paginated с фильтрами; (ж) count; (з) recompute_weights. fmt/clippy чисто.
-  - **Референс:** `../synopsis/internal/database/dao/fact_dao_test.go`, `fact_dao_batch_test.go` — семантика; design.md D5.
+  - **Критерии приёмки:** `cargo test -p db` зелёный; тесты: (а) CRUD round-trip; (б) **create_or_ignore атомарность**: повторный вызов с теми же ключами → одна запись, тот же ID; (в) list_by_entity_ids (subject+object); (г) validate_fact_domain: совпадающие домены → Ok(true), разные → Ok(false) (normalize; отсутствующий endpoint → Ok(false)); (д) find_orphaned_fact_ids/delete_orphaned_facts (не удаляет факты с живыми сущностями); (е) search_paginated с фильтрами (страница и total согласованы при совпадении имён обоих endpoint'ов); (ж) count; (з) recompute_weights (батчинг IN-списков). **API-факты из 1.10 (binding):** `Fact` struct по v5-схеме: (id, subject_entity_id, object_entity_id, predicate, domain, status, valid_from, valid_to, weight, metadata, created_at, updated_at) — колонки confidence в v5 НЕТ; `validate_fact_domain` → `Result<bool, DbError>`; `delete(id) -> bool`; create/create_or_ignore хранят status='approved'. fmt/clippy чисто.
+  - **Референс:** `../synopsis/internal/database/dao/fact_dao_test.go`, `fact_dao_batch_test.go` — семантика; design.md D5; модульная документация `crates/db/src/fact.rs` (зафиксированные исправления багов Go).
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): выделена из 1.6.
+    - Ревизия 2 (2026-08-20): API-факты из 1.10 (Fact по v5-схеме, validate_fact_domain → bool).
 
 - [ ] 1.12 Relation DAOs — реализация
   - **Цель:** реализовать три модуля связей (chunk_entity, entity_link, entity_source) + регистрация в lib.rs. Полный тестовый набор — задача 1.13; здесь только smoke-тесты (базовый round-trip каждого DAO). **НЕ транскрибировать Go 1:1** (принцип миграции).
