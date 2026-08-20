@@ -128,6 +128,15 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия (решение человека 2026-08-20: чинить баг из 1.10 отдельной задачей).
 
+- [ ] 1.18 Вынести ID_BATCH_SIZE/LINK_BATCH_SIZE в config (устранение дублирования)
+  - **Цель:** устранить дублирование констант батчинга — 7 приватных копий в 7 модулях db (ID_BATCH_SIZE: fact/chunk/chunk_entity/entity_link/document/entity; LINK_BATCH_SIZE: entity_source). Единый источник истины — крейт `config` (решение человека 2026-08-20, перед архивом change). Значение 500 сохраняется (D9: параметр-лимит SQLite 32766). **Изменение графа зависимостей:** db → config (config — лёгкий крейт без обратных зависимостей; решение человека 2026-08-20).
+  - **Scope файлов:** `crates/config/src/db.rs` (НОВЫЙ модуль: `pub const ID_BATCH_SIZE: usize = 500;` + `pub const LINK_BATCH_SIZE: usize = 500;` + rustdoc с обоснованием D9 — missing_docs=deny), `crates/config/src/lib.rs` (pub mod db + re-export), `crates/db/Cargo.toml` (+ `config = { workspace = true }`), `crates/db/src/{chunk,chunk_entity,document,entity,entity_link,entity_source,fact}.rs` (удалить локальные `const`, использовать `config::ID_BATCH_SIZE`/`config::LINK_BATCH_SIZE`; поправить intra-doc ссылки `[ID_BATCH_SIZE]` → `[config::ID_BATCH_SIZE]`), корневой `Cargo.toml` (комментарий графа зависимостей: db → config).
+  - **Зависимости:** все DAO-задачи (1.1–1.17).
+  - **Критерии приёмки:** `cargo test -p db` и `cargo test --workspace` зелёные; grep-проверка: в crates/db НЕТ локальных `const ID_BATCH_SIZE`/`const LINK_BATCH_SIZE` (только `use config::...`); `cargo doc -p db` БЕЗ предупреждений (18 private_intra_doc_links устранены); fmt/clippy чисто.
+  - **Референс:** design.md D9 (обоснование 500), текущие определения в 7 модулях db.
+  - **История ревизий:**
+    - Ревизия 1 (2026-08-20): первая версия (решение человека 2026-08-20: вынести в конфиг перед архивом change).
+
 - [x] 1.15 FactSource DAO — тесты + сборка крейта
   - **Цель:** полный тестовый набор для `fact_source.rs` + финальная сборка крейта: re-exports, документация, полный прогон гейтов. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** тесты в `crates/db/src/fact_source.rs` (`#[cfg(test)]`), `crates/db/src/lib.rs` (все модули + re-exports + crate docs), финальная проверка: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, `cargo doc -p db`.
