@@ -493,7 +493,7 @@ mod tests {
 
     use super::*;
     use crate::Db;
-    use crate::test_util::in_memory_db;
+    use crate::test_util::{in_memory_db, temp_file_db};
 
     /// Run `f` with a DAO bound to a pooled connection (checked out for the
     /// closure's duration).
@@ -1006,9 +1006,15 @@ mod tests {
     // (c3) get_or_create: concurrent calls with the same key → one row, all
     // callers get the same id (D5 atomicity; SQLite serializes the writes
     // across pool connections, the ON CONFLICT clause is the guarantee).
+    //
+    // File-backed WAL database (task 1.16): on the shared-cache `:memory:`
+    // database the concurrent writers flake with SQLITE_LOCKED_SHAREDCACHE
+    // (extended code 262) — shared-cache table locks bypass the busy
+    // handler, a known SQLite limitation. The file-backed configuration is
+    // the production one, where busy_timeout=5000 (D8) serializes writers.
     #[test]
     fn get_or_create_is_atomic_under_concurrency() {
-        let db = in_memory_db();
+        let db = temp_file_db();
         let mut handles = Vec::new();
         for _ in 0..8 {
             let db = db.clone();
