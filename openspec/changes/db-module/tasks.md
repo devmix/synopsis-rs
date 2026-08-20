@@ -82,7 +82,7 @@
     - Ревизия 1 (2026-08-20): выделена из 1.6.
     - Ревизия 2 (2026-08-20): API-факты из 1.10 (Fact по v5-схеме, validate_fact_domain → bool).
 
-- [ ] 1.12 Relation DAOs — реализация
+- [x] 1.12 Relation DAOs — реализация
   - **Цель:** реализовать три модуля связей (chunk_entity, entity_link, entity_source) + регистрация в lib.rs. Полный тестовый набор — задача 1.13; здесь только smoke-тесты (базовый round-trip каждого DAO). **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/db/src/chunk_entity.rs` (`ChunkEntityDao`: `link` (INSERT OR IGNORE), `unlink`, `get_entities_by_chunk`, `get_chunks_by_entity`, `is_linked`, `unlink_chunk`, `unlink_entity`, `get_chunk_texts_by_entity`, `get_entities_by_chunks`, `get_entity_ids_by_doc_id`), `crates/db/src/entity_link.rs` (`EntityLinkDao`: `create` (отклоняет self-link), `list_by_entity`, `list_by_method`, `list_all`, `delete`, `count`, `graph_node_count`, `delete_by_entity_ids`), `crates/db/src/entity_source.rs` (`EntitySourceDao`: `create`, `link_batch` (multi-row INSERT OR IGNORE, батчи по 500 строк), `delete_by_document_id` (возвращает затронутые ID до удаления), `get_documents_by_entity_id`, `find_orphaned_entity_ids` (не удаляет EntityType)), `crates/db/src/lib.rs` (модули + re-exports), smoke-тесты в каждом модуле (`#[cfg(test)]`).
   - **Зависимости:** 1.1 (Db, DbError, DbExecutor, test_util), 1.3 (Document), 1.4 (Chunk), 1.5 (Entity), 1.9 (пул API).
