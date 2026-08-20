@@ -335,4 +335,249 @@ mod tests {
         .unwrap()
         .unwrap();
     }
+
+    // (e, cont.) create: a duplicate on the composite PK → `false` without
+    // error and exactly one row; a different relation_type is a new row.
+    #[test]
+    fn create_duplicate_and_distinct_relation_type() {
+        let db = in_memory_db();
+        let a = insert_entity(&db, "Alice");
+        let b = insert_entity(&db, "Bob");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
+            let first = link(a, b);
+            assert!(links.create(&first)?, "new link must insert");
+            assert!(!links.create(&first)?, "duplicate → false, no error");
+            assert_eq!(links.count()?, 1, "no duplicate row");
+
+            let mut second = link(a, b);
+            second.relation_type = "related_to".into();
+            assert!(links.create(&second)?, "a new relation_type is a new row");
+            assert_eq!(links.count()?, 2);
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // Every field round-trips, including evidence and confidence (oracle
+    // Provenance case).
+    #[test]
+    fn create_round_trips_all_fields() {
+        let db = in_memory_db();
+        let a = insert_entity(&db, "Alice");
+        let b = insert_entity(&db, "Bob");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
+            let mut l = link(a, b);
+            l.relation_type = "provenance_test".into();
+            l.method = "equals".into();
+            l.confidence = 0.87;
+            l.evidence = Some("Rule-based matching on name similarity".into());
+            links.create(&l)?;
+
+            let got = links.list_all()?.into_iter().next().expect("one link");
+            assert_eq!(got, l, "all fields round-trip");
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // (f) list_by_entity: outgoing AND incoming, in the oracle's
+    // (target, subject) order; unknown entity → empty.
+    #[test]
+    fn list_by_entity_both_directions_ordered() {
+        let db = in_memory_db();
+        let a = insert_entity(&db, "Alice");
+        let b = insert_entity(&db, "Bob");
+        let c = insert_entity(&db, "Carol");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
+            links.create(&link(a, b))?;
+            links.create(&link(c, a))?;
+            links.create(&link(a, c))?;
+
+            let by_a: Vec<(i64, i64)> = links
+                .list_by_entity(a)?
+                .iter()
+                .map(|l| (l.subject_entity_id, l.target_entity_id))
+                .collect();
+            assert_eq!(
+                by_a,
+                vec![(c, a), (a, b), (a, c)],
+                "both directions, ORDER BY target, subject"
+            );
+            assert!(
+                links.list_by_entity(999_999)?.is_empty(),
+                "unknown entity → empty"
+            );
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // (f) list_by_method: only the requested method, ordered by
+    // (subject, target, relation_type); list_all keeps the same order.
+    #[test]
+    fn list_by_method_and_list_all_ordered() {
+        let db = in_memory_db();
+        let a = insert_entity(&db, "Alice");
+        let b = insert_entity(&db, "Bob");
+        let c = insert_entity(&db, "Carol");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
+            let mut llm1 = link(b, c);
+            llm1.method = "llm".into();
+            let mut llm2 = link(a, b);
+            llm2.method = "llm".into();
+            llm2.relation_type = "llm_matched".into();
+            links.create(&llm1)?;
+            links.create(&llm2)?;
+            links.create(&link(a, c))?; // method "rule"
+
+            let llm: Vec<(i64, i64)> = links
+                .list_by_method("llm")?
+                .iter()
+                .map(|l| (l.subject_entity_id, l.target_entity_id))
+                .collect();
+            assert_eq!(
+                llm,
+                vec![(a, b), (b, c)],
+                "llm only, (subject, target) order"
+            );
+            assert!(
+                links.list_by_method("equals")?.is_empty(),
+                "no equals links"
+            );
+
+            let all: Vec<(i64, i64)> = links
+                .list_all()?
+                .iter()
+                .map(|l| (l.subject_entity_id, l.target_entity_id))
+                .collect();
+            assert_eq!(all, vec![(a, b), (a, c), (b, c)]);
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // (г) graph_node_count: subjects ∪ targets (distinct), 0 on an empty
+    // table.
+    #[test]
+    fn graph_node_count_unions_endpoints() {
+        let db = in_memory_db();
+        let a = insert_entity(&db, "Alice");
+        let b = insert_entity(&db, "Bob");
+        let c = insert_entity(&db, "Carol");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
+            assert_eq!(links.graph_node_count()?, 0, "no links → 0");
+            links.create(&link(a, b))?;
+            assert_eq!(links.graph_node_count()?, 2);
+            links.create(&link(c, a))?;
+            assert_eq!(
+                links.graph_node_count()?,
+                3,
+                "a (subject + target), b, c all referenced"
+            );
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // Schema FK cascade: deleting an endpoint removes its links; links of
+    // the surviving endpoints stay.
+    #[test]
+    fn entity_deletion_cascades_links() {
+        let db = in_memory_db();
+        let a = insert_entity(&db, "Alice");
+        let b = insert_entity(&db, "Bob");
+        let c = insert_entity(&db, "Carol");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
+            let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
+            links.create(&link(a, b))?;
+            links.create(&link(b, c))?;
+
+            assert!(entities.delete(a)?);
+            assert!(
+                links.list_by_entity(a)?.is_empty(),
+                "a's links must cascade"
+            );
+            assert_eq!(links.count()?, 1, "b→c survives");
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // (g) delete_by_entity_ids: both directions, de-duplicated input,
+    // unrelated ids delete nothing, empty input → 0.
+    #[test]
+    fn delete_by_entity_ids_both_directions() {
+        let db = in_memory_db();
+        let a = insert_entity(&db, "Alice");
+        let b = insert_entity(&db, "Bob");
+        let c = insert_entity(&db, "Carol");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
+            links.create(&link(a, b))?;
+            links.create(&link(b, a))?;
+            links.create(&link(b, c))?;
+
+            let deleted = links.delete_by_entity_ids(&[a, a, b, c])?;
+            assert_eq!(deleted, 3, "both directions, deduped input");
+            assert_eq!(links.count()?, 0);
+            assert_eq!(links.delete_by_entity_ids(&[])?, 0, "empty input → 0");
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // (g, cont.) delete_by_entity_ids across the D9 batch boundary: 501 leaf
+    // entities linked to one hub → two IN batches (500 × 2 = 1000 bound
+    // parameters each), all 501 links deleted.
+    #[test]
+    fn delete_by_entity_ids_batches_over_500() {
+        let db = in_memory_db();
+        let hub = insert_entity(&db, "Hub");
+
+        let leaves: Vec<i64> = db
+            .exec_tx(|tx| -> Result<Vec<i64>, DbError> {
+                let entities = EntityDao::new(ConnectionOrTx::Transaction(&*tx));
+                let links = EntityLinkDao::new(ConnectionOrTx::Transaction(&*tx));
+                let mut leaves = Vec::with_capacity(501);
+                for i in 0..501 {
+                    let leaf =
+                        entities.create("PERSON", &format!("Leaf-{i}"), "", None, None, None)?;
+                    links.create(&link(leaf, hub))?;
+                    leaves.push(leaf);
+                }
+                Ok(leaves)
+            })
+            .expect("seed commits");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
+            assert_eq!(links.count()?, 501);
+            let deleted = links.delete_by_entity_ids(&leaves)?;
+            assert_eq!(deleted, 501, "every leaf link removed");
+            assert_eq!(links.count()?, 0);
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
 }

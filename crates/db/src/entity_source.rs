@@ -261,4 +261,171 @@ mod tests {
         .unwrap()
         .unwrap();
     }
+
+    // create: a duplicate (entity, document) pair violates the unique index
+    // and surfaces as DbError::Sqlite (link_batch is the idempotent path).
+    #[test]
+    fn create_duplicate_fails() {
+        let db = in_memory_db();
+        let (doc, entity) = seed(&db, "/t/es-dup.md");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));
+            sources.create(entity, doc)?;
+            let err = sources
+                .create(entity, doc)
+                .expect_err("duplicate must fail");
+            assert!(matches!(err, DbError::Sqlite { .. }));
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // (и, cont.) link_batch: empty input is a no-op; duplicates inside the
+    // input are skipped by OR IGNORE.
+    #[test]
+    fn link_batch_empty_and_duplicate_input() {
+        let db = in_memory_db();
+        let (doc, entity) = seed(&db, "/t/es-batch-dup.md");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));
+            let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
+            let other = entities.create("PERSON", "Bob", "", None, None, None)?;
+
+            sources.link_batch(doc, &[])?;
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM entity_sources", [], |r| r.get(0))?;
+            assert_eq!(count, 0, "empty input → no rows");
+
+            sources.link_batch(doc, &[entity, other, entity])?;
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM entity_sources", [], |r| r.get(0))?;
+            assert_eq!(count, 2, "the repeated id must not duplicate a row");
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // get_documents_by_entity_id: several documents, ordered by document id.
+    #[test]
+    fn documents_by_entity_multiple_ordered() {
+        let db = in_memory_db();
+        let (doc1, entity) = seed(&db, "/t/es-multi.md");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));
+            let docs = DocumentDao::new(ConnectionOrTx::Connection(conn));
+            let doc2 = docs.create("markdown", "/t/es-multi-2.md", None, None)?;
+            let doc3 = docs.create("markdown", "/t/es-multi-3.md", None, None)?;
+            sources.create(entity, doc1)?;
+            sources.create(entity, doc3)?;
+            sources.create(entity, doc2)?;
+
+            // Autoincrement ids: doc1 < doc2 < doc3.
+            assert_eq!(
+                sources.get_documents_by_entity_id(entity)?,
+                vec![doc1, doc2, doc3],
+                "ordered by document id"
+            );
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // (к, cont.) delete_by_document_id: only the requested document's rows
+    // are removed; other documents' rows survive.
+    #[test]
+    fn delete_by_document_id_isolates_documents() {
+        let db = in_memory_db();
+        let (doc1, entity) = seed(&db, "/t/es-isolate.md");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));
+            let docs = DocumentDao::new(ConnectionOrTx::Connection(conn));
+            let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
+            let doc2 = docs.create("markdown", "/t/es-isolate-2.md", None, None)?;
+            let other = entities.create("PERSON", "Bob", "", None, None, None)?;
+
+            sources.create(entity, doc1)?;
+            sources.create(other, doc1)?;
+            sources.create(entity, doc2)?;
+
+            let affected = sources.delete_by_document_id(doc1)?;
+            assert_eq!(affected, vec![entity, other], "doc1's ids, ordered");
+            assert_eq!(
+                sources.get_documents_by_entity_id(entity)?,
+                vec![doc2],
+                "doc2's row survives"
+            );
+            assert!(sources.get_documents_by_entity_id(other)?.is_empty());
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // Schema FK cascades: deleting an entity or a document removes its
+    // entity_sources rows.
+    #[test]
+    fn schema_cascades_remove_sources() {
+        let db = in_memory_db();
+        let (doc, entity) = seed(&db, "/t/es-cascade.md");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));
+            let docs = DocumentDao::new(ConnectionOrTx::Connection(conn));
+            let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
+            let doc2 = docs.create("markdown", "/t/es-cascade-2.md", None, None)?;
+            let other = entities.create("PERSON", "Bob", "", None, None, None)?;
+
+            sources.create(entity, doc)?;
+            sources.create(entity, doc2)?;
+            sources.create(other, doc2)?;
+
+            assert!(entities.delete(entity)?);
+            assert_eq!(
+                sources.get_documents_by_entity_id(other)?,
+                vec![doc2],
+                "the other entity's rows survive"
+            );
+
+            assert!(docs.delete(doc2)?);
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM entity_sources", [], |r| r.get(0))?;
+            assert_eq!(count, 0, "all rows cascaded");
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    // (л, cont.) find_orphaned_entity_ids: every orphan, ordered by id;
+    // linked entities are absent.
+    #[test]
+    fn find_orphaned_ordered() {
+        let db = in_memory_db();
+        let (doc, linked) = seed(&db, "/t/es-orphans-order.md");
+
+        db.with_conn(|conn| -> Result<(), DbError> {
+            let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));
+            let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
+            let orphan1 = entities.create("PERSON", "Orphan1", "", None, None, None)?;
+            let orphan2 = entities.create("PERSON", "Orphan2", "", None, None, None)?;
+            sources.create(linked, doc)?;
+
+            // Autoincrement ids: orphan1 < orphan2.
+            assert_eq!(
+                sources.find_orphaned_entity_ids()?,
+                vec![orphan1, orphan2],
+                "all orphans, id order, linked entity absent"
+            );
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    }
 }
