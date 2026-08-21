@@ -7,13 +7,15 @@
 //! transcribed (see design decisions D1–D10).
 //!
 //! Current public API: [`EmbeddingProvider`], [`EmbeddingError`], the ONNX
-//! Runtime module ([`runtime::init_runtime`], [`runtime::build_session`]), and
-//! the HTTP downloader ([`downloader::Downloader`]). The library/model
-//! managers, tokenizer, cache and the ONNX provider land in tasks 1.4–1.9.
+//! Runtime module ([`runtime::init_runtime`], [`runtime::build_session`]),
+//! the HTTP downloader ([`downloader::Downloader`]), and the tokenizer
+//! wrapper ([`tokenizer::Tokenizer`]). The library/model managers, cache and
+//! the ONNX provider land in tasks 1.4–1.9.
 
 pub mod downloader;
 pub mod error;
 pub mod runtime;
+pub mod tokenizer;
 
 pub use error::EmbeddingError;
 

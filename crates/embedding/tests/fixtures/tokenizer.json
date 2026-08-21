@@ -1,0 +1,138 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "[PAD]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 1,
+      "content": "[UNK]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "post_processor": null,
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": null,
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "byte_fallback": true,
+    "ignore_merges": false,
+    "vocab": {
+      "[PAD]": 0,
+      "[UNK]": 1,
+      "a": 2,
+      "b": 3,
+      "c": 4,
+      "d": 5,
+      "e": 6,
+      "h": 7,
+      "l": 8,
+      "o": 9,
+      "r": 10,
+      "s": 11,
+      "t": 12,
+      "w": 13,
+      "Ġ": 14,
+      "ab": 15,
+      "el": 16,
+      "hel": 17,
+      "ld": 18,
+      "lo": 19,
+      "or": 20,
+      "wor": 21,
+      "hello": 22,
+      "world": 23,
+      "es": 24,
+      "tes": 25,
+      "Ġworld": 26,
+      "abc": 27,
+      "test": 28
+    },
+    "merges": [
+      [
+        "a",
+        "b"
+      ],
+      [
+        "e",
+        "l"
+      ],
+      [
+        "h",
+        "el"
+      ],
+      [
+        "l",
+        "d"
+      ],
+      [
+        "l",
+        "o"
+      ],
+      [
+        "o",
+        "r"
+      ],
+      [
+        "w",
+        "or"
+      ],
+      [
+        "hel",
+        "lo"
+      ],
+      [
+        "wor",
+        "ld"
+      ],
+      [
+        "e",
+        "s"
+      ],
+      [
+        "t",
+        "es"
+      ],
+      [
+        "Ġ",
+        "world"
+      ],
+      [
+        "ab",
+        "c"
+      ],
+      [
+        "tes",
+        "t"
+      ]
+    ]
+  }
+}
