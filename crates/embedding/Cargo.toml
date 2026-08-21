@@ -23,6 +23,8 @@ sha2 = { workspace = true }
 zip = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
-# Model/library cache manifests are JSON; progress bars for downloads.
+# Model/library cache manifests are JSON (serde derives for the manifest type);
+# progress bars for downloads.
+serde = { workspace = true }
 serde_json = { workspace = true }
 indicatif = { workspace = true }

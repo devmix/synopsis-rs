@@ -83,8 +83,9 @@ impl Downloader {
     }
 
     /// Constructor with explicit parameters (tests use a zero retry delay and
-    /// disabled SSRF checking to reach the local mock server).
-    fn with_params(
+    /// disabled SSRF checking to reach the local mock server;
+    /// [`crate::library::LibraryManager::with_downloader`]).
+    pub(crate) fn with_params(
         max_retries: u32,
         retry_delay: Duration,
         timeout: Duration,
