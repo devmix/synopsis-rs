@@ -9,13 +9,19 @@ use thiserror::Error;
 /// Errors produced by the embedding pipeline.
 ///
 /// String-carrying variants hold a human-readable message with enough context
-/// to log; the two external error types ([`ort::Error`], [`std::io::Error`])
-/// are converted directly via `From` so call sites can use `?`.
+/// to log; the external error types ([`ort::Error`], [`ort::LoadDynamicError`],
+/// [`std::io::Error`]) are converted via `From` so call sites can use `?`.
 #[derive(Debug, Error)]
 pub enum EmbeddingError {
     /// ONNX Runtime environment or session failure.
+    ///
+    /// Carries the rendered message rather than the `ort` error value:
+    /// constructing an `ort::Error` invokes the ONNX Runtime C API, which under
+    /// the `load-dynamic` feature panics when the runtime library is not loaded
+    /// — exactly the failure mode this variant reports (library load failures
+    /// arrive as [`ort::LoadDynamicError`] and are converted via `From`).
     #[error("onnx runtime error: {0}")]
-    Ort(#[from] ort::Error),
+    Ort(String),
 
     /// Tokenizer loading or tokenization failure.
     #[error("tokenizer error: {0}")]
@@ -42,6 +48,18 @@ pub enum EmbeddingError {
     /// Configuration error (invalid onnx.yaml entry, missing platform key).
     #[error("config error: {0}")]
     Config(String),
+}
+
+impl From<ort::Error> for EmbeddingError {
+    fn from(err: ort::Error) -> Self {
+        Self::Ort(err.to_string())
+    }
+}
+
+impl From<ort::LoadDynamicError> for EmbeddingError {
+    fn from(err: ort::LoadDynamicError) -> Self {
+        Self::Ort(err.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -95,11 +113,10 @@ mod tests {
     // all tests requiring the real ONNX Runtime are `#[ignore]`).
     #[test]
     #[ignore]
-    fn ort_error_converts_via_from_and_keeps_source() {
+    fn ort_error_converts_via_from_and_renders_message() {
         let ort_err = ort::Error::new_with_code(ort::ErrorCode::GenericFailure, "boom");
         let err = EmbeddingError::from(ort_err);
-        assert!(err.to_string().contains("boom"));
-        assert!(err.source().is_some());
+        assert_eq!(err.to_string(), "onnx runtime error: boom");
     }
 
     #[test]

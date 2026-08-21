@@ -6,11 +6,13 @@
 //! behavior and contracts only — this crate is re-architected for Rust, not
 //! transcribed (see design decisions D1–D10).
 //!
-//! Current public API (task 1.1): [`EmbeddingProvider`] and [`EmbeddingError`].
-//! The runtime, downloader, library/model managers, tokenizer, cache and the ONNX
-//! provider land in tasks 1.2–1.9.
+//! Current public API: [`EmbeddingProvider`], [`EmbeddingError`], and the ONNX
+//! Runtime module ([`runtime::init_runtime`], [`runtime::build_session`]).
+//! The downloader, library/model managers, tokenizer, cache and the ONNX
+//! provider land in tasks 1.3–1.9.
 
 pub mod error;
+pub mod runtime;
 
 pub use error::EmbeddingError;
 
