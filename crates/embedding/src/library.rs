@@ -281,7 +281,10 @@ fn current_platform_key() -> Option<String> {
 /// Normalizes an archive entry name to a relative path, rejecting names that
 /// are absolute or contain `..` components (zip-slip / tar-slip protection;
 /// the oracle joined entry names verbatim).
-fn safe_relative(name: &str) -> Result<PathBuf, String> {
+///
+/// Crate-internal: also used by [`crate::model`] to validate model file names
+/// from `onnx.yaml` before joining them to the models directory.
+pub(crate) fn safe_relative(name: &str) -> Result<PathBuf, String> {
     let mut out = PathBuf::new();
     for component in Path::new(name).components() {
         match component {
@@ -372,7 +375,10 @@ fn write_entry<R: Read>(
 
 /// Formats `SystemTime::now()` as an RFC 3339 UTC timestamp — the same shape
 /// the oracle writes to the manifest (`time.RFC3339`).
-fn rfc3339_now() -> String {
+///
+/// Crate-internal: also used by [`crate::model`] for the `installed_at` field
+/// of the model cache manifest.
+pub(crate) fn rfc3339_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
