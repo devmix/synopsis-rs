@@ -27,7 +27,7 @@
 //!   [`crate::library::LibraryManager`]; the oracle failed at cache
 //!   construction instead;
 //! - file names from the config are validated with the shared escape guard
-//!   ([`crate::library::safe_relative`]) before any download, so a hostile
+//!   (`safe_relative` in `crate::library`) before any download, so a hostile
 //!   `onnx.yaml` cannot write outside the models directory (the oracle
 //!   joined names verbatim).
 //!
