@@ -13,7 +13,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия (решения человека 2026-08-20: ort rc.13 load-dynamic, tokenizers 0.23.1, ureq, memory-only кэш, без APIProvider, без cancellation).
 
-- [ ] 1.2 Модуль runtime: ort-окружение и SessionBuilder
+- [x] 1.2 Модуль runtime: ort-окружение и SessionBuilder
   - **Цель:** изолировать весь ort-API в одном модуле: `init_runtime(lib_path)` — `ort::init_from(path)` (загрузка внешнего .so/.dylib по явному пути, D1/D10), `build_session(model_path)` — `Session::builder()` с `with_intra_threads(2)`, `with_inter_threads(1)`, `GraphOptimizationLevel::Level1` (D7), `commit_from_file`. QDQ-фьюжн для int8 — по умолчанию. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/embedding/src/runtime.rs` (новый) + регистрация в lib.rs.
   - **Зависимости:** 1.1 (ошибки, Cargo.toml).
