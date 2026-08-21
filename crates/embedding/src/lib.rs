@@ -11,14 +11,15 @@
 //! the HTTP downloader ([`downloader::Downloader`]), the ONNX Runtime
 //! library manager ([`library::LibraryManager`]), the model manager
 //! ([`model::ModelManager`]), the tokenizer wrapper ([`tokenizer::Tokenizer`]),
-//! and the in-memory embedding cache ([`cache::EmbeddingCache`]). The ONNX
-//! provider lands in task 1.8.
+//! the in-memory embedding cache ([`cache::EmbeddingCache`]), and the ONNX
+//! provider ([`provider::OnnxProvider`]).
 
 pub mod cache;
 pub mod downloader;
 pub mod error;
 pub mod library;
 pub mod model;
+pub mod provider;
 pub mod runtime;
 pub mod tokenizer;
 
