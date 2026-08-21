@@ -41,7 +41,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия.
 
-- [ ] 1.5 Модуль model: ModelManager + ModelCache
+- [x] 1.5 Модуль model: ModelManager + ModelCache
   - **Цель:** менеджер моделей: реестр из `OnnxConfig.models` (ModelForName, default), `ensure_model(name)` — установлена (кэш + файлы есть) → путь; нет → скачать все файлы (url/size из onnx.yaml) через downloader, пометить установленной в `.cache.json`; неизвестное имя → ошибка. Верификация размера после скачивания (D8). **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/embedding/src/model.rs` (новый) + регистрация в lib.rs.
   - **Зависимости:** 1.1 (ошибки), 1.3 (downloader).
