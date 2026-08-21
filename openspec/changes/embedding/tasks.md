@@ -77,7 +77,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия.
 
-- [ ] 1.9 Сборка: фабрика new_onnx_provider + финальные гейты
+- [x] 1.9 Сборка: фабрика new_onnx_provider + финальные гейты
   - **Цель:** фабрика `new_onnx_provider(cfg, data_dir, onnx_cfg) -> Result<Arc<dyn EmbeddingProvider>, EmbeddingError>`: LibraryManager.ensure_library → ModelManager.ensure_model → tokenizer → runtime.build_session → OnnxProvider. Re-exports всех публичных типов в lib.rs. Полный прогон гейтов. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/embedding/src/lib.rs` (фабрика + re-exports + crate docs), финальная проверка: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, `cargo doc -p embedding`.
   - **Зависимости:** 1.2, 1.4, 1.5, 1.8.
