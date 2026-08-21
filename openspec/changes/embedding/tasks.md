@@ -68,7 +68,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия.
 
-- [ ] 1.8 Модуль provider: OnnxProvider — батч-инференс, L2-нормализация, кэш
+- [x] 1.8 Модуль provider: OnnxProvider — батч-инференс, L2-нормализация, кэш
   - **Цель:** реализация `EmbeddingProvider`: `OnnxProvider { session: Arc<Mutex<Session>>, tokenizer, cache, vector_dim, model_name }`. `generate_embeddings`: пустой список → ошибка; per-text кэш-проверка; токенизация; батч-инференс одним ONNX-run (D4); L2-нормализация каждого вектора (norm≈0 → без деления); сохранение в кэш. Инференс — sync (вызывающий сам решает про spawn_blocking). **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/embedding/src/provider.rs` (новый) + регистрация в lib.rs.
   - **Зависимости:** 1.1 (trait/ошибки), 1.2 (runtime), 1.6 (tokenizer), 1.7 (cache).
