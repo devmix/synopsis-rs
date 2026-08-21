@@ -50,7 +50,7 @@
   - **История ревизий:**
     - Ревизия 1 (2026-08-20): первая версия.
 
-- [ ] 1.6 Модуль tokenizer: обёртка над HF tokenizers
+- [x] 1.6 Модуль tokenizer: обёртка над HF tokenizers
   - **Цель:** обёртка над `tokenizers::Tokenizer`: загрузка из tokenizer.json (путь к файлу), `tokenize(text) -> Vec<u32>` с truncation до max_length=512, `decode(ids) -> String`. **НЕ транскрибировать Go 1:1** (принцип миграции).
   - **Scope файлов:** `crates/embedding/src/tokenizer.rs` (новый) + регистрация в lib.rs.
   - **Зависимости:** 1.1 (ошибки).
