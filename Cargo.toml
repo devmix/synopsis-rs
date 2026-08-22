@@ -67,8 +67,22 @@ rmcp = "3"
 rusqlite = "0.40"
 libsqlite3-sys = { version = "0.38", features = ["bundled"] }
 
-# CEL expressions for entity linking (graph crate), file watcher,
-# cron scheduling and progress bars
+# Knowledge graph (graph change, design D1/D2; feasibility gate task 1.1,
+# 2026-08-22). Verified against the crates.io index: petgraph 0.8.3 (MIT OR
+# Apache-2.0, rust-version 1.64) is pure Rust with zero native dependencies;
+# default features trimmed to `std` only (graphmap/stable_graph/matrix_graph
+# are unused by design D1 — the index is a plain DiGraph). cel 0.14.3 (MIT,
+# rust-version 1.86.0) is active (published 2026-08-15) and replaces the
+# stale cel-interpreter per the frozen-stack decision of 2026-08-22 (design
+# D2); default features kept: `regex` (CEL regex functions) and `chrono`
+# (timestamp values — pure Rust; on darwin it reaches core-foundation-sys,
+# covered by the vendored ci/darwin-sdk stub). Both MSRVs are below our
+# pinned Rust 1.96.0; the zigbuild gate for both targets passed in task 1.1.
+petgraph = { version = "0.8", default-features = false, features = ["std"] }
+cel = "0.14"
+# cel-interpreter was superseded by `cel` above (graph design D2, 2026-08-22);
+# it is no longer inherited by any member and is kept here only as a palette
+# record of the former pin (remove once the palette is tidied).
 cel-interpreter = "0.10"
 notify = "8"
 tokio-cron-scheduler = "0.15"

@@ -6,6 +6,19 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges; oracle imports: ../synopsis/internal/graph + internal/relations (config).
+# D1 edges (design.md): SQLite is the source of truth (db crate DAOs), the
+# petgraph DiGraph + HashMap name/type indexes are a derived read-only
+# in-memory index; CEL entity-linking expressions run on the `cel` crate
+# (D2, replaces cel-interpreter). Feasibility gate for both new dependencies
+# passed in task 1.1 (host build, zigbuild windows-gnu + aarch64-apple-darwin,
+# cel API verified against registry sources).
 [dependencies]
 config = { workspace = true }
+db = { workspace = true }
+# In-memory graph index (D1): DiGraph + name->NodeId / type->nodes HashMaps.
+petgraph = { workspace = true }
+# CEL engine for ontology linking rules (D2/D5): custom functions facts(),
+# has_fact(), chunks(), chunk_contains(), neighbors(), path_exists().
+cel = { workspace = true }
+# Error types for library crates (workspace convention).
+thiserror = { workspace = true }
