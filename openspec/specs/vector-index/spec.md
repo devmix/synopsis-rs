@@ -1,10 +1,10 @@
-# vector-index Delta
+# vector-index Specification
 
 ## Purpose
 
 Локальный ANN-индекс эмбеддингов на disk-backed/квантованном движке: хранение векторов чанков, kNN-поиск в RAM-бюджете ноутбука, каскадная согласованность с SQLite-хранилищем чанков и формат фикстур для машинного паритета.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Жизненный цикл индекса
 
