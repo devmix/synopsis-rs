@@ -4257,6 +4257,7 @@ dependencies = [
  "rmcp",
  "serde_json",
  "tokio",
+ "vectors",
 ]
 
 [[package]]

@@ -7,16 +7,19 @@
 //! preserved (design D8); parity lives at the level of tool responses, reached
 //! through the official rmcp SDK over Streamable HTTP.
 //!
-//! This skeleton provides the mechanism only — the actual parity cases arrive
-//! together with each module change:
+//! The crate provides the mechanism; the actual parity cases arrive together
+//! with each module change:
 //! - [`mcp_client`]: MCP client wrapper (`initialize`/`tools/list`/`tools/call`)
 //!   with per-operation p50/p95 timing;
-//! - [`fixtures`]: fixture loader API (knowledge.db + vectors.bin paths);
+//! - [`fixtures`]: fixture loader API (knowledge.db + SYNX vectors.bin rows,
+//!   streamed via `vectors::synx`);
+//! - [`metrics`]: recall@k against provided ground truth;
 //! - [`diff`]: JSON/text diff utilities for parity reports.
 
 pub mod diff;
 pub mod fixtures;
 pub mod mcp_client;
+pub mod metrics;
 
 use std::path::PathBuf;
 
