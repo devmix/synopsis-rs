@@ -12,55 +12,36 @@
 //! primary key (the SQLite chunk row id). The dimensionality is a configuration parameter -
 //! this crate never calls the embedding crate, so the query path does not load the model.
 //!
+//! # Cascade protocol (design D3)
+//!
+//! The LanceDB index and the SQLite chunk table are separate stores with no
+//! cross-database transaction. Consistency is a three-layer protocol owned by
+//! the consumer:
+//!
+//! 1. **Cascade order (call contract).** When removing chunks, the consumer
+//!    calls [`VectorIndex::delete_by_chunk_ids`] BEFORE deleting the chunk
+//!    rows in SQLite (the oracle's "vectors → chunks" order). A crash between
+//!    the steps leaves orphaned *vectors* — visible and machine-detectable by
+//!    reconciliation — instead of live chunks with missing vectors, which
+//!    would silently degrade recall.
+//! 2. **Consumer tolerance.** Search returns chunk ids; the consumer filters
+//!    results against SQLite, so an orphaned vector can never reach the user
+//!    even before garbage collection runs.
+//! 3. **Reconciliation primitives.** [`VectorIndex::chunk_ids`] +
+//!    [`VectorIndex::count`] let a GC job compute "index − SQLite → delete".
+//!    The ultimate repair is a full [`VectorIndex::rebuild`] from chunk text
+//!    (re-encoding done by the ingestion layer, a future change).
+//!
 //! Module [`synx`] implements the SYNX binary fixture format (`vectors.bin`), the
 //! oracle ↔ harness vector-dump contract (native-seam-spikes design D4): a streaming
 //! reader and a chunk_id-sorted writer.
 
 pub mod engine;
+pub mod error;
 pub mod synx;
 
 pub use engine::LanceEngine;
-
-use thiserror::Error;
-
-/// Errors produced by the vectors crate.
-#[derive(Debug, Error)]
-pub enum VectorsError {
-    /// A configuration or call parameter violated a documented invariant.
-    #[error("invalid argument: {0}")]
-    InvalidArgument(String),
-    /// A vector length does not match the index dimensionality.
-    #[error("dimension mismatch: expected {expected}, got {actual}")]
-    DimensionMismatch {
-        /// Dimensionality the index is configured with.
-        expected: usize,
-        /// Length of the offending vector.
-        actual: usize,
-    },
-    /// The requested index does not exist (e.g. opening a path with no table).
-    /// The payload is the data directory that was looked up.
-    #[error("index not found at {0}")]
-    NotFound(String),
-    /// The ANN engine (LanceDB) reported a failure.
-    #[error("engine error: {0}")]
-    Engine(String),
-    /// A failure while accessing the on-disk index.
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-    /// A SYNX fixture file does not start with the `"SYNX"` magic bytes.
-    #[error("SYNX: bad magic")]
-    SyNxBadMagic,
-    /// A SYNX fixture file declares an unsupported format version.
-    #[error("SYNX: unsupported version {0} (expected 1)")]
-    SyNxBadVersion(u32),
-    /// A SYNX fixture file is truncated: the header or a row ends before its
-    /// promised number of bytes. The payload says where.
-    #[error("SYNX: truncated file ({0})")]
-    SyNxTruncated(String),
-    /// A SYNX fixture file declares zero dimensionality.
-    #[error("SYNX: dim must be > 0")]
-    SyNxZeroDim,
-}
+pub use error::VectorsError;
 
 /// Index and query parameters for the ANN engine.
 ///
@@ -221,7 +202,11 @@ pub trait VectorIndex: Send + Sync {
     /// (IvfHnswSq per ADR 0003).
     fn build_index(&self) -> Result<(), VectorsError>;
 
-    /// Atomically replaces the entire content with `rows` (drop + recreate).
+    /// Atomically replaces the entire content with `rows` and rebuilds the
+    /// ANN index over them: on success only `rows` are stored — nothing from
+    /// the previous content remains (no accumulation). An empty `rows`
+    /// empties the index. The ultimate repair of the cascade protocol
+    /// (design D3).
     fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError>;
 }
 
