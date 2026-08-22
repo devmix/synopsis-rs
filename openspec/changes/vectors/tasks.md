@@ -57,7 +57,7 @@
   - **Зависимости:** 1.4.
   - **Референс:** design D8 (уровень 1); `docs/adr/spike-s3-results.md` (протокол: warmup, held-out запросы, два прогона).
 
-- [ ] 1.7 parity-harness: загрузчик SYNX вместо TODO
+- [x] 1.7 parity-harness: загрузчик SYNX вместо TODO
   - **Цель:** закрыть TODO vectors.bin в parity-harness через `vectors::synx`.
   - **Scope файлов:** `crates/parity-harness/Cargo.toml` (+dep vectors), соответствующий модуль harness'а.
   - **Детали:** API загрузки фикстуры (файл → векторы/итератор) + расчёт recall@k против переданного ground truth уже частично есть — дополнить недостающим; тест на маленькой сгенерированной фикстуре (без сети).
