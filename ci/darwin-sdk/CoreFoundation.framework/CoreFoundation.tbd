@@ -1,0 +1,15 @@
+# Minimal vendored CoreFoundation stub for cross-linking aarch64-apple-darwin
+# under the official Zig 0.16 SDK, which ships no macOS framework stubs
+# (ziglang/zig#1349). Full provenance and the symbol-update procedure live in
+# ../README.md. Only the symbols actually referenced by the link are listed.
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ arm64-macos ]
+install-name:    '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation'
+current-version: 2447.0.0
+exports:
+  - targets:         [ arm64-macos ]
+    symbols:         [ _CFRelease, _CFStringGetBytes, _CFStringGetCStringPtr,
+                       _CFStringGetLength, _CFTimeZoneCopySystem, _CFTimeZoneGetName,
+                       _CFTimeZoneResetSystem ]
+...

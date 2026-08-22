@@ -9,3 +9,10 @@ workspace = true
 # D1 tier 0: no internal dependencies. The ANN engine (usearch vs lance) is a
 # new crate dependency chosen by native-seam-spikes; consumers know only the trait (D5).
 [dependencies]
+# ANN engine (ADR 0003): LanceDB local-filesystem mode. Compile-only for now -
+# the sync facade over the async lancedb API (design D2) lands with the engine
+# module (task vectors 1.3). Feasibility gate (task vectors 1.1): host build,
+# spot cross-compilation, release binary size.
+lancedb = { workspace = true }
+# Error types for library crates (workspace convention).
+thiserror = { workspace = true }

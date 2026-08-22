@@ -145,11 +145,17 @@ flate2 = "1"
 # tar 0.4.46 (MSRV 1.63): .tar.gz runtime packages (design D8).
 tar = "0.4"
 
+# ANN engine (vectors change, design D5; ADR 0003): lancedb 0.37.1 / lance 10.0.0.
+# Verified against registry source (task vectors 1.1, 2026-08-21): lancedb 0.37.1 has
+# `default = []`, so local-filesystem storage needs NO features at all - the cloud
+# object-store features (aws/azure/gcp/oss/huggingface/remote) are all opt-in and are
+# deliberately excluded (single local binary, no cloud). MSRV 1.91.0 (lancedb/lance),
+# datafusion 1.88 / arrow 1.85 - all below our pinned Rust 1.96.0.
+lancedb = { version = "0.37", default-features = false }
+
 # Intentionally NOT pinned here - decisions deferred to module changes:
-# - ANN engine: decided by ADR 0003 (lancedb, change native-seam-spikes); the pin moves with the
-#   archived spikes crate (.archive/spikes/Cargo.toml) and is re-added when the `vectors` change
-#   lands (design D5). Spike-only pins (ort/tokenizers/lancedb/futures) were removed from this
-#   palette in task 5.1; rusqlite_migration + include_dir came back with the db-module change
-#   (task 1.1, ADR 0001); ort + tokenizers came back with the embedding change (task 1.1,
-#   ADR 0002). ADRs 0001-0003 are the reference for re-pinning the rest (lancedb) in vectors.
+# - Spike-only pins (ort/tokenizers/lancedb/futures) were removed from this palette in task
+#   5.1; they come back per module change: rusqlite_migration + include_dir with db-module
+#   (task 1.1, ADR 0001), ort + tokenizers with the embedding change (task 1.1, ADR 0002),
+#   lancedb with the vectors change (task 1.1, ADR 0003 - pin above).
 # MCP protocol crate: decision made 2026-08-18 -> rmcp 3.x above (design D8).
