@@ -553,8 +553,9 @@ mod tests {
     }
 
     /// A deterministic seeded vector: SplitMix64-driven uniform f32 in
-    /// [-1, 1). No RNG crate needed (frozen palette); determinism is all the
-    /// tests require (queries are exact copies of stored rows).
+    /// [-1, 1). No RNG crate needed (frozen palette). Used for vectors that
+    /// are deliberately distant from the clustered corpus (fresh inserts,
+    /// empty-index queries, dim-mismatch fixtures).
     fn seeded_vector(seed: u64, dim: usize) -> Vec<f32> {
         let mut state = seed;
         (0..dim)
@@ -569,16 +570,95 @@ mod tests {
             .collect()
     }
 
+    /// Number of clusters in the corpus geometry (matches the reduced
+    /// `num_partitions` of [`test_config`]).
+    const TEST_CLUSTERS: usize = 8;
+    /// Per-dimension Gaussian noise sigma around a cluster center (tight
+    /// clusters: intra-cluster L2 ~ 0.23 vs inter-cluster L2 ~ 1.43).
+    const TEST_NOISE_SIGMA: f64 = 0.005;
+
+    /// A deterministic Gaussian sampler: SplitMix64 + Box-Muller (the same
+    /// construction as `tests/integration_gates.rs`; no RNG crate in the
+    /// frozen palette).
+    struct Gauss {
+        state: u64,
+        spare: Option<f64>,
+    }
+
+    impl Gauss {
+        fn new(seed: u64) -> Self {
+            Self {
+                state: seed,
+                spare: None,
+            }
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// Standard normal sample (Box-Muller), deterministic.
+        fn sample(&mut self) -> f64 {
+            if let Some(spare) = self.spare.take() {
+                return spare;
+            }
+            const INV_2_POW_53: f64 = 1.1102230246251565e-16;
+            let u1 = 1.0 - ((self.next_u64() >> 11) as f64 * INV_2_POW_53);
+            let u2 = (self.next_u64() >> 11) as f64 * INV_2_POW_53;
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = std::f64::consts::TAU * u2;
+            self.spare = Some(r * theta.sin());
+            r * theta.cos()
+        }
+    }
+
     /// ADR 0003 dim with small-corpus index parameters (reduced partitions
     /// per the task acceptance criteria).
     fn test_config() -> VectorIndexConfig {
         VectorIndexConfig::new(1024, 16, 100, 8, 8, 100).expect("test config is valid")
     }
 
-    /// `n` seeded rows with ids 0..n at dim 1024.
-    fn rows(n: usize) -> Vec<(u32, Vec<f32>)> {
-        (0..n as u32)
-            .map(|id| (id, seeded_vector(0xA11CE + id as u64, 1024)))
+    /// `n` clustered rows with ids `offset..offset+n` at dim 1024.
+    ///
+    /// Geometry (task 1.8 revision 1): the first [`TEST_CLUSTERS`] rows are
+    /// the EXACT cluster centers (unit basis vectors `e_(2·i)` — pairwise L2
+    /// = √2, maximally separated); every other row `i` is a noisy member of
+    /// cluster `(i - TEST_CLUSTERS) % TEST_CLUSTERS`: center + per-dim
+    /// Gaussian noise (σ = [`TEST_NOISE_SIGMA`]).
+    ///
+    /// Why clustered (the old uniform geometry was flaky ~1/15 runs): the
+    /// top-1 assertions of this module (query = an exact stored row must
+    /// return that row) query a CENTER row. A center is the strict global
+    /// minimum of its cluster (distance 0) AND the nearest neighbour of
+    /// nearly every member (member→center L2 ~ 0.32 vs member↔member L2
+    /// ~ 0.45), so it has a large in-degree in the HNSW graph and is
+    /// structurally reachable by the search beam. A noisy member row has no
+    /// such guarantee: in a homogeneous dense ball (uniform or clustered) a
+    /// member can have in-degree 0 in the probabilistic HNSW graph and be
+    /// unreachable — observed empirically during the revision.
+    fn rows(offset: u32, n: usize) -> Vec<(u32, Vec<f32>)> {
+        (0..n)
+            .map(|i| {
+                let id = offset + i as u32;
+                let center = if i < TEST_CLUSTERS {
+                    i
+                } else {
+                    (i - TEST_CLUSTERS) % TEST_CLUSTERS
+                };
+                let mut row = vec![0.0f32; 1024];
+                row[center * 2] = 1.0;
+                if i >= TEST_CLUSTERS {
+                    let mut gauss = Gauss::new(0xA11CE + id as u64);
+                    for value in row.iter_mut() {
+                        *value += (TEST_NOISE_SIGMA * gauss.sample()) as f32;
+                    }
+                }
+                (id, row)
+            })
             .collect()
     }
 
@@ -591,17 +671,18 @@ mod tests {
         let dir = TempDir::new();
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create engine");
 
-        let data = rows(2500); // spans 3 Arrow batches of 1000 rows
+        let data = rows(0, 2500); // spans 3 Arrow batches of 1000 rows
         engine
             .insert_batch(&batch_refs(&data))
             .expect("insert 2500 rows");
         engine.build_index().expect("build IvfHnswSq index");
 
-        // Query = an exact stored row: top-1 must be that row at ~0 distance,
-        // and the results must be sorted by distance ascending.
-        let results = engine.search(&data[123].1, 10).expect("search");
+        // Query = an exact stored row (a cluster center: see `rows`): top-1
+        // must be that row at ~0 distance, and the results must be sorted by
+        // distance ascending.
+        let results = engine.search(&data[3].1, 10).expect("search");
         assert_eq!(results.len(), 10, "10 results for 2500 stored rows");
-        assert_eq!(results[0].0, 123, "top-1 must be the queried row");
+        assert_eq!(results[0].0, 3, "top-1 must be the queried row");
         assert!(
             results[0].1 < 1e-4,
             "top-1 distance must be ~0, got {}",
@@ -625,7 +706,7 @@ mod tests {
     #[test]
     fn reopen_without_rebuild_sees_data() {
         let dir = TempDir::new();
-        let data = rows(500);
+        let data = rows(0, 500);
         let query = data[7].1.clone();
 
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create");
@@ -739,7 +820,7 @@ mod tests {
     fn delete_removes_rows_from_search() {
         let dir = TempDir::new();
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create");
-        let data = rows(500);
+        let data = rows(0, 500);
         engine.insert_batch(&batch_refs(&data)).expect("insert");
         engine.build_index().expect("build");
 
@@ -761,7 +842,7 @@ mod tests {
     fn delete_is_idempotent_for_absent_ids() {
         let dir = TempDir::new();
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create");
-        let data = rows(100);
+        let data = rows(0, 100);
         engine.insert_batch(&batch_refs(&data)).expect("insert");
         engine.build_index().expect("build");
 
@@ -787,7 +868,7 @@ mod tests {
     fn delete_batches_long_id_lists() {
         let dir = TempDir::new();
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create");
-        let data = rows(1500);
+        let data = rows(0, 1500);
         engine.insert_batch(&batch_refs(&data)).expect("insert");
         engine.build_index().expect("build");
 
@@ -807,7 +888,7 @@ mod tests {
         assert_eq!(engine.count().expect("count"), 0);
         assert!(engine.chunk_ids().expect("chunk_ids").is_empty());
 
-        let data = rows(1200); // spans 2 Arrow batches
+        let data = rows(0, 1200); // spans 2 Arrow batches
         engine.insert_batch(&batch_refs(&data)).expect("insert");
         assert_eq!(engine.count().expect("count"), 1200);
         let mut ids = engine.chunk_ids().expect("chunk_ids");
@@ -826,15 +907,13 @@ mod tests {
     fn rebuild_replaces_content_without_accumulation() {
         let dir = TempDir::new();
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create");
-        let first = rows(300);
+        let first = rows(0, 300);
         engine
             .insert_batch(&batch_refs(&first))
             .expect("insert first");
         engine.build_index().expect("build first");
 
-        let second: Vec<(u32, Vec<f32>)> = (300..600)
-            .map(|id| (id, seeded_vector(0xBEEF + id as u64, 1024)))
-            .collect();
+        let second = rows(300, 300);
         engine.rebuild(&second).expect("rebuild");
 
         // No accumulation: exactly the new rows, none of the first set.
@@ -845,12 +924,19 @@ mod tests {
 
         // The index was rebuilt: a new row is top-1 for its own vector, and a
         // query equal to a replaced (old) row must not return the old id.
-        let results = engine.search(&second[100].1, 5).expect("search new");
-        assert_eq!(results[0].0, 400, "new row 300+100 must be top-1");
+        // `second[3]` is a cluster center (see `rows`) — structurally reliable.
+        let results = engine.search(&second[3].1, 5).expect("search new");
+        assert_eq!(results[0].0, 303, "new center row 300+3 must be top-1");
         let stale = engine.search(&first[0].1, 10).expect("search stale query");
         assert!(
             !stale.iter().any(|(id, _)| *id < 300),
             "old ids must be gone: {stale:?}"
+        );
+        // The same center vector is now stored under the new id 300, so it is
+        // the exact top-1 for the stale query.
+        assert_eq!(
+            stale[0].0, 300,
+            "identical vector must be top-1 under new id"
         );
     }
 
@@ -859,7 +945,7 @@ mod tests {
     fn rebuild_with_empty_rows_empties_the_index() {
         let dir = TempDir::new();
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create");
-        let data = rows(100);
+        let data = rows(0, 100);
         engine.insert_batch(&batch_refs(&data)).expect("insert");
         engine.build_index().expect("build");
 
@@ -873,7 +959,7 @@ mod tests {
     #[test]
     fn reopen_after_lifecycle_ops_sees_everything() {
         let dir = TempDir::new();
-        let data = rows(400);
+        let data = rows(0, 400);
         let query = data[5].1.clone();
 
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create");
@@ -890,7 +976,7 @@ mod tests {
         assert!(!results.iter().any(|(id, _)| *id == 5 || *id == 137));
 
         // A rebuild on the reopened engine persists as well.
-        let replacement = rows(50);
+        let replacement = rows(0, 50);
         engine.rebuild(&replacement).expect("rebuild");
         drop(engine);
         let engine = LanceEngine::open(&dir.0, test_config()).expect("reopen after rebuild");
@@ -905,7 +991,7 @@ mod tests {
     fn trait_object_delegates_to_engine() {
         let dir = TempDir::new();
         let engine = LanceEngine::create(&dir.0, test_config()).expect("create");
-        let data = rows(200);
+        let data = rows(0, 200);
         let index: &dyn VectorIndex = &engine;
         index
             .insert_batch(&batch_refs(&data))
@@ -916,7 +1002,7 @@ mod tests {
         assert_eq!(results[0].0, 1);
         index.delete_by_chunk_ids(&[1]).expect("delete via trait");
         assert_eq!(index.count().expect("count"), 199);
-        let replacement = rows(10);
+        let replacement = rows(0, 10);
         index.rebuild(&replacement).expect("rebuild via trait");
         assert_eq!(index.count().expect("count"), 10);
     }
