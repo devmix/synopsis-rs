@@ -24,7 +24,7 @@
   - **Зависимости:** 1.1.
   - **Референс:** archive native-seam-spikes design D4 (формат дословно); design D6 этого change'а (почему модуль живёт в vectors).
 
-- [ ] 1.3 Движок: таблица, стриминговая вставка, индекс IvfHnswSq, kNN-поиск
+- [x] 1.3 Движок: таблица, стриминговая вставка, индекс IvfHnswSq, kNN-поиск
   - **Цель:** `LanceEngine` — реализация ядра trait'а на lancedb: создание/открытие таблицы, батчевая вставка, построение индекса, поиск top-k.
   - **Scope файлов:** `crates/vectors/src/engine.rs`, `crates/vectors/src/lib.rs` (ре-экспорт).
   - **Детали:** схема таблицы: `chunk_id u32` + `vector FixedSizeList<Float32, dim>` (design D4); выделенный tokio Runtime внутри движка (worker_threads≤2), sync-фасад через `block_on` (design D2 — вызывать только вне async-контекста, задокументировать); вставка Arrow RecordBatch'ами (~1000 строк/батч); `build_index()` — IvfHnswSq с параметрами конфига; `search(&[f32], k)` → `Vec<(u32, f32)>` по `_distance` asc, с nprobes/efSearch из конфига; ошибки: открытие несуществующего индекса, несовпадение dim, пустой индекс → пустой результат (не ошибка).
