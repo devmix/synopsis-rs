@@ -6,7 +6,7 @@
 
 ---
 
-- [ ] 1.1 Feasibility-гейт (petgraph + cel) + скаффолдинг крейта
+- [x] 1.1 Feasibility-гейт (petgraph + cel) + скаффолдинг крейта
   - **Цель:** снять риски двух новых зависимостей до написания кода графа и создать каркас крейта.
   - **Scope файлов:** `crates/graph/Cargo.toml`, `crates/graph/src/lib.rs` (+`error.rs` по конвенции workspace), корневой `Cargo.toml`, `Cargo.lock`.
   - **Детали:** workspace-пины `petgraph = "0.8"` и `cel = "0.14"` (замена cel-interpreter — frozen-stack решение человека 2026-08-22, design D2). Feasibility: (а) host-сборка (MSRV vs 1.96.0); (б) `cargo zigbuild --release --target x86_64-pc-windows-gnu` и `--target aarch64-apple-darwin` (обе зависимости pure Rust — ожидается PASS; darwin-стаб уже вендорен в ci/darwin-sdk); (в) верификация API cel по исходникам registry (`~/.cargo/registry/src/*/cel-0.14*/`): регистрация кастомных функций (add_function/FunctionContext), типы значений (Value), разбор выражений — НЕ угадывать. Каркас: `GraphError` (thiserror, варианты уточнить по задачам), module docs с намерением крейта (design D1).
