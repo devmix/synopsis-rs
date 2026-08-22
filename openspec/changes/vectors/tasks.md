@@ -41,7 +41,7 @@
   - **Зависимости:** 1.3.
   - **Референс:** design D3 (трёхслойный протокол + анализ режимов сбоя); `../synopsis/internal/gc/documents_gc.go` FullClearDocByID шаг 5 (порядок «векторы → чанки» сохранён из оракула).
 
-- [ ] 1.5 Конфиг: опциональная секция `vectors:` в preset
+- [x] 1.5 Конфиг: опциональная секция `vectors:` в preset
   - **Цель:** аддитивное расширение config-format (решение человека 2026-08-21): секция с полями индекса, дефолты ADR 0003.
   - **Scope файлов:** `crates/config/src/preset.rs` (+ модуль при необходимости), тесты config.
   - **Детали:** `#[serde(default, skip_serializing_if = "Option::is_none")]`-семантика: отсутствие секции → дефолты (dim=1024, m=16, ef_construction=100, num_partitions=256, nprobes=32, ef_search=200); секция хранит сырые поля — БЕЗ типов крейта vectors (направление зависимостей, design D7); маппинг — wiring в будущих change'ах.
