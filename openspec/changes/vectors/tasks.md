@@ -6,7 +6,7 @@
 
 ---
 
-- [ ] 1.1 Скаффолдинг крейта + feasibility-гейт lancedb
+- [x] 1.1 Скаффолдинг крейта + feasibility-гейт lancedb
   - **Цель:** создать каркас `crates/vectors` (trait `VectorIndex`, `VectorIndexConfig` с дефолтами ADR 0003, `VectorsError`) и снять главный риск — тяжёлая зависимость lancedb: host-сборка, спот-кросс-компиляция, размер бинаря.
   - **Scope файлов:** `crates/vectors/Cargo.toml`, `crates/vectors/src/lib.rs`; корневой `Cargo.toml` (workspace-пин `lancedb`); `Cargo.lock`.
   - **Детали:** trait dyn-совместимый Send+Sync, методы sync (design D2): `insert`, `search`, `delete_by_chunk_ids`, `chunk_ids`, `count`, `flush`/`build_index`, `rebuild` — точную форму уточнить по задачам 1.3/1.4, но сигнатуры зафиксировать здесь (параметры `(chunk_id: u32, vector: &[f32])`, поиск → `Vec<(u32, f32)>`). `VectorIndexConfig { dim=1024, m=16, ef_construction=100, num_partitions=256, nprobes=32, ef_search=200 }` (design D4/D7). Зависимость: `lancedb = { version = "0.37", default-features = false }` + минимальные фичи для локального filesystem (точный состав верифицировать по исходникам registry `~/.cargo/registry/src/*/lancedb-0.37*/Cargo.toml` — нужны local/oss storage, НЕ aws/azure/gcp/huggingface); выделенный tokio runtime внутри движка появится в 1.3 — здесь только dep-компиляция.
@@ -14,6 +14,7 @@
   - **Критерии приёмки:** все гейты зелёные; trait+config+error задокументированы (missing_docs=deny); юнит-тесты дефолтов конфига и валидации (dim>0, k>0); feasibility-пункты (а)(б)(в) выполнены и записаны; при провале (а)/(б) — СТОП и эскалация до задач движка.
   - **Зависимости:** нет (первая задача change'а).
   - **Референс:** `docs/adr/0003-ann-engine.md`; design D1/D2/D5; заголовок текущего `crates/vectors/src/lib.rs` (комментарий D1 tier 0 — сохранить намерение); `.archive/spikes/Cargo.toml` (пин lancedb спайков).
+  - **Ревизия 2 (2026-08-21, решение человека по эскалации feasibility (б)):** провал aarch64-apple-darwin доказан lancedb-специфичным (lance-arrow cdylib → core-foundation-sys → `-framework CoreFoundation`; zig 0.16 не шипует darwin framework-стабы, zig#1349). Выбран вариант **A**: вендорить минимальный `CoreFoundation.tbd`-стаб в репо + framework search path только для darwin-ноги CI. Scope расширен: `.github/workflows/ci.yml`, новый каталог `ci/darwin-sdk/` (стаб). Механизм: `CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS` с `-C link-arg=-F<repo>/ci/darwin-sdk` (затрагивает только darwin-таргет); точный состав символов стаба — из ошибок линковки (~8 CF-символов iana-time-zone: CFTimeZoneCopySystem, CFTimeZoneGetName, CFStringGetBytes, CFStringGetCStringPtr, CFStringGetLength, CFRelease, …). Критерий (б)-darwin перевыполняется ЛОКАЛЬНО тем же механизмом, что в CI (env-var + zigbuild) — это условие закрытия задачи.
 
 - [ ] 1.2 Модуль synx: формат фикстур vectors.bin (SYNX)
   - **Цель:** потоковый reader/writer бинарного формата SYNX (контракт оракул ↔ harness) в крейте vectors.
