@@ -4,9 +4,9 @@
 //!
 //! The public seam is [`VectorIndex`] (object-safe; consumers hold
 //! `Arc<dyn VectorIndex>`), [`VectorIndexConfig`] (index/query parameters, defaults per
-//! ADR 0003) and [`VectorsError`]. The LanceDB-backed engine (module `engine`, task 1.3)
-//! implements the trait with sync methods over a dedicated tokio runtime (design D2):
-//! call it only from sync contexts or `spawn_blocking` workers.
+//! ADR 0003) and [`VectorsError`]. The LanceDB-backed engine ([`engine::LanceEngine`])
+//! runs the async LanceDB API on a dedicated tokio runtime (design D2) behind sync
+//! methods: call it only from sync contexts or `spawn_blocking` workers.
 //!
 //! Inputs are ready-made `(chunk_id, Vec<f32>)` pairs; `chunk_id` is the application-level
 //! primary key (the SQLite chunk row id). The dimensionality is a configuration parameter -
@@ -16,7 +16,10 @@
 //! oracle ↔ harness vector-dump contract (native-seam-spikes design D4): a streaming
 //! reader and a chunk_id-sorted writer.
 
+pub mod engine;
 pub mod synx;
+
+pub use engine::LanceEngine;
 
 use thiserror::Error;
 
@@ -34,6 +37,10 @@ pub enum VectorsError {
         /// Length of the offending vector.
         actual: usize,
     },
+    /// The requested index does not exist (e.g. opening a path with no table).
+    /// The payload is the data directory that was looked up.
+    #[error("index not found at {0}")]
+    NotFound(String),
     /// The ANN engine (LanceDB) reported a failure.
     #[error("engine error: {0}")]
     Engine(String),
