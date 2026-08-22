@@ -11,6 +11,12 @@
 //! Inputs are ready-made `(chunk_id, Vec<f32>)` pairs; `chunk_id` is the application-level
 //! primary key (the SQLite chunk row id). The dimensionality is a configuration parameter -
 //! this crate never calls the embedding crate, so the query path does not load the model.
+//!
+//! Module [`synx`] implements the SYNX binary fixture format (`vectors.bin`), the
+//! oracle ↔ harness vector-dump contract (native-seam-spikes design D4): a streaming
+//! reader and a chunk_id-sorted writer.
+
+pub mod synx;
 
 use thiserror::Error;
 
@@ -34,6 +40,19 @@ pub enum VectorsError {
     /// A failure while accessing the on-disk index.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// A SYNX fixture file does not start with the `"SYNX"` magic bytes.
+    #[error("SYNX: bad magic")]
+    SyNxBadMagic,
+    /// A SYNX fixture file declares an unsupported format version.
+    #[error("SYNX: unsupported version {0} (expected 1)")]
+    SyNxBadVersion(u32),
+    /// A SYNX fixture file is truncated: the header or a row ends before its
+    /// promised number of bytes. The payload says where.
+    #[error("SYNX: truncated file ({0})")]
+    SyNxTruncated(String),
+    /// A SYNX fixture file declares zero dimensionality.
+    #[error("SYNX: dim must be > 0")]
+    SyNxZeroDim,
 }
 
 /// Index and query parameters for the ANN engine.
