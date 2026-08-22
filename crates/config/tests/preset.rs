@@ -170,6 +170,13 @@ fn fixture_parses_all_sections_with_expected_values() {
     assert_eq!(sv.host, "0.0.0.0");
     assert_eq!(sv.port, 8080);
 
+    // vectors (additive section, design D7) ---------------------------------
+    // The verbatim oracle fixture predates the section: it parses fine and the
+    // section stays absent, resolving to the ADR 0003 defaults.
+    assert!(cfg.vectors.is_none());
+    assert_eq!(cfg.vectors_config().dim, 1024);
+    assert_eq!(cfg.vectors_config().ef_search, 200);
+
     // The whole document is internally consistent for its (local) embeddings mode.
     cfg.validate()
         .expect("fixture must pass validation in local mode");

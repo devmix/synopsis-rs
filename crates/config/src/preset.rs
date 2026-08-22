@@ -19,6 +19,12 @@
 //! * **Go's buggy bool defaults are fixed** (D13, BREAKING): `enable_graph`,
 //!   `load_on_startup` and `watch_sources` use presence semantics — absent →
 //!   true, an explicit `false` is respected.
+//! * **`vectors:` is an additive extension with no oracle counterpart** (design
+//!   D7, human decision 2026-08-21): the oracle's vec0 brute-force had no ANN
+//!   parameters to tune, so the section stores raw fields with ADR 0003
+//!   defaults and Go's ignore-unknown-keys behavior keeps old presets
+//!   compatible. An absent section stays `None` (and is skipped on
+//!   re-serialization); [`Config::vectors_config`] resolves it to the defaults.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -189,6 +195,13 @@ pub struct Config {
     pub logging: LoggingConfig,
     /// Cross-domain entity linker.
     pub linker: LinkerConfig,
+    /// ANN index tuning for the vector search leg (design D7 — additive
+    /// extension of the frozen config format, human decision 2026-08-21).
+    /// `None` means the section was absent from the YAML; an absent section
+    /// resolves to the ADR 0003 defaults via
+    /// [`Config::vectors_config`](Config::vectors_config).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vectors: Option<VectorsConfig>,
 }
 
 impl Config {
@@ -410,6 +423,15 @@ impl Config {
             EmbeddingsMode::Api => self.embeddings.api.vector_dim,
             EmbeddingsMode::Unknown(_) => 0,
         }
+    }
+
+    /// Returns the effective ANN index configuration (design D7): the parsed
+    /// `vectors:` section when present, otherwise the ADR 0003 defaults
+    /// ([`VectorsConfig::default`]). The mapping to `vectors::VectorIndexConfig`
+    /// happens at the wiring level (a future change); field names and types
+    /// already mirror it, so the mapping is a field-by-field copy.
+    pub fn vectors_config(&self) -> VectorsConfig {
+        self.vectors.unwrap_or_default()
     }
 
     /// Returns the main SQLite database path (Go `DBPath`): the explicit
@@ -701,6 +723,82 @@ pub struct SearchConfig {
     pub recent_days: i32,
     /// Authority-based boost factors keyed by authority name.
     pub authority_boost: HashMap<String, f64>,
+}
+
+// ── Vectors (ANN index) ───────────────────────────────────────────────────
+//
+// Additive extension of the frozen config format (design D7, human decision
+// 2026-08-21): the oracle has no ANN parameters (vec0 brute-force had nothing
+// to tune) and Go ignores unknown keys, so presets without the section stay
+// compatible. Defaults are the ADR 0003 configuration.
+
+/// Declares the serde default helper for a `vectors:` section field (design
+/// D7): a key missing inside a present section resolves to the ADR 0003 value,
+/// the same as an absent section. The generated function is the single source
+/// of truth for [`VectorsConfig::default()`].
+macro_rules! vectors_adr_default {
+    ($name:ident, $value:literal) => {
+        /// ADR 0003 default for the matching `vectors:` section field (design D7).
+        fn $name() -> usize {
+            $value
+        }
+    };
+}
+
+vectors_adr_default!(default_vectors_dim, 1024);
+vectors_adr_default!(default_vectors_m, 16);
+vectors_adr_default!(default_vectors_ef_construction, 100);
+vectors_adr_default!(default_vectors_num_partitions, 256);
+vectors_adr_default!(default_vectors_nprobes, 32);
+vectors_adr_default!(default_vectors_ef_search, 200);
+
+/// ANN index and query parameters for the vector search leg (design D7).
+///
+/// Raw preset fields only: this crate does not depend on `vectors`
+/// (dependency direction, design D7), so the mapping to
+/// `vectors::VectorIndexConfig` happens at the wiring level (a future
+/// change). Field names and types mirror `VectorIndexConfig` so the mapping
+/// is a field-by-field copy.
+///
+/// Defaults are the ADR 0003 configuration; a key missing inside a present
+/// section resolves to the same value as an absent section
+/// ([`Config::vectors_config`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VectorsConfig {
+    /// Vector dimensionality (bge-m3: 1024).
+    #[serde(default = "default_vectors_dim")]
+    pub dim: usize,
+    /// HNSW graph degree M.
+    #[serde(default = "default_vectors_m")]
+    pub m: usize,
+    /// HNSW efConstruction: candidate list size during index build.
+    #[serde(default = "default_vectors_ef_construction")]
+    pub ef_construction: usize,
+    /// Number of IVF partitions (coarse-quantizer centroids).
+    #[serde(default = "default_vectors_num_partitions")]
+    pub num_partitions: usize,
+    /// IVF partitions probed per query; runtime-tunable (ADR 0003 mitigation #1).
+    #[serde(default = "default_vectors_nprobes")]
+    pub nprobes: usize,
+    /// HNSW efSearch: candidate list size during query; runtime-tunable.
+    #[serde(default = "default_vectors_ef_search")]
+    pub ef_search: usize,
+}
+
+impl Default for VectorsConfig {
+    /// ADR 0003 configuration: 1024-dim, M=16, efConstruction=100, 256
+    /// partitions, nprobes=32, efSearch=200 — the per-field serde defaults.
+    fn default() -> Self {
+        Self {
+            dim: default_vectors_dim(),
+            m: default_vectors_m(),
+            ef_construction: default_vectors_ef_construction(),
+            num_partitions: default_vectors_num_partitions(),
+            nprobes: default_vectors_nprobes(),
+            ef_search: default_vectors_ef_search(),
+        }
+    }
 }
 
 // ── Graph / storage ───────────────────────────────────────────────────────
@@ -1559,5 +1657,99 @@ ingestion:
         let mut zeroed = Config::default();
         zeroed.apply_defaults();
         assert_eq!(zeroed.ingestion.chunking.markdown.overlap_size, 0);
+    }
+
+    // ── vectors section (vectors change task 1.5, design D7) ───────────────
+
+    #[test]
+    fn vectors_section_absent_defaults_to_adr_0003() {
+        // Preset without the section: load keeps it None; vectors_config()
+        // resolves to the ADR 0003 defaults.
+        let cfg = parse("server:\n  name: x\n");
+        assert!(cfg.vectors.is_none());
+        let eff = cfg.vectors_config();
+        assert_eq!(eff.dim, 1024);
+        assert_eq!(eff.m, 16);
+        assert_eq!(eff.ef_construction, 100);
+        assert_eq!(eff.num_partitions, 256);
+        assert_eq!(eff.nprobes, 32);
+        assert_eq!(eff.ef_search, 200);
+        assert_eq!(eff, VectorsConfig::default());
+
+        // The zero-value config resolves the same way.
+        assert_eq!(Config::default().vectors_config(), VectorsConfig::default());
+    }
+
+    #[test]
+    fn vectors_section_full_override() {
+        let cfg = parse(
+            r#"
+vectors:
+  dim: 512
+  m: 8
+  ef_construction: 64
+  num_partitions: 16
+  nprobes: 4
+  ef_search: 100
+"#,
+        );
+        assert_eq!(
+            cfg.vectors_config(),
+            VectorsConfig {
+                dim: 512,
+                m: 8,
+                ef_construction: 64,
+                num_partitions: 16,
+                nprobes: 4,
+                ef_search: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn vectors_section_partial_override_fills_adr_defaults() {
+        // A key missing inside a present section resolves to the ADR 0003
+        // value — the same as an absent section.
+        let cfg = parse("vectors:\n  ef_search: 300\n");
+        let eff = cfg.vectors_config();
+        assert_eq!(eff.ef_search, 300);
+        assert_eq!(eff.dim, 1024);
+        assert_eq!(eff.m, 16);
+        assert_eq!(eff.ef_construction, 100);
+        assert_eq!(eff.num_partitions, 256);
+        assert_eq!(eff.nprobes, 32);
+    }
+
+    #[test]
+    fn vectors_section_unknown_key_does_not_break_parse() {
+        // Additive safety (config-format spec): unknown keys are ignored.
+        let cfg = parse("vectors:\n  bogus: 1\n  dim: 512\n");
+        let eff = cfg.vectors_config();
+        assert_eq!(eff.dim, 512);
+        assert_eq!(eff.ef_search, 200);
+    }
+
+    #[test]
+    fn vectors_section_yaml_roundtrip() {
+        // Present section survives serialize -> reparse byte-stably.
+        let cfg = parse("server:\n  name: synopsis\nvectors:\n  dim: 512\n  ef_search: 300\n");
+        let yaml = noyalib::to_string(&cfg).expect("serialize");
+        let back: Config = noyalib::from_str(&yaml).expect("reparse");
+        assert_eq!(back.vectors, cfg.vectors);
+        assert_eq!(noyalib::to_string(&back).expect("serialize"), yaml);
+    }
+
+    #[test]
+    fn vectors_section_skipped_in_yaml_when_absent() {
+        // Presets without the section stay compatible: serializing a config
+        // parsed from one does not invent the section.
+        let cfg = parse("server:\n  name: x\n");
+        let yaml = noyalib::to_string(&cfg).expect("serialize");
+        assert!(
+            !yaml.contains("\nvectors:"),
+            "absent section must not be serialized: {yaml}"
+        );
+        let back: Config = noyalib::from_str(&yaml).expect("reparse");
+        assert!(back.vectors.is_none());
     }
 }
