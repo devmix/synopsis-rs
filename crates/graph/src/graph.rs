@@ -63,8 +63,11 @@
 //!   the oracle's own cross-domain lookup (lowest matching id).
 //! - Fact edge `domain`/`metadata` are not carried in the edge weight: the
 //!   oracle's traverser never reads them (boundary checks use node domains).
-//! - The oracle's `avgDegree` double-counts every edge (outgoing + incoming)
-//!   — a Go bug; task 1.5 computes `2*E/N`.
+//! - The oracle's `avgDegree` sums its outgoing and incoming adjacency maps,
+//!   counting every edge twice — the standard average TOTAL degree of a
+//!   directed graph, `2*E/N` (the oracle's own tests pin exactly these
+//!   values); task 1.5 (metrics.rs) derives the same `2*E/N` directly from
+//!   the `DiGraph` edge count.
 //! - [`Graph::find_partial`] INCLUDES an exact name match as the top
 //!   relevance tier; the oracle's `FindEntityPartial` skipped exact matches
 //!   ("the caller should use `FindEntityExact`") — a footgun for a

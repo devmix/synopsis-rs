@@ -22,10 +22,12 @@
 
 pub mod error;
 pub mod graph;
+pub mod metrics;
 pub mod traverser;
 
 pub use error::GraphError;
 pub use graph::{EdgeKind, EntityNode, Graph, GraphEdge, GraphIndex};
+pub use metrics::GraphStats;
 pub use traverser::{
     DEFAULT_MAX_DEPTH, DEFAULT_MAX_NODES, Direction, HARD_MAX_DEPTH, TraversalEdge,
     TraverseOptions, TraverseResult,
