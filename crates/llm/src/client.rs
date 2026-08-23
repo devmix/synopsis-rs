@@ -1,11 +1,22 @@
 //! The call core: build the chat-completions request, send it with Bearer
-//! auth, and parse the response into the model's text content.
+//! auth, retry transient failures with exponential backoff, and parse the
+//! response into the model's text content.
 //!
 //! [`LlmClient`] is the public seam (design D1). It is built once from a
 //! validated [`LlmConfig`](config::preset::LlmConfig) (see [`LlmClient::new`])
-//! and shared across threads; [`LlmClient::call`] performs a single blocking
+//! and shared across threads; [`LlmClient::call`] performs a blocking
 //! `POST {api_base_url}/chat/completions` and returns the model's content
 //! (design D2).
+//!
+//! Retry policy (task 1.3): [`LlmError::is_retryable`] is the single decision
+//! point. Retryable failures (429/5xx, transport) are retried up to
+//! `max_retries` times; before each retry the client sleeps an exponential
+//! backoff — `500 ms · 2^(retry-1)` scaled by a ±20% jitter. Non-retryable
+//! failures (other statuses, empty content, parse, configuration) are
+//! returned immediately. Exhausting the budget returns
+//! [`LlmError::RetriesExhausted`] carrying the last attempt's error. The
+//! sleeper is injectable (the test-only `with_sleeper` seam) so no test ever
+//! sleeps for real.
 //!
 //! Deliberate deviations from the oracle (`../synopsis/internal/llm/client.go`),
 //! recorded per the migration principles:
@@ -17,11 +28,21 @@
 //!   every OpenAI-compatible API accepts them;
 //! - silent config defaults are replaced by fail-fast validation in
 //!   [`LlmClient::new`] (a zero timeout / retry count / token budget is a
-//!   configuration bug, not a value to paper over).
-//!
-//! The retry policy (429/5xx + transport, exponential backoff with injected
-//! delays) lands in task 1.3; this module already classifies every error via
-//! [`LlmError::is_retryable`] so that policy has a single decision point.
+//!   configuration bug, not a value to paper over);
+//! - backoff base is 500 ms with multiplicative ±20% jitter (the oracle uses
+//!   a 1 s base and adds a fixed 0–500 ms): a faster first retry suits the
+//!   laptop-local use case, and multiplicative jitter scales with the delay
+//!   instead of becoming negligible as the backoff grows;
+//! - the request body is built once and re-sent on every retry (the oracle
+//!   rebuilds it per attempt); the body is a pure function of the config and
+//!   the prompts, so the wire bytes are identical on each attempt;
+//! - jitter draws come from a small hand-rolled splitmix64 stream instead of a
+//!   `rand` dependency (not in the frozen stack): jitter only needs to
+//!   desynchronize concurrent retry loops, not to be cryptographic.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use config::preset::{LlmConfig, ResponseFormat};
 use serde::{Deserialize, Serialize};
@@ -29,13 +50,22 @@ use ureq::{Agent, http::Uri};
 
 use crate::error::LlmError;
 
+/// The first retry's backoff: 500 ms (documented choice; the oracle uses 1 s).
+const BACKOFF_BASE_MS: u64 = 500;
+/// The exponential factor: every retry doubles the previous delay.
+const BACKOFF_FACTOR: u64 = 2;
+/// The jitter spread: each delay is scaled by a random factor in [0.8, 1.2).
+const JITTER_SPREAD: f64 = 0.2;
+/// The splitmix64 increment (the 64-bit golden ratio).
+const SPLITMIX_GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
+
 /// Synchronous client for an OpenAI-compatible chat completions endpoint.
 ///
 /// Built once from a validated [`LlmConfig`](config::preset::LlmConfig) and
-/// shared across threads (`Send + Sync`; the ureq connection pool lives behind
-/// an `Arc`, so cloning is cheap). Methods block — call from sync contexts or
-/// `spawn_blocking` workers, never from inside an async task (design D2).
-#[derive(Clone)]
+/// shared across threads (`Send + Sync`; the ureq connection pool and the
+/// backoff sleeper live behind `Arc`s, so cloning is cheap). Methods block —
+/// call from sync contexts or `spawn_blocking` workers, never from inside an
+/// async task (design D2).
 pub struct LlmClient {
     /// Shared connection pool: global timeout, identity, and status handling
     /// are configured once in [`LlmClient::new`].
@@ -44,8 +74,38 @@ pub struct LlmClient {
     /// base).
     endpoint: String,
     /// The validated configuration: single source of all request parameters
-    /// (model, sampling, budget, auth).
+    /// (model, sampling, budget, auth, retry budget).
     config: LlmConfig,
+    /// The backoff sleeper between retries. The default is a real
+    /// [`std::thread::sleep`]; tests replace it via the `with_sleeper` seam
+    /// so no test sleeps.
+    sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
+    /// The seed of this client's splitmix64 jitter stream (see
+    /// [`LlmClient::next_jitter`]).
+    rng_seed: u64,
+    /// The draw counter of the jitter stream.
+    rng_counter: AtomicU64,
+}
+
+impl Clone for LlmClient {
+    fn clone(&self) -> Self {
+        // The clone continues the jitter stream where the original left off,
+        // so two clones never produce the same jitter sequence (identical
+        // sequences would synchronize their retry timing).
+        let next_state = self.rng_seed.wrapping_add(
+            self.rng_counter
+                .load(Ordering::Relaxed)
+                .wrapping_mul(SPLITMIX_GOLDEN),
+        );
+        Self {
+            agent: self.agent.clone(),
+            endpoint: self.endpoint.clone(),
+            config: self.config.clone(),
+            sleeper: Arc::clone(&self.sleeper),
+            rng_seed: splitmix64_mix(next_state),
+            rng_counter: AtomicU64::new(0),
+        }
+    }
 }
 
 impl LlmClient {
@@ -135,20 +195,51 @@ impl LlmClient {
             .user_agent("synopsis/0.1.0")
             .build();
 
+        // Jitter stream seed: the wall clock, mixed so its low bits (which
+        // carry the least entropy) do not bias the early draws.
+        let elapsed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO);
+        let rng_seed = splitmix64_mix(elapsed.as_nanos() as u64);
+
         Ok(Self {
             agent: Agent::new_with_config(agent_config),
             endpoint,
             config: config.clone(),
+            sleeper: Arc::new(std::thread::sleep),
+            rng_seed,
+            rng_counter: AtomicU64::new(0),
         })
+    }
+
+    /// Replaces the backoff sleeper (test seam, compiled into test builds
+    /// only).
+    ///
+    /// The default sleeper is a real [`std::thread::sleep`]; tests install a
+    /// recorder to observe the backoff delays without sleeping. The sleeper
+    /// runs on the calling thread, between retry attempts.
+    #[cfg(test)]
+    pub(crate) fn with_sleeper(self, sleeper: impl Fn(Duration) + Send + Sync + 'static) -> Self {
+        Self {
+            sleeper: Arc::new(sleeper),
+            ..self
+        }
     }
 
     /// Performs one chat completion and returns the model's text content.
     ///
     /// Builds the request body (model, `system` + `user` messages, sampling,
-    /// and the structured-output mode), `POST`s it to
+    /// and the structured-output mode) once, then `POST`s it to
     /// `{api_base_url}/chat/completions` with an `Authorization: Bearer`
-    /// header only when `api_key` is non-empty, and parses
-    /// `choices[0].message.content` (trimmed) out of the `200` response.
+    /// header only when `api_key` is non-empty, retrying transient failures
+    /// (task 1.3) and parsing `choices[0].message.content` (trimmed) out of
+    /// the final `200` response.
+    ///
+    /// Retry policy: up to `max_retries` retries after the initial attempt
+    /// (total attempts = `max_retries + 1`), each preceded by an exponential
+    /// backoff sleep ([`LlmClient::backoff_delay`]). Only retryable errors
+    /// ([`LlmError::is_retryable`]: 429/5xx, transport) are retried;
+    /// everything else is returned immediately.
     ///
     /// `schema` and `schema_name` are used only in
     /// [`ResponseFormat::JsonSchema`] mode: a non-empty `schema` is parsed as
@@ -156,7 +247,8 @@ impl LlmClient {
     /// defaulting the name to `llm_output` when `schema_name` is empty; an
     /// empty or absent `schema` falls back to `json_object` (oracle
     /// parity). In [`ResponseFormat::JsonObject`] mode both arguments are
-    /// ignored.
+    /// ignored. The schema is embedded in every retried request (the payload
+    /// is built once and re-sent verbatim).
     ///
     /// The per-request timeout is the config `timeout_ms`, applied globally to
     /// the connection pool in [`LlmClient::new`].
@@ -164,9 +256,11 @@ impl LlmClient {
     /// # Errors
     ///
     /// - [`LlmError::Configuration`] when a prompt is empty;
-    /// - [`LlmError::RetryableHttp`] for `429` / `5xx`;
-    /// - [`LlmError::HttpStatus`] for any other non-`200` status;
-    /// - [`LlmError::Transport`] for connection / DNS / timeout failures;
+    /// - [`LlmError::HttpStatus`] for a non-retryable non-`200` status (other
+    ///   4xx, 3xx, 1xx) — returned immediately;
+    /// - [`LlmError::RetriesExhausted`] when the retry budget is exhausted;
+    ///   carries the last attempt's [`LlmError::RetryableHttp`] (429/5xx) or
+    ///   [`LlmError::Transport`] (connection / DNS / timeout) error;
     /// - [`LlmError::EmptyContent`] for a `200` whose content is empty or
     ///   whitespace-only — non-retryable by design;
     /// - [`LlmError::Parse`] for a `200` whose body is not a chat completion
@@ -189,17 +283,60 @@ impl LlmClient {
             ));
         }
 
+        // Built once and re-sent on every retry: the body is a pure function
+        // of the config and the prompts, so the wire bytes are identical on
+        // each attempt (the oracle rebuilds it per attempt — same bytes).
         let body = self.build_request_body(system, user, schema, schema_name)?;
         let payload = serde_json::to_string(&body)
             .map_err(|err| LlmError::Parse(format!("failed to serialize request: {err}")))?;
 
+        self.call_with_retries(&payload)
+    }
+
+    /// Sends the pre-built payload, retrying retryable failures with backoff.
+    ///
+    /// Before every retry (never before the initial attempt) the sleeper is
+    /// invoked with [`LlmClient::backoff_delay`]. A non-retryable error is
+    /// returned immediately; exhausting the budget wraps the last attempt's
+    /// error in [`LlmError::RetriesExhausted`] (the oracle's
+    /// `exhausted N retries: <last>` — here `attempts` = total attempts).
+    fn call_with_retries(&self, payload: &str) -> Result<String, LlmError> {
+        let max_attempts = self.config.max_retries as u32 + 1;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            if attempt > 1 {
+                // `attempt - 1` is the 1-based retry index (first retry = 1).
+                (self.sleeper)(self.backoff_delay(attempt - 1));
+            }
+            match self.send_once(payload) {
+                Ok(content) => return Ok(content),
+                // Non-retryable: retrying produces the same result (or the
+                // configuration is broken).
+                Err(err) if !err.is_retryable() => return Err(err),
+                // The budget is used up: report exhaustion with the last
+                // attempt's cause.
+                Err(err) if attempt == max_attempts => {
+                    return Err(LlmError::RetriesExhausted {
+                        attempts: max_attempts,
+                        last: Box::new(err),
+                    });
+                }
+                // Retryable with budget left: back off and try again.
+                Err(_) => {}
+            }
+        }
+    }
+
+    /// One attempt: POST the payload, classify the status, parse the content.
+    fn send_once(&self, payload: &str) -> Result<String, LlmError> {
         let mut request = self.agent.post(&self.endpoint);
         if !self.config.api_key.is_empty() {
             request = request.header("Authorization", format!("Bearer {}", self.config.api_key));
         }
         let mut response = request
             .content_type("application/json")
-            .send(&payload)
+            .send(payload)
             .map_err(|err| LlmError::from_transport(err, &self.endpoint))?;
 
         let status = response.status();
@@ -209,6 +346,37 @@ impl LlmClient {
             .map_err(|err| LlmError::from_transport(err, &self.endpoint))?;
 
         Self::classify_and_parse(status.as_u16(), text)
+    }
+
+    /// The backoff delay before retry `retry` (1-based: 1 = the first retry).
+    ///
+    /// `BACKOFF_BASE_MS · BACKOFF_FACTOR^(retry-1)` scaled by a ±20% jitter
+    /// drawn from this client's splitmix64 stream. The ±20% bands of
+    /// consecutive retries are disjoint (…600 ms < 800 ms < 1600 ms…), so the
+    /// delays strictly grow even in the worst case.
+    fn backoff_delay(&self, retry: u32) -> Duration {
+        let mut scaled_ms = BACKOFF_BASE_MS;
+        // Bounded by the u64 bit width: past ~59 doublings the value has
+        // saturated anyway, so the cap only guards a pathological config.
+        for _ in 0..(retry.saturating_sub(1)).min(63) {
+            scaled_ms = scaled_ms.saturating_mul(BACKOFF_FACTOR);
+        }
+        let u = self.next_jitter(); // [0, 1)
+        let factor = 1.0 - JITTER_SPREAD + 2.0 * JITTER_SPREAD * u; // [0.8, 1.2)
+        Duration::from_millis((scaled_ms as f64 * factor) as u64)
+    }
+
+    /// The next value of the jitter stream, normalized to [0, 1).
+    ///
+    /// A hand-rolled splitmix64 stream instead of a `rand` dependency (not in
+    /// the frozen stack): jitter only needs to desynchronize concurrent retry
+    /// loops, not to be cryptographic.
+    fn next_jitter(&self) -> f64 {
+        let draw = self.rng_counter.fetch_add(1, Ordering::Relaxed);
+        let state = self
+            .rng_seed
+            .wrapping_add(draw.wrapping_mul(SPLITMIX_GOLDEN));
+        splitmix64_mix(state) as f64 / u64::MAX as f64
     }
 
     /// The model identifier this client calls (part of the linker cache key,
@@ -294,13 +462,23 @@ impl LlmClient {
     /// Maps an HTTP status plus body to a result or a classified error.
     fn classify_and_parse(status: u16, body: String) -> Result<String, LlmError> {
         match status {
-            // 429 (rate limited) and all 5xx are retryable (task 1.3).
+            // 429 (rate limited) and all 5xx are retryable:
+            // `call_with_retries` retries them; everything else is returned
+            // to the caller immediately.
             429 | 500..=599 => Err(LlmError::RetryableHttp { status, body }),
             200 => parse_chat_completion(&body),
             // Every other status (other 4xx, 3xx, 1xx) is non-retryable.
             _ => Err(LlmError::HttpStatus { status, body }),
         }
     }
+}
+
+/// The splitmix64 finalizer: a cheap, well-mixed 64-bit permutation.
+fn splitmix64_mix(x: u64) -> u64 {
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Parses a `200` response body into the model's text content.
@@ -849,42 +1027,98 @@ mod tests {
         assert_eq!(server.request_count(), 1, "no retry for empty content");
     }
 
-    #[test]
-    fn call_429_is_retryable() {
-        let server = MockServer::start(move |_| (429, b"rate limited".to_vec()));
-        let client = LlmClient::new(&valid_config(&server.url)).unwrap();
+    /// Asserts `err` is [`LlmError::RetriesExhausted`] with exactly
+    /// `attempts` attempts and runs `check` on the carried last cause.
+    fn assert_exhausted(err: &LlmError, attempts: u32, check: impl Fn(&LlmError)) {
+        match err {
+            LlmError::RetriesExhausted {
+                attempts: got,
+                last,
+            } => {
+                assert_eq!(*got, attempts, "got: {err}");
+                check(last);
+            }
+            other => panic!("expected RetriesExhausted, got: {other:?}"),
+        }
+    }
 
-        let err = client.call("s", "u", None, None).err().unwrap();
-
+    /// Asserts a recorded backoff delay for retry `retry` (1-based) lies
+    /// within the documented ±20% jitter band of `500 ms · 2^(retry-1)`.
+    fn assert_delay_within(delay: &Duration, retry: u32) {
+        let base_ms = 500u64 * 2u64.pow(retry - 1);
+        let got_ms = delay.as_millis() as u64;
+        let (lo, hi) = (base_ms * 8 / 10, base_ms * 12 / 10);
         assert!(
-            matches!(err, LlmError::RetryableHttp { status: 429, .. }),
-            "got: {err}"
+            got_ms >= lo && got_ms < hi,
+            "retry {retry}: expected [{lo}, {hi}) ms, got {got_ms} ms"
         );
-        assert!(err.is_retryable());
     }
 
     #[test]
-    fn call_5xx_is_retryable() {
-        let server = MockServer::start(move |_| (500, b"boom".to_vec()));
-        let client = LlmClient::new(&valid_config(&server.url)).unwrap();
+    fn call_429_is_retryable_and_exhausts_with_cause() {
+        let server = MockServer::start(move |_| (429, b"rate limited".to_vec()));
+        let config = config_with(&server.url, |c| c.max_retries = 0);
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&delays);
+        let client = LlmClient::new(&config)
+            .unwrap()
+            .with_sleeper(move |d| recorded.lock().unwrap().push(d));
 
         let err = client.call("s", "u", None, None).err().unwrap();
 
-        assert!(
-            matches!(err, LlmError::RetryableHttp { status: 500, .. }),
-            "got: {err}"
+        assert_exhausted(&err, 1, |last| {
+            assert!(
+                matches!(last, LlmError::RetryableHttp { status: 429, .. }),
+                "got: {last:?}"
+            );
+            assert!(last.is_retryable(), "the cause must stay retryable");
+        });
+        assert!(!err.is_retryable(), "exhaustion is terminal");
+        assert_eq!(
+            server.request_count(),
+            1,
+            "max_retries = 0: a single attempt"
         );
-        assert!(err.is_retryable());
         assert!(
-            err.to_string().contains("boom"),
-            "body must be carried: {err}"
+            delays.lock().unwrap().is_empty(),
+            "no backoff sleep without retries"
+        );
+    }
+
+    #[test]
+    fn call_5xx_is_retryable_and_exhausts_with_cause() {
+        let server = MockServer::start(move |_| (500, b"boom".to_vec()));
+        let config = config_with(&server.url, |c| c.max_retries = 0);
+        let client = LlmClient::new(&config).unwrap();
+
+        let err = client.call("s", "u", None, None).err().unwrap();
+
+        assert_exhausted(&err, 1, |last| {
+            assert!(
+                matches!(last, LlmError::RetryableHttp { status: 500, .. }),
+                "got: {last:?}"
+            );
+            assert!(
+                last.to_string().contains("boom"),
+                "body must be carried: {last}"
+            );
+        });
+        assert!(!err.is_retryable());
+        assert_eq!(
+            server.request_count(),
+            1,
+            "max_retries = 0: a single attempt"
         );
     }
 
     #[test]
     fn call_other_4xx_is_non_retryable() {
         let server = MockServer::start(move |_| (400, b"bad request".to_vec()));
-        let client = LlmClient::new(&valid_config(&server.url)).unwrap();
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&delays);
+        let client = LlmClient::new(&valid_config(&server.url))
+            .unwrap()
+            .with_sleeper(move |d| recorded.lock().unwrap().push(d));
 
         let err = client.call("s", "u", None, None).err().unwrap();
 
@@ -893,6 +1127,11 @@ mod tests {
             "got: {err}"
         );
         assert!(!err.is_retryable());
+        assert_eq!(server.request_count(), 1, "no retry for non-retryable 4xx");
+        assert!(
+            delays.lock().unwrap().is_empty(),
+            "no backoff sleep for 4xx"
+        );
     }
 
     #[test]
@@ -904,6 +1143,7 @@ mod tests {
 
         assert!(matches!(err, LlmError::Parse(_)), "got: {err}");
         assert!(!err.is_retryable());
+        assert_eq!(server.request_count(), 1, "no retry for parse errors");
     }
 
     #[test]
@@ -990,5 +1230,172 @@ mod tests {
         assert_configuration(user_err, "user prompt");
 
         assert_eq!(server.request_count(), 0, "no request for empty prompts");
+    }
+
+    // ── Retry policy tests (task 1.3) ───────────────────────────────────────
+
+    #[test]
+    fn call_retries_429_then_succeeds() {
+        let server = MockServer::start(|i| {
+            if i == 0 {
+                (429, b"rate limited".to_vec())
+            } else {
+                (200, success_body("recovered"))
+            }
+        });
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&delays);
+        let client = LlmClient::new(&valid_config(&server.url))
+            .unwrap()
+            .with_sleeper(move |d| recorded.lock().unwrap().push(d));
+
+        let content = client.call("s", "u", None, None).unwrap();
+
+        assert_eq!(content, "recovered");
+        assert_eq!(server.request_count(), 2, "one retry after the 429");
+        let delays = delays.lock().unwrap();
+        assert_eq!(delays.len(), 1, "exactly one backoff sleep");
+        assert_delay_within(&delays[0], 1);
+    }
+
+    #[test]
+    fn call_5xx_exhausts_retries_with_last_cause() {
+        let server = MockServer::start(move |_| (500, b"boom".to_vec()));
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&delays);
+        let client = LlmClient::new(&valid_config(&server.url))
+            .unwrap() // max_retries = 2
+            .with_sleeper(move |d| recorded.lock().unwrap().push(d));
+
+        let err = client.call("s", "u", None, None).err().unwrap();
+
+        assert_exhausted(&err, 3, |last| {
+            assert!(
+                matches!(last, LlmError::RetryableHttp { status: 500, body } if body == "boom"),
+                "got: {last:?}"
+            );
+        });
+        assert!(!err.is_retryable(), "exhaustion is terminal");
+        assert_eq!(server.request_count(), 3, "initial attempt + 2 retries");
+        assert_eq!(
+            delays.lock().unwrap().len(),
+            2,
+            "a backoff sleep before each retry"
+        );
+    }
+
+    #[test]
+    fn call_backoff_delays_grow_exponentially() {
+        let server = MockServer::start(move |_| (500, b"boom".to_vec()));
+        let config = config_with(&server.url, |c| c.max_retries = 3);
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&delays);
+        let client = LlmClient::new(&config)
+            .unwrap()
+            .with_sleeper(move |d| recorded.lock().unwrap().push(d));
+
+        let err = client.call("s", "u", None, None).err().unwrap();
+        assert_exhausted(&err, 4, |_| {});
+
+        let delays = delays.lock().unwrap();
+        assert_eq!(
+            delays.len(),
+            3,
+            "a backoff sleep before each of the 3 retries"
+        );
+        for (i, delay) in delays.iter().enumerate() {
+            assert_delay_within(delay, i as u32 + 1);
+        }
+        // The ±20% bands of consecutive retries are disjoint (600 < 800,
+        // 1200 < 1600), so in-band delays are strictly increasing.
+        assert!(delays[0] < delays[1], "delays must grow: {delays:?}");
+        assert!(delays[1] < delays[2], "delays must grow: {delays:?}");
+    }
+
+    #[test]
+    fn call_json_schema_present_in_every_retried_request() {
+        let server = MockServer::start(|i| {
+            if i == 0 {
+                (429, b"rate limited".to_vec())
+            } else {
+                (200, success_body("ok"))
+            }
+        });
+        let config = config_with(&server.url, |c| {
+            c.response_format = ResponseFormat::JsonSchema
+        });
+        let client = LlmClient::new(&config).unwrap().with_sleeper(|_d| {});
+
+        client
+            .call(
+                "s",
+                "u",
+                Some(r#"{"type":"object","properties":{"same_entity":{"type":"boolean"}}}"#),
+                Some("link_decision"),
+            )
+            .unwrap();
+
+        assert_eq!(server.request_count(), 2, "one retry after the 429");
+        for i in [0, 1] {
+            let body = server.request_body_json(i);
+            assert_eq!(
+                body["response_format"]["type"], "json_schema",
+                "request {i} must keep the json_schema mode"
+            );
+            assert_eq!(
+                body["response_format"]["json_schema"]["name"], "link_decision",
+                "request {i}"
+            );
+            assert_eq!(
+                body["response_format"]["json_schema"]["schema"]["type"], "object",
+                "request {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn call_transport_error_is_retried_until_exhausted() {
+        // A closed loopback port fails the connect: a retryable transport
+        // error (no mock server involved).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let config = config_with(&format!("http://127.0.0.1:{port}"), |c| c.max_retries = 1);
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&delays);
+        let client = LlmClient::new(&config)
+            .unwrap()
+            .with_sleeper(move |d| recorded.lock().unwrap().push(d));
+
+        let err = client.call("s", "u", None, None).err().unwrap();
+
+        assert_exhausted(&err, 2, |last| {
+            assert!(matches!(last, LlmError::Transport(_)), "got: {last:?}");
+        });
+        let delays = delays.lock().unwrap();
+        assert_eq!(delays.len(), 1);
+        assert_delay_within(&delays[0], 1);
+    }
+
+    #[test]
+    fn backoff_delay_stays_within_jitter_band_and_varies() {
+        let client = LlmClient::new(&valid_config("http://127.0.0.1:1")).unwrap();
+        let mut distinct = std::collections::HashSet::new();
+        for retry in 1u32..=5 {
+            let base_ms = 500u64 * 2u64.pow(retry - 1);
+            for _ in 0..100 {
+                let got_ms = client.backoff_delay(retry).as_millis() as u64;
+                assert!(
+                    got_ms >= base_ms * 8 / 10 && got_ms < base_ms * 12 / 10,
+                    "retry {retry}: {got_ms} ms outside [{}, {})",
+                    base_ms * 8 / 10,
+                    base_ms * 12 / 10
+                );
+                distinct.insert(got_ms);
+            }
+        }
+        // A working jitter stream produces many distinct delays over 400
+        // draws (a constant draw would collapse each band to one value).
+        assert!(distinct.len() > 100, "jitter never varied: {distinct:?}");
     }
 }
