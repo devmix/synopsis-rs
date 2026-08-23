@@ -18,6 +18,10 @@
 //!   `has_fact`, and [`build_chunk_index`] / [`ChunkIndex`] serving `chunks`
 //!   and `chunk_contains`. [`register_data_functions`] installs all four on
 //!   an engine in one call.
+//! - The two graph-backed contract functions (task 1.8): `neighbors` and
+//!   `path_exists` over the in-memory graph, served by the lazy
+//!   [`ReachabilityIndex`] slot. [`register_graph_functions`] installs both
+//!   on an engine in one call.
 //! - [`ScopeCache`] — per-evaluation lazy indexes (the Rust re-design of the
 //!   oracle's `scope_cache.go`): heavy data is built by the first function
 //!   call that needs it and shared by every later call in the same
@@ -79,6 +83,8 @@
 //! | `has_fact(e, k, v)` | `bool` | whether `e` has an approved fact with predicate `k` and value `v` |
 //! | `chunks(e)` | `Arc<Vec<Value>>` | the chunk texts of `e` (list of strings), in `sequence_num` order |
 //! | `chunk_contains(e, t)` | `bool` | whether any chunk text of `e` contains `t` |
+//! | `neighbors(e)` | `Arc<Vec<Value>>` | the entity ids directly adjacent to `e` (all edge kinds, both directions), deduplicated, ascending |
+//! | `path_exists(from, to, max_depth)` | `bool` | whether `to` is reachable from `from` within `max_depth` steps under the D4 boundary rule |
 //!
 //! The `facts(e)` map carries exactly the keys `id` (int, the `facts.id`),
 //! `predicate` (string), `domain` (string) and `value` (string — the fact's
@@ -165,15 +171,40 @@
 //! - (task 1.7) `chunk_contains` is an EXACT, case-SENSITIVE substring test
 //!   over the chunk texts (oracle parity: Go `strings.Contains`) — not FTS,
 //!   not `LIKE`, no normalization.
+//! - (task 1.8) `neighbors(e)` takes ONE argument (the frozen contract,
+//!   design D5) and returns the DIRECT adjacency over ALL edge kinds, both
+//!   directions, deduplicated and ascending; the oracle's `neighbors(e,
+//!   hops)` returned the ids at EXACTLY `hops` distance over ENTITY LINKS
+//!   only.
+//! - (task 1.8) the oracle's `GraphIndex` hop layers are BROKEN: the "skip
+//!   if already seen at a lower hop" check compares against the PREVIOUS
+//!   layer, but layer 0 contains EVERY entity — so every layer >= 1 is
+//!   empty, `neighbors(e, hops)` is always empty and `path_exists(a, b, n)`
+//!   degenerates to `a == b`. No oracle test pins the broken behavior; here
+//!   both functions are real (a direct adjacency read and a depth-bounded
+//!   BFS, no prebuilt layers — see [`ReachabilityIndex`]).
+//! - (task 1.8) `path_exists` traverses BOTH edge populations under the D4
+//!   boundary rule with entity-link crossing ENABLED (the traverse mode in
+//!   which cross-domain reachability is possible at all — the function's
+//!   purpose in the cross-domain linker): a fact edge never leaves the
+//!   START entity's domain, an entity-link edge may. The oracle applied no
+//!   domain rule in its CEL `path_exists` (domain-unaware, links only) —
+//!   the D4 rule is the contract-level fix. `max_depth` is used as given
+//!   (0 = identity only) and clamped to the D4 hard max; it is NOT
+//!   default-filled like traverse's zero-valued option.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use cel::objects::{Key as CelKey, Map as CelMap};
 use cel::{Context, ExecutionError, Program, Value};
 use db::DbExecutor;
+use petgraph::Direction as PetDirection;
+use petgraph::visit::EdgeRef;
 
 use crate::error::GraphError;
+use crate::graph::{EdgeKind, Graph};
+use crate::traverser::HARD_MAX_DEPTH;
 
 /// Locks `mutex`, recovering the guard if another thread panicked while
 /// holding it. The critical sections guarded in this module hold no user
@@ -377,16 +408,148 @@ pub fn build_chunk_index(db: &db::Db) -> Result<ChunkIndex, GraphError> {
     })?
 }
 
-/// Depth-bounded reachability for the `path_exists` contract function.
+/// The in-memory graph behind the `neighbors` / `path_exists` contract
+/// functions (task 1.8, design D5).
 ///
-/// Design D5 calls this the "GraphIndex" (BFS reachability layers); the name
-/// `GraphIndex` is already taken in this crate by the index-availability
-/// enum (task 1.2), so the slot type is named `ReachabilityIndex` instead.
+/// Design D5 calls this the "GraphIndex"; the name `GraphIndex` is already
+/// taken in this crate by the index-availability enum (task 1.2), so the
+/// slot type is named `ReachabilityIndex` instead.
 ///
-/// Placeholder (task 1.6): task 1.8 replaces this unit struct with the real
-/// structure (depth-bounded reachability over [`crate::Graph`] with the D4
-/// domain boundaries).
-pub struct ReachabilityIndex;
+/// The slot holds the FULL in-memory [`Graph`] (task 1.2) and answers both
+/// functions WITHOUT prebuilt reachability layers:
+/// - `neighbors` — a direct O(degree) adjacency read, both directions;
+/// - `path_exists` — a per-call depth-bounded BFS (worst case O(V+E), early
+///   exit on a hit).
+///
+/// Scale reasoning (design D1): a personal corpus is thousands to hundreds
+/// of thousands of entities (an index of units of MB), so a per-call BFS is
+/// microseconds-to-milliseconds. A prebuilt transitive closure (the oracle's
+/// hop layers) would cost O(V^2) memory — infeasible at 100k entities — for
+/// no measurable gain; YAGNI. The oracle's layers are also broken (see the
+/// module docs, deviations).
+#[derive(Debug)]
+pub struct ReachabilityIndex {
+    graph: Graph,
+}
+
+impl ReachabilityIndex {
+    /// Wrap an already-built index (the SQLite version is
+    /// [`build_reachability_index`]).
+    #[must_use]
+    pub fn new(graph: Graph) -> Self {
+        Self { graph }
+    }
+
+    /// The entity ids directly adjacent to `entity_id`: every incident edge
+    /// (fact AND entity-link, both directions), deduplicated, ascending.
+    /// Empty for a missing entity (never an error).
+    ///
+    /// Adjacency is a one-hop view, not a traversal: the D4 domain boundary
+    /// rule (a traversal concept) does not filter it — a cross-domain fact
+    /// edge still makes the other endpoint a neighbor.
+    #[must_use]
+    pub fn neighbors(&self, entity_id: i64) -> Vec<i64> {
+        let Some(node) = self.graph.node_index(entity_id) else {
+            return Vec::new();
+        };
+        let g = self.graph.graph();
+        let mut ids = HashSet::with_capacity(4);
+        for edge in g.edges_directed(node, PetDirection::Outgoing) {
+            ids.insert(g[edge.target()].id);
+        }
+        for edge in g.edges_directed(node, PetDirection::Incoming) {
+            ids.insert(g[edge.source()].id);
+        }
+        let mut ids: Vec<i64> = ids.into_iter().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Whether `to_id` is reachable from `from_id` within `max_depth` edge
+    /// steps (both directions), under the SAME D4 boundary rule as
+    /// [`crate::Graph::traverse`] with entity-link crossing enabled:
+    /// - a step over a FACT edge never leaves the START entity's domain;
+    /// - a step over an ENTITY-LINK edge may cross domains.
+    ///
+    /// `from_id == to_id` is `true` when the entity exists (a zero-length
+    /// path). A missing `from_id` or `to_id` is `false`, never an error.
+    /// `max_depth` is used as given (0 = identity only) and clamped to the
+    /// D4 hard max (`HARD_MAX_DEPTH`); it is not default-filled like
+    /// traverse's zero-valued option (an explicit CEL argument is not a zero
+    /// value).
+    #[must_use]
+    pub fn path_exists(&self, from_id: i64, to_id: i64, max_depth: i64) -> bool {
+        let (Some(from), Some(to)) = (self.graph.node_index(from_id), self.graph.node_index(to_id))
+        else {
+            return false;
+        };
+        if from == to {
+            return true;
+        }
+        let depth = max_depth.clamp(0, HARD_MAX_DEPTH as i64) as u32;
+        if depth == 0 {
+            return false;
+        }
+
+        let g = self.graph.graph();
+        let start_domain = g[from].domain.clone();
+        let mut visited = HashSet::with_capacity(16);
+        visited.insert(from);
+        let mut level = vec![from];
+        for _ in 0..depth {
+            let mut next = Vec::new();
+            for &node in &level {
+                for (edge, neighbor) in g
+                    .edges_directed(node, PetDirection::Outgoing)
+                    .map(|e| (e, e.target()))
+                    .chain(
+                        g.edges_directed(node, PetDirection::Incoming)
+                            .map(|e| (e, e.source())),
+                    )
+                {
+                    if visited.contains(&neighbor) {
+                        continue; // cycle protection
+                    }
+                    if g[neighbor].domain != start_domain
+                        && edge.weight().kind != EdgeKind::EntityLink
+                    {
+                        // D4 boundary (the same rule as traverse): a fact
+                        // edge never crosses the start domain; only an
+                        // entity link may.
+                        continue;
+                    }
+                    if neighbor == to {
+                        return true;
+                    }
+                    visited.insert(neighbor);
+                    next.push(neighbor);
+                }
+            }
+            if next.is_empty() {
+                return false;
+            }
+            level = next;
+        }
+        false
+    }
+}
+
+/// Build the reachability index from SQLite in one pass (design D5): all
+/// entities, approved facts and entity links — the same rows as the startup
+/// index (`GraphIndex::from_db`), without its configuration gating: the CEL
+/// evaluation path always reads the current database state (oracle parity:
+/// the scope loader built the graph index unconditionally).
+pub fn build_reachability_index(db: &db::Db) -> Result<ReachabilityIndex, GraphError> {
+    db.with_conn(|conn| -> Result<ReachabilityIndex, GraphError> {
+        let exec = db::ConnectionOrTx::Connection(conn);
+        let entities = db::EntityDao::new(exec).list()?;
+        let facts = db::FactDao::new(exec).list_all()?;
+        let links = db::EntityLinkDao::new(exec).list_all()?;
+        Ok(ReachabilityIndex::new(Graph::from_rows(
+            entities, facts, links,
+        )))
+    })?
+}
 
 /// Per-evaluation shared state for the contract functions (design D5).
 ///
@@ -437,7 +600,8 @@ impl ScopeCache {
         self.chunks.get_or_build(build)
     }
 
-    /// The reachability index, built on first access by `build` (task 1.8).
+    /// The reachability index, built on first access by `build` (the
+    /// contract functions use [`build_reachability_index`], task 1.8).
     pub fn reachability(
         &self,
         build: impl FnOnce() -> Result<ReachabilityIndex, GraphError>,
@@ -630,6 +794,46 @@ pub fn register_data_functions(engine: &mut CelEngine, db: Arc<db::Db>) {
                 .chunks(|| build_chunk_index(&contains_db))
                 .map_err(|err| ExecutionError::function_error("chunk_contains", err.to_string()))?;
             Ok(index.contains(entity, &text))
+        });
+    });
+}
+
+/// Install the two graph-backed contract functions (task 1.8, design D5) —
+/// `neighbors` and `path_exists` — on `engine`, bound to `db` (the SQLite
+/// source of truth, design D1).
+///
+/// Both share the lazy reachability slot of the per-evaluation
+/// [`ScopeCache`]: the index is built on the FIRST call of either function
+/// in an evaluation and cached for the rest of it (see the module docs for
+/// the installer pattern). A db failure during the lazy build is bridged
+/// with `ExecutionError::function_error` and surfaces as
+/// [`GraphError::CelEval`] from both functions (see the module docs for the
+/// deviation from the oracle); a missing entity is empty / false, never an
+/// error.
+pub fn register_graph_functions(engine: &mut CelEngine, db: Arc<db::Db>) {
+    engine.register(move |scope, ctx| {
+        // Each registered function closure is 'static and outlives the
+        // installer's parameters, so every one owns its own clones.
+        let (neighbors_scope, path_scope) = (Arc::clone(&scope), Arc::clone(&scope));
+        let (neighbors_db, path_db) = (Arc::clone(&db), Arc::clone(&db));
+
+        ctx.add_function("neighbors", move |entity: i64| {
+            let index = neighbors_scope
+                .reachability(|| build_reachability_index(&neighbors_db))
+                .map_err(|err| ExecutionError::function_error("neighbors", err.to_string()))?;
+            let ids = index
+                .neighbors(entity)
+                .into_iter()
+                .map(Value::Int)
+                .collect::<Vec<Value>>();
+            Ok(Arc::new(ids))
+        });
+
+        ctx.add_function("path_exists", move |from: i64, to: i64, max_depth: i64| {
+            let index = path_scope
+                .reachability(|| build_reachability_index(&path_db))
+                .map_err(|err| ExecutionError::function_error("path_exists", err.to_string()))?;
+            Ok(index.path_exists(from, to, max_depth))
         });
     });
 }
@@ -838,7 +1042,9 @@ mod tests {
     // ── task 1.7: the data contract functions on a fixed database ─────
 
     use db::test_util::in_memory_db;
-    use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao};
+    use db::{
+        ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, EntityLinkDao, FactDao,
+    };
 
     /// A fixed fixture: 4 entities, 4 facts (f3 made draft, f4 with a
     /// `NULL` subject), one document with 3 chunks linked to entities.
@@ -1088,22 +1294,28 @@ mod tests {
     }
 
     /// A db failure during the lazy index build surfaces as
-    /// `GraphError::CelEval` from EVERY function (deviation from the
-    /// oracle: `has_fact`/`chunk_contains` must not silently return
+    /// `GraphError::CelEval` from ALL FOUR data functions (deviation from
+    /// the oracle: `has_fact`/`chunk_contains` must not silently return
     /// false).
     #[test]
     fn storage_failure_surfaces_as_cel_eval_error() {
         let (db, alice, ..) = fixture_db();
         let engine = fixture_engine(&db);
 
+        // Break the storage of BOTH indexes: the facts index reads `facts`,
+        // the chunk index joins `chunk_entities` (drop the child table —
+        // FK-safe; the build query then fails with "no such table").
         db.with_conn(|conn| {
             conn.execute("DROP TABLE facts", []).unwrap();
+            conn.execute("DROP TABLE chunk_entities", []).unwrap();
         })
         .unwrap();
 
         for source in [
             format!("facts({alice})"),
             format!("has_fact({alice}, 'works_at', 'Acme')"),
+            format!("chunks({alice})"),
+            format!("chunk_contains({alice}, 'works at')"),
         ] {
             let program = engine.compile(&source).unwrap();
             let err = engine.evaluate(&program, &[]).unwrap_err();
@@ -1140,5 +1352,385 @@ mod tests {
             Arc::ptr_eq(&c_first, &c_second),
             "chunk index rebuilt within one scope"
         );
+
+        let r_first = scope
+            .reachability(|| build_reachability_index(&db))
+            .unwrap();
+        let r_second = scope
+            .reachability(|| build_reachability_index(&db))
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&r_first, &r_second),
+            "reachability index rebuilt within one scope"
+        );
+    }
+
+    // ── task 1.8: the graph contract functions ───────────────────────────
+
+    use db::{Entity, EntityLink, Fact};
+
+    /// Row builders for the pure (SQLite-free) index tests.
+    fn entity(id: i64, domain: &str) -> Entity {
+        Entity {
+            id,
+            entity_type: "PERSON".into(),
+            name: format!("E{id}"),
+            domain: domain.into(),
+            description: None,
+            confidence: None,
+            metadata_json: None,
+            created_at: String::new(),
+        }
+    }
+
+    fn fact(id: i64, subject: i64, object: i64) -> Fact {
+        Fact {
+            id,
+            subject_entity_id: Some(subject),
+            predicate: "knows".into(),
+            object_entity_id: Some(object),
+            domain: String::new(),
+            metadata_json: None,
+            status: "approved".into(),
+            valid_from: None,
+            valid_to: None,
+            weight: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn link(subject: i64, target: i64) -> EntityLink {
+        EntityLink {
+            subject_entity_id: subject,
+            target_entity_id: target,
+            relation_type: "same_entity".into(),
+            method: "rule".into(),
+            confidence: 0.9,
+            evidence: None,
+        }
+    }
+
+    /// `neighbors`: both directions, ALL edge kinds (fact + link),
+    /// deduplicated, ascending; a missing entity is empty, not an error.
+    #[test]
+    fn neighbors_is_both_directions_deduplicated_sorted() {
+        // 1→2 fact, 3→1 fact, 1→4 cross-domain fact, 1→5 link, 4→1 link
+        // (the pair 1–4 has a fact AND a link: deduplicated to one id).
+        let graph = Graph::from_rows(
+            vec![
+                entity(1, "hr"),
+                entity(2, "hr"),
+                entity(3, "hr"),
+                entity(4, "it"),
+                entity(5, "it"),
+            ],
+            vec![fact(1, 1, 2), fact(2, 3, 1), fact(3, 1, 4)],
+            vec![link(1, 5), link(4, 1)],
+        );
+        let index = ReachabilityIndex::new(graph);
+
+        assert_eq!(index.neighbors(1), vec![2, 3, 4, 5]);
+        assert_eq!(index.neighbors(2), vec![1]);
+        assert_eq!(index.neighbors(3), vec![1]);
+        assert_eq!(index.neighbors(4), vec![1]);
+        assert_eq!(
+            index.neighbors(999),
+            Vec::new(),
+            "missing entity → empty, not an error"
+        );
+    }
+
+    /// `path_exists`: connected / disconnected pairs, identity, missing
+    /// entities.
+    #[test]
+    fn path_exists_connected_disconnected_and_identity() {
+        // chain 1→2→3 (hr) plus an isolated node 4 (it).
+        let graph = Graph::from_rows(
+            vec![
+                entity(1, "hr"),
+                entity(2, "hr"),
+                entity(3, "hr"),
+                entity(4, "it"),
+            ],
+            vec![fact(1, 1, 2), fact(2, 2, 3)],
+            Vec::new(),
+        );
+        let index = ReachabilityIndex::new(graph);
+
+        assert!(index.path_exists(1, 3, 2), "chain reached within 2");
+        assert!(index.path_exists(3, 1, 2), "BFS is bidirectional");
+        assert!(!index.path_exists(1, 4, 5), "disconnected pair");
+        assert!(!index.path_exists(4, 1, 5), "disconnected pair (reverse)");
+        assert!(index.path_exists(1, 1, 0), "identity is a zero-length path");
+        assert!(!index.path_exists(999, 999, 5), "missing entity → false");
+        assert!(!index.path_exists(1, 999, 5), "missing target → false");
+    }
+
+    /// `path_exists`: `max_depth` is respected and clamped to the D4 hard
+    /// max (10).
+    #[test]
+    fn path_exists_respects_and_clamps_max_depth() {
+        // 12-node chain (hr): the distance 1→12 is 11 edges.
+        let graph = Graph::from_rows(
+            (1..=12).map(|id| entity(id, "hr")).collect(),
+            (1..12).map(|id| fact(id, id, id + 1)).collect(),
+            Vec::new(),
+        );
+        let index = ReachabilityIndex::new(graph);
+
+        assert!(!index.path_exists(1, 12, 10), "distance 11 > depth 10");
+        assert!(
+            !index.path_exists(1, 12, 100),
+            "depth 100 is clamped to the hard max (10) < distance 11"
+        );
+        assert!(!index.path_exists(1, 12, 0), "depth 0 is identity only");
+        assert!(index.path_exists(1, 11, 10), "distance 10 == hard max");
+    }
+
+    /// D4 boundary (the same rule as traverse with link crossing enabled):
+    /// a cross-domain FACT edge is never traversed, an ENTITY-LINK edge may
+    /// cross domains, and the boundary is relative to the START entity's
+    /// domain — once crossed, fact edges inside the crossed domain are
+    /// blocked too.
+    #[test]
+    fn path_exists_applies_the_d4_boundary_rule() {
+        // f2 crosses hr→it; the links 1→4→5 cross domains.
+        let graph = Graph::from_rows(
+            vec![
+                entity(1, "hr"),
+                entity(2, "hr"),
+                entity(3, "it"),
+                entity(4, "it"),
+                entity(5, "it"),
+            ],
+            vec![fact(1, 1, 2), fact(2, 1, 3)],
+            vec![link(1, 4), link(4, 5)],
+        );
+        let index = ReachabilityIndex::new(graph);
+
+        assert!(index.path_exists(1, 2, 1), "in-domain fact edge");
+        assert!(
+            !index.path_exists(1, 3, 5),
+            "the cross-domain fact edge is never traversed"
+        );
+        assert!(
+            index.path_exists(1, 4, 1),
+            "an entity link may cross domains"
+        );
+        assert!(index.path_exists(1, 5, 2), "two link hops across domains");
+        assert!(!index.path_exists(1, 5, 1), "depth 1 reaches only 4");
+
+        // The same rule from the crossed side: 1→2 via the link is allowed,
+        // but 2→3 via the fact (inside the crossed domain) is not; starting
+        // from 2, that fact edge is in-domain and is traversed.
+        let crossed = Graph::from_rows(
+            vec![entity(1, "hr"), entity(2, "it"), entity(3, "it")],
+            vec![fact(1, 2, 3)],
+            vec![link(1, 2)],
+        );
+        let index = ReachabilityIndex::new(crossed);
+        assert!(
+            !index.path_exists(1, 3, 2),
+            "fact edge in the crossed domain"
+        );
+        assert!(index.path_exists(2, 3, 1), "in-domain when starting from 2");
+    }
+
+    /// A two-domain fixture with facts and entity links (the graph-function
+    /// counterpart of `fixture_db`). Returns `(db, alice, bob, carol, acme,
+    /// globex, dave)`.
+    fn graph_fixture_db() -> (db::Db, i64, i64, i64, i64, i64, i64) {
+        let db = in_memory_db();
+        let (alice, bob, carol, acme, globex, dave) = db
+            .with_conn(|conn| -> Result<_, db::DbError> {
+                let exec = ConnectionOrTx::Connection(conn);
+                let entities = EntityDao::new(exec);
+                let alice = entities.create("PERSON", "Alice", "hr", None, None, None)?;
+                let bob = entities.create("PERSON", "Bob", "hr", None, None, None)?;
+                let carol = entities.create("PERSON", "Carol", "hr", None, None, None)?;
+                let acme = entities.create("ORGANIZATION", "Acme", "it", None, None, None)?;
+                let globex = entities.create("ORGANIZATION", "Globex", "it", None, None, None)?;
+                let dave = entities.create("PERSON", "Dave", "geo", None, None, None)?;
+
+                let facts = FactDao::new(exec);
+                facts.create(Some(alice), "knows", Some(bob), "hr", None, None, None)?;
+                facts.create(Some(bob), "knows", Some(carol), "hr", None, None, None)?;
+                facts.create(
+                    Some(carol),
+                    "reports_to",
+                    Some(alice),
+                    "hr",
+                    None,
+                    None,
+                    None,
+                )?;
+                // Cross-domain fact edge: adjacency only, never traversed.
+                facts.create(Some(alice), "works_at", Some(acme), "hr", None, None, None)?;
+
+                let links = EntityLinkDao::new(exec);
+                links.create(&EntityLink {
+                    subject_entity_id: alice,
+                    target_entity_id: globex,
+                    relation_type: "same_entity".into(),
+                    method: "rule".into(),
+                    confidence: 0.95,
+                    evidence: None,
+                })?;
+                links.create(&EntityLink {
+                    subject_entity_id: acme,
+                    target_entity_id: alice,
+                    relation_type: "related_to".into(),
+                    method: "equals".into(),
+                    confidence: 0.8,
+                    evidence: None,
+                })?;
+                Ok((alice, bob, carol, acme, globex, dave))
+            })
+            .unwrap()
+            .unwrap();
+        (db, alice, bob, carol, acme, globex, dave)
+    }
+
+    /// An engine with the two graph functions registered over `db`.
+    fn graph_engine(db: &db::Db) -> CelEngine {
+        let mut engine = CelEngine::new();
+        register_graph_functions(&mut engine, Arc::new(db.clone()));
+        engine
+    }
+
+    /// Acceptance: `neighbors` is correct for BOTH directions over all edge
+    /// kinds (fact + link), deduplicated and ascending.
+    #[test]
+    fn cel_neighbors_is_correct_for_both_directions() {
+        let (db, alice, bob, carol, acme, globex, ..) = graph_fixture_db();
+        let engine = graph_engine(&db);
+
+        // Outgoing: bob (fact), acme (cross-domain fact), globex (link).
+        // Incoming: carol (fact), acme (link) — deduplicated with the fact.
+        let value = eval(&engine, &format!("neighbors({alice})"));
+        assert_eq!(
+            value,
+            Value::List(Arc::new(vec![
+                Value::Int(bob),
+                Value::Int(carol),
+                Value::Int(acme),
+                Value::Int(globex),
+            ]))
+        );
+        // Pure incoming side (the acme→alice link).
+        let value = eval(&engine, &format!("neighbors({acme})"));
+        assert_eq!(value, Value::List(Arc::new(vec![Value::Int(alice)])));
+        // Both directions on bob: alice (in), carol (out).
+        let value = eval(&engine, &format!("neighbors({bob})"));
+        assert_eq!(
+            value,
+            Value::List(Arc::new(vec![Value::Int(alice), Value::Int(carol)]))
+        );
+        // Missing entity: empty list, not an error.
+        assert_eq!(
+            eval(&engine, "neighbors(999999)"),
+            Value::List(Arc::new(Vec::new()))
+        );
+    }
+
+    /// Acceptance: `path_exists` is true on connected pairs (both
+    /// directions, facts and links) and false on disconnected ones.
+    #[test]
+    fn cel_path_exists_true_false_on_connected_disconnected_pairs() {
+        let (db, alice, bob, carol, _acme, globex, dave) = graph_fixture_db();
+        let engine = graph_engine(&db);
+
+        assert!(as_bool(eval(
+            &engine,
+            &format!("path_exists({alice}, {carol}, 2)")
+        )));
+        assert!(as_bool(eval(
+            &engine,
+            &format!("path_exists({carol}, {bob}, 2)")
+        )));
+        // Cross-domain via the entity link (a cross-domain FACT edge alone
+        // would never cross).
+        assert!(as_bool(eval(
+            &engine,
+            &format!("path_exists({alice}, {globex}, 1)")
+        )));
+        assert!(as_bool(eval(
+            &engine,
+            &format!("path_exists({globex}, {alice}, 1)")
+        )));
+        // Disconnected (dave has no edges at all). Identity and missing
+        // entities are pinned at the index level.
+        assert!(!as_bool(eval(
+            &engine,
+            &format!("path_exists({alice}, {dave}, 5)")
+        )));
+        assert!(!as_bool(eval(
+            &engine,
+            &format!("path_exists({dave}, {alice}, 5)")
+        )));
+    }
+
+    /// Acceptance: `max_depth` is respected at the CEL surface (the depth-0
+    /// and hard-max clamp edge cases are pinned at the index level).
+    #[test]
+    fn cel_path_exists_respects_max_depth() {
+        let (db, _alice, bob, carol, acme, globex, ..) = graph_fixture_db();
+        let engine = graph_engine(&db);
+
+        // carol→acme needs exactly 2 hops: carol→alice (fact), then
+        // alice→acme via the INCOMING link (the cross-domain FACT edge alone
+        // would be blocked).
+        assert!(!as_bool(eval(
+            &engine,
+            &format!("path_exists({carol}, {acme}, 1)")
+        )));
+        assert!(as_bool(eval(
+            &engine,
+            &format!("path_exists({carol}, {acme}, 2)")
+        )));
+        // bob→globex needs exactly 2 hops: bob→alice (fact), alice→globex
+        // (link).
+        assert!(!as_bool(eval(
+            &engine,
+            &format!("path_exists({bob}, {globex}, 1)")
+        )));
+        assert!(as_bool(eval(
+            &engine,
+            &format!("path_exists({bob}, {globex}, 2)")
+        )));
+    }
+
+    /// A db failure during the lazy reachability build surfaces as
+    /// `GraphError::CelEval` from BOTH graph functions (the same rule as the
+    /// data functions: a broken database must not silently produce "no
+    /// link" decisions).
+    #[test]
+    fn graph_storage_failure_surfaces_as_cel_eval_error() {
+        let (db, alice, bob, ..) = graph_fixture_db();
+        let engine = graph_engine(&db);
+
+        db.with_conn(|conn| {
+            conn.execute("DROP TABLE entity_links", []).unwrap();
+        })
+        .unwrap();
+
+        for source in [
+            format!("neighbors({alice})"),
+            format!("path_exists({alice}, {bob}, 2)"),
+        ] {
+            let program = engine.compile(&source).unwrap();
+            let err = engine.evaluate(&program, &[]).unwrap_err();
+            match err {
+                GraphError::CelEval { source } => {
+                    let message = source.to_string();
+                    assert!(
+                        message.contains("Error executing function"),
+                        "unexpected message: {message}"
+                    );
+                }
+                other => panic!("expected CelEval for {source}, got {other:?}"),
+            }
+        }
     }
 }
