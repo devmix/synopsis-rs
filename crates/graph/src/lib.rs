@@ -21,8 +21,10 @@
 //! (1.5), CEL engine and contract functions (1.6–1.8), linkers (1.9).
 
 pub mod error;
+pub mod graph;
 
 pub use error::GraphError;
+pub use graph::{EdgeKind, EntityNode, Graph, GraphEdge, GraphIndex};
 
 #[cfg(test)]
 mod tests {
