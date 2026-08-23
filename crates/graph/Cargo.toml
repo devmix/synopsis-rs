@@ -29,3 +29,9 @@ thiserror = { workspace = true }
 minijinja = { workspace = true }
 sha2 = { workspace = true }
 serde = { workspace = true }
+# OpenAI-compatible LLM client (llm change 2.2, design D1/D6): the `llm`
+# linking method posts one chat completion per candidate pair.
+llm = { workspace = true }
+# JSON wire format for the LLM decision: strict parse of the response and the
+# `app_kv` cache value (design D4/D6).
+serde_json = { workspace = true }

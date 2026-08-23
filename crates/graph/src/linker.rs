@@ -28,18 +28,33 @@
 //!   oracle's unstable sort made tie order nondeterministic), the first rule
 //!   evaluating to `true` wins, and its `relation-type` becomes the link's
 //!   relation with confidence [`RULE_CONFIDENCE`].
-//! - `llm` — STUB (design D6, human decision 2026-08-21): no LLM client in
-//!   this build. It records its skip in [`LinkResult::notes`] and writes
-//!   nothing. `LinkerConfig::disabled` excludes the method entirely (the
-//!   oracle's `Linker.Disabled` check in the ingestion runner).
+//! - `llm` — one chat completion per pair (llm change, design D6): up to
+//!   three context chunk texts per entity (truncated like the oracle:
+//!   description 200 chars, chunk 500 chars) are rendered into the user
+//!   prompt; the system prompt carries no data and is rendered once per run.
+//!   The response is parsed strictly to `{same_entity, confidence,
+//!   reasoning}` with the confidence clamped to [0, 1], and a `same_entity`
+//!   link (method `llm`, evidence = the reasoning) is created only when the
+//!   decision is `same_entity` with confidence ≥
+//!   `CrossDomainLinksConfig::llm_confidence_threshold`. Decisions are
+//!   cached in `app_kv` under `llm_link_{sha256(canonical pair ids +
+//!   template hashes + model)}` (design D4): the cache is checked BEFORE the
+//!   call and written AFTER the decision, including below-threshold ones. A
+//!   pair whose context load, call, or parse fails is a non-fatal
+//!   [`LinkResult::errors`] entry; the run itself succeeds.
+//!   `LinkerConfig::disabled` excludes the method entirely (the oracle's
+//!   `Linker.Disabled` check in the ingestion runner).
 //!
 //! # Deviations from the oracle
 //!
 //! - No incremental mode (`since`): the Rust rebuild is always a full
 //!   rebuild (YAGNI, design D3 — the in-memory index is rebuilt from
 //!   scratch at startup anyway).
-//! - The LLM method is a stub rather than a client call; the oracle's
-//!   `linker == nil` error becomes the disabled exclusion above.
+//! - The LLM decision cache is keyed by the pair's entity **ids** in
+//!   canonical (ascending) order (design D4): the oracle keyed it by
+//!   (type, normalized name, normalized domain) so entries survive database
+//!   rebuilds that renumber entities. The ids keep the key construction
+//!   trivial; a renumbered rebuild simply re-consults the model.
 //! - Non-boolean rule results are detected at evaluation time: the oracle
 //!   type-checks rules against `cel.BoolType` at compile time, but the
 //!   `cel` crate's `Program::compile` is parse-only.
@@ -53,12 +68,18 @@ use std::sync::Arc;
 use cel::Value;
 use cel::objects::{Key as CelKey, Map as CelMap};
 use config::ontology::{CrossDomainLinksConfig, LinkExpression, LinkMethod};
-use config::preset::LinkerConfig;
+use config::preset::{LinkerConfig, LlmConfig};
 use db::utils::normalize;
-use db::{ConnectionOrTx, Db, Entity, EntityDao, EntityLink, EntityLinkDao};
+use db::{AppKv, ChunkEntityDao, ConnectionOrTx, Db, Entity, EntityDao, EntityLink, EntityLinkDao};
+use llm::LlmClient;
+use serde::{Deserialize, Serialize};
 
 use crate::cel::{CelEngine, register_data_functions, register_graph_functions};
 use crate::error::GraphError;
+use crate::prompts::{
+    EntityData, EntityLinkerPrompts, LinkerInput, TemplateHashes, load_entity_linker_prompts,
+    sha256_hex, truncate,
+};
 
 /// The oracle's `config.DefaultEqualsMinWords`: names shorter than this many
 /// words are too ambiguous for `equals` linking.
@@ -69,6 +90,39 @@ const DEFAULT_RELATION_TYPE: &str = "same_entity";
 const EQUALS_CONFIDENCE: f64 = 0.9;
 /// The oracle's `ruleConfidence`.
 const RULE_CONFIDENCE: f64 = 1.0;
+/// Max context chunk texts per entity in the LLM prompt (the oracle's
+/// `contextLimit`).
+const LLM_CONTEXT_LIMIT: i64 = 3;
+/// Max description length in the LLM prompt (the oracle's `defaultDescLen`).
+const LLM_DESCRIPTION_LEN: i64 = 200;
+/// Max length of one context chunk in the LLM prompt (the oracle's
+/// `defaultChunkLen`).
+const LLM_CHUNK_LEN: i64 = 500;
+/// The static `json_schema` payload for the LLM decision (design D6; the
+/// oracle's `GenerateJSONSchema`). Sent on every call in `json_schema`
+/// response-format mode; the client ignores it in `json_object` mode.
+const LINK_DECISION_SCHEMA: &str = r#"{
+  "title": "EntityComparison",
+  "type": "object",
+  "properties": {
+    "same_entity": {
+      "type": "boolean",
+      "description": "Indicates whether entities are the same"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "The level of confidence in the answer is from 0.0 to 1.0"
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Explanation or logic for decision making"
+    }
+  },
+  "required": ["same_entity", "confidence"],
+  "additionalProperties": false
+}"#;
 
 /// The outcome of one linking run (the oracle's `BuildEntityLinksResult`).
 #[derive(Debug, Default, PartialEq)]
@@ -77,7 +131,8 @@ pub struct LinkResult {
     /// bidirectional pair counts once).
     pub links_created: usize,
     /// Candidate pairs that produced no new rows: already linked (idempotent
-    /// re-run), or skipped by the `llm` stub.
+    /// re-run), or decided not linkable by the `llm` method (`same_entity`
+    /// false or confidence below the threshold).
     pub links_skipped: usize,
     /// Informational notes (e.g. the `llm` stub's skip record). The crate
     /// has no logging dependency; the CLI layer can surface these.
@@ -393,16 +448,260 @@ fn run_expression(
     }
 }
 
-/// The `llm` method STUB (design D6, human decision 2026-08-21): no LLM
-/// client in this build — the stub records its skip in [`LinkResult::notes`]
-/// and writes nothing. The real implementation lands with the future LLM
-/// client change.
-fn run_llm_stub(pairs: &[CandidatePair], result: &mut LinkResult) {
-    result.links_skipped += pairs.len();
-    result.notes.push(format!(
-        "llm: stub — no LLM client in this build, {} candidate pair(s) skipped",
-        pairs.len()
-    ));
+/// The structured LLM decision (the oracle's `LinkDecision`, design D6).
+///
+/// Also the wire format of the `app_kv` cache value (design D4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct LinkDecision {
+    /// Whether the entities refer to the same real-world entity.
+    same_entity: bool,
+    /// Confidence in [0, 1] (clamped at parse time).
+    confidence: f64,
+    /// The model's explanation; the link's `evidence`. Optional on the wire
+    /// (the schema requires only `same_entity`/`confidence`); absent → empty.
+    #[serde(default)]
+    reasoning: String,
+}
+
+/// Strictly parse the model's JSON decision and clamp the confidence to
+/// [0, 1] (design D6). A non-JSON response or a wrong shape is a pair error
+/// (non-fatal), never a panic.
+fn parse_link_decision(raw: &str) -> Result<LinkDecision, String> {
+    let mut decision: LinkDecision =
+        serde_json::from_str(raw.trim()).map_err(|err| format!("invalid decision JSON: {err}"))?;
+    decision.confidence = decision.confidence.clamp(0.0, 1.0);
+    Ok(decision)
+}
+
+/// The decision-cache key (design D4): `llm_link_` + the SHA-256 hex of the
+/// pair's entity ids in canonical (ascending) order, the two template source
+/// hashes, and the model name. A changed prompt or model invalidates every
+/// entry.
+fn llm_cache_key(a_id: i64, b_id: i64, hashes: &TemplateHashes, model: &str) -> String {
+    let (lo, hi) = (a_id.min(b_id), a_id.max(b_id));
+    let payload = format!("{lo}:{hi}|{}|{}|{model}", hashes.system, hashes.user);
+    format!("llm_link_{}", sha256_hex(payload.as_bytes()))
+}
+
+/// Read the cached decision for `key`; `None` on a miss. A stored value that
+/// no longer parses is a miss too (the oracle logs and re-calls) — a note
+/// records it.
+fn read_cached_decision(
+    db: &Db,
+    key: &str,
+    notes: &mut Vec<String>,
+) -> Result<Option<LinkDecision>, String> {
+    let raw = db
+        .with_conn(|conn| {
+            let kv = AppKv::new(ConnectionOrTx::Connection(conn));
+            kv.get(key).map_err(|err| format!("cache read: {err}"))
+        })
+        .map_err(|err| err.to_string())??;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    match serde_json::from_str::<LinkDecision>(&raw) {
+        Ok(decision) => Ok(Some(decision)),
+        Err(err) => {
+            notes.push(format!(
+                "llm cache: stored decision under {key} is corrupt ({err}); re-calling the model"
+            ));
+            Ok(None)
+        }
+    }
+}
+
+/// Store the decision under `key` (the upsert refreshes `updated_at`).
+fn write_cached_decision(db: &Db, key: &str, decision: &LinkDecision) -> Result<(), String> {
+    let value = serde_json::to_string(decision).map_err(|err| err.to_string())?;
+    db.with_conn(|conn| {
+        let kv = AppKv::new(ConnectionOrTx::Connection(conn));
+        kv.set(key, &value)
+            .map_err(|err| format!("cache write: {err}"))
+    })
+    .map_err(|err| err.to_string())?
+}
+
+/// One entity's prompt data (name/type/domain + truncated description + up to
+/// [`LLM_CONTEXT_LIMIT`] truncated chunk texts), the oracle's `entityData`.
+fn load_entity_data(db: &Db, entity: &Entity) -> Result<EntityData, String> {
+    let chunks = db
+        .with_conn(|conn| {
+            let dao = ChunkEntityDao::new(ConnectionOrTx::Connection(conn));
+            dao.get_chunk_texts_by_entity(entity.id, LLM_CONTEXT_LIMIT)
+                .map_err(|err| format!("load context: {err}"))
+        })
+        .map_err(|err| err.to_string())??;
+    let context = chunks
+        .into_iter()
+        .map(|text| truncate(&text, LLM_CHUNK_LEN))
+        .collect();
+    let description = truncate(
+        entity.description.as_deref().unwrap_or_default(),
+        LLM_DESCRIPTION_LEN,
+    );
+    Ok(EntityData {
+        name: entity.name.clone(),
+        entity_type: entity.entity_type.clone(),
+        domain: entity.domain.clone(),
+        description,
+        context,
+    })
+}
+
+/// The per-run `llm` context (the oracle's linker setup): the initialized
+/// client, the loaded prompt templates, the pre-rendered system prompt (it
+/// carries no data, so one render serves the whole run), and the template
+/// hashes (the cache-key input).
+struct LlmRun {
+    client: LlmClient,
+    prompts: EntityLinkerPrompts,
+    system_prompt: String,
+    hashes: TemplateHashes,
+}
+
+impl LlmRun {
+    /// Initialize the client and load the prompts. The caller records
+    /// `init llm linker: {err}` on failure (the `expression` init pattern).
+    fn new(config: &LlmConfig, prompts_path: &str) -> Result<Self, String> {
+        let client = LlmClient::new(config).map_err(|err| err.to_string())?;
+        let prompts = load_entity_linker_prompts(prompts_path).map_err(|err| err.to_string())?;
+        let system_prompt = prompts
+            .render_system()
+            .map_err(|err| format!("render system prompt: {err}"))?;
+        let hashes = prompts.template_hashes();
+        Ok(Self {
+            client,
+            prompts,
+            system_prompt,
+            hashes,
+        })
+    }
+}
+
+/// The miss path: load both contexts, render the user prompt, call the model,
+/// and strictly parse the decision.
+fn decide_via_llm(db: &Db, pair: &CandidatePair, run: &LlmRun) -> Result<LinkDecision, String> {
+    let entity_a = load_entity_data(db, &pair.a)?;
+    let entity_b = load_entity_data(db, &pair.b)?;
+    let user_prompt = run
+        .prompts
+        .render_user(&LinkerInput { entity_a, entity_b })
+        .map_err(|err| err.to_string())?;
+    let raw = run
+        .client
+        .call(
+            &run.system_prompt,
+            &user_prompt,
+            Some(LINK_DECISION_SCHEMA),
+            Some("entity_linker"),
+        )
+        .map_err(|err| err.to_string())?;
+    parse_link_decision(&raw)
+}
+
+/// The outcome of one pair under the `llm` method.
+enum PairOutcome {
+    /// A new link row was inserted for the pair.
+    Linked,
+    /// No new row: the pair was already linked, or the decision was
+    /// `same_entity` false / below the confidence threshold.
+    NotLinked,
+}
+
+/// One candidate pair under the `llm` method (the oracle's `LinkPair` + the
+/// threshold gate): cache check BEFORE the call, decision, cache write AFTER
+/// the decision (including below-threshold ones), then the threshold gate.
+///
+/// `Err` carries a pair-level failure message (non-fatal for the run);
+/// non-fatal side effects (a corrupt cache entry, a failed cache write) are
+/// recorded in `result` and do not fail the pair.
+fn process_llm_pair(
+    db: &Db,
+    pair: &CandidatePair,
+    run: &LlmRun,
+    threshold: f64,
+    result: &mut LinkResult,
+) -> Result<PairOutcome, String> {
+    let key = llm_cache_key(pair.a.id, pair.b.id, &run.hashes, run.client.model());
+
+    // Cache check BEFORE the call (design D4): a hit skips the HTTP round-trip.
+    let decision = match read_cached_decision(db, &key, &mut result.notes)? {
+        Some(decision) => decision,
+        None => {
+            let decision = decide_via_llm(db, pair, run)?;
+            // Cache AFTER the decision — including below-threshold ones: a
+            // "not the same" verdict is as reusable as a match (no TTL, oracle
+            // parity). A failed write is non-fatal (the oracle logs only).
+            if let Err(err) = write_cached_decision(db, &key, &decision) {
+                result.errors.push(format!("cache write: {err}"));
+            }
+            decision
+        }
+    };
+
+    // The threshold gate (design D6): both flags must hold.
+    if !decision.same_entity || decision.confidence < threshold {
+        return Ok(PairOutcome::NotLinked);
+    }
+    let created = create_bidirectional_link(
+        db,
+        pair.a.id,
+        pair.b.id,
+        DEFAULT_RELATION_TYPE,
+        "llm",
+        decision.confidence,
+        &decision.reasoning,
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(if created {
+        PairOutcome::Linked
+    } else {
+        PairOutcome::NotLinked
+    })
+}
+
+/// The `llm` method (the oracle's `LLMCrossDomainLinker`): one chat
+/// completion per pair, decisions cached in `app_kv` (design D4).
+///
+/// A broken LLM configuration or prompt load fails the whole method
+/// (recorded in [`LinkResult::errors`], the `expression` init pattern); a
+/// per-pair failure never aborts the run.
+fn run_llm(
+    db: &Db,
+    links_config: &CrossDomainLinksConfig,
+    linker_config: &LinkerConfig,
+    prompts_path: &str,
+    pairs: &[CandidatePair],
+    result: &mut LinkResult,
+) {
+    if pairs.is_empty() {
+        return;
+    }
+    let run = match LlmRun::new(&linker_config.llm, prompts_path) {
+        Ok(run) => run,
+        Err(err) => {
+            result.errors.push(format!("init llm linker: {err}"));
+            return;
+        }
+    };
+    // A loaded override is recorded in the result (the LinkResult.notes
+    // pattern; the crate has no logger).
+    result.notes.extend(run.prompts.notes().iter().cloned());
+
+    let threshold = links_config.llm_confidence_threshold;
+    for pair in pairs {
+        match process_llm_pair(db, pair, &run, threshold, result) {
+            Ok(PairOutcome::Linked) => result.links_created += 1,
+            Ok(PairOutcome::NotLinked) => result.links_skipped += 1,
+            Err(msg) => {
+                result
+                    .errors
+                    .push(format!("llm pair ({} <-> {}): {msg}", pair.a.id, pair.b.id));
+                result.links_skipped += 1;
+            }
+        }
+    }
 }
 
 /// Run the cross-domain linking pipeline (the oracle's `BuildEntityLinks`):
@@ -410,11 +709,15 @@ fn run_llm_stub(pairs: &[CandidatePair], result: &mut LinkResult) {
 ///
 /// `linker_config.disabled` (the preset's `LinkerConfig`, the oracle's
 /// `Linker.Disabled` check in the ingestion runner) excludes the `llm`
-/// method.
+/// method. `prompts_path` is the preset's `paths.prompts_path` (design D3):
+/// the `llm` method loads its prompt templates from
+/// `{prompts_path}/entity-linker/` (embedded defaults when the files are
+/// absent); it is ignored by every other method.
 pub fn build_entity_links(
     db: &Db,
     links_config: &CrossDomainLinksConfig,
     linker_config: &LinkerConfig,
+    prompts_path: &str,
 ) -> Result<LinkResult, GraphError> {
     let entities =
         db.with_conn(|conn| EntityDao::new(ConnectionOrTx::Connection(conn)).list())??;
@@ -431,7 +734,14 @@ pub fn build_entity_links(
                         .notes
                         .push("llm: excluded by linker.disabled".to_owned());
                 } else {
-                    run_llm_stub(&pairs, &mut result);
+                    run_llm(
+                        db,
+                        links_config,
+                        linker_config,
+                        prompts_path,
+                        &pairs,
+                        &mut result,
+                    );
                 }
             }
         }
@@ -445,8 +755,15 @@ mod tests {
     // compile-time constants).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    use std::io::{Read, Write};
+
     use super::*;
     use config::ontology::EqualsConfig;
+    use config::preset::{LlmConfig, ResponseFormat};
+
+    /// A nonexistent prompts path: the `llm` method falls back to the
+    /// embedded templates (the normal case, design D3).
+    const TEST_PROMPTS_PATH: &str = "/nonexistent/prompts";
 
     /// A test entity with the given (id, type, name, domain).
     fn entity(id: i64, entity_type: &str, name: &str, domain: &str) -> Entity {
@@ -555,6 +872,7 @@ mod tests {
             &db,
             &links_config(vec![LinkMethod::Equals], Vec::new()),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(result.links_created, 1);
@@ -583,7 +901,8 @@ mod tests {
             equals: Some(EqualsConfig { min_words: 1 }),
             ..links_config(vec![LinkMethod::Equals], Vec::new())
         };
-        let result = build_entity_links(&db, &config, &LinkerConfig::default()).unwrap();
+        let result =
+            build_entity_links(&db, &config, &LinkerConfig::default(), TEST_PROMPTS_PATH).unwrap();
         assert_eq!(result.links_created, 1);
         assert_eq!(all_links(&db).len(), 2);
     }
@@ -628,6 +947,7 @@ mod tests {
             &db,
             &links_config(vec![LinkMethod::Expression], vec![rule]),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(result.links_created, 1);
@@ -676,6 +996,7 @@ mod tests {
             &db1,
             &links_config(vec![LinkMethod::Expression], rules.clone()),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(r1.links_created, 1);
@@ -693,6 +1014,7 @@ mod tests {
             &db2,
             &links_config(vec![LinkMethod::Expression], rules),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(r2.links_created, 1);
@@ -719,6 +1041,7 @@ mod tests {
             &db1,
             &links_config(vec![LinkMethod::Expression], vec![bad]),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(r1.links_created, 0);
@@ -744,6 +1067,7 @@ mod tests {
             &db2,
             &links_config(vec![LinkMethod::Expression], vec![non_bool]),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(r2.links_created, 0);
@@ -756,48 +1080,474 @@ mod tests {
         assert!(all_links(&db2).is_empty());
     }
 
+    // ── LLM method (task 2.2) ──────────────────────────────────────────────
+
+    /// A `LinkerConfig` pointing the LLM client at `base_url` (no retries:
+    /// one attempt per pair, so the mock's request count is deterministic).
+    fn llm_linker_config(base_url: &str) -> LinkerConfig {
+        LinkerConfig {
+            disabled: false,
+            llm: LlmConfig {
+                api_base_url: base_url.to_owned(),
+                api_key: String::new(),
+                model_name: "test-model".to_owned(),
+                temperature: 0.0,
+                max_tokens: 256,
+                seed: 1,
+                response_format: ResponseFormat::JsonObject,
+                timeout_ms: 5000,
+                max_retries: 0,
+            },
+        }
+    }
+
+    /// A chat-completions response whose content is the given decision JSON.
+    fn decision_body(same_entity: bool, confidence: f64, reasoning: &str) -> Vec<u8> {
+        let content = serde_json::json!({
+            "same_entity": same_entity,
+            "confidence": confidence,
+            "reasoning": reasoning,
+        })
+        .to_string();
+        serde_json::json!({
+            "choices": [{ "message": { "content": content }, "finish_reason": "stop" }],
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// The `llm_link_*` cache entries (key, value) in `app_kv`.
+    fn cached_decisions(db: &db::Db) -> Vec<(String, String)> {
+        db.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT key, value FROM app_kv WHERE key LIKE 'llm_link%'")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        })
+        .unwrap()
+    }
+
+    /// A minimal HTTP/1.1 mock LLM server on 127.0.0.1 (the `crates/llm`
+    /// pattern; keeps CI network-free): counts every request, captures the
+    /// raw requests, and serves a fixed `(status, body)` with
+    /// `Connection: close`.
+    struct MockLlm {
+        url: String,
+        requests: Arc<std::sync::atomic::AtomicUsize>,
+        captured: Arc<std::sync::Mutex<Vec<String>>>,
+        shutdown: Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl MockLlm {
+        fn start(status: u16, body: Vec<u8>) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (thread_requests, thread_captured, thread_shutdown) = (
+                Arc::clone(&requests),
+                Arc::clone(&captured),
+                Arc::clone(&shutdown),
+            );
+            let thread = std::thread::spawn(move || {
+                loop {
+                    if thread_shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            thread_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            handle_mock_llm(stream, status, &body, &thread_captured);
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                url,
+                requests,
+                captured,
+                shutdown,
+                thread: Some(thread),
+            }
+        }
+
+        fn request_count(&self) -> usize {
+            self.requests.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// The `user` message (the rendered user prompt) of request `i`.
+        fn user_message(&self, i: usize) -> String {
+            let raw = self.captured.lock().unwrap()[i].clone();
+            let body = raw
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body.to_string())
+                .unwrap_or_default();
+            let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+            value["messages"][1]["content"].as_str().unwrap().to_owned()
+        }
+    }
+
+    impl Drop for MockLlm {
+        fn drop(&mut self) {
+            self.shutdown
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            // The accept loop polls the shutdown flag, so the join returns
+            // promptly.
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// Serve one connection: read the full request, record it, answer.
+    fn handle_mock_llm(
+        mut stream: std::net::TcpStream,
+        status: u16,
+        body: &[u8],
+        captured: &std::sync::Mutex<Vec<String>>,
+    ) {
+        let _ = stream.set_nonblocking(false);
+        let mut received = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            if let Some(total) = mock_request_len(&received)
+                && received.len() >= total
+            {
+                break;
+            }
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => received.extend_from_slice(&buffer[..n]),
+            }
+        }
+        if let Ok(text) = std::str::from_utf8(&received) {
+            captured.lock().unwrap().push(text.to_string());
+        }
+        let reason = if (200..=299).contains(&status) {
+            "OK"
+        } else {
+            "Error"
+        };
+        let response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.write_all(body);
+        let _ = stream.flush();
+        // Let the client drain the response before the socket is closed.
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    /// Total expected request length (headers + body) once the header block
+    /// is complete; `None` while more header bytes are still needed.
+    fn mock_request_len(received: &[u8]) -> Option<usize> {
+        let header_end = received
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|pos| pos + 4)?;
+        let headers = std::str::from_utf8(&received[..header_end]).ok()?;
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if !name.trim().eq_ignore_ascii_case("content-length") {
+                    return None;
+                }
+                value.trim().parse::<usize>().ok()
+            })
+            .unwrap_or(0);
+        Some(header_end + content_length)
+    }
+
     #[test]
-    fn llm_stub_writes_nothing_and_disabled_excludes_the_method() {
+    fn llm_above_threshold_creates_link() {
         let db = db::test_util::in_memory_db();
         insert_entities(
             &db,
             &[
                 ("PERSON", "Alice Smith", "hr"),
                 ("PERSON", "Alice Smith", "it"),
-                ("PERSON", "Bob Jones", "hr"),
-                ("PERSON", "Bob Jones", "it"),
             ],
         );
-        let config = links_config(vec![LinkMethod::Llm], Vec::new());
+        let server = MockLlm::start(200, decision_body(true, 0.95, "same name"));
+        let linker = llm_linker_config(&server.url);
 
-        // Stub active (disabled = false): skips are counted, nothing written,
-        // a note records the skip.
-        let active = build_entity_links(&db, &config, &LinkerConfig::default()).unwrap();
-        assert_eq!(active.links_created, 0);
-        assert_eq!(active.links_skipped, 2);
-        assert!(
-            active
-                .notes
-                .iter()
-                .any(|note| note.starts_with("llm: stub"))
+        let result = build_entity_links(
+            &db,
+            &links_config(vec![LinkMethod::Llm], Vec::new()),
+            &linker,
+            TEST_PROMPTS_PATH,
+        )
+        .unwrap();
+
+        assert_eq!(result.links_created, 1);
+        assert_eq!(result.links_skipped, 0);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(server.request_count(), 1, "one LLM call for the pair");
+
+        let links = all_links(&db);
+        assert_eq!(links.len(), 2, "one bidirectional pair");
+        for link in &links {
+            assert_eq!(link.method, "llm");
+            assert_eq!(link.relation_type, "same_entity");
+            assert_eq!(link.confidence, 0.95);
+            assert_eq!(link.evidence.as_deref(), Some("same name"));
+        }
+    }
+
+    #[test]
+    fn llm_below_threshold_no_link_but_cache_written() {
+        let db = db::test_util::in_memory_db();
+        insert_entities(
+            &db,
+            &[
+                ("PERSON", "Alice Smith", "hr"),
+                ("PERSON", "Alice Smith", "it"),
+            ],
         );
+        // 0.3 < the links config threshold (0.7).
+        let server = MockLlm::start(200, decision_body(true, 0.3, "probably not"));
+        let linker = llm_linker_config(&server.url);
+
+        let result = build_entity_links(
+            &db,
+            &links_config(vec![LinkMethod::Llm], Vec::new()),
+            &linker,
+            TEST_PROMPTS_PATH,
+        )
+        .unwrap();
+
+        assert_eq!(result.links_created, 0);
+        assert_eq!(result.links_skipped, 1);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         assert!(all_links(&db).is_empty());
 
-        // Disabled: the method is excluded entirely — no skip count.
+        // The below-threshold decision is still cached (design D4).
+        let entries = cached_decisions(&db);
+        assert_eq!(entries.len(), 1);
+        let (key, value) = &entries[0];
+        assert!(key.starts_with("llm_link_"), "cache key: {key}");
+        let decision: LinkDecision = serde_json::from_str(value).unwrap();
+        assert_eq!(
+            decision,
+            LinkDecision {
+                same_entity: true,
+                confidence: 0.3,
+                reasoning: "probably not".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn llm_same_entity_false_gates_the_link() {
+        let db = db::test_util::in_memory_db();
+        insert_entities(
+            &db,
+            &[
+                ("PERSON", "Alice Smith", "hr"),
+                ("PERSON", "Alice Smith", "it"),
+            ],
+        );
+        // High confidence, but same_entity = false: the gate needs both.
+        let server = MockLlm::start(200, decision_body(false, 0.99, "different people"));
+        let linker = llm_linker_config(&server.url);
+
+        let result = build_entity_links(
+            &db,
+            &links_config(vec![LinkMethod::Llm], Vec::new()),
+            &linker,
+            TEST_PROMPTS_PATH,
+        )
+        .unwrap();
+
+        assert_eq!(result.links_created, 0);
+        assert_eq!(result.links_skipped, 1);
+        assert!(all_links(&db).is_empty());
+        let entries = cached_decisions(&db);
+        assert_eq!(entries.len(), 1);
+        let decision: LinkDecision = serde_json::from_str(&entries[0].1).unwrap();
+        assert!(!decision.same_entity);
+    }
+
+    #[test]
+    fn llm_cache_hit_skips_the_call() {
+        let db = db::test_util::in_memory_db();
+        insert_entities(
+            &db,
+            &[
+                ("PERSON", "Alice Smith", "hr"),
+                ("PERSON", "Alice Smith", "it"),
+            ],
+        );
+        let server = MockLlm::start(200, decision_body(true, 0.95, "same name"));
+        let linker = llm_linker_config(&server.url);
+        let config = links_config(vec![LinkMethod::Llm], Vec::new());
+
+        let first = build_entity_links(&db, &config, &linker, TEST_PROMPTS_PATH).unwrap();
+        assert_eq!(first.links_created, 1);
+        assert_eq!(server.request_count(), 1);
+
+        // Re-run: the cached decision applies, the row already exists, and
+        // the server must not see a second request.
+        let second = build_entity_links(&db, &config, &linker, TEST_PROMPTS_PATH).unwrap();
+        assert_eq!(second.links_created, 0);
+        assert_eq!(
+            second.links_skipped, 1,
+            "cached decision, row already exists"
+        );
+        assert!(second.errors.is_empty(), "errors: {:?}", second.errors);
+        assert_eq!(server.request_count(), 1, "cache hit: no second LLM call");
+    }
+
+    #[test]
+    fn llm_call_failure_is_recorded_and_pipeline_alive() {
+        let db = db::test_util::in_memory_db();
+        insert_entities(
+            &db,
+            &[
+                ("PERSON", "Alice Smith", "hr"),
+                ("PERSON", "Alice Smith", "it"),
+            ],
+        );
+        // A 200 with a valid envelope but a content that is not the decision
+        // JSON: a strict decision-parse error.
+        let bad_content = serde_json::json!({
+            "choices": [{ "message": { "content": "not a decision" } }],
+        })
+        .to_string()
+        .into_bytes();
+        let server = MockLlm::start(200, bad_content);
+        let linker = llm_linker_config(&server.url);
+        // equals runs first and must still create its link (pipeline alive).
+        let config = links_config(vec![LinkMethod::Equals, LinkMethod::Llm], Vec::new());
+
+        let result = build_entity_links(&db, &config, &linker, TEST_PROMPTS_PATH).unwrap();
+
+        assert_eq!(result.links_created, 1, "equals still links the pair");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|err| err.starts_with("llm pair (") && err.contains("invalid decision JSON")),
+            "errors: {:?}",
+            result.errors
+        );
+        let links = all_links(&db);
+        assert!(
+            !links.iter().any(|link| link.method == "llm"),
+            "no llm links after a failed pair"
+        );
+        // A failed pair is not cached.
+        assert!(cached_decisions(&db).is_empty());
+    }
+
+    #[test]
+    fn llm_disabled_excludes_the_method() {
+        let db = db::test_util::in_memory_db();
+        insert_entities(
+            &db,
+            &[
+                ("PERSON", "Alice Smith", "hr"),
+                ("PERSON", "Alice Smith", "it"),
+            ],
+        );
+        let server = MockLlm::start(200, decision_body(true, 0.95, "same name"));
         let disabled = LinkerConfig {
             disabled: true,
-            ..LinkerConfig::default()
+            ..llm_linker_config(&server.url)
         };
-        let excluded = build_entity_links(&db, &config, &disabled).unwrap();
-        assert_eq!(excluded.links_created, 0);
-        assert_eq!(excluded.links_skipped, 0);
+
+        let result = build_entity_links(
+            &db,
+            &links_config(vec![LinkMethod::Llm], Vec::new()),
+            &disabled,
+            TEST_PROMPTS_PATH,
+        )
+        .unwrap();
+
+        assert_eq!(result.links_created, 0);
+        assert_eq!(result.links_skipped, 0);
         assert!(
-            excluded
+            result
                 .notes
                 .iter()
                 .any(|note| note.contains("excluded by linker.disabled"))
         );
+        assert_eq!(server.request_count(), 0, "disabled: no LLM call");
         assert!(all_links(&db).is_empty());
+    }
+
+    #[test]
+    fn llm_prompt_carries_up_to_three_chunk_contexts() {
+        let db = db::test_util::in_memory_db();
+        let ids = insert_entities(
+            &db,
+            &[
+                ("PERSON", "Alice Smith", "hr"),
+                ("PERSON", "Alice Smith", "it"),
+            ],
+        );
+        db.with_conn(|conn| -> Result<(), db::DbError> {
+            let documents = db::DocumentDao::new(ConnectionOrTx::Connection(conn));
+            let doc = documents.create("text", "doc.txt", None, None)?;
+            let chunks = db::ChunkDao::new(ConnectionOrTx::Connection(conn));
+            let links = db::ChunkEntityDao::new(ConnectionOrTx::Connection(conn));
+            // Entity A: FOUR chunks — only the first three may reach the prompt.
+            for (i, text) in [
+                "alpha context",
+                "beta context",
+                "gamma context",
+                "delta context",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let chunk = chunks.create(doc, text, i as i64, None, None)?;
+                links.link(chunk, ids[0])?;
+            }
+            // Entity B: one chunk.
+            let chunk = chunks.create(doc, "epsilon context", 0, None, None)?;
+            links.link(chunk, ids[1])?;
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+
+        let server = MockLlm::start(200, decision_body(true, 0.95, "same name"));
+        let linker = llm_linker_config(&server.url);
+        let result = build_entity_links(
+            &db,
+            &links_config(vec![LinkMethod::Llm], Vec::new()),
+            &linker,
+            TEST_PROMPTS_PATH,
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let user = server.user_message(0);
+        assert!(
+            user.contains("Context [0]: alpha context"),
+            "prompt:\n{user}"
+        );
+        assert!(user.contains("Context [1]: beta context"));
+        assert!(user.contains("Context [2]: gamma context"));
+        assert!(
+            !user.contains("delta context"),
+            "the 4th chunk must not reach the prompt:\n{user}"
+        );
+        assert!(user.contains("epsilon context"));
     }
 
     #[test]
@@ -821,6 +1571,7 @@ mod tests {
                 vec![rule.clone()],
             ),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(first.links_created, 1);
@@ -833,6 +1584,7 @@ mod tests {
             &db2,
             &links_config(vec![LinkMethod::Expression, LinkMethod::Equals], vec![rule]),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(second.links_created, 1);
@@ -861,6 +1613,7 @@ mod tests {
             &db,
             &links_config(vec![LinkMethod::Equals], Vec::new()),
             &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
         )
         .unwrap();
         assert_eq!(result.links_created, 0);

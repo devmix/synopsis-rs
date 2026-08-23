@@ -89,9 +89,14 @@ pub struct TemplateHashes {
 /// Loaded entity-linker prompt templates (system + user), their source hashes,
 /// and the notes recording which sources were used (design D3).
 ///
-/// The minijinja environment (with the `join`/`truncate` helpers and block
-/// trimming) is built once at load; the compiled templates are cached on it, so
-/// rendering in the per-pair loop (task 2.2) does not re-parse.
+/// Built once per linking run by the `llm` method
+/// ([`crate::linker::build_entity_links`] with `LinkMethod::Llm`): the
+/// minijinja environment (with the `join`/`truncate` helpers and block
+/// trimming) is created at load and the compiled templates are cached on it,
+/// so rendering in the per-pair loop does not re-parse. The system prompt
+/// (no data) is rendered once per run; the user prompt is rendered per pair
+/// from a [`LinkerInput`]. [`EntityLinkerPrompts::template_hashes`] feeds the
+/// decision-cache key (design D4).
 #[derive(Debug)]
 pub struct EntityLinkerPrompts {
     /// The environment holding the compiled templates and the helpers.
@@ -268,7 +273,10 @@ fn register_helpers(env: &mut Environment<'static>) {
 /// The oracle's `utils.Truncate`: shorten `s` to at most `max` chars, appending
 /// `...` when truncated. `max <= 0` yields `""`. Rune-safe (never splits a
 /// multi-byte character).
-fn truncate(s: &str, max: i64) -> String {
+///
+/// Also used by the `llm` linking method (task 2.2) to bound the prompt's
+/// description and context-chunk lengths before rendering.
+pub(crate) fn truncate(s: &str, max: i64) -> String {
     if max <= 0 {
         return String::new();
     }
@@ -282,7 +290,10 @@ fn truncate(s: &str, max: i64) -> String {
 }
 
 /// Hex SHA-256 of a byte slice (the template-source hash for the D4 key).
-fn sha256_hex(bytes: &[u8]) -> String {
+///
+/// Also used by the `llm` linking method (task 2.2) for the decision-cache
+/// key digest.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {

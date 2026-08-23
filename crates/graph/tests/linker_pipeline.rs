@@ -88,7 +88,10 @@ fn end_to_end_linking_and_idempotent_rerun() {
     let linker = LinkerConfig::default();
 
     // ── First run ─────────────────────────────────────────────────────────
-    let first = build_entity_links(&db, &config, &linker).expect("first run must succeed");
+    // The fixture methods are equals/expression only: the prompts path is
+    // unused (a nonexistent path would fall back to the embedded templates).
+    let first = build_entity_links(&db, &config, &linker, "/nonexistent/prompts")
+        .expect("first run must succeed");
     assert!(
         first.errors.is_empty(),
         "first run must not error: {:?}",
@@ -142,7 +145,8 @@ fn end_to_end_linking_and_idempotent_rerun() {
     }
 
     // ── Second run: idempotent ────────────────────────────────────────────
-    let second = build_entity_links(&db, &config, &linker).expect("second run must succeed");
+    let second = build_entity_links(&db, &config, &linker, "/nonexistent/prompts")
+        .expect("second run must succeed");
     assert!(
         second.errors.is_empty(),
         "second run must not error: {:?}",

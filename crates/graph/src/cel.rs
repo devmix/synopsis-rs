@@ -1440,7 +1440,7 @@ mod tests {
         assert_eq!(index.neighbors(4), vec![1]);
         assert_eq!(
             index.neighbors(999),
-            Vec::new(),
+            Vec::<i64>::new(),
             "missing entity → empty, not an error"
         );
     }

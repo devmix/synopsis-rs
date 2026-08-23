@@ -2319,9 +2319,11 @@ dependencies = [
  "cel",
  "config",
  "db",
+ "llm",
  "minijinja",
  "petgraph",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror",
 ]
