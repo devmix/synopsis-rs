@@ -25,6 +25,7 @@ pub mod error;
 pub mod graph;
 pub mod linker;
 pub mod metrics;
+pub mod prompts;
 pub mod traverser;
 
 pub use cel::{
@@ -36,6 +37,9 @@ pub use error::GraphError;
 pub use graph::{EdgeKind, EntityNode, Graph, GraphEdge, GraphIndex};
 pub use linker::{LinkResult, build_entity_links};
 pub use metrics::GraphStats;
+pub use prompts::{
+    EntityData, EntityLinkerPrompts, LinkerInput, TemplateHashes, load_entity_linker_prompts,
+};
 pub use traverser::{
     DEFAULT_MAX_DEPTH, DEFAULT_MAX_NODES, Direction, HARD_MAX_DEPTH, TraversalEdge,
     TraverseOptions, TraverseResult,

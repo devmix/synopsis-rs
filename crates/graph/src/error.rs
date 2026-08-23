@@ -57,6 +57,38 @@ pub enum GraphError {
         /// The rule's name.
         name: String,
     },
+    /// A prompt-template override file exists but could not be read (llm change
+    /// 2.1, design D3). A *missing* file is not an error — it falls back to the
+    /// embedded default.
+    #[error("prompt template: read {path}: {source}")]
+    PromptTemplateIo {
+        /// The override file path that failed to read.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A prompt template (embedded default or user override) failed to parse
+    /// (llm change 2.1, design D3). Detected at load time, not first render.
+    #[error("prompt template {name}: parse: {source}")]
+    PromptTemplateParse {
+        /// Which template: `system` or `user`.
+        name: String,
+        /// The underlying minijinja parse error.
+        #[source]
+        source: minijinja::Error,
+    },
+    /// A prompt template failed to render (llm change 2.1, design D3): a
+    /// registered helper was misused, or an override template references a
+    /// missing field under a strict undefined behavior.
+    #[error("prompt template {name}: render: {source}")]
+    PromptTemplateRender {
+        /// Which template: `system` or `user`.
+        name: String,
+        /// The underlying minijinja render error.
+        #[source]
+        source: minijinja::Error,
+    },
 }
 
 impl From<cel::ParseErrors> for GraphError {

@@ -22,3 +22,10 @@ petgraph = { workspace = true }
 cel = { workspace = true }
 # Error types for library crates (workspace convention).
 thiserror = { workspace = true }
+# Prompt template engine (llm change, design D3): the entity-linker system/user
+# prompts are rendered with minijinja (embedded defaults + user overrides).
+# sha2 (already in the palette) hashes the template sources for the D4 cache key.
+# serde (derive) serializes the render-input structs into a minijinja `Value`.
+minijinja = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }

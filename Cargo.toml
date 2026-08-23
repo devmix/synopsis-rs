@@ -85,6 +85,16 @@ libsqlite3-sys = { version = "0.38", features = ["bundled"] }
 # pinned Rust 1.96.0; the zigbuild gate for both targets passed in task 1.1.
 petgraph = { version = "0.8", default-features = false, features = ["std"] }
 cel = "0.14"
+# Prompt template engine (llm change, design D3; human decision 2026-08-23):
+# the entity-linker prompts are user-overridable data with context loops and
+# join/truncate helpers, so a real template engine replaces the oracle's Go
+# text/template. Verified against the crates.io index: minijinja 2.24.0 is the
+# current stable 2.x line (3.0.0 is still alpha); MSRV 1.70, no known CVEs,
+# well below our pinned Rust 1.96.0. Default features trimmed to what the
+# linker needs: `serde` (render our input structs into a `Value`) and
+# `std_collections` (Vec/String in the context) — the builtins/macros/debug/
+# multi_template extras are unused and would bloat the single-binary build.
+minijinja = { version = "2", default-features = false, features = ["serde", "std_collections"] }
 # cel-interpreter was superseded by `cel` above (graph design D2, 2026-08-22);
 # it is no longer inherited by any member and is kept here only as a palette
 # record of the former pin (remove once the palette is tidied).
