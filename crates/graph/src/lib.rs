@@ -20,11 +20,13 @@
 //! lookup (1.3), domain-bounded traversal (1.4), metrics and DOT export
 //! (1.5), CEL engine and contract functions (1.6–1.8), linkers (1.9).
 
+pub mod cel;
 pub mod error;
 pub mod graph;
 pub mod metrics;
 pub mod traverser;
 
+pub use cel::{CelEngine, ChunkIndex, FactIndex, FunctionInstaller, ReachabilityIndex, ScopeCache};
 pub use error::GraphError;
 pub use graph::{EdgeKind, EntityNode, Graph, GraphEdge, GraphIndex};
 pub use metrics::GraphStats;
