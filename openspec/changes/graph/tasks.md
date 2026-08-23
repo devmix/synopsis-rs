@@ -62,7 +62,7 @@
   - **Зависимости:** 1.6.
   - **Референс:** internal/expression/engine.go (функции), internal/relations/scope_builders.go (FactIndex/ChunkIndex).
 
-- [ ] 1.8 CEL-графовые функции: neighbors, path_exists
+- [x] 1.8 CEL-графовые функции: neighbors, path_exists
   - **Цель:** две функции поверх in-memory индекса.
   - **Scope файлов:** cel.rs (+тесты).
   - **Детали:** neighbors(e) → смежные ID (оба направления; сверить с оракулом); path_exists(from,to,max_depth) → bool достижимости с ограничением глубины (лёгкий BFS; доменные границы — те же правила D4, сверить с оракулом). GraphIndex-слой лениво через scope cache.
