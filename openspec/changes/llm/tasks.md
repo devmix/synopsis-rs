@@ -38,7 +38,7 @@
   - **Зависимости:** 1.1 (крейт llm существует), независимо от 1.2–1.3.
   - **Референс:** design D3; internal/prompts/loader.go; ../synopsis/configs/prompts/entity-linker/*.tmpl.
 
-- [ ] 2.2 Реальный LLM-линкер (замена стаба)
+- [x] 2.2 Реальный LLM-линкер (замена стаба)
   - **Цель:** run_llm: контекст → шаблоны → вызов → парсинг → threshold → кэш → link.
   - **Scope файлов:** `crates/graph/src/linker.rs` (замена run_llm_stub), lib.rs (ре-экспорты).
   - **Детали:** для каждой пары после equals/expression: контекст — до 3 текстов чанков на сущность (ChunkEntityDao::get_chunk_texts_by_entity); user-шаблон получает данные обеих сущностей (name/type/domain/description/context[]); вызов клиента (response_format из LlmConfig; json_schema-схема статическая {same_entity, confidence, reasoning}); парсинг строгий, confidence клампится [0,1]; threshold из CrossDomainLinksConfig.llm_confidence_threshold; link method='llm', evidence=reasoning через существующий create_bidirectional_link; кэш app_kv `llm_link_{sha256(pair_canonical + template_hashes + model)}` — проверка ДО вызова, запись ПОСЛЕ решения (в т.ч. ниже порога). Ошибка одной пары — non-fatal в LinkResult.errors. disabled исключает метод (как в стабе).
