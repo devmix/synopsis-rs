@@ -30,7 +30,7 @@
   - **Зависимости:** 1.2.
   - **Референс:** design D6; internal/llm/client.go (retry-политика).
 
-- [ ] 2.1 Prompts-модуль graph: загрузка + рендеринг
+- [x] 2.1 Prompts-модуль graph: загрузка + рендеринг
   - **Цель:** шаблоны entity-linker: загрузка из prompts_path с embedded-fallback, рендеринг minijinja, хэши для ключа кэша.
   - **Scope файлов:** `crates/graph/src/prompts.rs` (+тесты), `crates/graph/Cargo.toml` (+minijinja, +llm dep появится в 2.2 — можно сразу), lib.rs (ре-экспорт).
   - **Детали:** embedded-дефолты system/user (include_str! из fixtures — переписать оракульные configs/prompts/entity-linker/*.tmpl в Jinja2 функционально: тот же текст, циклы по контекстным чанкам, хелперы join/truncate зарегистрировать в minijinja). Загрузка: если файл существует по prompts_path/entity-linker/{system,user}.tmpl — он побеждает; отличие фиксируется записью в notes-канал (возврат из загрузчика). Хэши sha256 обоих отрендеренных ИСТОЧНИКОВ шаблонов (не данных) — для ключа кэша D4.
