@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<global>
+
+    <!-- Linking methods in application order: equals, expression, then llm
+         (the llm method is the subject of this fixture, task 2.3). -->
+    <cross-domain-links>
+        <methods>
+            <method>equals</method>
+            <method>expression</method>
+            <method>llm</method>
+        </methods>
+
+        <!-- No <equals> block: min-words keeps the oracle default (2), so the
+             one-word "Acme" name is too short for equals — only the llm
+             method can link that pair. -->
+
+        <expressions>
+            <!-- Link a person to its cross-domain twin when the person works
+                 at the Acme organization (the object entity's name). The
+                 A.type guard keeps the rule from firing on the Acme pair
+                 itself (a fact is attached to both endpoints). -->
+            <expression>
+                <name>acme_workers</name>
+                <description>Link cross-domain twins that both work at Acme</description>
+                <priority>5</priority>
+                <where>A.type == 'PERSON' &amp;&amp; has_fact(A.id, 'works_at', 'Acme')</where>
+                <relation-type>works_at_same_org</relation-type>
+            </expression>
+        </expressions>
+    </cross-domain-links>
+
+</global>
