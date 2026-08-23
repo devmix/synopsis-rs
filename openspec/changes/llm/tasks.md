@@ -6,7 +6,7 @@
 
 ---
 
-- [ ] 1.1 Скаффолдинг крейта llm
+- [x] 1.1 Скаффолдинг крейта llm
   - **Цель:** создать `crates/llm` (базовый ярус D1, зависимость только config) с ошибками и конфигурационной сборкой клиента.
   - **Scope файлов:** `crates/llm/Cargo.toml`, `crates/llm/src/lib.rs`, `crates/llm/src/error.rs`; корневой `Cargo.toml` (members + palette: minijinja pin; ureq/serde уже есть).
   - **Детали:** `LlmError` (thiserror) по конвенции workspace (см. error.rs соседних крейтов): варианты для HTTP-статусов (retryable/non-retryable различимы), сети/таймаута, пустого content, парсинга ответа, конфигурации. Конструктор клиента из `&LlmConfig` (валидация: base URL непустой, timeout_ms > 0 и т.п. — по вкусу, задокументировать). Публичный API пока каркас: метод вызова появится в 1.2.
