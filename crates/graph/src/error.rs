@@ -48,6 +48,15 @@ pub enum GraphError {
         /// The missing entity row id.
         entity_id: i64,
     },
+    /// An ontology linking rule evaluated to a non-boolean value (task 1.9):
+    /// the oracle type-checks rules against `cel.BoolType` at compile time,
+    /// but the `cel` crate's `Program::compile` is parse-only, so the check
+    /// happens at evaluation.
+    #[error("linking rule {name:?} must evaluate to a boolean")]
+    NonBooleanRule {
+        /// The rule's name.
+        name: String,
+    },
 }
 
 impl From<cel::ParseErrors> for GraphError {

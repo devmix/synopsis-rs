@@ -453,7 +453,11 @@ impl ReachabilityIndex {
             return Vec::new();
         };
         let g = self.graph.graph();
-        let mut ids = HashSet::with_capacity(4);
+        // Capacity from the node's actual degree (both directions), not a
+        // fixed guess: most entities have few links, hubs have many.
+        let degree = g.edges_directed(node, PetDirection::Outgoing).count()
+            + g.edges_directed(node, PetDirection::Incoming).count();
+        let mut ids = HashSet::with_capacity(degree);
         for edge in g.edges_directed(node, PetDirection::Outgoing) {
             ids.insert(g[edge.target()].id);
         }

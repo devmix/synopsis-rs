@@ -23,15 +23,18 @@
 pub mod cel;
 pub mod error;
 pub mod graph;
+pub mod linker;
 pub mod metrics;
 pub mod traverser;
 
 pub use cel::{
     CelEngine, ChunkIndex, FactIndex, FunctionInstaller, ReachabilityIndex, ScopeCache,
-    build_chunk_index, build_fact_index, register_data_functions,
+    build_chunk_index, build_fact_index, build_reachability_index, register_data_functions,
+    register_graph_functions,
 };
 pub use error::GraphError;
 pub use graph::{EdgeKind, EntityNode, Graph, GraphEdge, GraphIndex};
+pub use linker::{LinkResult, build_entity_links};
 pub use metrics::GraphStats;
 pub use traverser::{
     DEFAULT_MAX_DEPTH, DEFAULT_MAX_NODES, Direction, HARD_MAX_DEPTH, TraversalEdge,
