@@ -14,7 +14,7 @@
   - **Зависимости:** нет.
   - **Референс:** design D1/D2; паттерн feasibility — archive vectors задача 1.1; `ci/darwin-sdk/README.md`.
 
-- [ ] 1.2 Построитель индекса: SQLite → petgraph DiGraph
+- [x] 1.2 Построитель индекса: SQLite → petgraph DiGraph
   - **Цель:** Graph::from_db — загрузка entities/entity_links в DiGraph + индексы name→ID («domain:lowercase_name», O(1)) и type→nodes.
   - **Scope файлов:** `crates/graph/src/graph.rs` (или lib.rs при малом объёме), тесты.
   - **Детали:** узлы — сущности (вес: id, domain, name, type); рёбра — entity_links (тип связи в весе ребра) + fact-рёбра из фактов сущностей (пометить как fact-рёбра для доменных границ D4 — сверить с оракулом, как именно fact-связи попадают в граф: traverser.go различает их от entity links). Полный rebuild за один проход (D3). Семантика флагов: enable_graph=false / load_on_startup=false → индекс не строится, состояние «граф недоступен» (не ошибка). Пустая БД → пустой валидный индекс.
