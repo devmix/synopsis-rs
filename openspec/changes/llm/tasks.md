@@ -14,7 +14,7 @@
   - **Зависимости:** нет.
   - **Референс:** design D1/D2; паттерн скаффолдинга — archive vectors 1.1 / graph 1.1.
 
-- [ ] 1.2 Клиент: запрос/ответ/Bearer
+- [x] 1.2 Клиент: запрос/ответ/Bearer
   - **Цель:** ядро вызова POST {base}/chat/completions: сборка тела, Bearer, парсинг ответа в текст.
   - **Scope файлов:** `crates/llm/src/client.rs` (+тесты), lib.rs (ре-экспорт).
   - **Детали:** тело: model, messages[{role:system},{role:user}] (content строкой — оракул использует parts, но для текстовых промптов строка эквивалентна; зафиксировать решение), temperature, seed, max_tokens, response_format (json_object → {"type":"json_object"}; json_schema → вложенный объект с name/schema; default name «llm_output»). Пустой api_key → без Authorization. Ответ: choices[0].message.content; пустой content → явная non-retryable ошибка. Таймаут из конфига на запрос.
