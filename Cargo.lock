@@ -2797,9 +2797,8 @@ name = "ingestion"
 version = "0.1.0"
 dependencies = [
  "config",
- "db",
- "embedding",
- "graph",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

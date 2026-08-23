@@ -22,6 +22,7 @@
 //! chunking artifact.
 
 pub mod error;
+pub mod parsers;
 pub mod types;
 
 pub use error::IngestionError;
