@@ -54,7 +54,7 @@
   - **Зависимости:** 1.1.
   - **Референс:** design D5; internal/expression/{engine.go,scope_cache.go}.
 
-- [ ] 1.7 CEL-функции данных: facts, has_fact, chunks, chunk_contains
+- [x] 1.7 CEL-функции данных: facts, has_fact, chunks, chunk_contains
   - **Цель:** четыре SQLite-backed функции контракта.
   - **Scope файлов:** cel.rs (+тесты).
   - **Детали:** facts(e) → список фактов сущности; has_fact(e,k,v) → bool; chunks(e) → чанки сущности; chunk_contains(e,text) → bool (подстрочный поиск по текстам чанков сущности — сверить семантику с оракулом: FTS или LIKE). Типы аргументов/возврата — маппинг cel::Value ↔ наши данные зафиксировать и задокументировать.
