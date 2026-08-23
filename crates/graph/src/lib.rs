@@ -26,7 +26,10 @@ pub mod graph;
 pub mod metrics;
 pub mod traverser;
 
-pub use cel::{CelEngine, ChunkIndex, FactIndex, FunctionInstaller, ReachabilityIndex, ScopeCache};
+pub use cel::{
+    CelEngine, ChunkIndex, FactIndex, FunctionInstaller, ReachabilityIndex, ScopeCache,
+    build_chunk_index, build_fact_index, register_data_functions,
+};
 pub use error::GraphError;
 pub use graph::{EdgeKind, EntityNode, Graph, GraphEdge, GraphIndex};
 pub use metrics::GraphStats;
