@@ -38,7 +38,7 @@
   - **Зависимости:** 1.2.
   - **Референс:** design D4; internal/graph/traverser.go (Options, Normalize, семантика MaxNodes/FollowEntityLinks).
 
-- [ ] 1.5 Метрики + DOT-export
+- [x] 1.5 Метрики + DOT-export
   - **Цель:** stats (node_count, edge_count, avg_degree) и to_dot() (валидный graphviz, атрибуция узлов доменом/типом).
   - **Scope файлов:** модуль метрик (+тесты).
   - **Детали:** DOT — средствами petgraph (Dot-эскейп имён); avg_degree = 2*edges/nodes (сверить с metrics.go, edge-семантика направленных рёбер).
