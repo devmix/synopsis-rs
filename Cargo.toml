@@ -5,6 +5,7 @@ members = [
     "crates/config",
     "crates/db",
     "crates/vectors",
+    "crates/llm",
     "crates/embedding",
     "crates/ingestion",
     "crates/graph",
@@ -37,11 +38,15 @@ expect_used = "warn" # same as unwrap_used
 [workspace.dependencies]
 # Internal crates - dependency graph fixed by design.md D1 (revised by
 # db-module task 1.18, human decision 2026-08-20: db → config for the
-# SQLite batch-size constants):
-# config -> db; db, vectors -> embedding, ingestion, graph -> search -> mcp -> cli
+# SQLite batch-size constants; llm change D1 adds llm to the base tier):
+# config, db, vectors, llm -> embedding, ingestion, graph -> search -> mcp -> cli
 config = { path = "crates/config" }
 db = { path = "crates/db" }
 vectors = { path = "crates/vectors" }
+# Base tier (llm change D1): OpenAI-compatible LLM client; only internal
+# dependency is config (LlmConfig). graph/embedding depend on it, never
+# the other way around.
+llm = { path = "crates/llm" }
 embedding = { path = "crates/embedding" }
 ingestion = { path = "crates/ingestion" }
 graph = { path = "crates/graph" }

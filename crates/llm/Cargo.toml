@@ -1,0 +1,22 @@
+[package]
+name = "llm"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# Base tier of the D1 graph (change llm, design D1): the only internal
+# dependency is `config` (source of LlmConfig); graph/embedding depend on this
+# crate, never the other way around. The sync ureq client is design D2:
+# callers (the graph linker) dispatch calls onto spawn_blocking workers.
+[dependencies]
+config = { workspace = true }
+# Sync HTTP (design D2): same ureq 3 pin as the embedding downloader; default
+# rustls+gzip keeps TLS pure-Rust for the static musl and windows-gnu CI targets.
+ureq = { workspace = true }
+# JSON request/response bodies (design D2; the call method lands in task 1.2).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Error types for library crates (workspace convention).
+thiserror = { workspace = true }
