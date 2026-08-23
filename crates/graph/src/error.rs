@@ -41,6 +41,13 @@ pub enum GraphError {
         /// Which argument was empty.
         what: &'static str,
     },
+    /// The requested entity is not present in the index (the oracle's
+    /// "start node %d not found" from `BFS`, task 1.4).
+    #[error("entity {entity_id} not found in graph")]
+    EntityNotFound {
+        /// The missing entity row id.
+        entity_id: i64,
+    },
 }
 
 impl From<cel::ParseErrors> for GraphError {
