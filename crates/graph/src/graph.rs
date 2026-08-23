@@ -16,6 +16,8 @@
 //! `HashMap` indexes:
 //! - [`Graph::find_exact`] key `"domain:lowercase_name"` → node, O(1)
 //!   (oracle `nameToID`, same key format);
+//! - [`Graph::find_partial`] — O(n) fuzzy name lookup within a domain
+//!   (task 1.3), sorted by relevance tier, then normalized name, then id;
 //! - [`Graph::nodes_by_type`] — entity type → node indexes
 //!   (oracle `typeToNodes`).
 //!
@@ -63,6 +65,17 @@
 //!   oracle's traverser never reads them (boundary checks use node domains).
 //! - The oracle's `avgDegree` double-counts every edge (outgoing + incoming)
 //!   — a Go bug; task 1.5 computes `2*E/N`.
+//! - [`Graph::find_partial`] INCLUDES an exact name match as the top
+//!   relevance tier; the oracle's `FindEntityPartial` skipped exact matches
+//!   ("the caller should use `FindEntityExact`") — a footgun for a
+//!   standalone API: a query equal to a name would return nothing.
+//! - [`Graph::find_partial`] results are deterministically sorted (relevance
+//!   tier, normalized name, entity id); the oracle's order within a tier
+//!   followed Go map iteration order (random).
+//! - [`Graph::find_exact`] rejects any name that normalizes to empty (the
+//!   oracle rejected only the literally empty string); [`Graph::find_partial`]
+//!   rejects an empty query with [`GraphError::EmptyQuery`] (the oracle's
+//!   "pattern must not be empty").
 //!
 //! ## Flag semantics (D13, config crate)
 //!
@@ -267,10 +280,62 @@ impl Graph {
     /// O(1) exact name lookup (case- and surrounding-whitespace-insensitive
     /// on both parts): the node index of the entity with the given name in
     /// the given domain, or `None` if absent.
+    ///
+    /// A name that normalizes to empty (empty or whitespace-only) is always
+    /// a miss — the oracle's `name == ""` guard, generalized to the
+    /// normalized form.
     pub fn find_exact(&self, name: &str, domain: &str) -> Option<NodeIndex> {
+        let name = normalize(name);
+        if name.is_empty() {
+            return None;
+        }
         self.by_name
-            .get(&format!("{}:{}", normalize(domain), normalize(name)))
+            .get(&format!("{}:{}", normalize(domain), name))
             .copied()
+    }
+
+    /// Fuzzy name lookup (task 1.3): every entity whose normalized name
+    /// contains the normalized `query` as a substring.
+    ///
+    /// Complexity: an O(n) linear scan over the index nodes (plus an
+    /// O(m log m) sort of the m matches) — deliberate at personal-corpus
+    /// scale (design D3); a dedicated index would be premature.
+    ///
+    /// - `domain` is normalized; an EMPTY domain searches all domains
+    ///   (the oracle's contract).
+    /// - An empty `query` (empty or whitespace-only) is a caller bug:
+    ///   [`GraphError::EmptyQuery`] (the oracle's "pattern must not be
+    ///   empty").
+    /// - No match → an empty slice, NOT an error.
+    ///
+    /// Results are sorted deterministically: relevance tier first
+    /// ([`MatchTier::Exact`], then [`MatchTier::Prefix`], then
+    /// [`MatchTier::Substring`]), then normalized name, then entity id
+    /// (a same-name tie within one domain is possible: the unique key
+    /// includes the type).
+    pub fn find_partial(&self, domain: &str, query: &str) -> Result<Vec<&EntityNode>, GraphError> {
+        let query = normalize(query);
+        if query.is_empty() {
+            return Err(GraphError::EmptyQuery { what: "query" });
+        }
+        let domain = normalize(domain);
+
+        let mut matches: Vec<(MatchTier, String, i64, &EntityNode)> = Vec::new();
+        for index in self.graph.node_indices() {
+            let node = &self.graph[index];
+            if !domain.is_empty() && node.domain != domain {
+                continue;
+            }
+            let name = normalize(&node.name);
+            let Some(tier) = match_tier(&name, &query) else {
+                continue;
+            };
+            matches.push((tier, name, node.id, node));
+        }
+        matches.sort_unstable_by(|(t1, n1, i1, _), (t2, n2, i2, _)| {
+            (t1, n1.as_str(), *i1).cmp(&(t2, n2.as_str(), *i2))
+        });
+        Ok(matches.into_iter().map(|(_, _, _, node)| node).collect())
     }
 
     /// All node indexes of `entity_type` in entity-id order; empty if the
@@ -281,6 +346,33 @@ impl Graph {
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
+}
+
+/// Relevance tier of a [`Graph::find_partial`] match; the first sort key
+/// (ascending = more relevant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MatchTier {
+    /// The query equals the normalized name.
+    Exact,
+    /// The normalized name starts with the query.
+    Prefix,
+    /// The query occurs strictly inside the normalized name.
+    Substring,
+}
+
+/// The relevance tier of a normalized `name` for a normalized `query`, or
+/// `None` if the query does not occur in the name at all.
+fn match_tier(name: &str, query: &str) -> Option<MatchTier> {
+    if name == query {
+        return Some(MatchTier::Exact);
+    }
+    name.find(query).map(|pos| {
+        if pos == 0 {
+            MatchTier::Prefix
+        } else {
+            MatchTier::Substring
+        }
+    })
 }
 
 /// The graph index in one of its two states (task 1.2 flag semantics):
@@ -633,5 +725,140 @@ mod tests {
             g.find_exact("alice", "hr").is_some(),
             "index key must use the normalized domain"
         );
+    }
+
+    /// Task 1.3: display names of a finder result, in result order.
+    fn names(result: Vec<&EntityNode>) -> Vec<String> {
+        result.iter().map(|n| n.name.clone()).collect()
+    }
+
+    /// Acceptance: exact finds in any case (covered above) plus the
+    /// oracle's empty-name guard — a name that normalizes to empty is
+    /// always a miss.
+    #[test]
+    fn exact_with_empty_name_is_a_miss() {
+        let db = in_memory_db();
+        seed_entity(&db, "PERSON", "Alice", "hr");
+
+        let index = GraphIndex::from_db(&db, &GraphConfig::default()).unwrap();
+        let g = index.ready().unwrap();
+        for name in ["", "   ", "\t\n"] {
+            assert_eq!(g.find_exact(name, "hr"), None, "query {name:?}");
+        }
+    }
+
+    // Acceptance: partial finds by prefix AND substring (case-insensitive),
+    // deterministically sorted: relevance tier, then normalized name, then
+    // entity id. Insertion order is scrambled on purpose — the result must
+    // not depend on it.
+    #[test]
+    fn partial_finds_prefix_and_substring_sorted() {
+        let db = in_memory_db();
+        seed_entity(&db, "PERSON", "Bob Cooper", "hr");
+        seed_entity(&db, "PERSON", "Alice Cooper", "hr");
+        seed_entity(&db, "PERSON", "Cooper", "hr");
+        seed_entity(&db, "PERSON", "Cooper Smith", "hr");
+        seed_entity(&db, "PERSON", "Alice", "hr");
+
+        let index = GraphIndex::from_db(&db, &GraphConfig::default()).unwrap();
+        let g = index.ready().unwrap();
+
+        // "alice": exact (Alice) then prefix (Alice Cooper). The exact match
+        // IS included (documented deviation: the oracle skipped it).
+        assert_eq!(
+            names(g.find_partial("hr", "alice").unwrap()),
+            vec!["Alice", "Alice Cooper"]
+        );
+        // Case-insensitive: the same result for "ALICE".
+        assert_eq!(
+            names(g.find_partial("hr", "ALICE").unwrap()),
+            vec!["Alice", "Alice Cooper"]
+        );
+
+        // "cooper": exact (Cooper), prefix (Cooper Smith), then the
+        // substring tier sorted by normalized name (Alice Cooper < Bob
+        // Cooper).
+        assert_eq!(
+            names(g.find_partial("hr", "cooper").unwrap()),
+            vec!["Cooper", "Cooper Smith", "Alice Cooper", "Bob Cooper"]
+        );
+
+        // No match → empty (NOT an error).
+        assert!(g.find_partial("hr", "zzz").unwrap().is_empty());
+    }
+
+    // Acceptance: a cross-domain name is not found under the wrong domain;
+    // an empty domain searches all domains (the oracle's contract).
+    #[test]
+    fn partial_is_domain_scoped() {
+        let db = in_memory_db();
+        let hr_alice = seed_entity(&db, "PERSON", "Alice", "hr");
+        let it_alice = seed_entity(&db, "PERSON", "Alice", "it");
+        seed_entity(&db, "PERSON", "Alicia", "it");
+
+        let index = GraphIndex::from_db(&db, &GraphConfig::default()).unwrap();
+        let g = index.ready().unwrap();
+
+        // The cross-domain name does not leak into the wrong domain…
+        let in_it = g.find_partial("it", "alice").unwrap();
+        assert_eq!(in_it.len(), 1);
+        assert_eq!(in_it[0].id, it_alice, "only the it-domain Alice");
+        // …and a domain without the name is empty (not an error).
+        assert!(g.find_partial("geo", "alice").unwrap().is_empty());
+
+        // Empty domain → all domains; the same name in two domains keeps
+        // entity-id order within the exact tier.
+        let ids: Vec<i64> = g
+            .find_partial("", "alice")
+            .unwrap()
+            .iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(ids, vec![hr_alice, it_alice]);
+
+        // Case- and whitespace-insensitive domain and query.
+        assert_eq!(
+            names(g.find_partial(" IT ", "ALIC").unwrap()),
+            vec!["Alice", "Alicia"],
+            "prefix tier sorted by normalized name"
+        );
+    }
+
+    // Acceptance (determinism tie-break): the same normalized name within
+    // one domain (different types — the unique key includes the type) is
+    // ordered by entity id.
+    #[test]
+    fn partial_tie_breaks_by_entity_id() {
+        let db = in_memory_db();
+        let person = seed_entity(&db, "PERSON", "Twin", "hr");
+        let org = seed_entity(&db, "ORGANIZATION", "Twin", "hr");
+
+        let index = GraphIndex::from_db(&db, &GraphConfig::default()).unwrap();
+        let g = index.ready().unwrap();
+        let ids: Vec<i64> = g
+            .find_partial("hr", "twin")
+            .unwrap()
+            .iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(ids, vec![person, org], "id order for a same-name tie");
+    }
+
+    // Acceptance: an empty query is a caller bug → an explicit error (the
+    // oracle's "pattern must not be empty"), not an empty result.
+    #[test]
+    fn partial_with_empty_query_is_an_error() {
+        let db = in_memory_db();
+        seed_entity(&db, "PERSON", "Alice", "hr");
+
+        let index = GraphIndex::from_db(&db, &GraphConfig::default()).unwrap();
+        let g = index.ready().unwrap();
+        for query in ["", "   ", "\t\n"] {
+            let err = g.find_partial("hr", query).unwrap_err();
+            assert!(
+                matches!(err, GraphError::EmptyQuery { .. }),
+                "query {query:?} must be an EmptyQuery error, got {err:?}"
+            );
+        }
     }
 }

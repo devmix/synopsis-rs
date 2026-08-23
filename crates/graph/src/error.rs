@@ -33,6 +33,14 @@ pub enum GraphError {
     /// facts or chunks goes through the DAOs (design D1).
     #[error("storage error: {0}")]
     Db(#[from] db::DbError),
+    /// A finder input was empty after normalization (a caller bug: an empty
+    /// name or query cannot match — the oracle's "pattern must not be empty"
+    /// for `FindEntityPartial`, task 1.3).
+    #[error("empty query: {what} must not be empty")]
+    EmptyQuery {
+        /// Which argument was empty.
+        what: &'static str,
+    },
 }
 
 impl From<cel::ParseErrors> for GraphError {
