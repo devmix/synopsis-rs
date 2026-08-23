@@ -6,7 +6,7 @@
 
 ---
 
-- [ ] 1.1 Скаффолдинг крейта: трейты и типы
+- [x] 1.1 Скаффолдинг крейта: трейты и типы
   - **Цель:** создать `crates/ingestion` с трейтами Parser/Chunker/Source и типами Document/ParseResult/DocumentChunk/Metadata.
   - **Scope файлов:** `crates/ingestion/Cargo.toml` (+config), `crates/ingestion/src/lib.rs`, `src/types.rs`, `src/error.rs`; корневой Cargo.toml при необходимости.
   - **Детали:** сигнатуры по design D1; DocumentChunk = {doc_id: Option<i64>, text, sequence_num, start_offset/end_offset: usize (byte), metadata}; Metadata — типизированная базовая структура + extension-поле (детали по усмотрению, задокументировать); ParseResult {documents, errors: Vec<IngestionError>} — нефатальные ошибки вместе с документами.
