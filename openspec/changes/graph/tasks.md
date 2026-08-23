@@ -22,7 +22,7 @@
   - **Зависимости:** 1.1.
   - **Референс:** design D1/D3; internal/graph/graph.go (структура индексов — семантика); db-крейт DAO (EntityDao, EntityLinkDao).
 
-- [ ] 1.3 Поиск сущностей: exact + partial
+- [x] 1.3 Поиск сущностей: exact + partial
   - **Цель:** FindEntityExact (O(1), регистронезависимо, по домену+имени) и FindEntityPartial (prefix + substring в домене, результат сортирован).
   - **Scope файлов:** модуль графа из 1.2 (+тесты).
   - **Детали:** exact — через name→ID индекс (ключ «domain:lowercase_name»); partial — линейный скан по домену с нормализацией регистра (масштабы личного корпуса это позволяют; задокументировать O(n)).
