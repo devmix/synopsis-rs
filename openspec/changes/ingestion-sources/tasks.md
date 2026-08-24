@@ -71,7 +71,7 @@
   - **Зависимости:** 1.6.
   - **Референс:** parsers/mediawiki_parser.go.
 
-- [ ] 1.8 Webpage-источник (parser+chunker)
+- [x] 1.8 Webpage-источник (parser+chunker)
   - **Цель:** формат webpage (HTML?) по семантике оракула.
   - **Scope файлов:** parser+chunker webpage (+тесты+фикстуры), регистрация.
   - **Детали:** сверить с parsers/webpage_parser.go: извлечение текста из HTML (какая стратегия?), зависимости (html-крейт? проверить, что уже в палитре или добавить с верификацией).
