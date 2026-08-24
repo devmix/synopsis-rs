@@ -154,6 +154,17 @@ regex = "1"
 # crate used by its parallel walk API — unavoidable, but pure Rust, so no
 # impact on the single-binary/laptop constraints. No known CVEs.
 ignore = "0.4"
+# HTML -> Markdown for the webpage source (ingestion task 1.8): the Rust
+# analogue of the oracle's JohannesKaufmann/html-to-markdown (Go) — built on
+# html5ever (Servo's fault-tolerant HTML5 parser, pure Rust, like the
+# oracle's golang.org/x/net/html), with structural Markdown output (ATX
+# headings, links, lists, tables, code, images) that the markdown chunker
+# relies on for structure-aware splitting. Verified against the crates.io
+# index + docs.rs (task 1.8): html-to-markdown-rs 3.11.4 (xberg-io, MIT),
+# active (released 2026-08-22, ~1M downloads), rust-version 1.88 < pinned
+# Rust 1.96.0, no known CVEs. Default features trimmed: `metadata` (serde /
+# serde_json metadata extraction) is unused — plain conversion only.
+html-to-markdown-rs = { version = "3.11", default-features = false }
 
 # ONNX embeddings pipeline (embedding change, design D1/D2/D3/D8; ADR 0002). Versions
 # verified online by the implementer against crates.io, MSRV and CVEs (task embedding 1.1,

@@ -3,11 +3,11 @@
 //!
 //! A [`Source`] is the self-sufficient ingestion unit for one source type:
 //! one parser plus its chunker (design D1). The format composites
-//! ([`MarkdownSource`], [`JsonSource`], [`MediawikiSource`]) wire a crate
-//! parser to an injected chunker — the oracle's sources do the same, and the
-//! remaining formats (webpage, unstructured; tasks 1.8–1.9) follow this
-//! pattern (webpage reuses the markdown chunker, unstructured both, cf. the
-//! oracle's `registry_test.go`). Mediawiki is the one deliberate deviation:
+//! ([`MarkdownSource`], [`JsonSource`], [`MediawikiSource`],
+//! [`WebpageSource`]) wire a crate parser to an injected chunker — the
+//! oracle's sources do the same, and the remaining format (unstructured;
+//! task 1.9) follows this pattern (it reuses both the markdown and JSON
+//! chunkers, cf. the oracle's `registry_test.go`). Mediawiki is the one deliberate deviation:
 //! the oracle injected the *markdown* chunker as a "graceful degradation"
 //! that never matched wikitext headings; the Rust pipeline injects the
 //! dedicated [`MediawikiChunker`](crate::chunkers::mediawiki::MediawikiChunker)
@@ -27,6 +27,7 @@ use crate::error::IngestionError;
 use crate::parsers::json::JsonParser;
 use crate::parsers::markdown::MarkdownParser;
 use crate::parsers::mediawiki::MediawikiParser;
+use crate::parsers::webpage::WebpageParser;
 use crate::types::{Chunker, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source};
 
 /// Markdown source: [`MarkdownParser`] plus an injected Markdown chunker
@@ -161,6 +162,51 @@ impl Chunker for MediawikiSource {
 
 impl Source for MediawikiSource {}
 
+/// Webpage source: [`WebpageParser`] plus an injected Markdown chunker
+/// (oracle `sources.WebpageSource`).
+///
+/// The oracle injects the *markdown* chunker, and so does the Rust
+/// pipeline: the parser emits Markdown either way (raw `.md` pages or
+/// `.html` pages converted to Markdown), so the markdown chunker's
+/// ATX-heading structure-awareness applies to both page kinds. There is no
+/// dedicated webpage chunker (the oracle has none either).
+pub struct WebpageSource {
+    chunker: Box<dyn Chunker>,
+}
+
+impl WebpageSource {
+    /// Registry key: the `type` attribute word in `global.xml`
+    /// (`config::ontology::SourceType::Webpages`).
+    pub const SOURCE_TYPE: &'static str = "webpages";
+
+    /// Creates a webpage source over the given (markdown) chunker.
+    pub fn new(chunker: Box<dyn Chunker>) -> Self {
+        Self { chunker }
+    }
+}
+
+impl Parser for WebpageSource {
+    fn parse(&self, source_path: &Path) -> ParseResult {
+        WebpageParser.parse(source_path)
+    }
+
+    fn supported_extensions(&self) -> &[&str] {
+        WebpageParser.supported_extensions()
+    }
+}
+
+impl Chunker for WebpageSource {
+    fn chunk(
+        &self,
+        content: &str,
+        metadata: &DocumentMetadata,
+    ) -> Result<Vec<DocumentChunk>, IngestionError> {
+        self.chunker.chunk(content, metadata)
+    }
+}
+
+impl Source for WebpageSource {}
+
 /// Maps a `global.xml` source-type word to its [`Source`] implementation
 /// (oracle `sources.Registry`, design D5).
 ///
@@ -260,6 +306,17 @@ mod tests {
         })))
     }
 
+    /// A webpage composite with the injected markdown chunker (the oracle
+    /// wires the markdown chunker: the parser emits Markdown either way).
+    fn webpage_source() -> WebpageSource {
+        WebpageSource::new(Box::new(MarkdownChunker::new(MarkdownChunkerConfig {
+            strategy: ChunkingStrategy::Headers,
+            max_chunk_size: 1000,
+            overlap_size: 0,
+            ..Default::default()
+        })))
+    }
+
     #[test]
     fn registry_returns_registered_implementations() {
         let mut registry = Registry::new();
@@ -272,11 +329,15 @@ mod tests {
         registry
             .register(MediawikiSource::SOURCE_TYPE, Box::new(mediawiki_source()))
             .unwrap();
+        registry
+            .register(WebpageSource::SOURCE_TYPE, Box::new(webpage_source()))
+            .unwrap();
 
         // The registry keys are exactly the `global.xml` `type` words.
         assert_eq!(MarkdownSource::SOURCE_TYPE, "markdown");
         assert_eq!(JsonSource::SOURCE_TYPE, "json");
         assert_eq!(MediawikiSource::SOURCE_TYPE, "mediawiki");
+        assert_eq!(WebpageSource::SOURCE_TYPE, "webpages");
 
         let markdown = registry.get("markdown").unwrap();
         assert_eq!(markdown.supported_extensions(), [".md", ".markdown"]);
@@ -287,9 +348,15 @@ mod tests {
         let mediawiki = registry.get("mediawiki").unwrap();
         assert_eq!(mediawiki.supported_extensions(), [".json"]);
 
+        let webpages = registry.get("webpages").unwrap();
+        assert_eq!(webpages.supported_extensions(), [".md", ".html"]);
+
         // BTreeMap order: deterministic and sorted (the oracle iterated a Go
         // map in random order).
-        assert_eq!(registry.types(), vec!["json", "markdown", "mediawiki"]);
+        assert_eq!(
+            registry.types(),
+            vec!["json", "markdown", "mediawiki", "webpages"]
+        );
     }
 
     #[test]
@@ -465,6 +532,71 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
             vec![Some("API Gateway"), Some("Config")]
+        );
+    }
+
+    #[test]
+    fn webpage_source_parses_and_chunks_end_to_end() {
+        let tree = TempTree::new();
+        tree.write(
+            "pages/index.md",
+            "# Home\n\nWelcome to the site.\n\n## Team\n\nThe people.",
+        );
+        tree.write(
+            "pages/about.html",
+            "<h1>About</h1><p>We build things.</p><h2>Team</h2><p>The people behind it.</p>",
+        );
+        tree.write("static/logo.png", "binary data");
+
+        let source: Box<dyn Source> = Box::new(webpage_source());
+        let result = source.parse(&tree.0);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.documents.len(), 2);
+
+        // Both page kinds carry the webpage metadata.
+        for document in &result.documents {
+            assert_eq!(document.metadata.source_type, WebpageSource::SOURCE_TYPE);
+            assert!(document.metadata.file_size.is_some());
+            assert!(document.metadata.modified_at.is_some());
+        }
+
+        // The .html document's content is converted Markdown — the chunk
+        // offsets are relative to it (never the raw HTML), and the injected
+        // markdown chunker splits it on the converted ATX headings.
+        let html_doc = result
+            .documents
+            .iter()
+            .find(|d| d.metadata.source_file == "pages/about.html")
+            .unwrap();
+        assert!(
+            html_doc.content.contains("# About"),
+            "converted content: {:?}",
+            html_doc.content
+        );
+
+        let chunks = source.chunk(&html_doc.content, &html_doc.metadata).unwrap();
+        assert_eq!(chunks.len(), 2);
+        for (index, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.sequence_num, index);
+            // Byte-offset invariant (crate contract), relative to the
+            // converted content.
+            assert_eq!(
+                &html_doc.content[chunk.start_offset..chunk.end_offset],
+                chunk.text
+            );
+            assert_eq!(chunk.metadata.source_type, WebpageSource::SOURCE_TYPE);
+        }
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|c| {
+                    c.metadata
+                        .extra
+                        .get("section_title")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .collect::<Vec<_>>(),
+            vec![Some("About"), Some("Team")]
         );
     }
 }

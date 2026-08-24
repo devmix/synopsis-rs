@@ -23,3 +23,7 @@ serde = { workspace = true }
 # gitignore-style `.synignore` matching in the shared walk helper (task 1.2b):
 # user exclusions for source trees, all parsers inherit them.
 ignore = { workspace = true }
+# HTML -> Markdown conversion for the webpage parser (task 1.8): `.html`
+# pages are converted to Markdown so the injected markdown chunker can split
+# them on ATX headings, like the oracle's html-to-markdown library.
+html-to-markdown-rs = { workspace = true }

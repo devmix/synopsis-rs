@@ -12,7 +12,7 @@
 //! is walked (sources are explicitly configured paths).
 //!
 //! Implemented formats: markdown (task 1.2), json (task 1.4), mediawiki
-//! (task 1.7); webpage and unstructured follow the same pattern.
+//! (task 1.7), webpage (task 1.8); unstructured follows the same pattern.
 
 use std::fs;
 use std::path::Path;
@@ -25,6 +25,7 @@ use crate::error::IngestionError;
 pub mod json;
 pub mod markdown;
 pub mod mediawiki;
+pub mod webpage;
 
 /// File name of the user exclusion file, read from the source root and every
 /// subdirectory with gitignore semantics.
