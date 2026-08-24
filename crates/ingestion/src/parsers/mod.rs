@@ -11,8 +11,8 @@
 //! built-in skip list. Absence of `.synignore` is a valid case: everything
 //! is walked (sources are explicitly configured paths).
 //!
-//! Implemented formats: markdown (task 1.2), json (task 1.4); the remaining
-//! formats (mediawiki, webpage, unstructured) follow the same pattern.
+//! Implemented formats: markdown (task 1.2), json (task 1.4), mediawiki
+//! (task 1.7); webpage and unstructured follow the same pattern.
 
 use std::fs;
 use std::path::Path;
@@ -24,6 +24,7 @@ use crate::error::IngestionError;
 
 pub mod json;
 pub mod markdown;
+pub mod mediawiki;
 
 /// File name of the user exclusion file, read from the source root and every
 /// subdirectory with gitignore semantics.

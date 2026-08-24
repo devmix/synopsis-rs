@@ -17,6 +17,9 @@ thiserror = { workspace = true }
 # Format-specific metadata bag: `serde_json::Map<String, Value>` (BTreeMap-
 # backed by default: key-sorted, deterministic ordering for parity diffs).
 serde_json = { workspace = true }
+# `Deserialize` derive for the mediawiki page struct (task 1.7); workspace
+# pin (serde 1.x, `derive` feature) — no new crate, palette entry only.
+serde = { workspace = true }
 # gitignore-style `.synignore` matching in the shared walk helper (task 1.2b):
 # user exclusions for source trees, all parsers inherit them.
 ignore = { workspace = true }

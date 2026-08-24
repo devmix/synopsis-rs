@@ -3,11 +3,15 @@
 //!
 //! A [`Source`] is the self-sufficient ingestion unit for one source type:
 //! one parser plus its chunker (design D1). The format composites
-//! ([`MarkdownSource`], [`JsonSource`]) wire a crate parser to an injected
-//! chunker — the oracle's `MarkdownSource`/`JsonSource` do the same, and the
-//! remaining formats (mediawiki, webpage, unstructured; tasks 1.7–1.9) follow
-//! this pattern (mediawiki and webpage reuse the markdown chunker,
-//! unstructured both, cf. the oracle's `registry_test.go`).
+//! ([`MarkdownSource`], [`JsonSource`], [`MediawikiSource`]) wire a crate
+//! parser to an injected chunker — the oracle's sources do the same, and the
+//! remaining formats (webpage, unstructured; tasks 1.8–1.9) follow this
+//! pattern (webpage reuses the markdown chunker, unstructured both, cf. the
+//! oracle's `registry_test.go`). Mediawiki is the one deliberate deviation:
+//! the oracle injected the *markdown* chunker as a "graceful degradation"
+//! that never matched wikitext headings; the Rust pipeline injects the
+//! dedicated [`MediawikiChunker`](crate::chunkers::mediawiki::MediawikiChunker)
+//! instead (task 1.7).
 //!
 //! [`Registry`] maps the `type` attribute word of a `global.xml` `<source>`
 //! element to its implementation (design D5, oracle `sources.Registry`).
@@ -22,6 +26,7 @@ use std::path::Path;
 use crate::error::IngestionError;
 use crate::parsers::json::JsonParser;
 use crate::parsers::markdown::MarkdownParser;
+use crate::parsers::mediawiki::MediawikiParser;
 use crate::types::{Chunker, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source};
 
 /// Markdown source: [`MarkdownParser`] plus an injected Markdown chunker
@@ -31,7 +36,7 @@ use crate::types::{Chunker, DocumentChunk, DocumentMetadata, ParseResult, Parser
 /// chunker. The chunker arrives as `Box<dyn Chunker>` (oracle: an interface
 /// parameter) so the pipeline (series change 3) can inject whatever the
 /// config selects, and later formats that reuse the markdown chunker
-/// (mediawiki, webpage) keep the same composition.
+/// (webpage) keep the same composition.
 pub struct MarkdownSource {
     chunker: Box<dyn Chunker>,
 }
@@ -110,6 +115,52 @@ impl Chunker for JsonSource {
 
 impl Source for JsonSource {}
 
+/// Mediawiki source: [`MediawikiParser`] plus an injected chunker (oracle
+/// `sources.MediawikiSource`).
+///
+/// Deliberate deviation (task 1.7): the oracle injected the *markdown*
+/// chunker as a "graceful degradation" that never matched wikitext headings,
+/// collapsing heading-rich pages into one unsplit chunk. The Rust pipeline
+/// injects the dedicated
+/// [`MediawikiChunker`](crate::chunkers::mediawiki::MediawikiChunker)
+/// instead; the composite shape (parser + `Box<dyn Chunker>`) is identical.
+pub struct MediawikiSource {
+    chunker: Box<dyn Chunker>,
+}
+
+impl MediawikiSource {
+    /// Registry key: the `type` attribute word in `global.xml`
+    /// (`config::ontology::SourceType::Mediawiki`).
+    pub const SOURCE_TYPE: &'static str = "mediawiki";
+
+    /// Creates a mediawiki source over the given chunker.
+    pub fn new(chunker: Box<dyn Chunker>) -> Self {
+        Self { chunker }
+    }
+}
+
+impl Parser for MediawikiSource {
+    fn parse(&self, source_path: &Path) -> ParseResult {
+        MediawikiParser.parse(source_path)
+    }
+
+    fn supported_extensions(&self) -> &[&str] {
+        MediawikiParser.supported_extensions()
+    }
+}
+
+impl Chunker for MediawikiSource {
+    fn chunk(
+        &self,
+        content: &str,
+        metadata: &DocumentMetadata,
+    ) -> Result<Vec<DocumentChunk>, IngestionError> {
+        self.chunker.chunk(content, metadata)
+    }
+}
+
+impl Source for MediawikiSource {}
+
 /// Maps a `global.xml` source-type word to its [`Source`] implementation
 /// (oracle `sources.Registry`, design D5).
 ///
@@ -177,6 +228,7 @@ mod tests {
     use super::*;
     use crate::chunkers::json::JsonChunker;
     use crate::chunkers::markdown::MarkdownChunker;
+    use crate::chunkers::mediawiki::MediawikiChunker;
     use crate::parsers::tests::TempTree;
 
     /// A markdown composite with the config-crate defaults plus an explicit
@@ -197,6 +249,17 @@ mod tests {
         JsonSource::new(Box::new(JsonChunker::new(JsonChunkerConfig::default())))
     }
 
+    /// A mediawiki composite with the dedicated wikitext chunker (task 1.7
+    /// deviation from the oracle's markdown-chunker reuse).
+    fn mediawiki_source() -> MediawikiSource {
+        MediawikiSource::new(Box::new(MediawikiChunker::new(MarkdownChunkerConfig {
+            strategy: ChunkingStrategy::Headers,
+            max_chunk_size: 1000,
+            overlap_size: 0,
+            ..Default::default()
+        })))
+    }
+
     #[test]
     fn registry_returns_registered_implementations() {
         let mut registry = Registry::new();
@@ -206,10 +269,14 @@ mod tests {
         registry
             .register(JsonSource::SOURCE_TYPE, Box::new(json_source()))
             .unwrap();
+        registry
+            .register(MediawikiSource::SOURCE_TYPE, Box::new(mediawiki_source()))
+            .unwrap();
 
         // The registry keys are exactly the `global.xml` `type` words.
         assert_eq!(MarkdownSource::SOURCE_TYPE, "markdown");
         assert_eq!(JsonSource::SOURCE_TYPE, "json");
+        assert_eq!(MediawikiSource::SOURCE_TYPE, "mediawiki");
 
         let markdown = registry.get("markdown").unwrap();
         assert_eq!(markdown.supported_extensions(), [".md", ".markdown"]);
@@ -217,9 +284,12 @@ mod tests {
         let json = registry.get("json").unwrap();
         assert_eq!(json.supported_extensions(), [".json"]);
 
+        let mediawiki = registry.get("mediawiki").unwrap();
+        assert_eq!(mediawiki.supported_extensions(), [".json"]);
+
         // BTreeMap order: deterministic and sorted (the oracle iterated a Go
         // map in random order).
-        assert_eq!(registry.types(), vec!["json", "markdown"]);
+        assert_eq!(registry.types(), vec!["json", "markdown", "mediawiki"]);
     }
 
     #[test]
@@ -333,5 +403,68 @@ mod tests {
             );
             assert_eq!(chunk.metadata.source_type, JsonSource::SOURCE_TYPE);
         }
+    }
+
+    #[test]
+    fn mediawiki_source_parses_and_chunks_end_to_end() {
+        let tree = TempTree::new();
+        tree.write(
+            "space/wiki-type/graph.json",
+            r#"{"API Gateway": ["Service Catalog"]}"#,
+        );
+        tree.write(
+            "space/wiki-type/by-type/services/api_gateway.json",
+            r#"{
+                "title": "API Gateway",
+                "url": "https://example.com/API_Gateway",
+                "wikitext": "== API Gateway ==\nA service mesh component.\n\n== Config ==\nSettings live here.",
+                "images": ["gateway.png"],
+                "links": ["Service Catalog"],
+                "categories": ["Services"]
+            }"#,
+        );
+
+        let source: Box<dyn Source> = Box::new(mediawiki_source());
+        let result = source.parse(&tree.0);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.documents.len(), 1);
+        let document = &result.documents[0];
+        assert_eq!(document.metadata.source_type, MediawikiSource::SOURCE_TYPE);
+        assert_eq!(
+            document.metadata.source_file,
+            "space/wiki-type/by-type/services/api_gateway.json"
+        );
+        assert_eq!(
+            document.metadata.extra.get("graph_relations"),
+            Some(&serde_json::Value::Array(vec![serde_json::Value::String(
+                "Service Catalog".to_owned()
+            )]))
+        );
+
+        // The composite chunks the wikitext through the injected chunker:
+        // one chunk per `== section ==`.
+        let chunks = source.chunk(&document.content, &document.metadata).unwrap();
+        assert_eq!(chunks.len(), 2);
+        for (index, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.sequence_num, index);
+            // Byte-offset invariant (crate contract).
+            assert_eq!(
+                &document.content[chunk.start_offset..chunk.end_offset],
+                chunk.text
+            );
+            assert_eq!(chunk.metadata.source_type, MediawikiSource::SOURCE_TYPE);
+        }
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|c| {
+                    c.metadata
+                        .extra
+                        .get("section_title")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .collect::<Vec<_>>(),
+            vec![Some("API Gateway"), Some("Config")]
+        );
     }
 }
