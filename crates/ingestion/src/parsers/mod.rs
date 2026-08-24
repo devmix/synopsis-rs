@@ -10,6 +10,9 @@
 //! gitignore semantics are the single exclusion mechanism — there is no
 //! built-in skip list. Absence of `.synignore` is a valid case: everything
 //! is walked (sources are explicitly configured paths).
+//!
+//! Implemented formats: markdown (task 1.2), json (task 1.4); the remaining
+//! formats (mediawiki, webpage, unstructured) follow the same pattern.
 
 use std::fs;
 use std::path::Path;
@@ -19,6 +22,7 @@ use ignore::{IncrementalIgnore, WalkBuilder};
 
 use crate::error::IngestionError;
 
+pub mod json;
 pub mod markdown;
 
 /// File name of the user exclusion file, read from the source root and every
