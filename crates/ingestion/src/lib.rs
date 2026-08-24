@@ -21,6 +21,7 @@
 //! through its own structure keyed by chunk index, keeping the chunk a pure
 //! chunking artifact.
 
+pub mod chunkers;
 pub mod error;
 pub mod parsers;
 pub mod types;
