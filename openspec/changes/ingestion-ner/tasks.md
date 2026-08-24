@@ -57,7 +57,7 @@
     truncate на границе, невалидный confidence, мусорные version, uncertainty-фильтр.
   - Критерии приёмки: гейты зелёные; функции чистые (без I/O).
 
-- [ ] 2.4 Кэш LLM-NER: sha256-ключ + ленивая таблица
+- [x] 2.4 Кэш LLM-NER: sha256-ключ + ленивая таблица
   - Цель: персистентный кэш ответов.
   - Scope файлов: `crates/ingestion/src/ner/llm_cache.rs` (новый),
     `crates/ingestion/Cargo.toml` (+sha2 workspace).
