@@ -63,7 +63,7 @@
   - **Зависимости:** 1.3, 1.5.
   - **Референс:** design D5; sources/registry.go.
 
-- [ ] 1.7 Mediawiki-источник (parser+chunker)
+- [x] 1.7 Mediawiki-источник (parser+chunker)
   - **Цель:** формат mediawiki по семантике оракула.
   - **Scope файлов:** `src/parsers/mediawiki.rs`, `src/chunkers/mediawiki.rs` (+тесты+фикстуры), регистрация в реестре.
   - **Детали:** сверить с parsers/mediawiki_parser.go и chunker'ом (если выделен) — чем отличается от markdown (синтаксис `== Заголовок ==`?).
