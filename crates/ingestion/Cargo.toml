@@ -17,3 +17,6 @@ thiserror = { workspace = true }
 # Format-specific metadata bag: `serde_json::Map<String, Value>` (BTreeMap-
 # backed by default: key-sorted, deterministic ordering for parity diffs).
 serde_json = { workspace = true }
+# gitignore-style `.synignore` matching in the shared walk helper (task 1.2b):
+# user exclusions for source trees, all parsers inherit them.
+ignore = { workspace = true }

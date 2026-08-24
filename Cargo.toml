@@ -144,6 +144,16 @@ thiserror = "2"
 # config-module 3.1b): regex 1.13.x is current stable (official rust-lang crate); no known
 # CVEs; resolves below our pinned Rust 1.96.0 toolchain.
 regex = "1"
+# gitignore-style file matching for source walks (ingestion task 1.2b, human
+# decision 2026-08-23: exclusions exclusively via `.synignore`, no built-in
+# skip list). Verified against the crates.io index + registry source (task
+# 1.2b): ignore 0.4.33 is the current 0.4.x (BurntSushi/ripgrep crate),
+# rust-version 1.88 < pinned Rust 1.96.0, no features needed (the only feature,
+# `simd-accel`, is an optional regex-automata accelerator we do not enable).
+# crossbeam-channel/crossbeam-deque are hard (non-optional) dependencies of the
+# crate used by its parallel walk API — unavoidable, but pure Rust, so no
+# impact on the single-binary/laptop constraints. No known CVEs.
+ignore = "0.4"
 
 # ONNX embeddings pipeline (embedding change, design D1/D2/D3/D8; ADR 0002). Versions
 # verified online by the implementer against crates.io, MSRV and CVEs (task embedding 1.1,

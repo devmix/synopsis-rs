@@ -8,9 +8,12 @@
 //! **Deliberate deviation from the oracle:** the Go parser matches only the
 //! `.md` suffix. The task body (the source of truth here) requires both
 //! `.md` and `.markdown`, so [`MarkdownParser::supported_extensions`]
-//! reports both and the walk accepts both. Everything else — the skip list,
-//! the relative `source_file`, `file_size`/`modified_at` metadata, and the
-//! best-effort error collection — follows the oracle.
+//! reports both and the walk accepts both. The relative `source_file`,
+//! `file_size`/`modified_at` metadata, and the best-effort error collection
+//! follow the oracle. Exclusions differ by design (human decision
+//! 2026-08-23): the oracle's hardcoded `skipDirs` list is replaced by
+//! user `.synignore` files with gitignore semantics, inherited from the
+//! shared walk.
 
 use std::path::Path;
 
@@ -100,41 +103,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::fs;
-    use std::path::PathBuf;
 
     use super::*;
-
-    /// A temporary directory that removes itself on drop.
-    struct TempTree(PathBuf);
-
-    impl TempTree {
-        fn new() -> Self {
-            static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "synopsis-md-parser-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-            fs::create_dir_all(&path).expect("create temp tree");
-            Self(path)
-        }
-
-        /// Writes `content` to `rel` under the tree, creating parent dirs.
-        fn write(&self, rel: &str, content: &str) -> PathBuf {
-            let path = self.0.join(rel);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent dirs");
-            }
-            fs::write(&path, content).expect("write file");
-            path
-        }
-    }
-
-    impl Drop for TempTree {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::parsers::tests::TempTree;
 
     fn source_files(result: &ParseResult) -> Vec<String> {
         result
@@ -225,12 +196,12 @@ mod tests {
     }
 
     #[test]
-    fn skips_system_directories() {
+    fn without_synignore_everything_is_walked() {
+        // Human decision 2026-08-23: the hardcoded SKIP_DIRS list is gone;
+        // without a .synignore, even system-looking directories are walked.
         let tree = TempTree::new();
-        tree.write(".git/HEAD.md", "# should be skipped");
-        tree.write("node_modules/pkg/readme.md", "# should be skipped");
-        tree.write(".idea/config.md", "# should be skipped");
-        tree.write(".opencode/plan.md", "# should be skipped");
+        tree.write(".git/HEAD.md", "# walked");
+        tree.write("node_modules/pkg/readme.md", "# walked");
         tree.write("visible.md", "# visible");
 
         let result = MarkdownParser.parse(&tree.0);
@@ -239,9 +210,24 @@ mod tests {
         let files = source_files(&result);
         assert_eq!(
             files,
-            vec!["visible.md"],
-            "system dirs must be pruned: {files:?}"
+            vec![".git/HEAD.md", "node_modules/pkg/readme.md", "visible.md"]
         );
+    }
+
+    #[test]
+    fn synignore_exclusions_are_inherited_end_to_end() {
+        let tree = TempTree::new();
+        tree.write(".synignore", "generated/\n*.draft.md\n");
+        tree.write("keep.md", "# kept");
+        tree.write("generated/a.md", "# excluded directory");
+        tree.write("notes.draft.md", "# excluded pattern");
+        tree.write("sub/keep2.md", "# kept at depth");
+
+        let result = MarkdownParser.parse(&tree.0);
+
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let files = source_files(&result);
+        assert_eq!(files, vec!["keep.md", "sub/keep2.md"]);
     }
 
     #[test]
