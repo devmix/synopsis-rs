@@ -31,7 +31,7 @@
   - **Зависимости:** 1.2.
   - **Референс:** crates.io/docs.rs ignore (BurntSushi); решение человека 2026-08-23.
 
-- [ ] 1.3 Markdown-чанкер (structure-aware)
+- [x] 1.3 Markdown-чанкер (structure-aware)
   - **Цель:** деление по секциям заголовков с max_chunk_size/overlap из конфига.
   - **Scope файлов:** `src/chunkers/markdown.rs` (+тесты +фикстуры).
   - **Детали:** семантика — markdown_chunker.go и ЕГО тесты (ожидания границ зафиксированы там): заголовки каких уровней режут, как overlap отступает от границы секции, metadata.section_title. Byte-офсеты валидны: text[start..end] == chunk.text. overlap=0 сохраняется (config-крейт уже нормализует дефолты — чанкер не подменяет).
