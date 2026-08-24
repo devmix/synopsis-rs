@@ -20,6 +20,11 @@ serde_json = { workspace = true }
 # `Deserialize` derive for the mediawiki page struct (task 1.7); workspace
 # pin (serde 1.x, `derive` feature) — no new crate, palette entry only.
 serde = { workspace = true }
+# `regex` for the NER rule engine (ingestion-ner task 2.1): prepared rules
+# hold the config loader's compiled patterns (config design D5) as
+# `regex::Regex`. Declared explicitly even though `ignore` already pulls the
+# crate transitively (workspace convention).
+regex = { workspace = true }
 # gitignore-style `.synignore` matching in the shared walk helper (task 1.2b):
 # user exclusions for source trees, all parsers inherit them.
 ignore = { workspace = true }
