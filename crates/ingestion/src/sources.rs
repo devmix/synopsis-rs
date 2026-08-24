@@ -4,10 +4,12 @@
 //! A [`Source`] is the self-sufficient ingestion unit for one source type:
 //! one parser plus its chunker (design D1). The format composites
 //! ([`MarkdownSource`], [`JsonSource`], [`MediawikiSource`],
-//! [`WebpageSource`]) wire a crate parser to an injected chunker — the
-//! oracle's sources do the same, and the remaining format (unstructured;
-//! task 1.9) follows this pattern (it reuses both the markdown and JSON
-//! chunkers, cf. the oracle's `registry_test.go`). Mediawiki is the one deliberate deviation:
+//! [`WebpageSource`], [`UnstructuredSource`]) wire a crate parser to an
+//! injected chunker — the oracle's sources do the same. The unstructured
+//! format is the only composite with *two* chunkers: it parses both
+//! Markdown and JSON files and routes chunking on the document's
+//! `source_type` (oracle `UnstructuredSource`, cf. the oracle's
+//! `registry_test.go`). Mediawiki is the one deliberate deviation:
 //! the oracle injected the *markdown* chunker as a "graceful degradation"
 //! that never matched wikitext headings; the Rust pipeline injects the
 //! dedicated [`MediawikiChunker`](crate::chunkers::mediawiki::MediawikiChunker)
@@ -27,6 +29,7 @@ use crate::error::IngestionError;
 use crate::parsers::json::JsonParser;
 use crate::parsers::markdown::MarkdownParser;
 use crate::parsers::mediawiki::MediawikiParser;
+use crate::parsers::unstructured::UnstructuredParser;
 use crate::parsers::webpage::WebpageParser;
 use crate::types::{Chunker, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source};
 
@@ -207,6 +210,64 @@ impl Chunker for WebpageSource {
 
 impl Source for WebpageSource {}
 
+/// Unstructured source: [`UnstructuredParser`] (Markdown + JSON files) plus
+/// two injected chunkers routed by the document's `source_type` (oracle
+/// `sources.UnstructuredSource`).
+///
+/// The oracle composes an `UnstructuredParser` (`.md`) and a `JSONParser`
+/// (`.json`) and routes chunking on `metadata["source_type"]`:
+/// `"unstructured"` → the markdown chunker, `"json"` → the JSON chunker,
+/// anything else is an explicit error (fail loud). The Rust composite keeps
+/// that routing contract; the parse side is a single shared walk (see the
+/// parser module docs) instead of the oracle's two walks.
+pub struct UnstructuredSource {
+    md_chunker: Box<dyn Chunker>,
+    json_chunker: Box<dyn Chunker>,
+}
+
+impl UnstructuredSource {
+    /// Registry key: the `type` attribute word in `global.xml`
+    /// (`config::ontology::SourceType::Unstructured`).
+    pub const SOURCE_TYPE: &'static str = "unstructured";
+
+    /// Creates an unstructured source over the given markdown and JSON
+    /// chunkers.
+    pub fn new(md_chunker: Box<dyn Chunker>, json_chunker: Box<dyn Chunker>) -> Self {
+        Self {
+            md_chunker,
+            json_chunker,
+        }
+    }
+}
+
+impl Parser for UnstructuredSource {
+    fn parse(&self, source_path: &Path) -> ParseResult {
+        UnstructuredParser.parse(source_path)
+    }
+
+    fn supported_extensions(&self) -> &[&str] {
+        UnstructuredParser.supported_extensions()
+    }
+}
+
+impl Chunker for UnstructuredSource {
+    fn chunk(
+        &self,
+        content: &str,
+        metadata: &DocumentMetadata,
+    ) -> Result<Vec<DocumentChunk>, IngestionError> {
+        // Oracle `Chunk`: the routing key is the document's source type —
+        // set by the parser, never guessed.
+        match metadata.source_type.as_str() {
+            Self::SOURCE_TYPE => self.md_chunker.chunk(content, metadata),
+            JsonSource::SOURCE_TYPE => self.json_chunker.chunk(content, metadata),
+            other => Err(IngestionError::ChunkRouting(other.to_owned())),
+        }
+    }
+}
+
+impl Source for UnstructuredSource {}
+
 /// Maps a `global.xml` source-type word to its [`Source`] implementation
 /// (oracle `sources.Registry`, design D5).
 ///
@@ -317,6 +378,20 @@ mod tests {
         })))
     }
 
+    /// An unstructured composite with the two injected chunkers the oracle
+    /// wires (registry_test.go: markdown chunker + JSON chunker).
+    fn unstructured_source() -> UnstructuredSource {
+        UnstructuredSource::new(
+            Box::new(MarkdownChunker::new(MarkdownChunkerConfig {
+                strategy: ChunkingStrategy::Headers,
+                max_chunk_size: 1000,
+                overlap_size: 0,
+                ..Default::default()
+            })),
+            Box::new(JsonChunker::new(JsonChunkerConfig::default())),
+        )
+    }
+
     #[test]
     fn registry_returns_registered_implementations() {
         let mut registry = Registry::new();
@@ -332,12 +407,19 @@ mod tests {
         registry
             .register(WebpageSource::SOURCE_TYPE, Box::new(webpage_source()))
             .unwrap();
+        registry
+            .register(
+                UnstructuredSource::SOURCE_TYPE,
+                Box::new(unstructured_source()),
+            )
+            .unwrap();
 
         // The registry keys are exactly the `global.xml` `type` words.
         assert_eq!(MarkdownSource::SOURCE_TYPE, "markdown");
         assert_eq!(JsonSource::SOURCE_TYPE, "json");
         assert_eq!(MediawikiSource::SOURCE_TYPE, "mediawiki");
         assert_eq!(WebpageSource::SOURCE_TYPE, "webpages");
+        assert_eq!(UnstructuredSource::SOURCE_TYPE, "unstructured");
 
         let markdown = registry.get("markdown").unwrap();
         assert_eq!(markdown.supported_extensions(), [".md", ".markdown"]);
@@ -351,11 +433,14 @@ mod tests {
         let webpages = registry.get("webpages").unwrap();
         assert_eq!(webpages.supported_extensions(), [".md", ".html"]);
 
+        let unstructured = registry.get("unstructured").unwrap();
+        assert_eq!(unstructured.supported_extensions(), [".md", ".json"]);
+
         // BTreeMap order: deterministic and sorted (the oracle iterated a Go
         // map in random order).
         assert_eq!(
             registry.types(),
-            vec!["json", "markdown", "mediawiki", "webpages"]
+            vec!["json", "markdown", "mediawiki", "unstructured", "webpages"]
         );
     }
 
@@ -597,6 +682,118 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
             vec![Some("About"), Some("Team")]
+        );
+    }
+
+    #[test]
+    fn unstructured_source_parses_and_chunks_end_to_end() {
+        let tree = TempTree::new();
+        tree.write(
+            "docs/article.md",
+            "# Title\n\nBody of the first section.\n\n## More\n\nDeeper body.",
+        );
+        tree.write("docs/hero.png", "image data");
+        tree.write(
+            "data/items.json",
+            r#"[{"id": 1, "title": "Alpha"}, {"id": 2, "title": "Beta"}]"#,
+        );
+
+        let source: Box<dyn Source> = Box::new(unstructured_source());
+        let result = source.parse(&tree.0);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.documents.len(), 2);
+
+        // The Markdown document carries the unstructured metadata, including
+        // the images of its directory.
+        let md_doc = result
+            .documents
+            .iter()
+            .find(|d| d.metadata.source_file == "docs/article.md")
+            .unwrap();
+        assert_eq!(md_doc.metadata.source_type, UnstructuredSource::SOURCE_TYPE);
+        assert_eq!(
+            md_doc
+                .metadata
+                .extra
+                .get("image_paths")
+                .and_then(serde_json::Value::as_array)
+                .map(|images| images.len()),
+            Some(1)
+        );
+
+        // The JSON document keeps the JSON parser's metadata.
+        let json_doc = result
+            .documents
+            .iter()
+            .find(|d| d.metadata.source_file == "data/items.json")
+            .unwrap();
+        assert_eq!(json_doc.metadata.source_type, JsonSource::SOURCE_TYPE);
+
+        // Routing: the Markdown document goes to the markdown chunker — one
+        // chunk per section.
+        let chunks = source.chunk(&md_doc.content, &md_doc.metadata).unwrap();
+        assert_eq!(chunks.len(), 2);
+        for (index, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.sequence_num, index);
+            // Byte-offset invariant (crate contract).
+            assert_eq!(
+                &md_doc.content[chunk.start_offset..chunk.end_offset],
+                chunk.text
+            );
+            assert_eq!(chunk.metadata.source_type, UnstructuredSource::SOURCE_TYPE);
+        }
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|c| {
+                    c.metadata
+                        .extra
+                        .get("section_title")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .collect::<Vec<_>>(),
+            vec![Some("Title"), Some("More")]
+        );
+
+        // Routing: the JSON document goes to the JSON chunker — one `title`
+        // chunk per array object.
+        let chunks = source.chunk(&json_doc.content, &json_doc.metadata).unwrap();
+        assert_eq!(chunks.len(), 2);
+        for (index, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.sequence_num, index);
+            // Byte-offset invariant (crate contract).
+            assert_eq!(
+                &json_doc.content[chunk.start_offset..chunk.end_offset],
+                chunk.text
+            );
+            assert_eq!(chunk.metadata.source_type, JsonSource::SOURCE_TYPE);
+        }
+    }
+
+    #[test]
+    fn unstructured_chunk_routing_rejects_unknown_source_type() {
+        // Oracle `Chunk`: an unknown routing key is an explicit error, never
+        // a guessed chunker.
+        let source: Box<dyn Source> = Box::new(unstructured_source());
+        let metadata = DocumentMetadata {
+            source_type: "mediawiki".to_owned(),
+            ..Default::default()
+        };
+
+        let error = match source.chunk("content", &metadata) {
+            Err(error) => error,
+            Ok(_) => panic!("unknown routing key must be an explicit error"),
+        };
+        assert!(
+            matches!(
+                error,
+                IngestionError::ChunkRouting(ref word) if word == "mediawiki"
+            ),
+            "got {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            r#"unknown source type "mediawiki" for unstructured chunk routing"#
         );
     }
 }

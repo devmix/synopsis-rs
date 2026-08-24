@@ -68,6 +68,12 @@ pub enum IngestionError {
     /// crate keeps unknown strategy words in `ChunkingStrategy::Unknown`).
     #[error("unknown chunking strategy {0:?}")]
     UnknownStrategy(String),
+
+    /// A document's `source_type` has no chunker in the unstructured source's
+    /// routing table (task 1.9). The oracle fails loud on an unknown routing
+    /// key instead of guessing a chunker.
+    #[error("unknown source type {0:?} for unstructured chunk routing")]
+    ChunkRouting(String),
 }
 
 #[cfg(test)]
@@ -95,6 +101,12 @@ mod tests {
         assert_eq!(
             strategy.to_string(),
             r#"unknown chunking strategy "rolling""#
+        );
+
+        let routing = IngestionError::ChunkRouting("mediawiki".to_owned());
+        assert_eq!(
+            routing.to_string(),
+            r#"unknown source type "mediawiki" for unstructured chunk routing"#
         );
     }
 

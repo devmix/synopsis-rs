@@ -82,7 +82,11 @@ impl JsonParser {
     }
 
     /// Reads one JSON file into a [`Document`] (oracle `parseFile`).
-    fn read_file(path: &Path, root: &Path) -> Result<Document, IngestionError> {
+    ///
+    /// `pub(crate)`: the unstructured parser (task 1.9) reuses this exact
+    /// reader for the `.json` half of its walk, so the two formats cannot
+    /// drift.
+    pub(crate) fn read_file(path: &Path, root: &Path) -> Result<Document, IngestionError> {
         let content = std::fs::read_to_string(path).map_err(|source| IngestionError::Io {
             path: path.to_path_buf(),
             source,
