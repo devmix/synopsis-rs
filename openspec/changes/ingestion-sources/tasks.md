@@ -22,7 +22,7 @@
   - **Зависимости:** 1.1.
   - **Референс:** parsers/markdown_parser.go.
 
-- [ ] 1.2b Поддержка .synignore (замена SKIP_DIRS)
+- [x] 1.2b Поддержка .synignore (замена SKIP_DIRS)
   - **Ревизия (2026-08-23, решение человека):** hardcoded SKIP_DIRS из задачи 1.2 УДАЛЯЕТСЯ полностью — исключение каталогов/файлов делается исключительно через `.synignore`-файлы (gitignore-семантика) посредством крейта `ignore` (BurntSushi/ripgrep; кастомное имя файла через add_custom_ignore_filename). Один механизм, а не два пересекающихся (DRY/KISS). Следствие принято: без .synignore обходится всё (источники — явно сконфигурированные пути в global.xml).
   - **Цель:** gitignore-подобные пользовательские исключения на уровне общего walk-хелпера — все парсеры наследуют автоматически.
   - **Scope файлов:** `crates/ingestion/Cargo.toml` (+ignore workspace pin после верификации MSRV/features по registry), корневой Cargo.toml, `src/parsers/mod.rs` (walk-хелпер), тесты.
