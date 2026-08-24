@@ -125,6 +125,7 @@ impl RelationData {
 /// inline template conditionals, moved to code (the minijinja
 /// `trim_blocks` setting eats the newline of a line ending in a block tag,
 /// so the per-line logic lives here instead).
+#[must_use]
 fn format_entity_attribute(def: &AttributeDef) -> String {
     let mut line = format!("{} ({})", def.name, attr_type_word(def.attr_type));
     if def.required {
@@ -181,6 +182,7 @@ struct UserData {
 /// The template word for an [`AttributeType`] (the oracle prints the raw XML
 /// word; known words map 1:1). `Unknown` — an unrecognized word whose raw
 /// text the config crate does not retain — renders as `"unknown"`.
+#[must_use]
 fn attr_type_word(kind: AttributeType) -> &'static str {
     match kind {
         AttributeType::String => "string",

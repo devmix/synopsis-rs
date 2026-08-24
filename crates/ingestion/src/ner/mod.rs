@@ -16,14 +16,24 @@
 //!   failures are the `Err` arm, never `Ok(None)` (design D10).
 //! - Entity/fact metadata bags are [`serde_json::Map`] — the same BTreeMap-
 //!   backed type chunk metadata uses, so enrichment is a plain extend.
+//!
+//! The LLM provider's building blocks live alongside the trait: [`NerPrompts`]
+//! renders the system/user prompts (task 2.2), [`generate_json_schema`]
+//! builds the structured-output schema and [`parse_llm_response`] applies the
+//! design D5 parse/validate rules (task 2.3); the provider itself
+//! (task 2.5) composes them.
 
 use serde_json::{Map, Value};
 
 use crate::error::IngestionError;
 
+mod llm_schema;
+mod parse;
 mod prompts;
 mod regex;
 
+pub use llm_schema::generate_json_schema;
+pub use parse::parse_llm_response;
 pub use prompts::{NerPrompts, TemplateHashes, load_ner_prompts};
 pub use regex::RegexNer;
 
