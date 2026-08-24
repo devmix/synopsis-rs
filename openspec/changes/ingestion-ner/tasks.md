@@ -24,7 +24,7 @@
     (capture/no-capture, dedup, multi-domain, empty content).
   - Критерии приёмки: гейты зелёные; кейсы оракула покрыты; публичные типы задокументированы.
 
-- [ ] 2.2 Промпты NER: embedded minijinja + контекст документа (BINDING)
+- [x] 2.2 Промпты NER: embedded minijinja + контекст документа (BINDING)
   - Цель: шаблоны system/user с явным блоком контекста документа.
   - Scope файлов: `crates/ingestion/src/ner/prompts.rs` (новый),
     `crates/ingestion/src/ner/templates/system.tmpl` + `user.tmpl` (новые, include_str!),
