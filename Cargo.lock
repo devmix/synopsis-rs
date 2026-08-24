@@ -2883,9 +2883,11 @@ dependencies = [
  "config",
  "html-to-markdown-rs",
  "ignore",
+ "minijinja",
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

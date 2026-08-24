@@ -32,3 +32,13 @@ ignore = { workspace = true }
 # pages are converted to Markdown so the injected markdown chunker can split
 # them on ATX headings, like the oracle's html-to-markdown library.
 html-to-markdown-rs = { workspace = true }
+# Jinja2 engine for the NER prompt templates (ingestion-ner task 2.2):
+# embedded defaults via include_str! + user overrides, same pattern as the
+# graph crate's entity-linker prompts (workspace pin: 2.x, serde +
+# std_collections). `builtins` adds the standard filter set — the templates
+# use the built-in `join` filter (the graph crate registers its own `join`
+# function because it renders without this feature).
+minijinja = { workspace = true, features = ["builtins"] }
+# Template-source SHA-256 hashes feeding the LLM-NER cache key (ingestion-ner
+# design D4; also used by the task 2.4 cache-key builder).
+sha2 = { workspace = true }

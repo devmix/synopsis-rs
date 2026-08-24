@@ -74,6 +74,37 @@ pub enum IngestionError {
     /// key instead of guessing a chunker.
     #[error("unknown source type {0:?} for unstructured chunk routing")]
     ChunkRouting(String),
+
+    /// A prompt template override file could not be read (NER prompts,
+    /// ingestion-ner task 2.2).
+    #[error("read prompt template {path}: {source}")]
+    PromptTemplateIo {
+        /// Path of the override file.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A prompt template (embedded default or user override) failed to parse
+    /// (NER prompts, ingestion-ner task 2.2).
+    #[error("parse prompt template {name}: {source}")]
+    PromptTemplateParse {
+        /// Short template name (`"system"` / `"user"`).
+        name: String,
+        /// Underlying minijinja parse error.
+        source: minijinja::Error,
+    },
+
+    /// Rendering a prompt template failed (NER prompts, ingestion-ner
+    /// task 2.2).
+    #[error("render prompt template {name}: {source}")]
+    PromptTemplateRender {
+        /// Short template name (`"system"` / `"user"`).
+        name: String,
+        /// Underlying minijinja render error.
+        source: minijinja::Error,
+    },
 }
 
 #[cfg(test)]

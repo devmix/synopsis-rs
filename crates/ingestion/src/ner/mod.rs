@@ -21,8 +21,10 @@ use serde_json::{Map, Value};
 
 use crate::error::IngestionError;
 
+mod prompts;
 mod regex;
 
+pub use prompts::{NerPrompts, TemplateHashes, load_ner_prompts};
 pub use regex::RegexNer;
 
 /// An entity extracted from chunk content by a [`NerProvider`].
