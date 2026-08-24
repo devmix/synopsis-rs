@@ -9,7 +9,7 @@
 Директива (binding): НЕ копировать Go 1:1 — функциональная копия, архитектура для Rust
 (DRY/KISS/SOLID/YAGNI); баги оракула исправлять или фиксировать отклонения.
 
-- [ ] 2.1 Ядро NER: типы + трейт + RegexNer
+- [x] 2.1 Ядро NER: типы + трейт + RegexNer
   - Цель: фундамент модуля ner и первый провайдер.
   - Scope файлов: `crates/ingestion/src/ner/mod.rs` (новый), `crates/ingestion/src/ner/regex.rs` (новый),
     `crates/ingestion/src/lib.rs` (объявление модуля), `crates/ingestion/Cargo.toml` (+regex workspace).
