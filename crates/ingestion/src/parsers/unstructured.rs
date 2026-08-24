@@ -34,9 +34,9 @@
 //!   a superset of `GroupSections` (which only cut at heading boundaries).
 //! * The oracle matches only `.md` (not `.markdown`) for the unstructured
 //!   format; that restriction is preserved here.
-//! * The oracle's `isImageExt` helper lives in the webpage file (where it is
-//!   dead code) but is *used* by this parser; the extension list is ported
-//!   here, where it is live.
+//! * The oracle's `isImageExt` helper lives in the webpage file (unused by
+//!   the webpage parser itself) but is *used* by this parser; the extension
+//!   list is ported here, where it is live.
 
 use std::path::Path;
 

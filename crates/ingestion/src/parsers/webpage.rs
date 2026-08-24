@@ -37,8 +37,10 @@
 //! * **Invalid UTF-8** in an `.html` file is a non-fatal
 //!   [`IngestionError::Io`] (the Rust converter takes `&str`; the Go oracle
 //!   string-cast the bytes).
-//! * The oracle's `isImageExt` helper is dead code (never called) and is not
-//!   ported.
+//! * The oracle's `isImageExt` helper is defined in this file but never used
+//!   by the webpage parser (its only caller is `unstructured_parser.go`'s
+//!   `collectImages`); the Rust port therefore lives in the unstructured
+//!   module, where it is live.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

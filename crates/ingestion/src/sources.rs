@@ -18,9 +18,8 @@
 //! [`Registry`] maps the `type` attribute word of a `global.xml` `<source>`
 //! element to its implementation (design D5, oracle `sources.Registry`).
 //! Looking up an unknown type is an explicit
-//! [`IngestionError::UnknownSourceType`](crate::IngestionError::UnknownSourceType)
-//! — never a silent skip (the oracle's runner failed with
-//! `no source for type %q` in the same case).
+//! [`IngestionError::UnknownSourceType`] — never a silent skip (the oracle's
+//! runner failed with `no source for type %q` in the same case).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -309,8 +308,7 @@ impl Registry {
 
     /// Returns the source registered under `source_type`.
     ///
-    /// An unknown type is an explicit
-    /// [`IngestionError::UnknownSourceType`](crate::IngestionError::UnknownSourceType)
+    /// An unknown type is an explicit [`IngestionError::UnknownSourceType`]
     /// (design D5), never a silent skip.
     pub fn get(&self, source_type: &str) -> Result<&dyn Source, IngestionError> {
         self.sources
