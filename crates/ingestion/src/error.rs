@@ -105,6 +105,24 @@ pub enum IngestionError {
         /// Underlying minijinja render error.
         source: minijinja::Error,
     },
+
+    /// A SQLite storage failure (LLM-NER cache, ingestion-ner task 2.4): the
+    /// db crate is the source of truth for the lazily-created
+    /// `llm_ner_cache` table (design D6). A broken database must not look
+    /// empty — the failure propagates instead of degrading to a cache miss
+    /// (db convention, cf. `db::AppKv`).
+    #[error("storage error: {0}")]
+    Db(#[from] db::DbError),
+
+    /// Serializing an LLM-NER cache entry to JSON failed (ingestion-ner
+    /// task 2.4). In practice unreachable for validated results (finite
+    /// confidence), but the API is total.
+    #[error("llm ner cache: serialize entry: {source}")]
+    NerCacheJson {
+        /// Underlying serde_json error.
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 #[cfg(test)]

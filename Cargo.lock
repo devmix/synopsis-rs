@@ -2881,6 +2881,7 @@ name = "ingestion"
 version = "0.1.0"
 dependencies = [
  "config",
+ "db",
  "html-to-markdown-rs",
  "ignore",
  "minijinja",

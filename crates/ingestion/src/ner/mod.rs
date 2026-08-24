@@ -20,18 +20,22 @@
 //! The LLM provider's building blocks live alongside the trait: [`NerPrompts`]
 //! renders the system/user prompts (task 2.2), [`generate_json_schema`]
 //! builds the structured-output schema and [`parse_llm_response`] applies the
-//! design D5 parse/validate rules (task 2.3); the provider itself
+//! design D5 parse/validate rules (task 2.3); [`LlmNerCache`] +
+//! [`build_cache_key`] persist LLM responses in the lazily-created
+//! `llm_ner_cache` table (task 2.4, design D6); the provider itself
 //! (task 2.5) composes them.
 
 use serde_json::{Map, Value};
 
 use crate::error::IngestionError;
 
+mod llm_cache;
 mod llm_schema;
 mod parse;
 mod prompts;
 mod regex;
 
+pub use llm_cache::{LlmNerCache, build_cache_key};
 pub use llm_schema::generate_json_schema;
 pub use parse::parse_llm_response;
 pub use prompts::{NerPrompts, TemplateHashes, load_ner_prompts};

@@ -42,3 +42,7 @@ minijinja = { workspace = true, features = ["builtins"] }
 # Template-source SHA-256 hashes feeding the LLM-NER cache key (ingestion-ner
 # design D4; also used by the task 2.4 cache-key builder).
 sha2 = { workspace = true }
+# LLM-NER response cache (ingestion-ner task 2.4, design D6): bound to the db
+# crate's unified executor surface (ConnectionOrTx), same shape as the db
+# crate's own DAOs. The llm crate edge lands with the provider (task 2.5).
+db = { workspace = true }
