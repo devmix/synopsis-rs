@@ -24,6 +24,7 @@
 pub mod chunkers;
 pub mod error;
 pub mod parsers;
+pub mod sources;
 pub mod types;
 
 pub use error::IngestionError;

@@ -54,6 +54,12 @@ pub enum IngestionError {
     #[error("unknown source type {0:?}")]
     UnknownSourceType(String),
 
+    /// A source type was registered twice (registry, task 1.6). Registration
+    /// happens once at pipeline start, so a duplicate is a programmer error —
+    /// surfaced explicitly (oracle contract: `Register` errors on duplicates).
+    #[error("source type {0:?} already registered")]
+    AlreadyRegistered(String),
+
     /// A file extension matched no registered parser (design D5).
     #[error("unsupported file extension {0:?}")]
     UnsupportedExtension(String),

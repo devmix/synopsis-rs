@@ -249,7 +249,9 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 #[cfg(test)]
-mod tests {
+// `pub(crate)`: the shared `TempTree` fixture is reused by the sibling
+// modules' tests (parsers, sources).
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
