@@ -79,7 +79,7 @@
   - **Зависимости:** 1.6.
   - **Референс:** parsers/webpage_parser.go.
 
-- [ ] 1.9 Unstructured-источник (parser+chunker)
+- [x] 1.9 Unstructured-источник (parser+chunker)
   - **Цель:** формат unstructured (plain text?) по семантике оракула.
   - **Scope файлов:** parser+chunker unstructured (+тесты), регистрация.
   - **Детали:** сверить с parsers/unstructured_parser.go.
