@@ -42,7 +42,7 @@
     схема домена с атрибутами/синонимами.
   - Критерии приёмки: гейты зелёные; binding-сценарии спеки покрыты тестами.
 
-- [ ] 2.3 Обработка ответа LLM: parse + validate + JSON-schema
+- [x] 2.3 Обработка ответа LLM: parse + validate + JSON-schema
   - Цель: чистые функции обработки вывода LLM и генерация schema.
   - Scope файлов: `crates/ingestion/src/ner/llm_schema.rs` (новый),
     `crates/ingestion/src/ner/parse.rs` (новый).
