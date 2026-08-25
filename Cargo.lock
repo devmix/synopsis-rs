@@ -2884,6 +2884,7 @@ dependencies = [
  "db",
  "html-to-markdown-rs",
  "ignore",
+ "indicatif",
  "llm",
  "minijinja",
  "regex",

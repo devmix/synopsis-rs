@@ -49,6 +49,7 @@ pub mod entities;
 pub mod error;
 pub mod ner;
 pub mod parsers;
+pub mod progress;
 pub mod sources;
 pub mod types;
 
@@ -70,6 +71,7 @@ pub use parsers::markdown::MarkdownParser;
 pub use parsers::mediawiki::MediawikiParser;
 pub use parsers::unstructured::UnstructuredParser;
 pub use parsers::webpage::WebpageParser;
+pub use progress::{ProgressStats, ProgressTracker};
 pub use sources::{
     JsonSource, MarkdownSource, MediawikiSource, Registry, UnstructuredSource, WebpageSource,
 };
