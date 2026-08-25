@@ -249,6 +249,14 @@ pub enum IngestionError {
         #[source]
         source: serde_json::Error,
     },
+
+    /// No configured source root contains the given path (pipeline task 3.7,
+    /// oracle parity: `no configured source contains %s` from `SyncSource`).
+    #[error("no configured source contains {path}")]
+    NoSourceForPath {
+        /// The path that matched no configured source root.
+        path: String,
+    },
 }
 
 #[cfg(test)]

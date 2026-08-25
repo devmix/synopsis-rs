@@ -51,6 +51,7 @@ pub mod ingester;
 pub mod ner;
 pub mod parsers;
 pub mod progress;
+pub mod runner;
 pub mod sources;
 pub mod types;
 
