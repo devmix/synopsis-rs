@@ -151,8 +151,9 @@ impl NerProvider for RegexNer {
 }
 
 /// Oracle `utils.Normalize`: trim, lowercase and collapse internal whitespace
-/// runs to single spaces.
-fn normalize(text: &str) -> String {
+/// runs to single spaces. Crate-private: `LlmNer` reuses it for domain
+/// tagging (ingestion-ner task 2.5) instead of re-implementing the rule.
+pub(crate) fn normalize(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.to_lowercase()
 }

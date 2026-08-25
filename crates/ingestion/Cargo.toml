@@ -44,5 +44,9 @@ minijinja = { workspace = true, features = ["builtins"] }
 sha2 = { workspace = true }
 # LLM-NER response cache (ingestion-ner task 2.4, design D6): bound to the db
 # crate's unified executor surface (ConnectionOrTx), same shape as the db
-# crate's own DAOs. The llm crate edge lands with the provider (task 2.5).
+# crate's own DAOs.
 db = { workspace = true }
+# Synchronous OpenAI-compatible chat client for the LlmNer provider
+# (ingestion-ner task 2.5, design D5): per-domain structured calls with the
+# generated JSON schema under the `ner_result` name.
+llm = { workspace = true }

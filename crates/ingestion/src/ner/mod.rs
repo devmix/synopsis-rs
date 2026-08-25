@@ -29,12 +29,14 @@ use serde_json::{Map, Value};
 
 use crate::error::IngestionError;
 
+mod llm;
 mod llm_cache;
 mod llm_schema;
 mod parse;
 mod prompts;
 mod regex;
 
+pub use llm::LlmNer;
 pub use llm_cache::{LlmNerCache, build_cache_key};
 pub use llm_schema::generate_json_schema;
 pub use parse::parse_llm_response;

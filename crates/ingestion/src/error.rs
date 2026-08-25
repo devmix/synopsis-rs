@@ -123,6 +123,33 @@ pub enum IngestionError {
         #[source]
         source: serde_json::Error,
     },
+
+    /// An LLM call failed during NER extraction (ingestion-ner task 2.5,
+    /// design D5/D10): configuration, HTTP status, transport, or retry
+    /// exhaustion. The llm crate's error is the source of truth; the
+    /// failure is fatal for the extraction call (no partial results).
+    #[error("llm ner call: {0}")]
+    Llm(#[from] llm::LlmError),
+
+    /// The model's NER response content is not the expected
+    /// `{entities, relations}` JSON (ingestion-ner task 2.5). The pure
+    /// parser ([`crate::ner::parse_llm_response`]) returns the
+    /// serde_json::Error; this provider boundary names the domain and maps
+    /// it (design D10: LLM failures are fatal for the call).
+    #[error("parse llm ner response for domain {domain}: {source}")]
+    LlmNerParse {
+        /// Domain the failed response was rendered for.
+        domain: String,
+        /// Underlying serde_json error from the response parse.
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// The LLM provider was constructed without any domain config
+    /// (ingestion-ner task 2.5; the oracle errors with "no valid domain
+    /// configs").
+    #[error("llm ner: at least one domain config is required")]
+    LlmNerNoDomains,
 }
 
 #[cfg(test)]
