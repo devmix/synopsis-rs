@@ -6,10 +6,17 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges; oracle imports: ../synopsis/internal/search (config, embedding, graph).
-# vectors is added per design D5: search consumes the ANN trait.
+# D1 edges; oracle imports: ../synopsis/internal/search (config, db, embedding,
+# graph). db: SearchResult carries chunk/entity rows (task 4.1).
 [dependencies]
 config = { workspace = true }
+db = { workspace = true }
 embedding = { workspace = true }
 graph = { workspace = true }
 vectors = { workspace = true }
+# thiserror for SearchError (workspace convention, config-module D4).
+thiserror = { workspace = true }
+# Result metadata bag: `serde_json::Map<String, Value>` (workspace convention,
+# same as ingestion — BTreeMap-backed: deterministic key order for parity
+# diffs).
+serde_json = { workspace = true }

@@ -5579,8 +5579,11 @@ name = "search"
 version = "0.1.0"
 dependencies = [
  "config",
+ "db",
  "embedding",
  "graph",
+ "serde_json",
+ "thiserror",
  "vectors",
 ]
 
