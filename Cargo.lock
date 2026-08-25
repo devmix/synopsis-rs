@@ -2882,6 +2882,7 @@ version = "0.1.0"
 dependencies = [
  "config",
  "db",
+ "embedding",
  "html-to-markdown-rs",
  "ignore",
  "indicatif",
@@ -2892,6 +2893,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "vectors",
 ]
 
 [[package]]

@@ -191,6 +191,64 @@ pub enum IngestionError {
         #[source]
         source: serde_json::Error,
     },
+
+    /// The ingest root exists but is not a directory (pipeline task 3.4,
+    /// oracle parity: `Ingest` rejects a file root before doing anything).
+    #[error("source path {path} is not a directory")]
+    NotADirectory {
+        /// The offending path.
+        path: PathBuf,
+    },
+
+    /// Parsing produced no documents but did produce errors (pipeline
+    /// task 3.4, oracle parity): the run fails instead of reporting a
+    /// successful no-op.
+    #[error("no documents parsed, {count} errors occurred")]
+    NoDocumentsParsed {
+        /// Number of parse errors collected.
+        count: usize,
+    },
+
+    /// Embedding generation failed (pipeline task 3.4): the embedding
+    /// provider is the source of truth.
+    #[error("embedding: {0}")]
+    Embedding(#[from] embedding::EmbeddingError),
+
+    /// The embedding provider returned a different vector count than the
+    /// requested text count (pipeline task 3.4): continuing would silently
+    /// misalign every vector from that batch on, so the document fails
+    /// instead of storing misaligned vectors.
+    #[error(
+        "embedding count mismatch in batch {batch} of {total_batches}: \
+         expected {expected} vectors, got {actual}"
+    )]
+    EmbeddingCountMismatch {
+        /// 1-based batch number that failed.
+        batch: usize,
+        /// Total number of batches for the document.
+        total_batches: usize,
+        /// Number of texts in the batch.
+        expected: usize,
+        /// Number of vectors the provider returned.
+        actual: usize,
+    },
+
+    /// A vector-index write failed (pipeline task 3.4, design D5): vectors
+    /// are written after the SQLite commit, so a failure here leaves chunks
+    /// without vectors; orphan reconciliation repairs the divergence (the
+    /// chunk row is the source of truth).
+    #[error("vector index: {0}")]
+    Vectors(#[from] vectors::VectorsError),
+
+    /// Serializing document metadata to JSON failed (pipeline task 3.4).
+    /// In practice unreachable (parser-produced values are finite), but the
+    /// API is total (cf. [`NerCacheJson`](Self::NerCacheJson)).
+    #[error("document metadata: serialize JSON: {source}")]
+    MetadataJson {
+        /// Underlying serde_json error.
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 #[cfg(test)]

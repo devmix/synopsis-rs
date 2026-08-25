@@ -53,3 +53,12 @@ llm = { workspace = true }
 # Progress bar for the run tracker (task 3.1): stderr bar auto-hidden when
 # stderr is not a terminal, so headless runs stay quiet.
 indicatif = { workspace = true }
+# Embedding provider seam for the pipeline's embed stage (task 3.4, design
+# D3): the Ingester calls `generate_embeddings` on the injected provider —
+# the crate itself never loads the ONNX runtime.
+embedding = { workspace = true }
+# Vector-index seam for the pipeline's post-commit vector write (task 3.4,
+# design D5): the Ingester holds a `&dyn VectorSink` (a narrow local trait
+# with a blanket impl over `vectors::VectorIndex`), so tests record writes
+# without a LanceDB engine.
+vectors = { workspace = true }

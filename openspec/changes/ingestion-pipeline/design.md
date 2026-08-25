@@ -29,7 +29,7 @@ belongs beside the other DAOs and is reusable by future prune/GC commands).
 pub struct Ingester<'a> { /* db handle, config, collaborators */ }
 Ingester::new(db: &Db, cfg: &IngestionConfig, source: &dyn Source,
               embed: &dyn EmbeddingProvider, ner: Option<&dyn NerProvider>,
-              resolver: &Resolver, vectors: &VectorEngineHandle) -> Result<Self>
+              resolver: &Resolver, vectors: &dyn VectorSink) -> Self  // infallible: all collaborators are references
 pub fn ingest(&self, source_path: &str, rebuild: bool) -> Result<ProgressStats, IngestionError>
 ```
 
