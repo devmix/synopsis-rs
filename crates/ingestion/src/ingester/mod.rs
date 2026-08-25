@@ -33,6 +33,7 @@
 //! The pipeline's pure helpers (content hashing, quote extraction (design
 //! D7), source-type resolution) live in [`helpers`] (task 3.3).
 
+mod backup;
 mod facts;
 mod helpers;
 
@@ -118,18 +119,22 @@ impl<'a> Ingester<'a> {
     /// Runs the full pipeline over the source directory.
     ///
     /// Flow (oracle `Ingest`): validate the root is a directory → count
-    /// files for the progress bar → backup hook (task 3.6) → rebuild-clear
-    /// hook (task 3.6, when `rebuild`) → parse → per-document pipeline.
-    /// Parse errors count into the stats; a parse that produced nothing but
-    /// errors fails the run (oracle parity). Per-document failures count
-    /// into [`ProgressStats::errors`] and never abort the run (design D8).
+    /// files for the progress bar → database backup (design D6) →
+    /// rebuild-clear (design D6, when `rebuild`) → parse → per-document
+    /// pipeline. Parse errors count into the stats; a parse that produced
+    /// nothing but errors fails the run (oracle parity). Per-document
+    /// failures count into [`ProgressStats::errors`] and never abort the
+    /// run (design D8).
     ///
     /// # Errors
     ///
     /// [`IngestionError::Io`] when the root cannot be stat'ed,
     /// [`IngestionError::NotADirectory`] when it is a file,
     /// [`IngestionError::NoDocumentsParsed`] when parsing found nothing but
-    /// errors. Document-level failures are counted, not returned.
+    /// errors. A database that cannot even be read (backup stage) or a
+    /// rebuild-clear failure also propagates (design D8: DB failure fails
+    /// the source); a backup snapshot failure is a warning, not an error.
+    /// Document-level failures are counted, not returned.
     pub fn ingest(
         &self,
         source_path: &Path,
@@ -151,12 +156,20 @@ impl<'a> Ingester<'a> {
             &format!("Ingesting from {}", source_path.display()),
         );
 
-        // TODO(task 3.6): create_backup() before the first write (design
-        // D6): VACUUM INTO snapshot, warn-only on failure.
+        // Design D6: snapshot the database before the first destructive
+        // write. A failed snapshot is a warning inside `create_backup`
+        // (returns `false`); only an unreadable database propagates.
+        backup::create_backup(self.db)?;
         if rebuild {
-            // TODO(task 3.6): clear_source_data(source_path) before parsing
-            // (design D6): all documents under the source root, one
-            // transaction.
+            // Design D6: a rebuild clears every document under the source
+            // root BEFORE parsing, in one transaction.
+            let cleared = backup::clear_source_data(self.db, source_path)?;
+            if cleared > 0 {
+                eprintln!(
+                    "rebuild: cleared {cleared} documents under {}",
+                    source_path.display()
+                );
+            }
         }
 
         let parse_result = self.source.parse(source_path);
@@ -1367,5 +1380,128 @@ mod tests {
             })
             .unwrap();
         assert_eq!(fact_count, 0);
+    }
+
+    // ── Task 3.6: backup + rebuild ────────────────────────────────────────
+
+    /// A rebuild deletes the source's documents BEFORE parsing, so the
+    /// re-ingest creates them fresh (not as updates) with fresh chunk rows.
+    #[test]
+    fn rebuild_clears_the_source_documents_before_parsing() {
+        let dir = TempDir::new();
+        let root = dir.0.clone();
+        write_file(&root, "a.txt", "line one\nline two");
+        let h = Harness::new();
+
+        let first = h.run(&root, false);
+        assert_eq!(first.documents_created, 1, "{first:?}");
+
+        let second = h.run(&root, true);
+        assert_eq!(second.documents_created, 1, "{second:?}");
+        assert_eq!(second.documents_updated, 0, "{second:?}");
+        assert_eq!(second.documents_skipped, 0, "{second:?}");
+        assert_eq!(second.chunks_created, 2, "{second:?}");
+        assert_eq!(second.errors, 0, "{second:?}");
+
+        let (doc_count, chunk_count) =
+            h.db.with_conn(|conn| {
+                let exec = ConnectionOrTx::Connection(conn);
+                let docs = DocumentDao::new(exec);
+                let docs = docs.list().unwrap();
+                let chunk_count = ChunkDao::new(exec)
+                    .list_by_doc_id(docs[0].id)
+                    .unwrap()
+                    .len();
+                (docs.len(), chunk_count)
+            })
+            .unwrap();
+        assert_eq!(doc_count, 1, "exactly one document after the rebuild");
+        assert_eq!(chunk_count, 2, "fresh chunk rows, old ones cascade-deleted");
+    }
+
+    /// A rebuild clears only documents under the source root: a sibling
+    /// directory whose name merely starts with the root's must survive
+    /// (the oracle's string-prefix match would have deleted it).
+    #[test]
+    fn rebuild_leaves_documents_outside_the_root() {
+        let dir = TempDir::new();
+        let root = dir.0.join("docs");
+        let sibling = dir.0.join("docs2");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+        write_file(&root, "a.txt", "line one");
+        let h = Harness::new();
+
+        // Seed a sibling document directly (the pipeline only walks `root`).
+        let sibling_path = sibling.join("b.txt").to_string_lossy().into_owned();
+        h.db.exec_tx(|tx| -> Result<(), IngestionError> {
+            let docs = DocumentDao::new(ConnectionOrTx::Transaction(&*tx));
+            docs.create("test", &sibling_path, None, Some("hash"))?;
+            Ok(())
+        })
+        .unwrap();
+
+        let stats = h.run(&root, true);
+        assert_eq!(stats.documents_created, 1, "{stats:?}");
+        assert_eq!(stats.errors, 0, "{stats:?}");
+
+        let paths: HashSet<String> =
+            h.db.with_conn(|conn| {
+                DocumentDao::new(ConnectionOrTx::Connection(conn))
+                    .list()
+                    .unwrap()
+                    .into_iter()
+                    .map(|doc| doc.original_path)
+                    .collect()
+            })
+            .unwrap();
+        assert_eq!(
+            paths,
+            HashSet::from([
+                root.join("a.txt").to_string_lossy().into_owned(),
+                sibling_path,
+            ]),
+            "the root's document was re-created, the sibling survived"
+        );
+    }
+
+    /// A rebuild on an empty database is a no-op clear: the run proceeds
+    /// and creates the documents.
+    #[test]
+    fn rebuild_with_no_matching_documents_is_a_noop() {
+        let dir = TempDir::new();
+        let root = dir.0.clone();
+        write_file(&root, "a.txt", "line one");
+        let h = Harness::new();
+
+        let stats = h.run(&root, true);
+        assert_eq!(stats.documents_created, 1, "{stats:?}");
+        assert_eq!(stats.chunks_created, 1, "{stats:?}");
+        assert_eq!(stats.errors, 0, "{stats:?}");
+    }
+
+    /// Two consecutive rebuilds converge to exactly one document.
+    #[test]
+    fn rebuild_is_idempotent() {
+        let dir = TempDir::new();
+        let root = dir.0.clone();
+        write_file(&root, "a.txt", "line one\nline two");
+        let h = Harness::new();
+
+        let first = h.run(&root, true);
+        assert_eq!(first.documents_created, 1, "{first:?}");
+        let second = h.run(&root, true);
+        assert_eq!(second.documents_created, 1, "{second:?}");
+        assert_eq!(second.errors, 0, "{second:?}");
+
+        let doc_count =
+            h.db.with_conn(|conn| {
+                DocumentDao::new(ConnectionOrTx::Connection(conn))
+                    .list()
+                    .unwrap()
+                    .len()
+            })
+            .unwrap();
+        assert_eq!(doc_count, 1, "exactly one document after two rebuilds");
     }
 }
