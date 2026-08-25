@@ -80,7 +80,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
     дедуп синтетических сущностей; веса пересчитаны; цитаты записаны.
   - Критерии приёмки: гейты ingestion зелёные.
 
-- [ ] 3.6 Backup + rebuild
+- [x] 3.6 Backup + rebuild
   - Цель: снимок БД и очистка источника.
   - Scope файлов: `crates/ingestion/src/ingester/backup.rs` (новый).
   - Содержание: create_backup по design D6: PRAGMA database_list → путь файла;
