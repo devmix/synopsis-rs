@@ -67,7 +67,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
     vectors после коммита.
   - Критерии приёмки: гейты ingestion зелёные; сценарии покрыты.
 
-- [ ] 3.5 Ingester: факты
+- [x] 3.5 Ingester: факты
   - Цель: запись фактов с синтетическими сущностями и цитатами.
   - Scope файлов: `crates/ingestion/src/ingester/facts.rs` (новый).
   - Содержание: store_entities-фактовая часть по оракулу: уникальные (name,type,domain)
