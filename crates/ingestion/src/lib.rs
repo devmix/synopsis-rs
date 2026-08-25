@@ -47,6 +47,7 @@
 pub mod chunkers;
 pub mod entities;
 pub mod error;
+pub mod ingester;
 pub mod ner;
 pub mod parsers;
 pub mod progress;
