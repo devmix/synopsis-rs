@@ -71,7 +71,7 @@
   - Тесты: roundtrip; повреждённая запись → промах; детерминизм ключа; формат temperature.
   - Критерии приёмки: гейты зелёные; миграции не тронуты.
 
-- [ ] 2.5 LlmNer: сборка провайдера
+- [x] 2.5 LlmNer: сборка провайдера
   - Цель: полный LLM-провайдер поверх 2.2–2.4.
   - Scope файлов: `crates/ingestion/src/ner/llm.rs` (новый),
     `crates/ingestion/Cargo.toml` (+llm, db workspace).
