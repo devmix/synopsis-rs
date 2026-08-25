@@ -231,7 +231,7 @@ pub struct TemplateHashes {
 /// is created at load and the compiled templates are cached on it, so
 /// rendering in the per-domain loop does not re-parse.
 /// [`NerPrompts::template_hashes`] feeds the LLM cache key (task 2.4).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NerPrompts {
     /// The environment holding the compiled templates.
     env: Environment<'static>,

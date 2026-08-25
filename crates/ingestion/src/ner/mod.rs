@@ -23,12 +23,15 @@
 //! design D5 parse/validate rules (task 2.3); [`LlmNerCache`] +
 //! [`build_cache_key`] persist LLM responses in the lazily-created
 //! `llm_ner_cache` table (task 2.4, design D6); the provider itself
-//! (task 2.5) composes them.
+//! (task 2.5) composes them. [`CompositeNer`] (task 2.6, design D7) is the
+//! stage orchestrator: sequential providers in declared order + the
+//! per-domain auto-publish threshold filter.
 
 use serde_json::{Map, Value};
 
 use crate::error::IngestionError;
 
+mod composite;
 mod llm;
 mod llm_cache;
 mod llm_schema;
@@ -36,6 +39,7 @@ mod parse;
 mod prompts;
 mod regex;
 
+pub use composite::CompositeNer;
 pub use llm::LlmNer;
 pub use llm_cache::{LlmNerCache, build_cache_key};
 pub use llm_schema::generate_json_schema;

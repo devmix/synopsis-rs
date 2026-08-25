@@ -150,6 +150,20 @@ pub enum IngestionError {
     /// configs").
     #[error("llm ner: at least one domain config is required")]
     LlmNerNoDomains,
+
+    /// A configured NER stage `"prose"` has no implementation (ingestion-ner
+    /// task 2.6): prose NER is deferred by human decision 2026-08-23 — the
+    /// Go-only statistical provider has no Rust equivalent and a second
+    /// ONNX stack was rejected. The config parser still accepts the `"prose"`
+    /// word (the strict `NerMethod` enum keeps oracle word parity); the
+    /// failure surfaces at provider construction instead.
+    #[error(
+        "ner stage \"prose\" is not implemented: prose NER is deferred \
+        (human decision 2026-08-23 — Go-only statistical provider, no Rust \
+        equivalent, second ONNX stack rejected); configure \"regex\" and/or \
+        \"llm\" instead"
+    )]
+    ProseNerDeferred,
 }
 
 #[cfg(test)]

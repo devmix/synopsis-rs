@@ -30,7 +30,7 @@
 //! - **No silent config defaults.** The oracle clamps a negative
 //!   temperature to 0 and a non-positive `max_tokens` to 2048; our
 //!   [`LlmClient::new`](llm::LlmClient::new) fails fast on those instead
-//!   (llm crate deviation), so the validated config values are used verbat
+//!   (llm crate deviation), so the validated config values are used verbatim
 //!   in the cache key.
 //! - **Schema is always passed to the call.** The oracle's
 //!   `GenerateJSONSchema(cfg, requires_schema)` returns `""` when the
