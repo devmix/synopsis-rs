@@ -112,7 +112,7 @@
     + чистые кейсы `resolver_test.go` (включая кириллицу).
   - Критерии приёмки: гейты зелёные; кириллические кейсы оракула совпадают.
 
-- [ ] 2.8 Resolver: индекс + операции над БД
+- [x] 2.8 Resolver: индекс + операции над БД
   - Цель: персистентная дедупликация сущностей.
   - Scope файлов: `crates/ingestion/src/entities/resolver.rs` (новый),
     `crates/ingestion/Cargo.toml` (+db workspace).
