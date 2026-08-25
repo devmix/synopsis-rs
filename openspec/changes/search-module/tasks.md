@@ -9,7 +9,7 @@ crates/embedding (trait), crates/graph (traverser), crates/config (SearchConfig/
 Директива (binding): НЕ копировать Go 1:1 — функциональная копия, архитектура для Rust
 (DRY/KISS/SOLID/YAGNI); баги оракула исправлять или фиксировать отклонения.
 
-- [ ] 4.1 Скаффолдинг крейта + типы + RRF
+- [x] 4.1 Скаффолдинг крейта + типы + RRF
   - Цель: новый крейт crates/search и ядро фьюжна.
   - Scope файлов: `crates/search/{Cargo.toml,src/lib.rs,src/error.rs,src/rrf.rs}` (новые),
     корневой Cargo.toml (+workspace member).
