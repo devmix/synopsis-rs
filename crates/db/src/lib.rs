@@ -36,6 +36,7 @@ pub mod error;
 pub mod executor;
 pub mod fact;
 pub mod fact_source;
+pub mod gc;
 pub mod test_util;
 pub mod utils;
 
@@ -51,3 +52,4 @@ pub use error::DbError;
 pub use executor::{ConnectionOrTx, DbExecutor};
 pub use fact::{Fact, FactDao, FactFilter};
 pub use fact_source::{FactSource, FactSourceDao};
+pub use gc::GcDao;
