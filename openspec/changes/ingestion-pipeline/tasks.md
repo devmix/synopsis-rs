@@ -23,7 +23,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
   - Тесты: счётчики, снапшот, elapsed > 0.
   - Критерии приёмки: гейты зелёные.
 
-- [ ] 3.2 GC-модуль в db-крейте
+- [x] 3.2 GC-модуль в db-крейте
   - Цель: каскадное удаление документа + сироки-документы.
   - Scope файлов: `crates/db/src/gc.rs` (новый), `crates/db/src/lib.rs` (+mod).
   - Содержание: GcDao над ConnectionOrTx (форма существующих DAO):
