@@ -109,7 +109,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
     domain enrichment, сериализация (Mutex) smoke.
   - Критерии приёмки: гейты ingestion зелёные.
 
-- [ ] 3.8 Runner: очистка, prune, линковка
+- [x] 3.8 Runner: очистка, prune, линковка
   - Цель: пост-конвейерные операции.
   - Scope файлов: `crates/ingestion/src/runner/cleanup.rs` (новый).
   - Содержание: cleanup_orphaned_data: одна транзакция — GcDao::delete_orphaned_entity_ids,
