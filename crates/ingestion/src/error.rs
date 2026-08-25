@@ -164,6 +164,33 @@ pub enum IngestionError {
         \"llm\" instead"
     )]
     ProseNerDeferred,
+
+    /// The document id passed to the entity resolver is not a valid
+    /// database row id (task 2.8): the resolver refuses to link provenance
+    /// to a nonexistent row instead of letting the FK constraint fail
+    /// mid-batch.
+    #[error("invalid document id {0}: must be a positive row id")]
+    InvalidDocumentId(i64),
+
+    /// An entity candidate found in the resolver's blocking index no longer
+    /// exists in the database and a full rehydration did not recover it
+    /// (task 2.8, design D9): the index and the database diverged beyond
+    /// the single-retry recovery path.
+    #[error(
+        "entity candidate {0} is gone and could not be re-resolved after \
+        index rehydration"
+    )]
+    EntityCandidateGone(i64),
+
+    /// Serializing an entity's scoped metadata to JSON failed (task 2.8).
+    /// In practice unreachable (the input is already a `serde_json::Map`),
+    /// but the API is total.
+    #[error("entity metadata: serialize scoped JSON: {source}")]
+    EntityMetadataJson {
+        /// Underlying serde_json error.
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 #[cfg(test)]
