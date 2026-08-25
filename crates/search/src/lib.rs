@@ -2,8 +2,9 @@
 //!
 //! Oracle mapping: `../synopsis/internal/search` (design D1). Task 4.1
 //! delivers the shared result types and the RRF fusion core
-//! ([`reciprocal_rank_fusion`]); the sub-searchers, enricher, reranker,
-//! graph expander and the `Searcher` trait land in tasks 4.2–4.6.
+//! ([`reciprocal_rank_fusion`]); task 4.2 adds the lexical and semantic
+//! sub-searchers ([`LexicalSearcher`] / [`SemanticSearcher`]); the enricher,
+//! reranker, graph expander and the `Searcher` trait land in tasks 4.3–4.6.
 //!
 //! Result types (oracle `search.go` / `lexical_search.go` /
 //! `semantic_search.go`):
@@ -17,10 +18,14 @@
 //!   `metadata`, `entities`) that tasks 4.3/4.5 fill after fusion.
 
 pub mod error;
+pub mod lexical;
 pub mod rrf;
+pub mod semantic;
 
 pub use error::SearchError;
+pub use lexical::LexicalSearcher;
 pub use rrf::{DEFAULT_RRF_K, reciprocal_rank_fusion};
+pub use semantic::SemanticSearcher;
 
 /// Which sub-search produced a hit (or both, when the chunk is in both
 /// ranked lists).
@@ -80,7 +85,7 @@ pub struct SemanticHit {
     pub start_offset: Option<i64>,
     /// End offset in the original text, if any.
     pub end_offset: Option<i64>,
-    /// Cosine distance to the query embedding (lower is better).
+    /// Distance to the query embedding (lower is better).
     pub score: f64,
 }
 
@@ -114,4 +119,34 @@ pub struct SearchResult {
     /// Entities attached to the chunk; empty until the enricher fills it
     /// (task 4.3).
     pub entities: Vec<db::Entity>,
+}
+
+/// Normalize a domain filter for matching: trim, collapse whitespace,
+/// lowercase ([`db::utils::normalize`]). A domain that is empty after
+/// normalization means "no filter" (`None`).
+///
+/// Stored domains are canonically lowercase (ontology XML), so normalizing
+/// the input makes domain filtering case-insensitive on both sub-search legs
+/// without changing the db crate's SQL contract.
+pub(crate) fn normalize_domain(domain: Option<&str>) -> Option<String> {
+    domain
+        .map(db::utils::normalize)
+        .filter(|normalized| !normalized.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_domain_normalizes_and_drops_empty() {
+        assert_eq!(normalize_domain(None), None);
+        assert_eq!(normalize_domain(Some("")), None);
+        assert_eq!(normalize_domain(Some("   \t ")), None);
+        assert_eq!(normalize_domain(Some("HR")), Some("hr".to_string()));
+        assert_eq!(
+            normalize_domain(Some("  Eng   Dept ")),
+            Some("eng dept".to_string())
+        );
+    }
 }
