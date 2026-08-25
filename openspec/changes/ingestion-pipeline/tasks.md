@@ -48,7 +48,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
     `../synopsis/internal/ingestion/ingester_test.go` + hash/source_type кейсы.
   - Критерии приёмки: гейты ingestion зелёные.
 
-- [ ] 3.4 Ingester: каркас + документный цикл
+- [x] 3.4 Ingester: каркас + документный цикл
   - Цель: полный пер-документный конвейер без фактов.
   - Scope файлов: `crates/ingestion/src/ingester/mod.rs` (новый),
     `crates/ingestion/Cargo.toml` (+vectors, embedding workspace).
