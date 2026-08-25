@@ -11,7 +11,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
 Директива (binding): НЕ копировать Go 1:1 — функциональная копия, архитектура для Rust
 (DRY/KISS/SOLID/YAGNI); баги оракула исправлять или фиксировать отклонения.
 
-- [ ] 3.1 Прогресс-трекинг
+- [x] 3.1 Прогресс-трекинг
   - Цель: статистика и индикация прогона.
   - Scope файлов: `crates/ingestion/src/progress.rs` (новый), `crates/ingestion/src/lib.rs` (+mod),
     `crates/ingestion/Cargo.toml` (+indicatif workspace).
