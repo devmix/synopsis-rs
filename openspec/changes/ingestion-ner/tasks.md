@@ -98,7 +98,7 @@
     (порядок стадий, enrichment, threshold-фильтр, каскад, unknown domain pass-through).
   - Критерии приёмки: гейты зелёные.
 
-- [ ] 2.7 Примитивы разрешения: Jaro-Winkler + bigrams + кластеризация
+- [x] 2.7 Примитивы разрешения: Jaro-Winkler + bigrams + кластеризация
   - Цель: чистая математика дедупликации.
   - Scope файлов: `crates/ingestion/src/entities/similarity.rs` (новый),
     `crates/ingestion/src/entities/cluster.rs` (новый), `crates/ingestion/src/entities/mod.rs` (новый).
