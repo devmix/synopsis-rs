@@ -24,15 +24,16 @@
 //! - **Redundant second document update dropped:** the oracle re-updated the
 //!   document row at the end of the transaction with values it had already
 //!   written in `storeDocument`; one write is enough.
-//! - **Facts arrive in task 3.5:** NER results are held per chunk (the
-//!   parallel `Vec<Option<NerResult>>` of [`Ingester::extract_ner`]), but
-//!   storing `facts` (synthetic entities, `fact_sources` with quotes, weight
-//!   recompute) is a marked extension point in the store loop, not
-//!   implemented yet.
+//! - **Facts (task 3.5):** NER results are held per chunk (the parallel
+//!   `Vec<Option<NerResult>>` of [`Ingester::extract_ner`]); the fact half of
+//!   the oracle's `storeEntities` (synthetic endpoint entities, `facts` rows,
+//!   `fact_sources` with quotes, weight recompute) runs in
+//!   [`facts::store_facts`] inside the same transaction.
 //!
 //! The pipeline's pure helpers (content hashing, quote extraction (design
 //! D7), source-type resolution) live in [`helpers`] (task 3.3).
 
+mod facts;
 mod helpers;
 
 use std::collections::HashSet;
@@ -188,7 +189,7 @@ impl<'a> Ingester<'a> {
 
     /// The per-document pipeline (oracle `processDocument`): hash-dedup →
     /// chunk → batched embeddings → per-chunk NER → one transaction
-    /// (document + chunks + entity links) → post-commit vector writes
+    /// (document + chunks + entities + facts) → post-commit vector writes
     /// (design D5).
     ///
     /// # Errors
@@ -283,21 +284,30 @@ impl<'a> Ingester<'a> {
                 )?;
                 chunk_ids.push(chunk_id);
 
-                if let Some(ner_result) = ner_result
-                    && !ner_result.entities.is_empty()
-                {
-                    let resolved =
-                        self.resolver
-                            .add_entities(exec, doc_id, &ner_result.entities)?;
-                    tracker.add_entities(resolved.len() as u64);
-                    for entity in &resolved {
-                        links.link(chunk_id, entity.id)?;
+                if let Some(ner_result) = ner_result {
+                    if !ner_result.entities.is_empty() {
+                        let resolved =
+                            self.resolver
+                                .add_entities(exec, doc_id, &ner_result.entities)?;
+                        tracker.add_entities(resolved.len() as u64);
+                        for entity in &resolved {
+                            links.link(chunk_id, entity.id)?;
+                        }
                     }
+                    // Task 3.5: the fact half of the oracle's `storeEntities`
+                    // (no-op when the chunk has no facts).
+                    facts::store_facts(
+                        exec,
+                        self.resolver,
+                        tracker,
+                        doc_id,
+                        chunk_id,
+                        &chunk.text,
+                        &ner_result.facts,
+                        &path,
+                        chunk.sequence_num,
+                    )?;
                 }
-                // TODO(task 3.5): facts — store `ner_result.facts` as
-                // synthetic entities + `fact_sources` with quotes
-                // (helpers::extract_quote_from_chunk), then recompute entity
-                // weights.
             }
 
             tracker.add_chunks(chunks.len() as u64);
@@ -428,12 +438,14 @@ mod tests {
     };
 
     use db::test_util::in_memory_db;
-    use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao};
+    use db::{
+        ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, FactSourceDao,
+    };
     use embedding::EmbeddingError;
     use serde_json::Map;
 
     use super::*;
-    use crate::ner::{NerEntity, NerResult};
+    use crate::ner::{NerEntity, NerFact, NerResult};
     use crate::types::{Chunker, DocumentMetadata, ParseResult, Parser};
 
     /// An in-memory test source: `parse` reads every `.txt` file of the
@@ -631,6 +643,48 @@ mod tests {
         }
     }
 
+    /// A fact with an empty (global) domain and no metadata.
+    fn test_fact(
+        subject: &str,
+        subject_type: &str,
+        predicate: &str,
+        object: &str,
+        object_type: &str,
+    ) -> NerFact {
+        NerFact {
+            subject_type: subject_type.to_owned(),
+            subject_name: subject.to_owned(),
+            predicate: predicate.to_owned(),
+            object_type: object_type.to_owned(),
+            object_name: object.to_owned(),
+            domain: String::new(),
+            metadata: Map::new(),
+        }
+    }
+
+    /// A NER stub returning a fixed result (entities AND facts) for every
+    /// non-empty chunk.
+    struct FactStubNer {
+        result: NerResult,
+    }
+
+    impl NerProvider for FactStubNer {
+        fn name(&self) -> &'static str {
+            "fact-stub"
+        }
+
+        fn extract_entities(
+            &self,
+            content: &str,
+            _metadata: &Map<String, serde_json::Value>,
+        ) -> Result<Option<NerResult>, IngestionError> {
+            if content.trim().is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(self.result.clone()))
+        }
+    }
+
     /// A unique temp directory, removed on drop (tests run in parallel).
     struct TempDir(PathBuf);
 
@@ -695,7 +749,7 @@ mod tests {
         fn run_with(
             &self,
             root: &Path,
-            ner: Option<&StubNer>,
+            ner: Option<&dyn NerProvider>,
             sink: &dyn VectorSink,
             rebuild: bool,
         ) -> Result<ProgressStats, IngestionError> {
@@ -1094,5 +1148,224 @@ mod tests {
         assert_eq!(stats.errors, 1, "{stats:?}");
         assert_eq!(stats.files_processed, 1, "{stats:?}");
         assert_eq!(stats.documents_created, 1, "{stats:?}");
+    }
+
+    // ── Task 3.5: facts ──────────────────────────────────────────────────
+
+    #[test]
+    fn facts_are_stored_with_synthetic_entities_and_quotes() {
+        let dir = TempDir::new();
+        let root = dir.0.clone();
+        write_file(&root, "a.txt", "Alice works at Acme Corp.");
+        let h = Harness::new();
+        // NER finds Alice; the fact's object (Acme Corp) is synthetic-only.
+        let ner = FactStubNer {
+            result: NerResult {
+                entities: vec![test_entity("Alice", "person")],
+                facts: vec![test_fact(
+                    "Alice",
+                    "person",
+                    "works_at",
+                    "Acme Corp",
+                    "organization",
+                )],
+            },
+        };
+
+        let stats = h
+            .run_with(&root, Some(&ner), h.sink.as_ref(), false)
+            .unwrap();
+        assert_eq!(stats.documents_created, 1, "{stats:?}");
+        assert_eq!(stats.facts_created, 1, "{stats:?}");
+        assert_eq!(stats.fact_sources_created, 1, "{stats:?}");
+        // Alice (NER) + Acme Corp (synthetic, created by the fact stage).
+        assert_eq!(stats.entities_extracted, 2, "{stats:?}");
+
+        let (fact, source, links, doc_id) =
+            h.db.with_conn(|conn| {
+                let exec = ConnectionOrTx::Connection(conn);
+                let docs = DocumentDao::new(exec);
+                let doc = docs.list().unwrap().pop().expect("one document");
+                let fact = FactDao::new(exec)
+                    .list_all()
+                    .unwrap()
+                    .pop()
+                    .expect("one fact");
+                let source = FactSourceDao::new(exec)
+                    .get_by_fact_id(fact.id)
+                    .unwrap()
+                    .pop()
+                    .expect("one source");
+                let links = ChunkEntityDao::new(exec).get_entities_by_chunk(1).unwrap();
+                (fact, source, links, doc.id)
+            })
+            .unwrap();
+
+        assert_eq!(fact.predicate, "works_at");
+        assert_eq!(fact.domain, "");
+        assert_eq!(fact.status, "approved");
+        assert_eq!(fact.metadata_json, None, "empty fact metadata → NULL");
+        assert_eq!(fact.weight, 1, "recomputed from the single source");
+
+        let (subject, object) =
+            h.db.with_conn(|conn| {
+                let entities = EntityDao::new(ConnectionOrTx::Connection(conn))
+                    .list()
+                    .unwrap();
+                let by_name = |name: &str| {
+                    entities
+                        .iter()
+                        .find(|entity| entity.name == name)
+                        .expect("entity")
+                        .id
+                };
+                (by_name("Alice"), by_name("Acme Corp"))
+            })
+            .unwrap();
+        assert_eq!(fact.subject_entity_id, Some(subject));
+        assert_eq!(fact.object_entity_id, Some(object));
+
+        assert_eq!(source.document_id, doc_id);
+        assert_eq!(
+            source.quote.as_deref(),
+            Some("Alice works at Acme Corp."),
+            "the whole chunk fits the quote window"
+        );
+        assert_eq!(source.extracted_at.len(), 20, "{:?}", source.extracted_at);
+        assert!(
+            source.extracted_at.ends_with('Z'),
+            "{:?}",
+            source.extracted_at
+        );
+
+        // The chunk is linked to BOTH the NER entity and the synthetic one.
+        assert_eq!(links, vec![subject, object]);
+    }
+
+    /// Two facts sharing a subject produce three synthetic entities (Alice,
+    /// Acme Corp, Bob), not four — endpoints are de-duplicated by
+    /// (name, type, domain).
+    #[test]
+    fn synthetic_endpoints_are_deduplicated_across_facts() {
+        let dir = TempDir::new();
+        let root = dir.0.clone();
+        write_file(&root, "a.txt", "Alice works at Acme Corp and manages Bob.");
+        let h = Harness::new();
+        let ner = FactStubNer {
+            result: NerResult {
+                entities: Vec::new(),
+                facts: vec![
+                    test_fact("Alice", "person", "works_at", "Acme Corp", "organization"),
+                    test_fact("Alice", "person", "manages", "Bob", "person"),
+                ],
+            },
+        };
+
+        let stats = h
+            .run_with(&root, Some(&ner), h.sink.as_ref(), false)
+            .unwrap();
+        assert_eq!(stats.facts_created, 2, "{stats:?}");
+        assert_eq!(stats.fact_sources_created, 2, "{stats:?}");
+        assert_eq!(stats.entities_extracted, 3, "{stats:?}");
+
+        let entity_count =
+            h.db.with_conn(|conn| {
+                EntityDao::new(ConnectionOrTx::Connection(conn))
+                    .list()
+                    .unwrap()
+                    .len()
+            })
+            .unwrap();
+        assert_eq!(entity_count, 3, "Alice, Acme Corp and Bob — once each");
+    }
+
+    /// The same fact in two chunks de-duplicates to ONE `facts` row with two
+    /// `fact_sources` rows; the weight recompute yields 2.
+    #[test]
+    fn duplicate_facts_share_one_row_and_recompute_weights() {
+        let dir = TempDir::new();
+        let root = dir.0.clone();
+        write_file(
+            &root,
+            "a.txt",
+            "Alice works at Acme Corp.\nAlice works at Acme Corp.",
+        );
+        let h = Harness::new();
+        let ner = FactStubNer {
+            result: NerResult {
+                entities: vec![test_entity("Alice", "person")],
+                facts: vec![test_fact(
+                    "Alice",
+                    "person",
+                    "works_at",
+                    "Acme Corp",
+                    "organization",
+                )],
+            },
+        };
+
+        let stats = h
+            .run_with(&root, Some(&ner), h.sink.as_ref(), false)
+            .unwrap();
+        assert_eq!(stats.facts_created, 2, "{stats:?}");
+        assert_eq!(stats.fact_sources_created, 2, "{stats:?}");
+
+        let (fact_count, sources, weight) =
+            h.db.with_conn(|conn| {
+                let exec = ConnectionOrTx::Connection(conn);
+                let facts = FactDao::new(exec);
+                let fact = facts.list_all().unwrap().pop().expect("one fact row");
+                let sources = FactSourceDao::new(exec).get_by_fact_id(fact.id).unwrap();
+                (facts.count().unwrap(), sources.len(), fact.weight)
+            })
+            .unwrap();
+        assert_eq!(fact_count, 1, "create_or_ignore de-duplicates the row");
+        assert_eq!(sources, 2, "one provenance row per chunk");
+        assert_eq!(weight, 2, "recomputed from the two sources");
+    }
+
+    /// An empty `NerResult` (no entities, no facts) is a no-op: the document
+    /// and its chunks are stored, nothing else.
+    #[test]
+    fn empty_ner_result_is_a_no_op() {
+        let dir = TempDir::new();
+        let root = dir.0.clone();
+        write_file(&root, "a.txt", "Alice works at Acme Corp.");
+        let h = Harness::new();
+        let ner = FactStubNer {
+            result: NerResult::default(),
+        };
+
+        let stats = h
+            .run_with(&root, Some(&ner), h.sink.as_ref(), false)
+            .unwrap();
+        assert_eq!(stats.documents_created, 1, "{stats:?}");
+        assert_eq!(stats.chunks_created, 1, "{stats:?}");
+        assert_eq!(stats.entities_extracted, 0, "{stats:?}");
+        assert_eq!(stats.facts_created, 0, "{stats:?}");
+    }
+
+    /// An entities-only result (the default `StubNer`) never runs the facts
+    /// stage.
+    #[test]
+    fn entities_only_result_skips_the_facts_stage() {
+        let dir = TempDir::new();
+        let root = dir.0.clone();
+        write_file(&root, "a.txt", "line one");
+        let h = Harness::new();
+
+        let stats = h.run(&root, false);
+        assert_eq!(stats.entities_extracted, 1, "{stats:?}");
+        assert_eq!(stats.facts_created, 0, "{stats:?}");
+        assert_eq!(stats.fact_sources_created, 0, "{stats:?}");
+
+        let fact_count =
+            h.db.with_conn(|conn| {
+                FactDao::new(ConnectionOrTx::Connection(conn))
+                    .count()
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(fact_count, 0);
     }
 }
