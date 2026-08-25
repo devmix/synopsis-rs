@@ -111,12 +111,11 @@ struct RawRelation {
 ///
 /// Rules (design D5):
 /// - entities with an empty name are skipped;
-/// - confidence defaults to [`DEFAULT_LLM_CONFIDENCE`] when absent or outside
-///   `[0.0, 1.0]`;
-/// - descriptions are truncated to at most [`MAX_DESCRIPTION_LEN`] runes at
-///   the last sentence boundary (`.!?;`) within the cap, else hard-capped;
+/// - confidence defaults to 0.5 when absent or outside `[0.0, 1.0]`;
+/// - descriptions are truncated to at most 500 runes at the last sentence
+///   boundary (`.!?;`) within the cap, else hard-capped;
 /// - facts with any of the five required fields empty are skipped;
-/// - metadata is validated ([`validate_metadata`]).
+/// - metadata is validated (private `validate_metadata` rules).
 ///
 /// Parsed entities/facts carry an empty `domain` (see the module docs).
 ///

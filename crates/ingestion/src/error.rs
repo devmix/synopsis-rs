@@ -225,6 +225,38 @@ mod tests {
             routing.to_string(),
             r#"unknown source type "mediawiki" for unstructured chunk routing"#
         );
+
+        let invalid_id = IngestionError::InvalidDocumentId(0);
+        assert_eq!(
+            invalid_id.to_string(),
+            "invalid document id 0: must be a positive row id"
+        );
+
+        let gone = IngestionError::EntityCandidateGone(7);
+        assert_eq!(
+            gone.to_string(),
+            "entity candidate 7 is gone and could not be re-resolved after index rehydration"
+        );
+
+        let metadata_json = IngestionError::EntityMetadataJson {
+            source: serde_json::from_str::<serde_json::Value>("not json").unwrap_err(),
+        };
+        assert!(
+            metadata_json
+                .to_string()
+                .starts_with("entity metadata: serialize scoped JSON:"),
+            "{}",
+            metadata_json
+        );
+
+        let prose = IngestionError::ProseNerDeferred;
+        assert_eq!(
+            prose.to_string(),
+            "ner stage \"prose\" is not implemented: prose NER is deferred \
+             (human decision 2026-08-23 — Go-only statistical provider, no Rust \
+             equivalent, second ONNX stack rejected); configure \"regex\" and/or \
+             \"llm\" instead"
+        );
     }
 
     #[test]

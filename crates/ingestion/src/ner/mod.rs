@@ -2,7 +2,7 @@
 //!
 //! Oracle reference: `../synopsis/internal/ingestion/ner/` — `ner.go` (result
 //! types + provider trait) and `regex_ner.go` (the rule-based provider, ported
-//! in [`regex`](Self::regex)). Extraction results attach to chunks through the
+//! in [`RegexNer`]). Extraction results attach to chunks through the
 //! pipeline's own structure — the chunk itself stays a pure chunking artifact
 //! (ingestion-sources design D2).
 //!
@@ -26,6 +26,10 @@
 //! (task 2.5) composes them. [`CompositeNer`] (task 2.6, design D7) is the
 //! stage orchestrator: sequential providers in declared order + the
 //! per-domain auto-publish threshold filter.
+//!
+//! All public items are re-exported at the crate root (task 2.9), so
+//! downstream crates reference `ingestion::NerProvider`,
+//! `ingestion::CompositeNer`, … directly.
 
 use serde_json::{Map, Value};
 

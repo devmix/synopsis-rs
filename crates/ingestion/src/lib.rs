@@ -12,6 +12,17 @@
 //! pipeline's entry point: it maps the `type` attribute word of a `<source>`
 //! element to its implementation (design D5).
 //!
+//! The NER layer (change `ingestion-ner`) builds on the chunking pipeline:
+//! [`NerProvider`] implementations extract entities and facts from chunk
+//! content — [`RegexNer`] applies the domain's prepared regex rules and
+//! [`LlmNer`] renders the system/user prompts, calls a
+//! chat-completions endpoint and caches responses in the lazily-created
+//! `llm_ner_cache` table — and [`CompositeNer`] runs the configured stages
+//! in order, enriches the results and applies the per-domain
+//! `auto_publish_threshold` filter (design D7). Extracted entities are then
+//! deduplicated persistently by the [`Resolver`] over the `entities` table
+//! (Jaro-Winkler blocking index, design D9).
+//!
 //! Core contracts (oracle `types.go`, `chunkers/chunker.go`,
 //! `sources/source.go`):
 //!
@@ -25,9 +36,9 @@
 //!   mechanism for source walks; there is no built-in skip list.
 //!
 //! Deliberate deviation from the oracle (design D2): [`DocumentChunk`]
-//! carries no NER results — the NER stage (series change 2) attaches them
-//! through its own structure keyed by chunk index, keeping the chunk a pure
-//! chunking artifact.
+//! carries no NER results — the NER layer attaches them through its own
+//! structure keyed by chunk index, keeping the chunk a pure chunking
+//! artifact.
 //!
 //! Every public module item is re-exported at the crate root
 //! (`ingestion::MarkdownSource`, `ingestion::Registry`, …), so downstream
@@ -44,7 +55,16 @@ pub mod types;
 pub use chunkers::json::JsonChunker;
 pub use chunkers::markdown::MarkdownChunker;
 pub use chunkers::mediawiki::MediawikiChunker;
+pub use entities::{
+    ResolvedEntity, Resolver, bigrams, canonical_proto, cluster_batch, jaro_winkler,
+    normalize_name, scope_entity_metadata,
+};
 pub use error::IngestionError;
+pub use ner::{
+    CompositeNer, LlmNer, LlmNerCache, NerEntity, NerFact, NerPrompts, NerProvider, NerResult,
+    RegexNer, TemplateHashes, build_cache_key, generate_json_schema, load_ner_prompts,
+    parse_llm_response,
+};
 pub use parsers::json::JsonParser;
 pub use parsers::markdown::MarkdownParser;
 pub use parsers::mediawiki::MediawikiParser;
@@ -59,13 +79,18 @@ pub use types::{Chunker, Document, DocumentChunk, DocumentMetadata, ParseResult,
 mod root_api {
     //! Compile-time check that the full public API is reachable from the
     //! crate root (task 1.11 acceptance criterion: all five Source
-    //! implementations available from the root).
+    //! implementations available from the root; task 2.9 extends the pin
+    //! with the NER layer and the entity resolver).
+
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use serde_json::{Map, Value};
 
     use super::*;
 
     #[test]
     fn root_namespace_exposes_the_full_api() {
-        // The five Source composites (the acceptance criterion).
+        // The five Source composites (the task 1.11 acceptance criterion).
         fn assert_source<T: Source>(_: Option<T>) {}
         assert_source::<MarkdownSource>(None);
         assert_source::<JsonSource>(None);
@@ -95,5 +120,64 @@ mod root_api {
         assert_chunker::<MarkdownChunker>();
         assert_chunker::<JsonChunker>();
         assert_chunker::<MediawikiChunker>();
+
+        // NER: all three providers implement the object-safe trait.
+        fn assert_provider<T: NerProvider>() {}
+        assert_provider::<RegexNer>();
+        assert_provider::<LlmNer>();
+        assert_provider::<CompositeNer>();
+
+        // The NER result types and the cheap constructors.
+        let _ner_entity: Option<NerEntity> = None;
+        let _ner_fact: Option<NerFact> = None;
+        let _ner_result: Option<NerResult> = None;
+        let _regex_ner = RegexNer::new(&[]);
+        let _composite = CompositeNer::new(Vec::new(), &[]);
+        let _resolver = Resolver::new(0.8);
+        let _resolved: Option<ResolvedEntity> = None;
+        let _prompts: Option<NerPrompts> = None;
+        let _hashes: Option<TemplateHashes> = None;
+        let _cache: Option<LlmNerCache<'_>> = None;
+
+        // The stage factory and the prompt loader (name reachability from
+        // the root; their signatures are pinned by the call sites in the
+        // pipeline crates).
+        let _build = CompositeNer::build_from_stages;
+        let _load_prompts = load_ner_prompts;
+
+        // The pure NER helpers, exercised end to end from the root namespace.
+        let key = build_cache_key("srv", "model", 0.5, 1024, "sys", "usr", "content");
+        assert_eq!(key.len(), 64);
+        let parsed = parse_llm_response("{}").expect("an empty response parses");
+        assert!(parsed.entities.is_empty() && parsed.facts.is_empty());
+        let domain = config::DomainConfig {
+            name: "demo".to_owned(),
+            version: "1".to_owned(),
+            description: String::new(),
+            entities: Vec::new(),
+            relations: Vec::new(),
+            extraction: Default::default(),
+            confidence: Default::default(),
+        };
+        let _schema = generate_json_schema(&domain);
+
+        // The entity-resolution primitives.
+        let _normalized = normalize_name("  Foo   bar ");
+        let _grams = bigrams("foobar");
+        let _similarity = jaro_winkler("foo", "foobar");
+        let entity = NerEntity {
+            name: "Ivan Petrov".to_owned(),
+            entity_type: "person".to_owned(),
+            description: String::new(),
+            confidence: 1.0,
+            domain: String::new(),
+            metadata: Map::new(),
+        };
+        let clusters = cluster_batch(std::slice::from_ref(&entity), 0.8);
+        let canonical = canonical_proto(clusters.first().expect("one cluster"));
+        assert_eq!(canonical.name, entity.name);
+        let raw = Map::from_iter([("url".to_owned(), Value::String("https://x".to_owned()))]);
+        let scoped = scope_entity_metadata(&entity.name, &raw);
+        assert!(scoped.is_empty());
     }
 }

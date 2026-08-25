@@ -112,9 +112,9 @@ const DOCUMENT_LEVEL_FIELDS: &[&str] = &["url", "image_paths", "page_links", "ca
 /// Filters entity metadata down to entity-scoped fields (oracle
 /// `scopeEntityMetadata`).
 ///
-/// Document-level fields ([`DOCUMENT_LEVEL_FIELDS`]) are dropped
-/// case-insensitively; provenance fields (`source_file`, `source_type`,
-/// `space`, …) are kept. If `raw` contains a string `title`, it is
+/// Document-level fields (`url`, `image_paths`, `page_links`,
+/// `categories`) are dropped case-insensitively; provenance fields
+/// (`source_file`, `source_type`, `space`, …) are kept. If `raw` contains a string `title`, it is
 /// rewritten to the entity name; a non-string `title` is kept as-is.
 pub fn scope_entity_metadata(entity_name: &str, raw: &Map<String, Value>) -> Map<String, Value> {
     let mut scoped = Map::new();
