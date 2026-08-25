@@ -23,6 +23,18 @@
 //! deduplicated persistently by the [`Resolver`] over the `entities` table
 //! (Jaro-Winkler blocking index, design D9).
 //!
+//! The pipeline layer (change `ingestion-pipeline`) turns the parsed and
+//! chunked documents into the knowledge base: the [`Ingester`] runs the
+//! per-document pipeline (content-hash dedup → chunk → batched embeddings →
+//! NER → one SQLite transaction → post-commit vector writes) and the
+//! [`Runner`] orchestrates the configured sources — multi-source
+//! `ingest_all`, incremental sync, deleted-file pruning, orphan cleanup and
+//! cross-domain entity linking. Run statistics are reported as
+//! [`ProgressStats`] per source and [`SummaryStats`] per run; an orphan
+//! sweep reports [`OrphanCleanupStats`]. Vector writes go through the narrow
+//! [`VectorSink`] seam (blanket-implemented over every vectors engine) so
+//! tests can record or fail writes without an index engine.
+//!
 //! Core contracts (oracle `types.go`, `chunkers/chunker.go`,
 //! `sources/source.go`):
 //!
@@ -63,6 +75,7 @@ pub use entities::{
     normalize_name, scope_entity_metadata,
 };
 pub use error::IngestionError;
+pub use ingester::{Ingester, VectorSink};
 pub use ner::{
     CompositeNer, LlmNer, LlmNerCache, NerEntity, NerFact, NerPrompts, NerProvider, NerResult,
     RegexNer, TemplateHashes, build_cache_key, generate_json_schema, load_ner_prompts,
@@ -74,6 +87,7 @@ pub use parsers::mediawiki::MediawikiParser;
 pub use parsers::unstructured::UnstructuredParser;
 pub use parsers::webpage::WebpageParser;
 pub use progress::{ProgressStats, ProgressTracker};
+pub use runner::{OrphanCleanupStats, Runner, RunnerParams, SummaryStats};
 pub use sources::{
     JsonSource, MarkdownSource, MediawikiSource, Registry, UnstructuredSource, WebpageSource,
 };
@@ -84,7 +98,8 @@ mod root_api {
     //! Compile-time check that the full public API is reachable from the
     //! crate root (task 1.11 acceptance criterion: all five Source
     //! implementations available from the root; task 2.9 extends the pin
-    //! with the NER layer and the entity resolver).
+    //! with the NER layer and the entity resolver; task 3.9 extends it with
+    //! the pipeline layer).
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -183,5 +198,17 @@ mod root_api {
         let raw = Map::from_iter([("url".to_owned(), Value::String("https://x".to_owned()))]);
         let scoped = scope_entity_metadata(&entity.name, &raw);
         assert!(scoped.is_empty());
+
+        // The pipeline layer (task 3.9): the per-document ingester, the
+        // multi-source runner and their stat types, all from the root.
+        let _ingester: Option<Ingester<'_>> = None;
+        let _runner: Option<Runner<'_>> = None;
+        let _params: Option<RunnerParams<'_>> = None;
+        let _summary: Option<SummaryStats> = None;
+        let _orphan: Option<OrphanCleanupStats> = None;
+        // The vector write seam is object-safe (the runner holds
+        // `&dyn VectorIndex` adapters, tests hold recording stubs).
+        fn assert_sink<T: VectorSink + ?Sized>() {}
+        assert_sink::<dyn VectorSink>();
     }
 }

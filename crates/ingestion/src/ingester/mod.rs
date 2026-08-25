@@ -25,13 +25,14 @@
 //!   document row at the end of the transaction with values it had already
 //!   written in `storeDocument`; one write is enough.
 //! - **Facts (task 3.5):** NER results are held per chunk (the parallel
-//!   `Vec<Option<NerResult>>` of [`Ingester::extract_ner`]); the fact half of
-//!   the oracle's `storeEntities` (synthetic endpoint entities, `facts` rows,
-//!   `fact_sources` with quotes, weight recompute) runs in
-//!   [`facts::store_facts`] inside the same transaction.
+//!   `Vec<Option<NerResult>>` of the private `extract_ner` stage); the fact
+//!   half of the oracle's `storeEntities` (synthetic endpoint entities,
+//!   `facts` rows, `fact_sources` with quotes, weight recompute) runs in the
+//!   private `store_facts` stage inside the same transaction.
 //!
 //! The pipeline's pure helpers (content hashing, quote extraction (design
-//! D7), source-type resolution) live in [`helpers`] (task 3.3).
+//! D7), source-type resolution) live in the private `helpers` module
+//! (task 3.3).
 
 mod backup;
 mod facts;

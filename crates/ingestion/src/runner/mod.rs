@@ -108,8 +108,8 @@ pub struct RunnerParams<'a> {
     /// Embedding provider for chunk vectors.
     pub embed: &'a dyn EmbeddingProvider,
     /// Vector index engine (design D5: post-commit writes through the
-    /// [`VectorSink`](crate::ingester::VectorSink) blanket impl, plus the
-    /// orphan reconciliation of `cleanup_orphaned_data`, task 3.8).
+    /// [`VectorSink`] blanket impl, plus the orphan reconciliation of
+    /// `cleanup_orphaned_data`, task 3.8).
     pub vectors: &'a dyn VectorIndex,
     /// NER prompt templates (loaded once by the CLI, task 2.2).
     pub prompts: &'a NerPrompts,
