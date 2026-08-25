@@ -257,6 +257,13 @@ pub enum IngestionError {
         /// The path that matched no configured source root.
         path: String,
     },
+
+    /// A cross-domain entity-linking failure (pipeline task 3.8): the graph
+    /// crate is the source of truth for CEL/linker failures. At the
+    /// `ingest_all` tail the failure is recorded in `SummaryStats::errors`,
+    /// never fatal (design D8).
+    #[error("entity linking: {0}")]
+    Graph(#[from] graph::GraphError),
 }
 
 #[cfg(test)]

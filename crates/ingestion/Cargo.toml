@@ -62,3 +62,7 @@ embedding = { workspace = true }
 # with a blanket impl over `vectors::VectorIndex`), so tests record writes
 # without a LanceDB engine.
 vectors = { workspace = true }
+# Cross-domain entity linking for the Runner's post-run tail (task 3.8,
+# design D1: ingestion → graph edge): the runner delegates to
+# `graph::build_entity_links` instead of re-implementing the linker.
+graph = { workspace = true }

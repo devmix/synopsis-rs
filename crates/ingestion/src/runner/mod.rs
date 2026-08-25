@@ -11,14 +11,15 @@
 //! - [`Runner::ingest_all`] — processes the enabled configured sources
 //!   sequentially; a failing source is collected into
 //!   [`SummaryStats::errors`] and the run continues. The post-run orphan
-//!   cleanup + entity-linking tail is the task 3.8 extension point.
+//!   cleanup + entity-linking tail (`runner/cleanup.rs`) runs under the same
+//!   lock; its failures are collected into [`SummaryStats::errors`] too.
 //! - [`Runner::ingest_source`] — single-source entry point (explicit type or
 //!   detected), with per-source NER provider assembly and domain enrichment.
 //! - [`Runner::sync_source`] / [`Runner::ingest_source_by_path`] —
 //!   incremental (rebuild = false) entry points for the file watcher and the
 //!   CLI.
 //! - [`Runner::belongs_to_source`] — containment predicate used by the prune
-//!   stage (task 3.8).
+//!   stage (`runner/cleanup.rs`).
 //!
 //! All mutating entry points are serialized by an internal mutex (oracle
 //! `r.mu`): a future file watcher and a CLI sync must never write SQLite
@@ -38,10 +39,10 @@
 //! - `detectSourceType`'s `contains("mediawiki")` branch is subsumed by
 //!   `contains("wiki")` (every mediawiki name contains "wiki"); the oracle's
 //!   second check was dead code.
-//! - The post-run cleanup + entity-linking tail of `IngestAll` is a marked
-//!   extension point (task 3.8) rather than a stub call.
 //! - Warnings use `eprintln!` (crate convention, no logger in the frozen
 //!   stack), not the oracle's `log` package.
+
+pub mod cleanup;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
@@ -49,10 +50,13 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use config::DomainConfig;
 use config::ontology::{GlobalConfig, SourceConfig, SourceType};
-use config::preset::IngestionConfig;
+use config::preset::{IngestionConfig, LinkerConfig};
 use db::Db;
 use embedding::EmbeddingProvider;
 use serde_json::Value;
+use vectors::VectorIndex;
+
+pub use cleanup::OrphanCleanupStats;
 
 use crate::entities::Resolver;
 use crate::error::IngestionError;
@@ -103,10 +107,19 @@ pub struct RunnerParams<'a> {
     pub registry: &'a Registry,
     /// Embedding provider for chunk vectors.
     pub embed: &'a dyn EmbeddingProvider,
-    /// Vector sink for the ANN index (design D5: written after the commit).
-    pub vectors: &'a dyn VectorSink,
+    /// Vector index engine (design D5: post-commit writes through the
+    /// [`VectorSink`](crate::ingester::VectorSink) blanket impl, plus the
+    /// orphan reconciliation of `cleanup_orphaned_data`, task 3.8).
+    pub vectors: &'a dyn VectorIndex,
     /// NER prompt templates (loaded once by the CLI, task 2.2).
     pub prompts: &'a NerPrompts,
+    /// Cross-domain linker config (the root preset's `linker` section;
+    /// task 3.8: the `llm` linking method honors `disabled`).
+    pub linker_cfg: &'a LinkerConfig,
+    /// Prompt template directory (the root preset's `paths.prompts_path`;
+    /// task 3.8: the `llm` linking method loads
+    /// `{prompts_path}/entity-linker/`, embedded defaults when absent).
+    pub prompts_path: &'a str,
     /// LLM-NER cache database (a separate handle per the oracle); `None`
     /// disables response caching.
     pub llm_cache: Option<Db>,
@@ -125,8 +138,10 @@ pub struct Runner<'a> {
     domains: &'a HashMap<String, DomainConfig>,
     registry: &'a Registry,
     embed: &'a dyn EmbeddingProvider,
-    vectors: &'a dyn VectorSink,
+    vectors: &'a dyn VectorIndex,
     prompts: &'a NerPrompts,
+    linker_cfg: &'a LinkerConfig,
+    prompts_path: &'a str,
     llm_cache: Option<Db>,
 
     /// Configured sources keyed by absolute (lexically normalized) path;
@@ -155,6 +170,8 @@ impl<'a> Runner<'a> {
             embed,
             vectors,
             prompts,
+            linker_cfg,
+            prompts_path,
             llm_cache,
         } = params;
 
@@ -181,6 +198,8 @@ impl<'a> Runner<'a> {
             embed,
             vectors,
             prompts,
+            linker_cfg,
+            prompts_path,
             llm_cache,
             source_index,
             enabled_roots,
@@ -195,9 +214,10 @@ impl<'a> Runner<'a> {
     /// the run continues with the next source (oracle parity). `rebuild` is
     /// forwarded to every source (design D6 rebuild-clear).
     ///
-    /// TODO(3.8): the oracle's post-run tail — `cleanupOrphanedData` followed
-    /// by `buildEntityLinks` — lands in `runner/cleanup.rs`; its errors are
-    /// appended to [`SummaryStats::errors`] there.
+    /// The post-run tail (oracle `IngestAll`): [`cleanup_orphaned_data`](Self::cleanup_orphaned_data)
+    /// followed by [`build_entity_links`](Self::build_entity_links). Both
+    /// failures are collected into [`SummaryStats::errors`] and never fatal
+    /// (design D8).
     pub fn ingest_all(&self, rebuild: bool) -> SummaryStats {
         let _guard = self.lock();
         let mut stats = SummaryStats::default();
@@ -221,6 +241,32 @@ impl<'a> Runner<'a> {
                     eprintln!("ingest source {}: {err}", src.path);
                     stats.errors.push(format!("{}: {err}", src.path));
                 }
+            }
+        }
+
+        // Post-run tail (oracle `IngestAll`): orphan cleanup, then cross-
+        // domain entity linking. Already holding the run mutex — the locked
+        // cores are called directly.
+        match self.cleanup_orphaned_data_locked() {
+            Ok(cleanup) => eprintln!(
+                "orphan cleanup completed: entities={}, facts={}, documents={}, vectors={}",
+                cleanup.entities_deleted,
+                cleanup.facts_deleted,
+                cleanup.documents_deleted,
+                cleanup.vectors_deleted,
+            ),
+            Err(err) => {
+                eprintln!("cleanup orphaned data: {err}");
+                stats.errors.push(format!("cleanup orphaned data: {err}"));
+            }
+        }
+        match self.build_entity_links_locked() {
+            // Non-fatal per-link failures propagate into the summary
+            // (oracle parity: `stats.Errors = append(..., linkResult.Errors...)`).
+            Ok(link) => stats.errors.extend(link.errors),
+            Err(err) => {
+                eprintln!("build entity links: {err}");
+                stats.errors.push(format!("build entity links: {err}"));
             }
         }
         stats
@@ -342,6 +388,9 @@ impl<'a> Runner<'a> {
         // Per-run resolver: cheap to build, stateful only for the run
         // (oracle `NewIngester` built it inside from the same threshold).
         let resolver = Resolver::new(self.ingest_cfg.resolver.similarity_threshold);
+        let sink = SinkAdapter {
+            index: self.vectors,
+        };
         let ingester = Ingester::new(
             self.db,
             self.ingest_cfg,
@@ -349,7 +398,7 @@ impl<'a> Runner<'a> {
             self.embed,
             ner.as_deref(),
             &resolver,
-            self.vectors,
+            &sink,
         );
         ingester.ingest(Path::new(&src.path), rebuild)
     }
@@ -415,6 +464,22 @@ impl<'a> Runner<'a> {
     /// panicking holder cannot have corrupted anything.
     fn lock(&self) -> MutexGuard<'_, ()> {
         self.lock.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Adapts the Runner's type-erased [`VectorIndex`] handle to the Ingester's
+/// narrow write seam (task 3.8): the blanket `VectorSink` impl covers
+/// concrete engines, but not `dyn VectorIndex` itself (Rust has no
+/// trait-object upcast across it), while the orphan reconciliation
+/// (`chunk_ids` / `delete_by_chunk_ids`) needs the full trait.
+struct SinkAdapter<'a> {
+    /// The full vector-index engine handle.
+    index: &'a dyn VectorIndex,
+}
+
+impl VectorSink for SinkAdapter<'_> {
+    fn insert_batch(&self, rows: &[(u32, &[f32])]) -> Result<(), IngestionError> {
+        VectorIndex::insert_batch(self.index, rows).map_err(IngestionError::from)
     }
 }
 
@@ -553,16 +618,18 @@ fn is_within(path: &Path, root: &Path) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    use std::collections::BTreeMap;
     use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
     use config::DomainConfig;
     use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
-    use config::preset::IngestionConfig;
+    use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
     use db::{ConnectionOrTx, DocumentDao};
     use embedding::EmbeddingError;
+    use vectors::{VectorIndex, VectorsError};
 
     use super::*;
     use crate::ner::load_ner_prompts;
@@ -636,7 +703,7 @@ mod tests {
     impl Source for TestSource {}
 
     /// A deterministic embedding provider: vector `i` is all `(i + 1)`.
-    struct MockEmbedding {
+    pub(super) struct MockEmbedding {
         dim: usize,
     }
 
@@ -656,37 +723,109 @@ mod tests {
         }
     }
 
-    /// A [`VectorSink`] that records the inserted chunk ids (assertions).
-    struct RecordingSink {
-        chunk_ids: Mutex<Vec<u32>>,
+    /// In-memory [`VectorIndex`] stub: records every row (tests assert on
+    /// it). `fail_reads` makes `chunk_ids` fail (the cleanup error path,
+    /// task 3.8 test).
+    pub(super) struct MemoryIndex {
+        rows: Mutex<BTreeMap<u32, Vec<f32>>>,
+        fail_reads: AtomicBool,
     }
 
-    impl VectorSink for RecordingSink {
-        fn insert_batch(&self, rows: &[(u32, &[f32])]) -> Result<(), IngestionError> {
-            let mut ids = self
-                .chunk_ids
+    impl MemoryIndex {
+        /// An empty index with working reads.
+        pub(super) fn new() -> Self {
+            Self {
+                rows: Mutex::new(BTreeMap::new()),
+                fail_reads: AtomicBool::new(false),
+            }
+        }
+
+        /// Makes `chunk_ids` fail (the cleanup error path, task 3.8 test).
+        pub(super) fn set_fail_reads(&self, fail: bool) {
+            self.fail_reads.store(fail, Ordering::SeqCst);
+        }
+    }
+
+    impl VectorIndex for MemoryIndex {
+        fn insert(&self, chunk_id: u32, vector: &[f32]) -> Result<(), VectorsError> {
+            self.rows
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            ids.extend(rows.iter().map(|(id, _)| *id));
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(chunk_id, vector.to_vec());
+            Ok(())
+        }
+
+        fn insert_batch(&self, rows: &[(u32, &[f32])]) -> Result<(), VectorsError> {
+            let mut map = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            for (id, vector) in rows {
+                map.insert(*id, vector.to_vec());
+            }
+            Ok(())
+        }
+
+        fn search(&self, _query: &[f32], _k: usize) -> Result<Vec<(u32, f32)>, VectorsError> {
+            Ok(Vec::new())
+        }
+
+        fn delete_by_chunk_ids(&self, chunk_ids: &[u32]) -> Result<(), VectorsError> {
+            let mut map = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            for id in chunk_ids {
+                map.remove(id);
+            }
+            Ok(())
+        }
+
+        fn chunk_ids(&self) -> Result<Vec<u32>, VectorsError> {
+            if self.fail_reads.load(Ordering::SeqCst) {
+                return Err(VectorsError::Engine("test failure".to_owned()));
+            }
+            Ok(self
+                .rows
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .keys()
+                .copied()
+                .collect())
+        }
+
+        fn count(&self) -> Result<u64, VectorsError> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len() as u64)
+        }
+
+        fn build_index(&self) -> Result<(), VectorsError> {
+            Ok(())
+        }
+
+        fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError> {
+            let mut map = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            map.clear();
+            for (id, vector) in rows {
+                map.insert(*id, vector.clone());
+            }
             Ok(())
         }
     }
 
     /// Test fixture: in-memory DB, default collaborators and a runner built
-    /// over them.
-    struct Harness {
-        db: Db,
-        cfg: IngestionConfig,
-        global: GlobalConfig,
-        domains: HashMap<String, DomainConfig>,
-        registry: Registry,
-        embed: MockEmbedding,
-        sink: Arc<RecordingSink>,
-        prompts: crate::ner::NerPrompts,
+    /// over them. Shared with the `runner/cleanup.rs` tests (task 3.8).
+    pub(super) struct Harness {
+        pub(super) db: Db,
+        pub(super) cfg: IngestionConfig,
+        pub(super) global: GlobalConfig,
+        pub(super) domains: HashMap<String, DomainConfig>,
+        pub(super) registry: Registry,
+        pub(super) embed: MockEmbedding,
+        pub(super) sink: Arc<MemoryIndex>,
+        pub(super) prompts: crate::ner::NerPrompts,
+        pub(super) linker_cfg: LinkerConfig,
     }
 
     impl Harness {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let mut registry = Registry::new();
             registry
                 .register("unstructured", Box::new(TestSource))
@@ -707,14 +846,13 @@ mod tests {
                 domains: HashMap::new(),
                 registry,
                 embed: MockEmbedding { dim: 4 },
-                sink: Arc::new(RecordingSink {
-                    chunk_ids: Mutex::new(Vec::new()),
-                }),
+                sink: Arc::new(MemoryIndex::new()),
                 prompts: load_ner_prompts("/nonexistent-ner-prompts").unwrap(),
+                linker_cfg: LinkerConfig::default(),
             }
         }
 
-        fn runner(&self) -> Runner<'_> {
+        pub(super) fn runner(&self) -> Runner<'_> {
             Runner::new(RunnerParams {
                 db: &self.db,
                 ingest_cfg: &self.cfg,
@@ -724,6 +862,8 @@ mod tests {
                 embed: &self.embed,
                 vectors: self.sink.as_ref(),
                 prompts: &self.prompts,
+                linker_cfg: &self.linker_cfg,
+                prompts_path: "/nonexistent-prompts",
                 llm_cache: None,
             })
         }
@@ -732,10 +872,10 @@ mod tests {
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     /// A unique temp directory removed on drop.
-    struct TempDir(PathBuf);
+    pub(super) struct TempDir(PathBuf);
 
     impl TempDir {
-        fn new(prefix: &str) -> Self {
+        pub(super) fn new(prefix: &str) -> Self {
             let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!("ingestion-runner-{prefix}-{id}"));
             let _ = fs::remove_dir_all(&path);
@@ -743,7 +883,7 @@ mod tests {
             Self(path)
         }
 
-        fn sub(&self, name: &str) -> PathBuf {
+        pub(super) fn sub(&self, name: &str) -> PathBuf {
             self.0.join(name)
         }
     }
@@ -755,7 +895,7 @@ mod tests {
     }
 
     /// Builds a [`SourceConfig`] for the tests.
-    fn source_config(
+    pub(super) fn source_config(
         path: &str,
         source_type: SourceType,
         disabled: bool,
@@ -772,7 +912,7 @@ mod tests {
     }
 
     /// Builds a minimal domain config (no entities, no rules).
-    fn domain_config(name: &str) -> DomainConfig {
+    pub(super) fn domain_config(name: &str) -> DomainConfig {
         DomainConfig {
             name: name.to_owned(),
             version: "1".to_owned(),
@@ -823,12 +963,7 @@ mod tests {
 
         // The good source was processed after the failure: vectors were
         // written (the run did not stop at the first error).
-        let ids = harness
-            .sink
-            .chunk_ids
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        assert!(!ids.is_empty());
+        assert!(!harness.sink.chunk_ids().unwrap().is_empty());
     }
 
     #[test]

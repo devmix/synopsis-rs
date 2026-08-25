@@ -2883,6 +2883,7 @@ dependencies = [
  "config",
  "db",
  "embedding",
+ "graph",
  "html-to-markdown-rs",
  "ignore",
  "indicatif",
