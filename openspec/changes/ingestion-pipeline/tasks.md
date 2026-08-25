@@ -92,7 +92,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
     rebuild-prefix удаляет только свои документы.
   - Критерии приёмки: гейты ingestion зелёные.
 
-- [ ] 3.7 Runner: сборка и мультиисточниковый прогон
+- [x] 3.7 Runner: сборка и мультиисточниковый прогон
   - Цель: оркестрация источников.
   - Scope файлов: `crates/ingestion/src/runner/mod.rs` (новый).
   - Содержание: Runner по design D4: Mutex; конструктор принимает Db, Config,
