@@ -23,6 +23,14 @@
 //!   `k == 0`;
 //! - an empty or whitespace-only query returns `Ok(empty)` (same as the
 //!   lexical leg); the oracle checked only `== ""`.
+//!
+//! **Over-fetch starvation:** [`OVERFETCH_FACTOR`] = 3 bounds the candidate
+//! pool at `topK × 3`, so a domain-starved corpus (fewer than ~1/3 of the
+//! nearest neighbors in the requested domain) may yield fewer than `topK`
+//! results even when more in-domain chunks exist globally.
+//!
+//! Domains come from the shared [`crate::document_domains`] helper (moved
+//! here → crate root in task 4.3, shared with the enricher).
 
 use std::collections::HashMap;
 
@@ -30,7 +38,7 @@ use db::{ChunkDao, DocumentDao};
 use embedding::EmbeddingProvider;
 use vectors::VectorIndex;
 
-use crate::{SearchError, SemanticHit, normalize_domain};
+use crate::{SearchError, SemanticHit, document_domains, normalize_domain};
 
 /// Over-fetch factor for the domain-blind index (design D3): the leg fetches
 /// `topK × 3` candidates so that enough in-domain hits survive the
@@ -147,36 +155,6 @@ impl<'conn> SemanticSearcher<'conn> {
                 score: distance as f64,
             })
             .collect())
-    }
-}
-
-/// Document domains from `metadata_json` `$.domain`: a string or an array of
-/// strings, each normalized (whitespace-collapsed, lowercased); non-string
-/// array members, empty values, and malformed or missing JSON yield no
-/// domains. Shared with the enricher (task 4.3).
-pub(crate) fn document_domains(metadata_json: Option<&str>) -> Vec<String> {
-    let Some(json) = metadata_json else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return Vec::new();
-    };
-    match value.get("domain") {
-        Some(serde_json::Value::String(domain)) => {
-            let normalized = db::utils::normalize(domain);
-            if normalized.is_empty() {
-                Vec::new()
-            } else {
-                vec![normalized]
-            }
-        }
-        Some(serde_json::Value::Array(items)) => items
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .map(db::utils::normalize)
-            .filter(|domain| !domain.is_empty())
-            .collect(),
-        _ => Vec::new(),
     }
 }
 

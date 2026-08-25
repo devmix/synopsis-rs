@@ -3,8 +3,11 @@
 //! Oracle mapping: `../synopsis/internal/search` (design D1). Task 4.1
 //! delivers the shared result types and the RRF fusion core
 //! ([`reciprocal_rank_fusion`]); task 4.2 adds the lexical and semantic
-//! sub-searchers ([`LexicalSearcher`] / [`SemanticSearcher`]); the enricher,
-//! reranker, graph expander and the `Searcher` trait land in tasks 4.3–4.6.
+//! sub-searchers ([`LexicalSearcher`] / [`SemanticSearcher`]); task 4.3
+//! adds the enricher ([`Enricher`] — document metadata, merged source
+//! type, RFC3339 `updated_at`, reranker flags, domains and chunk
+//! entities); the reranker, graph expander and the `Searcher` trait land
+//! in tasks 4.4–4.6.
 //!
 //! Result types (oracle `search.go` / `lexical_search.go` /
 //! `semantic_search.go`):
@@ -14,14 +17,17 @@
 //!   and cosine distance respectively).
 //! - [`SearchResult`] is a fused, ranked hit: the chunk row fields, the
 //!   calibrated score (higher is better), the 1-based [`SearchResult::rank`],
-//!   the [`SourceType`], and the enrichment slots (`document_path`,
-//!   `metadata`, `entities`) that tasks 4.3/4.5 fill after fusion.
+//!   the [`SourceType`] wire word (merged with the document source type by
+//!   the enricher), and the enrichment slots (`document_path`, `metadata`,
+//!   `entities`) that tasks 4.3/4.5 fill after fusion.
 
+pub mod enrich;
 pub mod error;
 pub mod lexical;
 pub mod rrf;
 pub mod semantic;
 
+pub use enrich::Enricher;
 pub use error::SearchError;
 pub use lexical::LexicalSearcher;
 pub use rrf::{DEFAULT_RRF_K, reciprocal_rank_fusion};
@@ -29,6 +35,10 @@ pub use semantic::SemanticSearcher;
 
 /// Which sub-search produced a hit (or both, when the chunk is in both
 /// ranked lists).
+///
+/// The pre-enrichment vocabulary: [`SearchResult::source_type`] carries
+/// [`Self::as_str`] until the enricher merges in the document source type
+/// (design D6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceType {
     /// Hit came only from the lexical (FTS5/BM25) list.
@@ -111,8 +121,10 @@ pub struct SearchResult {
     pub score: f64,
     /// 1-based rank, assigned after the fusion sort.
     pub rank: usize,
-    /// Which list(s) produced the hit.
-    pub source_type: SourceType,
+    /// The wire source word: [`SourceType::as_str`] before enrichment,
+    /// merged with the document source type by the enricher
+    /// (`"lexical" + "pdf" → "lexical+pdf"`, design D6).
+    pub source_type: String,
     /// Enrichment bag (document metadata, reranker flags, graph context);
     /// empty until tasks 4.3–4.5 fill it.
     pub metadata: serde_json::Map<String, serde_json::Value>,
@@ -132,6 +144,37 @@ pub(crate) fn normalize_domain(domain: Option<&str>) -> Option<String> {
     domain
         .map(db::utils::normalize)
         .filter(|normalized| !normalized.is_empty())
+}
+
+/// Document domains from `metadata_json` `$.domain`: a string or an array of
+/// strings, each normalized (whitespace-collapsed, lowercased); non-string
+/// array members, empty values, and malformed or missing JSON yield no
+/// domains. Shared by the semantic leg's application-side domain filter
+/// (design D3) and the enricher's `domains` metadata key (design D6).
+pub(crate) fn document_domains(metadata_json: Option<&str>) -> Vec<String> {
+    let Some(json) = metadata_json else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    match value.get("domain") {
+        Some(serde_json::Value::String(domain)) => {
+            let normalized = db::utils::normalize(domain);
+            if normalized.is_empty() {
+                Vec::new()
+            } else {
+                vec![normalized]
+            }
+        }
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(db::utils::normalize)
+            .filter(|domain| !domain.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

@@ -133,7 +133,7 @@ pub fn reciprocal_rank_fusion(
             document_path: String::new(), // filled by the enricher (task 4.3)
             score: RRF_WEIGHT * e.rrf_score + BM25_WEIGHT * e.bm25.unwrap_or(NEUTRAL),
             rank: 0, // assigned after the sort
-            source_type: e.source_type,
+            source_type: e.source_type.as_str().to_owned(),
             metadata: serde_json::Map::new(), // filled by tasks 4.3–4.5
             entities: Vec::new(),             // filled by the enricher (task 4.3)
         })
@@ -464,27 +464,27 @@ mod tests {
     // Parity with oracle TestReciprocalRankFusion_SourceType.
     #[test]
     fn source_type() {
-        let cases: Vec<(&str, Vec<LexicalHit>, Vec<SemanticHit>, i64, SourceType)> = vec![
+        let cases: Vec<(&str, Vec<LexicalHit>, Vec<SemanticHit>, i64, &str)> = vec![
             (
                 "chunk only in lexical",
                 vec![lexical(1, "a", 1)],
                 vec![],
                 1,
-                SourceType::Lexical,
+                "lexical",
             ),
             (
                 "chunk only in semantic",
                 vec![],
                 vec![semantic(2, "b", 1, 0.1)],
                 2,
-                SourceType::Semantic,
+                "semantic",
             ),
             (
                 "chunk in both lists",
                 vec![lexical(3, "c", 1)],
                 vec![semantic(3, "c", 1, 0.05)],
                 3,
-                SourceType::Hybrid,
+                "hybrid",
             ),
         ];
 
@@ -629,11 +629,7 @@ mod tests {
         let sem = vec![semantic(1, "shared", 1, 0.5)];
         let got = reciprocal_rank_fusion(&lexical, &sem, 60, 10);
         assert_eq!(got.len(), 1, "hybrid: count mismatch");
-        assert_eq!(
-            got[0].source_type,
-            SourceType::Hybrid,
-            "expected hybrid source type"
-        );
+        assert_eq!(got[0].source_type, "hybrid", "expected hybrid source type");
         let pure_rrf = 1.0 / 61.0 + 1.0 / 61.0; // both lists, rank 1
         assert!(
             got[0].score > pure_rrf,
