@@ -34,7 +34,7 @@ crates/embedding (trait), crates/graph (traverser), crates/config (SearchConfig/
     (домен выживает, чужой отсекается); mismatch размерности; пустые входы.
   - Критерии приёмки: гейты search зелёные.
 
-- [ ] 4.3 Enricher + batch-метод в db
+- [x] 4.3 Enricher + batch-метод в db
   - Цель: обогащение результатов.
   - Scope файлов: `crates/search/src/enrich.rs` (новый),
     `crates/db/src/chunk_entity.rs` (+get_entities_by_chunks батч),
