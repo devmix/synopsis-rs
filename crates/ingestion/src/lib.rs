@@ -34,6 +34,7 @@
 //! crates only need the root namespace.
 
 pub mod chunkers;
+pub mod entities;
 pub mod error;
 pub mod ner;
 pub mod parsers;

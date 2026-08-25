@@ -45,7 +45,10 @@ pub use llm_cache::{LlmNerCache, build_cache_key};
 pub use llm_schema::generate_json_schema;
 pub use parse::parse_llm_response;
 pub use prompts::{NerPrompts, TemplateHashes, load_ner_prompts};
+// Crate-private re-export: the entity-resolution primitives (task 2.7)
+// normalize domain keys with the same rule the providers tag with (DRY).
 pub use regex::RegexNer;
+pub(crate) use regex::normalize;
 
 /// An entity extracted from chunk content by a [`NerProvider`].
 ///
