@@ -123,7 +123,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
     links skip без конфига; app_kv roundtrip.
   - Критерии приёмки: гейты ingestion зелёные.
 
-- [ ] 3.9 E2E + финальная сборка
+- [x] 3.9 E2E + финальная сборка
   - Цель: сквозной тест и публичный API.
   - Scope файлов: `crates/ingestion/tests/pipeline_e2e.rs` (новый),
     `crates/ingestion/src/lib.rs`, `crates/ingestion/src/runner/mod.rs`.
