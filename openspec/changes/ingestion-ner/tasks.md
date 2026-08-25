@@ -129,7 +129,7 @@
     hydrate, exact hit, similarity merge, promote имени, cross-domain изоляция, stats.
   - Критерии приёмки: гейты зелёные; сценарии оракула покрыты.
 
-- [ ] 2.9 Финальная сборка: ре-экспорты + документация
+- [x] 2.9 Финальная сборка: ре-экспорты + документация
   - Цель: публичный API модулей ner/entities из корня крейта.
   - Scope файлов: `crates/ingestion/src/lib.rs`, `crates/ingestion/src/ner/mod.rs`,
     `crates/ingestion/src/entities/mod.rs`.
