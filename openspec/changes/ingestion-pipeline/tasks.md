@@ -37,7 +37,7 @@ crates/vectors engine, crates/graph build_entity_links, crates/embedding trait �
     сироки-документы удаляются, связанные живут; пустой документ.
   - Критерии приёмки: гейты db зелёные.
 
-- [ ] 3.3 Хелперы Ingester: hash, quotes, source_type
+- [x] 3.3 Хелперы Ingester: hash, quotes, source_type
   - Цель: чистые функции документного конвейера.
   - Scope файлов: `crates/ingestion/src/ingester/helpers.rs` (новый; модуль ingester/).
   - Содержание: compute_content_hash (sha256 hex); extract_quote_from_chunk по design D7
