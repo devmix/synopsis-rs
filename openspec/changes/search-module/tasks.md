@@ -21,7 +21,7 @@ crates/embedding (trait), crates/graph (traverser), crates/config (SearchConfig/
   - Тесты: ПОЛНЫЙ паритет `../synopsis/internal/search/rrf_test.go`.
   - Критерии приёмки: гейты search зелёные.
 
-- [ ] 4.2 Суб-поиски: лексический и семантический
+- [x] 4.2 Суб-поиски: лексический и семантический
   - Цель: две ноги поиска.
   - Scope файлов: `crates/search/src/lexical.rs`, `crates/search/src/semantic.rs` (новые),
     `crates/search/Cargo.toml` (+db, embedding, vectors workspace).
