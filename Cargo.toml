@@ -111,6 +111,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 noyalib = "0.0.23" # YAML: successor of serde_yaml/serde_yml, both deprecated (verified 2026-08-18)
 
+# Cursor pagination for the MCP catalog tools (mcp-server task 5.2): opaque
+# base64 cursors, wire format byte-compatible with the Go oracle's
+# pagination.go. Verified on crates.io 2026-08-26: base64 0.23.1 is current
+# (published 2026-08-04), pure Rust with zero dependencies, MSRV 1.48 <
+# pinned Rust 1.96.0, no known CVEs.
+base64 = "0.23"
+
 # Schema migrations (db-module D3, ADR 0001): rusqlite_migration with the
 # from-directory loader + include_dir embedding the repo-root `migrations/` tree at
 # compile time. PRAGMA user_version is the sole schema-state authority (no

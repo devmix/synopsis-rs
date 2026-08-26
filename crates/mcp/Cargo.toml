@@ -10,6 +10,9 @@ workspace = true
 # (config, database, graph, search). rmcp features: server role + Streamable
 # HTTP transport (design D8) — the same set the parity-harness dev-deps pin.
 [dependencies]
+# Opaque cursor base64 for the paginated catalog tools (task 5.2); the wire
+# format is byte-compatible with the Go oracle's pagination.go.
+base64 = { workspace = true }
 axum = { workspace = true }
 # D1 layering (design.md): mcp depends on {config, db, search, graph}.
 # `config` is consumed by the 5.10 assembly (server name/version, graph

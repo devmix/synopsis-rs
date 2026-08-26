@@ -6,7 +6,7 @@
 //! re-architecture (functional copy, not a code copy): the legacy SSE
 //! transport is deliberately not ported (design D8), tool schemas are
 //! transcribed from `tools.go` as `rmcp::model::Tool` objects, and handler
-//! bodies are stubs until tasks 5.3–5.9 fill them (design D2).
+//! bodies are stubs until tasks 5.4–5.9 fill them (design D2).
 
 use std::sync::Arc;
 
@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 
 use crate::error::McpError;
 use crate::health::{HealthState, handler as health_handler};
+use crate::tools;
 
 /// The MCP server: injected collaborators (design D1) + the frozen tool
 /// registry. Cloned per session by the rmcp service factory.
@@ -106,14 +107,17 @@ impl Server {
     }
 
     /// Dispatch a registered tool call (design D2 seam: parse args → call
-    /// crate API → serialize the oracle-shaped payload). Tasks 5.3–5.9
-    /// replace the stub bodies with real handlers. An unknown tool name
-    /// never reaches this method — `call_tool` rejects it as a protocol
-    /// error first.
-    pub fn dispatch(&self, name: &str, _args: Option<&Value>) -> Result<Value, McpError> {
-        // Stub until tasks 5.3–5.9: every registered tool reports
-        // "not implemented yet" as an MCP tool error (design D2/D7).
-        Err(McpError::NotYetImplemented(name.to_owned()))
+    /// crate API → serialize the oracle-shaped payload). Tasks 5.4–5.9
+    /// replace the remaining stubs with real handlers. An unknown tool
+    /// name never reaches this method — `call_tool` rejects it as a
+    /// protocol error first.
+    pub fn dispatch(&self, name: &str, args: Option<&Value>) -> Result<Value, McpError> {
+        match name {
+            "search" => tools::search::handle_search(&self.db, &*self.searcher, args),
+            // Stub until tasks 5.4–5.9: the tool reports "not implemented
+            // yet" as an MCP tool error (design D2/D7).
+            _ => Err(McpError::NotYetImplemented(name.to_owned())),
+        }
     }
 }
 
@@ -871,9 +875,9 @@ mod tests {
     #[test]
     fn dispatch_stub_reports_not_implemented_as_tool_error() {
         let server = test_server();
-        let err = server.dispatch("search", None).unwrap_err();
+        let err = server.dispatch("catalog_overview", None).unwrap_err();
         assert!(
-            matches!(err, McpError::NotYetImplemented(ref name) if name == "search"),
+            matches!(err, McpError::NotYetImplemented(ref name) if name == "catalog_overview"),
             "got: {err:?}"
         );
         let result = err.into_tool_result();

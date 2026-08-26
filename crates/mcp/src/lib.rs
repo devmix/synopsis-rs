@@ -14,11 +14,16 @@
 //! - [`Server`] — injected collaborators (Db, Searcher, GraphIndex) +
 //!   axum router assembly;
 //! - [`McpError`] — handler error mapped to MCP tool errors (design D7);
-//! - [`health`] — `/health` status (design D5).
+//! - [`health`] — `/health` status (design D5);
+//! - [`pagination`] — opaque cursor pagination shared by the catalog tools
+//!   (design D3);
+//! - [`tools`] — per-tool handlers (design D2/D4).
 
 pub mod error;
 pub mod health;
+pub mod pagination;
 pub mod server;
+pub mod tools;
 
 pub use error::McpError;
 pub use server::Server;
