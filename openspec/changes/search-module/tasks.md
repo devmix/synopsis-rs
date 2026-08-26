@@ -68,7 +68,7 @@ crates/embedding (trait), crates/graph (traverser), crates/config (SearchConfig/
     facts serialization, non-fatal failure, empty graph/no entities).
   - Критерии приёмки: гейты search зелёные.
 
-- [ ] 4.6 HybridSearcher
+- [x] 4.6 HybridSearcher
   - Цель: оркестрация.
   - Scope файлов: `crates/search/src/hybrid.rs` (новый), `crates/search/src/lib.rs`
     (Searcher trait / сборка).
