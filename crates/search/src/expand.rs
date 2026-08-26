@@ -74,8 +74,9 @@ impl<'conn> GraphExpander<'conn> {
 
     /// Expand every result in place with `metadata["related_entities"]`.
     ///
-    /// Non-fatal by contract: any failure is a warning on stderr and the
-    /// results are returned without graph context.
+    /// Mutates `results` in place; on failure, results are returned without
+    /// `related_entities` metadata (non-fatal by contract — the failure is a
+    /// warning on stderr).
     pub fn expand(&self, results: &mut [SearchResult]) {
         match self.collect_expansions(results) {
             Ok(expansions) => attach_related_entities(results, &expansions),
@@ -614,11 +615,6 @@ mod tests {
             .expect("edges present")
             .as_array()
             .expect("an array");
-        assert!(
-            edges.len() <= 10,
-            "max_nodes limit violated: {} edges",
-            edges.len()
-        );
         assert_eq!(edges.len(), 9, "center + 9 neighbors fills the limit");
     }
 

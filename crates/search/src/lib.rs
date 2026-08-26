@@ -9,7 +9,8 @@
 //! entities); task 4.4 adds the reranker ([`Reranker`] — business rules,
 //! freshness and authority boosts with re-rank); task 4.5 adds the graph
 //! expander ([`GraphExpander`] — `related_entities` metadata, non-fatal);
-//! the `Searcher` trait lands in task 4.6.
+//! task 4.6 adds the hybrid orchestrator ([`HybridSearcher`] and the
+//! [`Searcher`] contract — sequential legs, RRF fusion, finalize pipeline).
 //!
 //! Result types (oracle `search.go` / `lexical_search.go` /
 //! `semantic_search.go`):
@@ -26,6 +27,7 @@
 pub mod enrich;
 pub mod error;
 pub mod expand;
+pub mod hybrid;
 pub mod lexical;
 pub mod rerank;
 pub mod rrf;
@@ -34,10 +36,47 @@ pub mod semantic;
 pub use enrich::Enricher;
 pub use error::SearchError;
 pub use expand::GraphExpander;
+pub use hybrid::HybridSearcher;
 pub use lexical::LexicalSearcher;
 pub use rerank::Reranker;
 pub use rrf::{DEFAULT_RRF_K, reciprocal_rank_fusion};
 pub use semantic::SemanticSearcher;
+
+/// The search contract (oracle `Searcher` interface): the hybrid entry
+/// point plus the two standalone legs. Implemented by [`HybridSearcher`].
+///
+/// All entry points take `top_k` in the config's width (`i32`); `<= 0`
+/// selects the matching config default (`final_top_k`, `lexical_top_k`,
+/// `semantic_top_k`). `domain` restricts results to one document domain
+/// (case-insensitive); `None` disables the filter. An empty query returns
+/// `Ok(empty)`.
+pub trait Searcher {
+    /// Hybrid search: both legs (per config flags), RRF fusion, finalize.
+    /// Both legs failing is a hard error carrying both causes; one leg
+    /// failing degrades to the survivor.
+    fn hybrid_search(
+        &self,
+        query: &str,
+        top_k: i32,
+        domain: Option<&str>,
+    ) -> Result<Vec<SearchResult>, SearchError>;
+
+    /// Lexical (FTS5/BM25) search only.
+    fn lexical_search(
+        &self,
+        query: &str,
+        top_k: i32,
+        domain: Option<&str>,
+    ) -> Result<Vec<SearchResult>, SearchError>;
+
+    /// Semantic (vector) search only.
+    fn semantic_search(
+        &self,
+        query: &str,
+        top_k: i32,
+        domain: Option<&str>,
+    ) -> Result<Vec<SearchResult>, SearchError>;
+}
 
 /// Which sub-search produced a hit (or both, when the chunk is in both
 /// ranked lists).
