@@ -24,6 +24,12 @@ context: |
   - rmcp 3.x — MCP протокол (Streamable HTTP, design D8; legacy SSE оракула намеренно
     не поддерживается); cel-interpreter — выражения линковки сущностей; tokenizers,
     notify, tokio-cron-scheduler, indicatif
+  - clap 4.6.6 (Builder API) — парсинг CLI-флагов и подкоманд (change `cli`,
+    user-approved расширение стека 2026-08-27; help-текст НЕ байт-паритетен с Go —
+    функциональная копия, не кодовая)
+  - tracing 0.1.44 + tracing-subscriber 0.3.23 — структурированные логи в `cli`
+    (serve/sync/load-test); библиотеки остаются logger-less (user-approved расширение
+    стека 2026-08-27)
 
   ## Жёсткие ограничения
   - Цель: ноутбук (16 ГБ RAM), личное использование, НЕ сервер. При N=1M × 1024-dim
