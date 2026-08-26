@@ -19,6 +19,15 @@ pub enum McpError {
     /// A registered tool whose handler is not implemented yet (tasks 5.3–5.9).
     #[error("tool '{0}' is not implemented yet")]
     NotYetImplemented(String),
+    /// A valid request for a resource that does not exist (the oracle's
+    /// "not found" tool errors, e.g. `get_fact_by_id` on a missing id).
+    /// Distinct from [`Self::InvalidArguments`]: the arguments parsed fine,
+    /// the id simply does not name a row.
+    #[error("{what}")]
+    NotFound {
+        /// The human-readable detail (e.g. "fact with id 42 not found").
+        what: String,
+    },
     /// Argument parse/validation failure for a registered tool.
     #[error("invalid arguments for tool '{tool}': {reason}")]
     InvalidArguments {

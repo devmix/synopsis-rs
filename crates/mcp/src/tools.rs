@@ -4,4 +4,5 @@
 
 pub mod catalog;
 pub mod entities_catalog;
+pub mod facts;
 pub mod search;

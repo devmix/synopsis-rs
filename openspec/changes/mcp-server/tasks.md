@@ -64,7 +64,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
   - Тесты: паритет соответствующим *_test.go: фильтр типа, пагинация, пустой тип.
   - Критерии приёмки: гейты mcp зелёные.
 
-- [ ] 5.6 search_facts + get_fact_by_id
+- [x] 5.6 search_facts + get_fact_by_id
   - Цель: факты.
   - Scope файлов: `crates/mcp/src/tools/facts.rs` (новый), регистрация.
   - Содержание: search_facts — фильтры по схеме + пагинация (approved-only);
