@@ -47,7 +47,7 @@ crates/embedding (trait), crates/graph (traverser), crates/config (SearchConfig/
   - Тесты: паритет `enricher_test.go` + юнит-тесты нового db-метода (in-memory SQLite).
   - Критерии приёмки: гейты search И db зелёные.
 
-- [ ] 4.4 Reranker
+- [x] 4.4 Reranker
   - Цель: бизнес-правила и бусты.
   - Scope файлов: `crates/search/src/rerank.rs` (новый).
   - Содержание: design D7 — дефолты 0.2/1.5/1.2/90, конфиг-оверрайды только >0,
