@@ -3,4 +3,5 @@
 //! [`crate::server::Server::dispatch`].
 
 pub mod catalog;
+pub mod entities_catalog;
 pub mod search;

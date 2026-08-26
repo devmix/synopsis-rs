@@ -303,7 +303,7 @@ mod tests {
         db.exec_tx(|tx| -> Result<(), db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let documents = DocumentDao::new(exec);
-            let chunks = db::ChunkDao::new(exec);
+            let chunks = ChunkDao::new(exec);
             let entities = EntityDao::new(exec);
             let facts = FactDao::new(exec);
             let links = EntityLinkDao::new(exec);

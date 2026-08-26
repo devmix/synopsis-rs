@@ -55,7 +55,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
     пустая БД.
   - Критерии приёмки: гейты mcp зелёные.
 
-- [ ] 5.5 catalog_entities + search_entities_by_type
+- [x] 5.5 catalog_entities + search_entities_by_type
   - Цель: списки сущностей.
   - Scope файлов: `crates/mcp/src/tools/entities_catalog.rs` (новый), регистрация.
   - Содержание: entities — EntityDao пагинированный список; by_type — фильтр типа
