@@ -82,7 +82,7 @@ crates/embedding (trait), crates/graph (traverser), crates/config (SearchConfig/
     (enrich→rerank→truncate→expand), enable/disable флаги, empty query.
   - Критерии приёмки: гейты search зелёные.
 
-- [ ] 4.7 Интеграционный тест + финальная сборка
+- [x] 4.7 Интеграционный тест + финальная сборка
   - Цель: сквозная проверка и публичный API.
   - Scope файлов: `crates/search/tests/hybrid_integration.rs` (новый),
     `crates/search/src/lib.rs`.
