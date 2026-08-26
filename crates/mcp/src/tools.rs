@@ -4,6 +4,8 @@
 
 pub mod catalog;
 pub mod documents;
+pub mod dossier;
 pub mod entities_catalog;
+pub mod entity;
 pub mod facts;
 pub mod search;

@@ -52,12 +52,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use db::{ConnectionOrTx, Entity, EntityDao, Fact, FactDao, FactFilter, FactSourceDao};
+use db::{ConnectionOrTx, EntityDao, Fact, FactDao, FactFilter, FactSourceDao};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::error::McpError;
 use crate::pagination::{DEFAULT_PAGE_SIZE, Page, decode_cursor, normalize_page_size};
+use crate::tools::entity::{EntityBrief, entity_brief};
 
 /// The frozen tool name (`mcp-contract`).
 pub const SEARCH_FACTS: &str = "search_facts";
@@ -330,31 +331,17 @@ struct FactInfo {
     weight: i64,
 }
 
-/// An endpoint entity (oracle `EntityWithContext`, shared verbatim with the
-/// document tools of tasks 5.7/5.8).
+/// A fact source (oracle `FactSourceInfo`), shared with the entity dossier
+/// (task 5.8).
 #[derive(Debug, Serialize)]
-struct EntityWithContext {
-    /// Entity row id.
-    id: i64,
-    /// Entity name.
-    name: String,
-    /// Entity type.
-    #[serde(rename = "type")]
-    r#type: String,
-    /// Entity domain (`''` = global).
-    domain: String,
-}
-
-/// A fact source (oracle `FactSourceInfo`).
-#[derive(Debug, Serialize)]
-struct FactSourceInfo {
+pub(crate) struct FactSourceInfo {
     /// The source document id.
-    document_id: i64,
+    pub(crate) document_id: i64,
     /// The exact quote; absent when the source has none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    quote: Option<String>,
+    pub(crate) quote: Option<String>,
     /// Extraction timestamp.
-    extracted_at: String,
+    pub(crate) extracted_at: String,
 }
 
 /// The `get_fact_by_id` response (oracle `FactByIDResponse`): field order
@@ -366,11 +353,11 @@ struct FactByIdResponse {
     /// The subject entity; absent when the fact has no subject or it could
     /// not be resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
-    subject_entity: Option<EntityWithContext>,
+    subject_entity: Option<EntityBrief>,
     /// The object entity; absent when the fact has no object or it could not
     /// be resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
-    object_entity: Option<EntityWithContext>,
+    object_entity: Option<EntityBrief>,
     /// The fact's sources; absent when it has none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     sources: Vec<FactSourceInfo>,
@@ -422,8 +409,8 @@ pub fn handle_get_fact_by_id(db: &db::Db, args: Option<&Value>) -> Result<Value,
 
     let response = FactByIdResponse {
         fact: fact_info(&fact),
-        subject_entity: subject.as_ref().map(entity_with_context),
-        object_entity: object.as_ref().map(entity_with_context),
+        subject_entity: subject.as_ref().map(entity_brief),
+        object_entity: object.as_ref().map(entity_brief),
         sources: sources
             .into_iter()
             .map(|source| FactSourceInfo {
@@ -454,16 +441,6 @@ fn fact_info(fact: &Fact) -> FactInfo {
         valid_from: fact.valid_from.clone(),
         valid_to: fact.valid_to.clone(),
         weight: fact.weight,
-    }
-}
-
-/// Map a stored entity to the wire endpoint object.
-fn entity_with_context(entity: &Entity) -> EntityWithContext {
-    EntityWithContext {
-        id: entity.id,
-        name: entity.name.clone(),
-        r#type: entity.entity_type.clone(),
-        domain: entity.domain.clone(),
     }
 }
 

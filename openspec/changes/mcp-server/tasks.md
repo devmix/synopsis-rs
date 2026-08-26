@@ -83,7 +83,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
     полная структура, not-found, документ без чанков.
   - Критерии приёмки: гейты mcp зелёные.
 
-- [ ] 5.8 get_entity_dossier
+- [x] 5.8 get_entity_dossier
   - Цель: досье сущности.
   - Scope файлов: `crates/mcp/src/tools/dossier.rs` (новый), регистрация.
   - Содержание: резолв по id ИЛИ имени → факты (approved) + источники + related

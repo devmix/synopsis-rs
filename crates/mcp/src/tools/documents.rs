@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::error::McpError;
+use crate::tools::entity::{EntityBrief, entity_brief};
 
 /// The frozen tool name (`mcp-contract`).
 pub const GET_DOCUMENT_CONTEXT: &str = "get_document_context";
@@ -96,31 +97,6 @@ fn parse_id_arg(raw: String, key: &str, tool: &'static str) -> Result<i64, McpEr
         tool,
         reason: format!("'{key}' must be an integer, got {raw:?}"),
     })
-}
-
-/// An entity as returned in the `entities` array (oracle
-/// `EntityWithContext`): field order matches the Go struct.
-#[derive(Debug, Serialize)]
-struct EntityOut {
-    /// Entity row id.
-    id: i64,
-    /// Entity name.
-    name: String,
-    /// Entity type.
-    #[serde(rename = "type")]
-    r#type: String,
-    /// Entity domain (`''` = global).
-    domain: String,
-}
-
-/// Map a stored entity to the wire `entities` entry.
-fn entity_out(entity: Entity) -> EntityOut {
-    EntityOut {
-        id: entity.id,
-        name: entity.name,
-        r#type: entity.entity_type,
-        domain: entity.domain,
-    }
 }
 
 /// De-duplicate `entity_ids` keeping first-occurrence order, then resolve
@@ -226,7 +202,7 @@ struct DocumentContextResponse {
     /// The entities mentioned by the document's chunks; absent when
     /// `include_entities` is false or there are none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    entities: Vec<EntityOut>,
+    entities: Vec<EntityBrief>,
     /// Approved fact ids linked to the document's entities; absent when
     /// `include_facts` is false or there are none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -408,7 +384,7 @@ pub fn handle_get_document_context(db: &db::Db, args: Option<&Value>) -> Result<
                 text: chunk.chunk_text,
             })
             .collect(),
-        entities: entities.into_iter().map(entity_out).collect(),
+        entities: entities.iter().map(entity_brief).collect(),
         fact_ids,
     };
     to_value(GET_DOCUMENT_CONTEXT, response)
@@ -467,7 +443,7 @@ struct ChunkByIdResponse {
     document: Option<DocumentBrief>,
     /// The entities mentioned in the chunk; absent when there are none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    entities: Vec<EntityOut>,
+    entities: Vec<EntityBrief>,
 }
 
 /// Handle the `get_chunk_by_id` tool call (design D2/D4).
@@ -514,7 +490,7 @@ pub fn handle_get_chunk_by_id(db: &db::Db, args: Option<&Value>) -> Result<Value
             source_type: doc.source_type.clone(),
             original_path: doc.original_path.clone(),
         }),
-        entities: entities.into_iter().map(entity_out).collect(),
+        entities: entities.iter().map(entity_brief).collect(),
     };
     to_value(GET_CHUNK_BY_ID, response)
 }

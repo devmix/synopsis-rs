@@ -5,9 +5,9 @@
 //! code is the behavior/contract reference only — this is the Rust
 //! re-architecture (functional copy, not a code copy): the legacy SSE
 //! transport is deliberately not ported (design D8), tool schemas are
-//! transcribed from `tools.go` as `rmcp::model::Tool` objects, and the
-//! remaining handler bodies are stubs until tasks 5.8–5.9 fill them
-//! (design D2).
+//! transcribed from `tools.go` as `rmcp::model::Tool` objects, and the last
+//! remaining handler body (`get_entity_relations`) is a stub until task 5.9
+//! fills it (design D2).
 
 use std::sync::Arc;
 
@@ -108,10 +108,9 @@ impl Server {
     }
 
     /// Dispatch a registered tool call (design D2 seam: parse args → call
-    /// crate API → serialize the oracle-shaped payload). Tasks 5.8–5.9
-    /// replace the remaining stubs with real handlers. An unknown tool
-    /// name never reaches this method — `call_tool` rejects it as a
-    /// protocol error first.
+    /// crate API → serialize the oracle-shaped payload). Task 5.9 replaces
+    /// the last stub with a real handler. An unknown tool name never reaches
+    /// this method — `call_tool` rejects it as a protocol error first.
     pub fn dispatch(&self, name: &str, args: Option<&Value>) -> Result<Value, McpError> {
         match name {
             "search" => tools::search::handle_search(&self.db, &*self.searcher, args),
@@ -125,8 +124,11 @@ impl Server {
             "get_fact_by_id" => tools::facts::handle_get_fact_by_id(&self.db, args),
             "get_document_context" => tools::documents::handle_get_document_context(&self.db, args),
             "get_chunk_by_id" => tools::documents::handle_get_chunk_by_id(&self.db, args),
-            // Stub until tasks 5.8–5.9: the tool reports "not implemented
-            // yet" as an MCP tool error (design D2/D7).
+            "get_entity_dossier" => {
+                tools::dossier::handle_get_entity_dossier(&self.db, &self.graph, args)
+            }
+            // Stub until task 5.9: the tool reports "not implemented yet" as
+            // an MCP tool error (design D2/D7).
             _ => Err(McpError::NotYetImplemented(name.to_owned())),
         }
     }
@@ -886,10 +888,13 @@ mod tests {
     #[test]
     fn dispatch_stub_reports_not_implemented_as_tool_error() {
         let server = test_server();
-        // `get_entity_dossier` is still a stub (task 5.8).
-        let err = server.dispatch("get_entity_dossier", None).unwrap_err();
+        // `get_entity_relations` is still a stub (task 5.9).
+        let err = server.dispatch("get_entity_relations", None).unwrap_err();
         assert!(
-            matches!(err, McpError::NotYetImplemented(ref name) if name == "get_entity_dossier"),
+            matches!(
+                err,
+                McpError::NotYetImplemented(ref name) if name == "get_entity_relations"
+            ),
             "got: {err:?}"
         );
         let result = err.into_tool_result();
