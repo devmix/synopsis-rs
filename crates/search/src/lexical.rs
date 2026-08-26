@@ -9,7 +9,7 @@
 //! - an empty *or whitespace-only* query returns `Ok(empty)` (the oracle
 //!   checked only `== ""`; a whitespace-only FTS5 MATCH expression would be a
 //!   syntax error at the DAO);
-//! - the domain is normalized ([`crate::normalize_domain`]) before the SQL
+//! - the domain is normalized (`crate::normalize_domain`) before the SQL
 //!   comparison: the oracle passed the raw string through, so the SQL
 //!   `json_each.value = ?` comparison was case-sensitive even though the
 //!   oracle's app-side `filterByDomain` normalized both sides. Stored domains

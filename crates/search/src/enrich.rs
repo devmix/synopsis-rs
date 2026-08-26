@@ -10,7 +10,7 @@
 //! `document_path`, merged `source_type` (`"lexical+pdf"` style),
 //! `metadata["document_source_type"]`, `updated_at` normalized to RFC3339,
 //! the raw `document_metadata_json`, `domains` (via the shared
-//! [`crate::document_domains`]), the reranker flags
+//! `crate::document_domains`), the reranker flags
 //! (`is_deprecated`/`is_official`/`valid_to`), and the chunk entities.
 //! The whole pool is returned enriched (no truncation here — that is the
 //! finalize pipeline, design D5).

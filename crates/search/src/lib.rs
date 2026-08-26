@@ -1,28 +1,53 @@
 //! Hybrid (full-text + vector) search with Reciprocal Rank Fusion.
 //!
-//! Oracle mapping: `../synopsis/internal/search` (design D1). Task 4.1
-//! delivers the shared result types and the RRF fusion core
-//! ([`reciprocal_rank_fusion`]); task 4.2 adds the lexical and semantic
-//! sub-searchers ([`LexicalSearcher`] / [`SemanticSearcher`]); task 4.3
-//! adds the enricher ([`Enricher`] — document metadata, merged source
-//! type, RFC3339 `updated_at`, reranker flags, domains and chunk
-//! entities); task 4.4 adds the reranker ([`Reranker`] — business rules,
-//! freshness and authority boosts with re-rank); task 4.5 adds the graph
-//! expander ([`GraphExpander`] — `related_entities` metadata, non-fatal);
-//! task 4.6 adds the hybrid orchestrator ([`HybridSearcher`] and the
-//! [`Searcher`] contract — sequential legs, RRF fusion, finalize pipeline).
+//! Oracle mapping: `../synopsis/internal/search` (design D1). The Go code
+//! is a reference for behavior and contracts only — this crate is the
+//! Rust re-architecture (functional copy, not a code copy).
+//!
+//! # Pipeline
+//!
+//! [`HybridSearcher`] composes the full pipeline (design D2/D5):
+//!
+//! 1. **Legs** — [`LexicalSearcher`] (FTS5/BM25 over
+//!    [`db::ChunkDao::search_fts`]) and [`SemanticSearcher`] (embedding
+//!    provider + [`vectors::VectorIndex`], with application-side domain
+//!    filtering and over-fetch, design D3). The legs run sequentially
+//!    (recorded deviation: the oracle used goroutines under a context
+//!    timeout; `timeout_ms` stays in the frozen config but is not
+//!    plumbed); a disabled leg is an empty success.
+//! 2. **Fusion** — [`reciprocal_rank_fusion`] (design D4: `1/(k+rank)`
+//!    accumulation, BM25 min-max over the lexical entries only, RRF
+//!    min-max, `0.7·rrf + 0.3·bm25` calibration, `chunk_id` tiebreak).
+//! 3. **Finalize** — [`Enricher`] (document path, merged source type,
+//!    RFC3339 `updated_at`, reranker flags, domains, chunk entities) →
+//!    [`Reranker`] (business/freshness/authority boosts with re-rank) →
+//!    truncate to top-K → [`GraphExpander`] (`related_entities` metadata,
+//!    non-fatal). Domain filtering happens inside the legs, never after
+//!    fusion.
+//!
+//! Both legs failing is a hard [`SearchError::BothSubSearchesFailed`]
+//! carrying both causes; one leg failing degrades to the survivor
+//! (design D9). An empty query returns `Ok(empty)`.
+//!
+//! # Public API
+//!
+//! Every public item is re-exported at the crate root
+//! (`search::HybridSearcher`, `search::SearchResult`, …), so downstream
+//! crates only need the root namespace. [`Searcher`] is the object-safe
+//! contract (the MCP layer holds `&dyn Searcher`); [`HybridSearcher`] is
+//! its sole implementation.
 //!
 //! Result types (oracle `search.go` / `lexical_search.go` /
 //! `semantic_search.go`):
 //!
 //! - [`LexicalHit`] / [`SemanticHit`] are raw sub-search hits before
 //!   fusion. Both carry a `score` where **lower is better** (FTS5 `bm25()`
-//!   and cosine distance respectively).
+//!   and L2 distance respectively).
 //! - [`SearchResult`] is a fused, ranked hit: the chunk row fields, the
 //!   calibrated score (higher is better), the 1-based [`SearchResult::rank`],
 //!   the [`SourceType`] wire word (merged with the document source type by
 //!   the enricher), and the enrichment slots (`document_path`, `metadata`,
-//!   `entities`) that tasks 4.3/4.5 fill after fusion.
+//!   `entities`) that the finalize pipeline fills after fusion.
 
 pub mod enrich;
 pub mod error;
@@ -159,7 +184,7 @@ pub struct SearchResult {
     pub start_offset: Option<i64>,
     /// End offset in the original text, if any.
     pub end_offset: Option<i64>,
-    /// Document path; empty until the enricher fills it (task 4.3).
+    /// Document path; empty until the enricher fills it.
     pub document_path: String,
     /// Final calibrated score, higher is better (0.7·rrf + 0.3·bm25, both
     /// min-max normalized).
@@ -171,10 +196,9 @@ pub struct SearchResult {
     /// (`"lexical" + "pdf" → "lexical+pdf"`, design D6).
     pub source_type: String,
     /// Enrichment bag (document metadata, reranker flags, graph context);
-    /// empty until tasks 4.3–4.5 fill it.
+    /// empty until the finalize pipeline fills it.
     pub metadata: serde_json::Map<String, serde_json::Value>,
-    /// Entities attached to the chunk; empty until the enricher fills it
-    /// (task 4.3).
+    /// Entities attached to the chunk; empty until the enricher fills it.
     pub entities: Vec<db::Entity>,
 }
 
@@ -236,5 +260,39 @@ mod tests {
             normalize_domain(Some("  Eng   Dept ")),
             Some("eng dept".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod root_api {
+    //! Compile-time check that the full public API is reachable from the
+    //! crate root (task 4.7, per the 1.11/2.9/3.9 convention).
+
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn root_namespace_exposes_the_full_api() {
+        // The search contract and its sole implementation.
+        fn assert_searcher<T: Searcher>() {}
+        assert_searcher::<HybridSearcher<'static>>();
+
+        // The pipeline stages (connection-bound handles, pinned by type).
+        let _lexical: Option<LexicalSearcher<'static>> = None;
+        let _semantic: Option<SemanticSearcher<'static>> = None;
+        let _enricher: Option<Enricher<'static>> = None;
+        let _expander: Option<GraphExpander<'static>> = None;
+        let _reranker: Option<Reranker> = None;
+
+        // The result types and the error.
+        let _lexical_hit: Option<LexicalHit> = None;
+        let _semantic_hit: Option<SemanticHit> = None;
+        let _result: Option<SearchResult> = None;
+        let _source: Option<SourceType> = None;
+        let _error: Option<SearchError> = None;
+
+        // The RRF fusion core.
+        assert!(reciprocal_rank_fusion(&[], &[], DEFAULT_RRF_K, 10).is_empty());
     }
 }

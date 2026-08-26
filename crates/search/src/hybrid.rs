@@ -38,7 +38,7 @@
 //! **Standalone legs** (oracle `LexicalSearch` / `SemanticSearch`): one leg
 //! only, `top_k <= 0` → that leg's config top-K, raw hits mapped to
 //! [`SearchResult`] with the score inverted (lower-is-better →
-//! higher-is-better, [`invert_score`]) and 1-based ranks in leg order, then
+//! higher-is-better, `invert_score`) and 1-based ranks in leg order, then
 //! the same finalize pipeline.
 //!
 //! **Conscious deviations from the oracle:**

@@ -7,7 +7,7 @@
 //! over-fetch.
 //!
 //! Flow: embed the query (an empty embedding is an error) → top-k index
-//! search with `topK × [`OVERFETCH_FACTOR`]` → resolve chunk rows, skipping
+//! search with `topK × OVERFETCH_FACTOR` → resolve chunk rows, skipping
 //! orphaned vectors (the vectors crate's cascade protocol) → when a domain is
 //! requested, resolve document domains from `metadata_json` and filter by
 //! normalized domain → truncate to `topK`.
@@ -18,18 +18,18 @@
 //!   batch `get_by_ids`, and the round-trips are cheap on local SQLite with a
 //!   count bounded by `topK × 3` (a batch method is a db-crate addition, out
 //!   of scope here);
-//! - a non-positive `top_k` falls back to [`DEFAULT_TOP_K`] (the config
+//! - a non-positive `top_k` falls back to `DEFAULT_TOP_K` (the config
 //!   validation default) instead of reaching the index, which rejects
 //!   `k == 0`;
 //! - an empty or whitespace-only query returns `Ok(empty)` (same as the
 //!   lexical leg); the oracle checked only `== ""`.
 //!
-//! **Over-fetch starvation:** [`OVERFETCH_FACTOR`] = 3 bounds the candidate
+//! **Over-fetch starvation:** `OVERFETCH_FACTOR` = 3 bounds the candidate
 //! pool at `topK × 3`, so a domain-starved corpus (fewer than ~1/3 of the
 //! nearest neighbors in the requested domain) may yield fewer than `topK`
 //! results even when more in-domain chunks exist globally.
 //!
-//! Domains come from the shared [`crate::document_domains`] helper (moved
+//! Domains come from the shared `crate::document_domains` helper (moved
 //! here → crate root in task 4.3, shared with the enricher).
 
 use std::collections::HashMap;
@@ -81,8 +81,8 @@ impl<'conn> SemanticSearcher<'conn> {
     ///
     /// An empty or whitespace-only query returns an empty vec without
     /// embedding or querying the index. `top_k` is the number of hits to
-    /// return (non-positive values fall back to [`DEFAULT_TOP_K`]); the index
-    /// is asked for `topK × [`OVERFETCH_FACTOR`]`. `domain` restricts the
+    /// return (non-positive values fall back to `DEFAULT_TOP_K`); the index
+    /// is asked for `topK × OVERFETCH_FACTOR`. `domain` restricts the
     /// result to documents whose `metadata_json` `$.domain` matches it
     /// (case-insensitive); `None` disables the filter.
     pub fn search(
