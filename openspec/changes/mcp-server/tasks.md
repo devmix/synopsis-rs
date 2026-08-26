@@ -74,7 +74,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
     approved-only (pending не просачивается), not-found, sources shape.
   - Критерии приёмки: гейты mcp зелёные.
 
-- [ ] 5.7 get_document_context + get_chunk_by_id
+- [x] 5.7 get_document_context + get_chunk_by_id
   - Цель: документ и чанк.
   - Scope файлов: `crates/mcp/src/tools/documents.rs` (новый), регистрация.
   - Содержание: document_context — метаданные документа + чанки + сущности чанков +

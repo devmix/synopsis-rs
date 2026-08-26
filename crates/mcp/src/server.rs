@@ -6,7 +6,7 @@
 //! re-architecture (functional copy, not a code copy): the legacy SSE
 //! transport is deliberately not ported (design D8), tool schemas are
 //! transcribed from `tools.go` as `rmcp::model::Tool` objects, and the
-//! remaining handler bodies are stubs until tasks 5.7–5.9 fill them
+//! remaining handler bodies are stubs until tasks 5.8–5.9 fill them
 //! (design D2).
 
 use std::sync::Arc;
@@ -108,7 +108,7 @@ impl Server {
     }
 
     /// Dispatch a registered tool call (design D2 seam: parse args → call
-    /// crate API → serialize the oracle-shaped payload). Tasks 5.7–5.9
+    /// crate API → serialize the oracle-shaped payload). Tasks 5.8–5.9
     /// replace the remaining stubs with real handlers. An unknown tool
     /// name never reaches this method — `call_tool` rejects it as a
     /// protocol error first.
@@ -123,7 +123,9 @@ impl Server {
             }
             "search_facts" => tools::facts::handle_search_facts(&self.db, args),
             "get_fact_by_id" => tools::facts::handle_get_fact_by_id(&self.db, args),
-            // Stub until tasks 5.7–5.9: the tool reports "not implemented
+            "get_document_context" => tools::documents::handle_get_document_context(&self.db, args),
+            "get_chunk_by_id" => tools::documents::handle_get_chunk_by_id(&self.db, args),
+            // Stub until tasks 5.8–5.9: the tool reports "not implemented
             // yet" as an MCP tool error (design D2/D7).
             _ => Err(McpError::NotYetImplemented(name.to_owned())),
         }
@@ -884,10 +886,10 @@ mod tests {
     #[test]
     fn dispatch_stub_reports_not_implemented_as_tool_error() {
         let server = test_server();
-        // `get_document_context` is still a stub (task 5.7).
-        let err = server.dispatch("get_document_context", None).unwrap_err();
+        // `get_entity_dossier` is still a stub (task 5.8).
+        let err = server.dispatch("get_entity_dossier", None).unwrap_err();
         assert!(
-            matches!(err, McpError::NotYetImplemented(ref name) if name == "get_document_context"),
+            matches!(err, McpError::NotYetImplemented(ref name) if name == "get_entity_dossier"),
             "got: {err:?}"
         );
         let result = err.into_tool_result();
