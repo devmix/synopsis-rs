@@ -2,4 +2,5 @@
 //! parse-args → crate-API → oracle-shaped-JSON function, registered in
 //! [`crate::server::Server::dispatch`].
 
+pub mod catalog;
 pub mod search;

@@ -11,7 +11,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
 исправлять или фиксировать отклонения. Транспорт: rmcp 3.x Streamable HTTP
 (заморожено D8), legacy SSE НЕ портировать.
 
-- [ ] 5.1 Каркас сервера: rmcp + axum + /health + реестр инструментов
+- [x] 5.1 Каркас сервера: rmcp + axum + /health + реестр инструментов
   - Цель: транспорт и регистрация.
   - Scope файлов: `crates/mcp/Cargo.toml` (+rmcp, axum, tokio и пр. по необходимости),
     `crates/mcp/src/lib.rs`, `crates/mcp/src/server.rs`, `crates/mcp/src/health.rs`,
@@ -25,7 +25,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
     /health форма (ключи/типы); ошибки → MCP tool error.
   - Критерии приёмки: гейты mcp зелёные.
 
-- [ ] 5.2 Курсорная пагинация
+- [x] 5.2 Курсорная пагинация
   - Цель: общий хелпер пагинации.
   - Scope файлов: `crates/mcp/src/pagination.rs` (новый).
   - Содержание: порт semantics pagination.go — opaque cursor (base64 последнего
@@ -34,7 +34,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
     странице; паритет кейсам оракула где применимо.
   - Критерии приёмки: гейты mcp зелёные.
 
-- [ ] 5.3 Инструмент search
+- [x] 5.3 Инструмент search
   - Цель: главный инструмент.
   - Scope файлов: `crates/mcp/src/tools/search.rs` (новый), регистрация в server.rs.
   - Содержание: design D4 — аргументы по замороженной схеме → Searcher (hybrid;
@@ -45,7 +45,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
     невалидные аргументы, домен.
   - Критерии приёмки: гейты mcp зелёные.
 
-- [ ] 5.4 catalog_overview + catalog_documents
+- [x] 5.4 catalog_overview + catalog_documents
   - Цель: обзор и список документов.
   - Scope файлов: `crates/mcp/src/tools/catalog.rs` (новый), регистрация.
   - Содержание: overview — счётчики documents/chunks/entities/facts (+прочее по
