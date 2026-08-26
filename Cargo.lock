@@ -4064,10 +4064,17 @@ dependencies = [
 name = "mcp"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "config",
  "db",
  "graph",
+ "rmcp",
  "search",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

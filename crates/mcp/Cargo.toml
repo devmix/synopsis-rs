@@ -7,9 +7,25 @@ edition.workspace = true
 workspace = true
 
 # D1 edges; oracle imports: ../synopsis/internal/mcp + internal/mcp/handlers
-# (config, database, graph, search). axum/serde arrive with the mcp module change.
+# (config, database, graph, search). rmcp features: server role + Streamable
+# HTTP transport (design D8) — the same set the parity-harness dev-deps pin.
 [dependencies]
+axum = { workspace = true }
+# D1 layering (design.md): mcp depends on {config, db, search, graph}.
+# `config` is consumed by the 5.10 assembly (server name/version, graph
+# enablement); the 5.1 scaffold injects those as plain values.
 config = { workspace = true }
 db = { workspace = true }
 graph = { workspace = true }
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
 search = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+# Test-only: `ServiceExt::oneshot` to drive the composed axum router without
+# a live listener (the full rmcp round-trip is task 5.10's job). Already in
+# the lock graph via axum.
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
