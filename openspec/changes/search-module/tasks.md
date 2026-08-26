@@ -57,7 +57,7 @@ crates/embedding (trait), crates/graph (traverser), crates/config (SearchConfig/
   - Тесты: полный паритет `reranker_test.go`.
   - Критерии приёмки: гейты search зелёные.
 
-- [ ] 4.5 Graph expander
+- [x] 4.5 Graph expander
   - Цель: расширение сущностей графом.
   - Scope файлов: `crates/search/src/expand.rs` (новый), `crates/search/Cargo.toml` (+graph).
   - Содержание: design D8 — для сущностей результата, присутствующих в графе:
