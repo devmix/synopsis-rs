@@ -5,9 +5,8 @@
 //! code is the behavior/contract reference only — this is the Rust
 //! re-architecture (functional copy, not a code copy): the legacy SSE
 //! transport is deliberately not ported (design D8), tool schemas are
-//! transcribed from `tools.go` as `rmcp::model::Tool` objects, and the last
-//! remaining handler body (`get_entity_relations`) is a stub until task 5.9
-//! fills it (design D2).
+//! transcribed from `tools.go` as `rmcp::model::Tool` objects, and every
+//! registered tool is backed by a real handler (design D2).
 
 use std::sync::Arc;
 
@@ -108,9 +107,9 @@ impl Server {
     }
 
     /// Dispatch a registered tool call (design D2 seam: parse args → call
-    /// crate API → serialize the oracle-shaped payload). Task 5.9 replaces
-    /// the last stub with a real handler. An unknown tool name never reaches
-    /// this method — `call_tool` rejects it as a protocol error first.
+    /// crate API → serialize the oracle-shaped payload). An unknown tool
+    /// name never reaches this method — `call_tool` rejects it as a protocol
+    /// error first; the catch-all arm is defense in depth.
     pub fn dispatch(&self, name: &str, args: Option<&Value>) -> Result<Value, McpError> {
         match name {
             "search" => tools::search::handle_search(&self.db, &*self.searcher, args),
@@ -127,8 +126,11 @@ impl Server {
             "get_entity_dossier" => {
                 tools::dossier::handle_get_entity_dossier(&self.db, &self.graph, args)
             }
-            // Stub until task 5.9: the tool reports "not implemented yet" as
-            // an MCP tool error (design D2/D7).
+            "get_entity_relations" => {
+                tools::graph_tools::handle_get_entity_relations(&self.db, &self.graph, args)
+            }
+            "get_entity_links" => tools::graph_tools::handle_get_entity_links(&self.db, args),
+            // Defense in depth: unregistered names are rejected upstream.
             _ => Err(McpError::NotYetImplemented(name.to_owned())),
         }
     }
@@ -885,23 +887,41 @@ mod tests {
         assert!(server.get_tool("no_such_tool").is_none());
     }
 
+    /// Wiring test (replaces the task 5.9 stub test): dispatch routes the
+    /// graph tools to their real handlers — the no-graph degradation error
+    /// comes from the handler, not the stub — and the defensive catch-all
+    /// still reports unregistered names as not-yet-implemented.
     #[test]
-    fn dispatch_stub_reports_not_implemented_as_tool_error() {
+    fn dispatch_routes_graph_tools_to_real_handlers() {
         let server = test_server();
-        // `get_entity_relations` is still a stub (task 5.9).
+
+        // `get_entity_relations` reaches the handler: the Unavailable graph
+        // degrades to the handler's not-found tool error.
         let err = server.dispatch("get_entity_relations", None).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                McpError::NotYetImplemented(ref name) if name == "get_entity_relations"
-            ),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, McpError::NotFound { .. }), "got: {err:?}");
         let result = err.into_tool_result();
         let rmcp::model::CallToolResponse::Complete(call) = result else {
             panic!("expected a complete tool result");
         };
         assert_eq!(call.is_error, Some(true));
+
+        // `get_entity_links` reaches the handler: missing args are an
+        // argument error, not the stub's not-yet-implemented.
+        let err = server.dispatch("get_entity_links", None).unwrap_err();
+        assert!(
+            matches!(err, McpError::InvalidArguments { .. }),
+            "got: {err:?}"
+        );
+
+        // The defensive catch-all is preserved for unregistered names.
+        let err = server.dispatch("no_such_tool", None).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                McpError::NotYetImplemented(ref name) if name == "no_such_tool"
+            ),
+            "got: {err:?}"
+        );
     }
 
     /// Behavior test of the axum composition: `GET /health` is served by the

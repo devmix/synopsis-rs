@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod documents;
 pub mod dossier;
 pub mod entities_catalog;
-pub mod entity;
+pub(crate) mod entity;
 pub mod facts;
+pub mod graph_tools;
 pub mod search;

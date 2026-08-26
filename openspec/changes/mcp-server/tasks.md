@@ -92,7 +92,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
     пустые секции.
   - Критерии приёмки: гейты mcp зелёные.
 
-- [ ] 5.9 get_entity_relations + get_entity_links
+- [x] 5.9 get_entity_relations + get_entity_links
   - Цель: графовые инструменты.
   - Scope файлов: `crates/mcp/src/tools/graph_tools.rs` (новый), регистрация.
   - Содержание: relations — обход графа от id/имени (graph traverser, лимиты из
