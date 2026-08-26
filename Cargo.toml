@@ -222,7 +222,13 @@ futures = "0.3"
 # ready-made date/time libraries everywhere). jiff 0.2.x (BurntSushi,
 # MIT OR Apache-2.0): verified on crates.io 2026-08-26 — 0.2.35 is current
 # (published 2026-07-25), pure Rust with zero native dependencies, MSRV well
-# below our pinned Rust 1.96.0, no known CVEs. Default features OFF: they
-# enable the tz-system/tzdb machinery (IANA timezone database + windows-link)
-# this project never uses — everything is UTC, so only `std` is enabled.
+# below our pinned Rust 1.96.0, no known CVEs. This dependency is
+# default-features OFF, features = ["std"] only: everything is UTC, so the
+# tz-system/tzdb features (IANA timezone machinery + windows-link) are never
+# requested here. Precise note (verified via cargo tree, utils-crate task 1.2):
+# `std` itself pulls no tz machinery, but jsonb (transitively via
+# lancedb → lance) re-enables jiff's default features through feature
+# unification; the only tz-data crate in that set, jiff-tzdb-platform
+# (~10 KB), is target-gated to Windows/wasm — never built on the Linux/macOS
+# targets and never accessed by this UTC-only code.
 jiff = { version = "0.2", default-features = false, features = ["std"] }

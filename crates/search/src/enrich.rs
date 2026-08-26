@@ -29,6 +29,7 @@
 use std::collections::{HashMap, HashSet};
 
 use db::{ChunkEntityDao, DocumentDao};
+use utils::temporal::normalize_to_rfc3339;
 
 use crate::{SearchError, SearchResult, document_domains};
 
@@ -99,7 +100,7 @@ impl<'conn> Enricher<'conn> {
                 // freshness boost can parse it (SQLite CURRENT_TIMESTAMP
                 // yields "YYYY-MM-DD HH:MM:SS"); unparseable values skip
                 // the key instead of failing enrichment.
-                if let Some(updated_at) = normalize_updated_at(&doc.updated_at) {
+                if let Some(updated_at) = normalize_to_rfc3339(&doc.updated_at) {
                     result
                         .metadata
                         .insert("updated_at".to_owned(), updated_at.into());
@@ -165,172 +166,6 @@ fn extract_reranker_flags(
     {
         out.insert("valid_to".to_owned(), valid_to.clone().into());
     }
-}
-
-/// Convert a document's `updated_at` value to RFC3339 (design D6).
-///
-/// Accepts RFC3339 (`2026-08-01T12:00:00Z`, with optional fractional
-/// seconds and `±HH:MM` offsets — pass-through, re-rendered canonically),
-/// the SQLite `CURRENT_TIMESTAMP` layout (`"2026-08-01 12:00:00"`, UTC)
-/// and the same layout with fractional seconds. Fractional seconds are
-/// dropped in the output (as in the oracle's `time.Format(RFC3339)`).
-/// Returns `None` for empty or unparseable inputs so the caller can skip
-/// the key instead of failing enrichment.
-///
-/// Crate-visible: the reranker (design D7) reuses it as the timestamp
-/// validator for `updated_at` and `valid_to` (see `rerank::parse_timestamp`).
-pub(crate) fn normalize_updated_at(value: &str) -> Option<String> {
-    let b = value.as_bytes();
-    if b.len() < 19 {
-        return None;
-    }
-    // "YYYY-MM-DD" + separator + "HH:MM:SS"
-    let digits = |start: usize, len: usize| b[start..start + len].iter().all(u8::is_ascii_digit);
-    if b[4] != b'-'
-        || b[7] != b'-'
-        || b[13] != b':'
-        || b[16] != b':'
-        || !(digits(0, 4)
-            && digits(5, 2)
-            && digits(8, 2)
-            && digits(11, 2)
-            && digits(14, 2)
-            && digits(17, 2))
-    {
-        return None;
-    }
-    let separator = b[10];
-    if !matches!(separator, b'T' | b't' | b' ') {
-        return None;
-    }
-
-    let year: i64 = parse_digits(&b[0..4])? as i64;
-    let month: u32 = parse_digits(&b[5..7])?;
-    let day: u32 = parse_digits(&b[8..10])?;
-    let hour: u32 = parse_digits(&b[11..13])?;
-    let minute: u32 = parse_digits(&b[14..16])?;
-    let second: u32 = parse_digits(&b[17..19])?;
-    if !(1..=12).contains(&month)
-        || !(1..=days_in_month(year, month)).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 59
-    {
-        return None;
-    }
-
-    let mut pos = 19;
-    // Optional fractional seconds (up to 9 digits, dropped in the output).
-    if pos < b.len() && b[pos] == b'.' {
-        pos += 1;
-        let mut frac_digits = 0;
-        while pos < b.len() && b[pos].is_ascii_digit() {
-            frac_digits += 1;
-            if frac_digits > 9 {
-                return None;
-            }
-            pos += 1;
-        }
-        if frac_digits == 0 {
-            return None;
-        }
-    }
-
-    // Offset: absent only for the SQLite layout (→ UTC); 'Z' or '±HH:MM'
-    // for RFC3339 (which requires the offset).
-    let offset_minutes: i64 = if pos == b.len() {
-        if separator == b' ' {
-            0
-        } else {
-            return None;
-        }
-    } else if separator == b' ' {
-        return None; // no offsets or trailing data in the SQLite layout
-    } else if matches!(b[pos], b'Z' | b'z') {
-        if pos + 1 != b.len() {
-            return None;
-        }
-        0
-    } else if matches!(b[pos], b'+' | b'-') {
-        if b.len() != pos + 6 || b[pos + 3] != b':' {
-            return None;
-        }
-        let offset_hours = parse_digits(&b[pos + 1..pos + 3])?;
-        let offset_minutes_part = parse_digits(&b[pos + 4..pos + 6])?;
-        if offset_hours > 23 || offset_minutes_part > 59 {
-            return None;
-        }
-        let sign = if b[pos] == b'+' { 1 } else { -1 };
-        sign * (offset_hours as i64 * 60 + offset_minutes_part as i64)
-    } else {
-        return None;
-    };
-
-    Some(format_rfc3339(
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        offset_minutes,
-    ))
-}
-
-/// Parse a run of ASCII digits into a value; `None` on an empty slice or a
-/// non-digit byte (no overflow: timestamps are short).
-fn parse_digits(bytes: &[u8]) -> Option<u32> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let mut value: u32 = 0;
-    for &c in bytes {
-        let digit = c.checked_sub(b'0')?;
-        if digit > 9 {
-            return None;
-        }
-        value = value.checked_mul(10)?.checked_add(u32::from(digit))?;
-    }
-    Some(value)
-}
-
-/// Days in a month (proleptic Gregorian, leap-year aware); 0 for an
-/// out-of-range month.
-fn days_in_month(year: i64, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 0,
-    }
-}
-
-/// Render the canonical RFC3339 form: `Z` for a zero offset, `±HH:MM`
-/// otherwise (the oracle's `time.Format(time.RFC3339)` behavior).
-fn format_rfc3339(
-    year: i64,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-    offset_minutes: i64,
-) -> String {
-    let mut out = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}");
-    if offset_minutes == 0 {
-        out.push('Z');
-    } else {
-        let sign = if offset_minutes < 0 { '-' } else { '+' };
-        let absolute = offset_minutes.unsigned_abs();
-        out.push_str(&format!("{sign}{:02}:{:02}", absolute / 60, absolute % 60));
-    }
-    out
 }
 
 #[cfg(test)]
@@ -501,53 +336,6 @@ mod tests {
             results[0].metadata["document_source_type"],
             serde_json::json!("")
         );
-    }
-
-    // updated_at normalization: all three accepted layouts, and the
-    // unparseable inputs that must skip the key (oracle
-    // TestEnricher_NormalizesUpdatedAt / TestEnricher_InvalidUpdatedAtSkipped).
-    #[test]
-    fn normalize_updated_at_formats() {
-        let cases = [
-            // (input, expected)
-            ("2026-08-01 12:00:00", Some("2026-08-01T12:00:00Z")),
-            ("2026-08-01 12:00:00.123", Some("2026-08-01T12:00:00Z")),
-            (
-                "2026-08-01 12:00:00.123456789",
-                Some("2026-08-01T12:00:00Z"),
-            ),
-            ("2026-08-01T12:00:00Z", Some("2026-08-01T12:00:00Z")),
-            ("2026-08-01T12:00:00z", Some("2026-08-01T12:00:00Z")),
-            ("2026-08-01T12:00:00.5Z", Some("2026-08-01T12:00:00Z")),
-            (
-                "2026-08-01T12:00:00+02:00",
-                Some("2026-08-01T12:00:00+02:00"),
-            ),
-            (
-                "2026-08-01T12:00:00-05:30",
-                Some("2026-08-01T12:00:00-05:30"),
-            ),
-            // Unparseable → the key is skipped.
-            ("", None),
-            ("not-a-date", None),
-            ("2026-13-01 12:00:00", None),
-            ("2026-02-30 12:00:00", None),
-            ("2024-02-29 12:00:00", Some("2024-02-29T12:00:00Z")),
-            ("2026-02-29 12:00:00", None),
-            ("2026-08-01T25:00:00Z", None),
-            ("2026-08-01 12:00:60", None),
-            ("2026-08-01 12:00:00Z", None),
-            ("2026-08-01T12:00:00", None),
-            ("2026-08-01 12:00:00.", None),
-            ("2026-08-01 12:00:00.1234567890", None),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(
-                normalize_updated_at(input).as_deref(),
-                expected,
-                "normalize_updated_at({input:?})"
-            );
-        }
     }
 
     // Reranker flags: right types extracted (false is a value, not an

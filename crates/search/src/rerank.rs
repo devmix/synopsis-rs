@@ -23,12 +23,11 @@
 //!   mutated;
 //! - the stage methods are module-private: the public surface is `rerank`
 //!   only (the oracle exposed every stage);
-//! - "now" comes from [`std::time::SystemTime`] (no chrono dependency); the
-//!   recency window is `recent_days × 86400` seconds — the oracle's
-//!   `time.AddDate(0, 0, -n)` is calendar-day arithmetic, identical for
-//!   UTC instants;
-//! - timestamp parsing reuses the enricher's
-//!   [`crate::enrich::normalize_updated_at`], so the SQLite
+//! - "now" comes from [`std::time::SystemTime`]; the recency window is
+//!   `recent_days × 86400` seconds — the oracle's `time.AddDate(0, 0, -n)`
+//!   is calendar-day arithmetic, identical for UTC instants;
+//! - timestamp parsing goes through the workspace date/time seam
+//!   [`utils::temporal::parse_epoch_seconds`], so the SQLite
 //!   `CURRENT_TIMESTAMP` layout (`"YYYY-MM-DD HH:MM:SS"`) is also accepted
 //!   — the oracle's strict `time.Parse(time.RFC3339, …)` silently ignored
 //!   such values (notably for `valid_to`, where an expired document then
@@ -38,6 +37,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use config::preset::SearchConfig;
+use utils::temporal::parse_epoch_seconds;
 
 use crate::SearchResult;
 
@@ -144,7 +144,7 @@ impl Reranker {
         let threshold = now - i64::from(self.recent_days) * SECONDS_PER_DAY;
         for result in results.iter_mut() {
             if let Some(serde_json::Value::String(updated_at)) = result.metadata.get("updated_at")
-                && parse_timestamp(updated_at).is_some_and(|updated| updated > threshold)
+                && parse_epoch_seconds(updated_at).is_some_and(|updated| updated > threshold)
             {
                 result.score *= self.recent_boost;
             }
@@ -185,7 +185,7 @@ impl Reranker {
         }
         if let Some(serde_json::Value::String(valid_to)) = metadata.get("valid_to")
             && !valid_to.is_empty()
-            && let (Some(expires), Some(now)) = (parse_timestamp(valid_to), now_unix_seconds())
+            && let (Some(expires), Some(now)) = (parse_epoch_seconds(valid_to), now_unix_seconds())
             && expires < now
         {
             factor *= EXPIRED_PENALTY;
@@ -201,85 +201,11 @@ fn now_unix_seconds() -> Option<i64> {
     i64::try_from(elapsed.as_secs()).ok()
 }
 
-/// Parse a timestamp string to seconds since the Unix epoch.
-///
-/// Validation and canonicalization reuse the enricher's
-/// [`crate::enrich::normalize_updated_at`] (RFC3339 and the SQLite
-/// `CURRENT_TIMESTAMP` layout, calendar-checked); the canonical output
-/// `YYYY-MM-DDTHH:MM:SS(Z|±HH:MM)` is then read at fixed offsets.
-fn parse_timestamp(value: &str) -> Option<i64> {
-    let canonical = crate::enrich::normalize_updated_at(value)?;
-    let b = canonical.as_bytes();
-    if b.len() < 20 {
-        return None;
-    }
-    // A digit field at `b[start..start + len]` as an integer.
-    let field = |start: usize, len: usize| -> Option<i64> {
-        b[start..start + len].iter().try_fold(0i64, |acc, &digit| {
-            if !digit.is_ascii_digit() {
-                return None;
-            }
-            acc.checked_mul(10)
-                .and_then(|v| v.checked_add(i64::from(digit - b'0')))
-        })
-    };
-    let year = field(0, 4)?;
-    let month = field(5, 2)? as u32;
-    let day = field(8, 2)? as u32;
-    let hour = field(11, 2)? as u32;
-    let minute = field(14, 2)? as u32;
-    let second = field(17, 2)? as u32;
-    let offset_minutes: i64 = if matches!(b[19], b'Z' | b'z') {
-        if b.len() != 20 {
-            return None;
-        }
-        0
-    } else {
-        if b.len() != 25 || !matches!(b[19], b'+' | b'-') || b[22] != b':' {
-            return None;
-        }
-        let offset_hours = field(20, 2)?;
-        let offset_part = field(23, 2)?;
-        let sign = if b[19] == b'+' { 1 } else { -1 };
-        sign * (offset_hours * 60 + offset_part)
-    };
-    let days = days_from_civil(year, month, day)?;
-    Some(
-        days * SECONDS_PER_DAY
-            + i64::from(hour) * 3_600
-            + i64::from(minute) * 60
-            + i64::from(second)
-            - offset_minutes * 60,
-    )
-}
-
-/// Days since 1970-01-01 for a proleptic Gregorian calendar date (Howard
-/// Hinnant's `days_from_civil`); `None` for an out-of-range month or day
-/// (the enricher already calendar-validates; defensive only).
-fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let adjusted_year = if month <= 2 { year - 1 } else { year };
-    let era = if adjusted_year >= 0 {
-        adjusted_year
-    } else {
-        adjusted_year - 399
-    } / 400;
-    let year_of_era = adjusted_year - era * 400; // [0, 399]
-    let month_prime = if month > 2 {
-        month as i64 - 3
-    } else {
-        month as i64 + 9
-    }; // [0, 11]
-    let day_of_year = (153 * month_prime + 2) / 5 + day as i64 - 1; // [0, 365]
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    Some(era * 146_097 + day_of_era - 719_468)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::time::Duration;
 
     use db::test_util::in_memory_db;
     use db::{ChunkDao, ChunkEntityDao, Db, DocumentDao};
@@ -888,7 +814,7 @@ mod tests {
         for enriched in &results {
             let updated_at = enriched.metadata["updated_at"].as_str().unwrap();
             assert!(updated_at.contains('T'), "not RFC3339: {updated_at}");
-            assert!(parse_timestamp(updated_at).is_some());
+            assert!(parse_epoch_seconds(updated_at).is_some());
         }
 
         let mut reranker = Reranker::new(None);
@@ -902,78 +828,21 @@ mod tests {
     }
 
     // ── time fixture helpers ─────────────────────────────────────────────
+    // The fixtures render through the workspace date/time seam (no calendar
+    // math in test code); the parser round-trips they used to pin now live
+    // in crates/utils (change utils-crate, task 1.1).
 
     /// RFC3339 (UTC, `Z`) for a unix timestamp.
     fn rfc3339_utc(secs: i64) -> String {
-        let (year, month, day, hour, minute, second) = unix_to_parts(secs);
-        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+        utils::temporal::format_rfc3339(UNIX_EPOCH + Duration::from_secs(secs as u64)).unwrap()
     }
 
     /// SQLite `CURRENT_TIMESTAMP` layout for a unix timestamp (the enricher
     /// must normalize it to RFC3339).
     fn sqlite_layout(secs: i64) -> String {
-        let (year, month, day, hour, minute, second) = unix_to_parts(secs);
-        format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
-    }
-
-    /// Seconds-since-epoch → (year, month, day, hour, minute, second), UTC.
-    fn unix_to_parts(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
-        let days = secs.div_euclid(86_400);
-        let rem = secs.rem_euclid(86_400);
-        let (year, month, day) = civil_from_days(days);
-        (
-            year,
-            month,
-            day,
-            (rem / 3_600) as u32,
-            ((rem % 3_600) / 60) as u32,
-            (rem % 60) as u32,
-        )
-    }
-
-    /// Inverse of `days_from_civil` (Howard Hinnant's `civil_from_days`);
-    /// sanity-checked against `days_from_civil` in the round-trip test.
-    fn civil_from_days(z: i64) -> (i64, u32, u32) {
-        let z = z + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let day_of_era = z - era * 146_097; // [0, 146096]
-        let year_of_era =
-            (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-        let year = year_of_era + era * 400;
-        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-        let month_prime = (5 * day_of_year + 2) / 153; // [0, 11]
-        let day = day_of_year - (153 * month_prime + 2) / 5 + 1; // [1, 31]
-        let month = if month_prime < 10 {
-            month_prime + 3
-        } else {
-            month_prime - 9
-        }; // [1, 12]
-        (
-            if month <= 2 { year + 1 } else { year },
-            month as u32,
-            day as u32,
-        )
-    }
-
-    // The fixture helpers must round-trip through the production parser.
-    #[test]
-    fn time_helpers_round_trip() {
-        for days_back in [0i64, 1, 45, 90, 100, 365, 1000] {
-            let secs = now_unix_seconds().unwrap() - days_back * 86_400 - 1_234;
-            let (year, month, day, hour, minute, second) = unix_to_parts(secs);
-            let parsed = parse_timestamp(&rfc3339_utc(secs)).unwrap();
-            assert_eq!(parsed, secs, "rfc3339 round trip at {secs}");
-            let sqlite = sqlite_layout(secs);
-            assert_eq!(
-                parse_timestamp(&sqlite).unwrap(),
-                secs,
-                "sqlite layout round trip at {secs}"
-            );
-            let reparsed = days_from_civil(year, month, day).unwrap() * 86_400
-                + i64::from(hour) * 3_600
-                + i64::from(minute) * 60
-                + i64::from(second);
-            assert_eq!(reparsed, secs, "civil round trip at {secs}");
-        }
+        rfc3339_utc(secs)
+            .replacen('T', " ", 1)
+            .trim_end_matches('Z')
+            .to_owned()
     }
 }

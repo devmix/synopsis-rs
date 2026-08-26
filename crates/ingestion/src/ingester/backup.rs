@@ -26,9 +26,10 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use db::{ConnectionOrTx, Db, DocumentDao};
+use utils::temporal::format_backup_stamp;
 
 use crate::error::IngestionError;
 
@@ -63,13 +64,10 @@ pub(crate) fn create_backup(db: &Db) -> Result<bool, IngestionError> {
         .parent()
         .map(|parent| parent.join("backups"))
         .unwrap_or_else(|| PathBuf::from("backups"));
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
     let (stem, ext) = file_stem_and_ext(&db_path);
     let backup_path = backups_dir.join(format!(
-        "{stem}_backup_{}{ext}",
-        format_timestamp(now.as_millis())
+        "{stem}_backup_{stamp}{ext}",
+        stamp = format_backup_stamp(SystemTime::now())
     ));
 
     let result = fs::create_dir_all(&backups_dir)
@@ -138,37 +136,6 @@ fn vacuum_into(db: &Db, backup_path: &Path) -> Result<(), IngestionError> {
         .map_err(IngestionError::from)?
         .map_err(|source| IngestionError::Db(db::DbError::Sqlite { source }))?;
     Ok(())
-}
-
-/// Format milliseconds since the Unix epoch as the design D6 backup
-/// timestamp `%Y-%m-%dT%H-%M-%S-<ms>` (UTC).
-fn format_timestamp(millis_since_epoch: u128) -> String {
-    let secs = (millis_since_epoch / 1000) as i64;
-    let ms = (millis_since_epoch % 1000) as u32;
-    let (year, month, day) = civil_from_days(secs / 86_400);
-    let rem = secs.rem_euclid(86_400) as u32;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}-{minute:02}-{second:02}-{ms:03}",
-        hour = rem / 3600,
-        minute = rem % 3600 / 60,
-        second = rem % 60,
-    )
-}
-
-/// Days since the Unix epoch → a UTC civil calendar date (Howard Hinnant's
-/// `civil_from_days` algorithm; std-only — the frozen stack has no date
-/// crate, and the backup name is the only consumer).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if month <= 2 { y + 1 } else { y }, month, day)
 }
 
 /// The database file name split into (stem, extension-including-dot),
@@ -429,16 +396,6 @@ mod tests {
     }
 
     // ── pure helpers ──────────────────────────────────────────────────────
-
-    #[test]
-    fn timestamp_format_matches_design_d6() {
-        assert_eq!(format_timestamp(0), "1970-01-01T00-00-00-000");
-        // 2020-02-29T12:30:45.007Z (leap-day anchor).
-        assert_eq!(
-            format_timestamp(1_582_979_445_007),
-            "2020-02-29T12-30-45-007"
-        );
-    }
 
     #[test]
     fn file_name_split_mirrors_go_filepath_ext() {

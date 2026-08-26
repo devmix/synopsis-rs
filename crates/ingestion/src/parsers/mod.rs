@@ -16,9 +16,10 @@
 
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use ignore::{IncrementalIgnore, WalkBuilder};
+use utils::temporal::format_rfc3339;
 
 use crate::error::IngestionError;
 
@@ -220,35 +221,11 @@ pub(crate) fn source_file_name(path: &Path, root: &Path) -> String {
 /// instants. Returns `None` for instants before the Unix epoch (not
 /// representable as a `SystemTime` duration).
 ///
-/// Dependency-free on purpose: `chrono` is not in the frozen palette, and
-/// second-precision UTC formatting is a few lines of calendar arithmetic.
+/// Delegates to the workspace date/time seam (`utils::temporal`, jiff —
+/// change utils-crate, design D4); the signature is kept so the per-format
+/// parsers and the ingester's facts/cleanup consumers stay unchanged.
 pub(crate) fn format_rfc3339_utc(time: SystemTime) -> Option<String> {
-    let seconds = time.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
-    let days = seconds.div_euclid(86_400);
-    let remainder = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (remainder / 3_600, (remainder % 3_600) / 60, remainder % 60);
-    Some(format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
-    ))
-}
-
-/// Days since the civil epoch 1970-01-01 to a (year, month, day) triple
-/// (Howard Hinnant's `civil_from_days`; `div_euclid` keeps pre-1970 dates
-/// correct).
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let day_of_era = z.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month + 2) / 5 + 1;
-    let month = if month < 10 { month + 3 } else { month - 9 };
-    let year = if month <= 2 { year + 1 } else { year };
-    (year, month, day)
+    format_rfc3339(time)
 }
 
 #[cfg(test)]
@@ -259,7 +236,7 @@ pub(crate) mod tests {
 
     use super::*;
     use std::path::PathBuf;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     /// A temporary directory that removes itself on drop.
     pub(crate) struct TempTree(pub(crate) PathBuf);

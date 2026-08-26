@@ -14,6 +14,9 @@ db = { workspace = true }
 embedding = { workspace = true }
 graph = { workspace = true }
 vectors = { workspace = true }
+# utils::temporal (change utils-crate, design D4): the workspace date/time
+# seam — enricher timestamp normalization and reranker epoch parsing.
+utils = { workspace = true }
 # thiserror for SearchError (workspace convention, config-module D4).
 thiserror = { workspace = true }
 # Result metadata bag: `serde_json::Map<String, Value>` (workspace convention,
