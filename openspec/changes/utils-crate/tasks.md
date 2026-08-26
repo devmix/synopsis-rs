@@ -7,7 +7,7 @@
 workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор.
 Директива (binding): НЕ копировать Go 1:1; DRY/KISS/SOLID/YAGNI.
 
-- [ ] 1.1 Крейс utils + модуль temporal на jiff
+- [x] 1.1 Крейс utils + модуль temporal на jiff
   - Цель: единая точка работы с датами.
   - Scope файлов: `crates/utils/{Cargo.toml,src/lib.rs,src/temporal.rs}` (новые),
     корневой `Cargo.toml` (+workspace member, +jiff в палитру).
