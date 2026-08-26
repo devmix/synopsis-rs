@@ -27,8 +27,12 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-# Test-only: `ServiceExt::oneshot` to drive the composed axum router without
-# a live listener (the full rmcp round-trip is task 5.10's job). Already in
-# the lock graph via axum.
+# Test-only. `ServiceExt::oneshot` drives the composed axum router in the
+# unit tests (no live listener). Task 5.10 adds the full wire round-trip:
+# rmcp's client role + reqwest-backed Streamable HTTP client transport (the
+# same feature set the parity-harness pins), and reqwest for the plain-HTTP
+# GET /health assertion (workspace palette entry, `json` only).
 [dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
 tower = { version = "0.5", features = ["util"] }

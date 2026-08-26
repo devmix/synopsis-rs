@@ -4069,6 +4069,7 @@ dependencies = [
  "config",
  "db",
  "graph",
+ "reqwest 0.13.4",
  "rmcp",
  "search",
  "serde",

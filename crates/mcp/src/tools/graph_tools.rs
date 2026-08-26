@@ -23,7 +23,7 @@
 //! 4. *No BFS timeout:* the oracle wraps the traversal in a 5 s context
 //!    timeout (a Go idiom); the Rust traverser is synchronous.
 //! 5. *Entity wire shape:* the oracle's `EntityNodeOut` has `domain,omitempty`;
-//!    the shared [`EntityBrief`] (house convention) always emits `domain`. In
+//!    the shared `EntityBrief` (house convention) always emits `domain`. In
 //!    practice identical: the v5 column is `NOT NULL`.
 //! 6. *Nil-target guard:* the v5 schema enforces the link endpoint FKs
 //!    (`foreign_keys=ON` on every pooled connection), so a dangling link row

@@ -64,6 +64,14 @@ axum = "0.8" # latest stable line; 0.9 not yet released on crates.io
 # (2026-08-18): Streamable HTTP transport, wire compatibility with the Go oracle's
 # legacy SSE deliberately NOT preserved. 3.1.3 is current (verified on crates.io).
 rmcp = "3"
+# Plain-HTTP client for the mcp integration test (task 5.10): the GET /health
+# assertion. reqwest 0.13.4 is already in the lock graph (rmcp 3.1.3's
+# Streamable HTTP client transport depends on it) — inheriting it adds no new
+# crate version to the build. Default features off at the palette level
+# (workspace-inheritance rule: a member cannot flip them): a plain http://
+# loopback assertion needs no TLS provider, keeping the stack pure-Rust
+# (no native-tls/OpenSSL); the mcp dev-dep adds `json`.
+reqwest = { version = "0.13", default-features = false }
 
 # SQLite storage, FTS5 compiled in (design D3). As of rusqlite 0.40 / libsqlite3-sys
 # 0.38 the defaults inverted: plain default links a system SQLite via pkg-config, and

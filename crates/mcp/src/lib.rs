@@ -10,14 +10,22 @@
 //! transcribed from `../synopsis/internal/mcp/tools.go` and pinned by the
 //! registry test in [`server`].
 //!
-//! Public API (task 5.1 scaffold; re-exports finalized in task 5.10):
-//! - [`Server`] — injected collaborators (Db, Searcher, GraphIndex) +
-//!   axum router assembly;
+//! # Public API
+//!
+//! Everything the `cli` crate (the next change) needs is re-exported at the
+//! crate root; the compile-time test at the bottom of this file pins the
+//! root paths so a rename, removal or signature drift fails the build:
+//!
+//! - [`Server`] — injected collaborators (Db, Searcher, GraphIndex) plus
+//!   `router()` for the axum assembly;
 //! - [`McpError`] — handler error mapped to MCP tool errors (design D7);
-//! - [`health`] — `/health` status (design D5);
-//! - [`pagination`] — opaque cursor pagination shared by the catalog tools
-//!   (design D3);
-//! - [`tools`] — per-tool handlers (design D2/D4).
+//! - [`HealthStatus`] / [`KbCounters`] — the `GET /health` payload (design D5).
+//!
+//! The modules [`error`], [`health`], [`pagination`], [`server`] and
+//! [`tools`] stay public for intra-crate use and test access; deeper seams
+//! (e.g. `health::HealthState`, the per-tool `handle_*` functions) are
+//! reachable through them but are not part of the root API the cli
+//! consumes.
 
 pub mod error;
 pub mod health;
@@ -26,4 +34,54 @@ pub mod server;
 pub mod tools;
 
 pub use error::McpError;
+pub use health::{HealthStatus, KbCounters};
 pub use server::Server;
+
+#[cfg(test)]
+mod root_api {
+    //! Compile-time pin of the crate-root public API (task 5.10): the cli
+    //! change consumes these root paths, so any rename, removal or
+    //! signature drift breaks this test at compile time.
+
+    use std::sync::Arc;
+
+    /// The injected search contract handle (the `Server::new` parameter
+    /// type; aliased so the constructor pin below stays readable).
+    type SearcherHandle = Arc<dyn search::Searcher + Send + Sync>;
+
+    /// The root re-exports resolve with the exact signatures the cli
+    /// assembly will use. (Inside the crate the root is `crate::`; the
+    /// external `mcp::` spelling is pinned by the integration test in
+    /// `tests/server_integration.rs`.)
+    #[test]
+    fn root_reexports_resolve() {
+        // Server: the constructor and the axum assembly (design D1).
+        let _constructor: fn(
+            String,
+            String,
+            db::Db,
+            SearcherHandle,
+            Arc<graph::GraphIndex>,
+        ) -> crate::Server = crate::Server::new;
+        let _router: fn(crate::Server) -> axum::Router = crate::Server::router;
+
+        // McpError: the tool-error mapping seam (design D7).
+        let _error: crate::McpError = crate::McpError::NotFound {
+            what: "root api pin".to_owned(),
+        };
+
+        // The /health payload types (design D5).
+        let _counters: crate::KbCounters = crate::KbCounters {
+            documents: 0,
+            chunks: 0,
+            entities: 0,
+            facts: 0,
+        };
+        let _status: &crate::HealthStatus = &crate::HealthStatus {
+            status: "ok".to_owned(),
+            version: "0.0.0".to_owned(),
+            sync_state: "idle".to_owned(),
+            counters: _counters,
+        };
+    }
+}

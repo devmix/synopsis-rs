@@ -15,7 +15,7 @@
 //! field-identical Go structs, and the handler bodies differ only in the
 //! required-`entity_type` check and the `name` filter. This module keeps ONE
 //! entity wire struct, ONE response struct and ONE list core
-//! ([`list_entities`]); the two public handlers differ only in argument
+//! (`list_entities`); the two public handlers differ only in argument
 //! parsing.
 //!
 //! **Recorded deviations (error text):** the oracle prefixes its tool-error
