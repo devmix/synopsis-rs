@@ -15,7 +15,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
     проверить сборку), API now_rfc3339 / format_rfc3339 / format_backup_stamp /
     normalize_to_rfc3339 / parse_epoch_seconds; семантика байт-в-байт от
     заменяемого кода (design D3).
-  - Тесты: переезд таблицы паритета normalize (13 кейсов из search/enrich.rs),
+  - Тесты: переезд таблицы паритета normalize (20 кейсов из search/enrich.rs),
     SQLite-лейаут + дробные секунды + 'z'→'Z' + мусор/пусто → None,
     round-trip format↔parse, backup-stamp формат (включая миллисекунды).
   - Критерии приёмки: гейты utils зелёные.
