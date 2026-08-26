@@ -602,7 +602,8 @@ fn reranker_official_boost_reorders_results() {
     let official_chunk = seed_chunk(&db, official, "benefits migration beta", 1);
 
     // Query embeds to the zero vector; distances: closer 1.0, official √2.
-    // Without the reranker the closer chunk would lead (1/1.0 > 1/√2).
+    // 1/√2 × 1.5 × 1.2 ≈ 1.273 > 1.0 × 1.2 = 1.2: the official chunk wins
+    // despite the distance gap.
     let index = MemoryIndex::new(MockEmbedding.vector_dim());
     index
         .insert(closer as u32, &embed("onboarding alpha"))
