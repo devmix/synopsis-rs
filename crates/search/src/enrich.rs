@@ -176,7 +176,10 @@ fn extract_reranker_flags(
 /// dropped in the output (as in the oracle's `time.Format(RFC3339)`).
 /// Returns `None` for empty or unparseable inputs so the caller can skip
 /// the key instead of failing enrichment.
-fn normalize_updated_at(value: &str) -> Option<String> {
+///
+/// Crate-visible: the reranker (design D7) reuses it as the timestamp
+/// validator for `updated_at` and `valid_to` (see `rerank::parse_timestamp`).
+pub(crate) fn normalize_updated_at(value: &str) -> Option<String> {
     let b = value.as_bytes();
     if b.len() < 19 {
         return None;

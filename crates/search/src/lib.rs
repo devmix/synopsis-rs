@@ -6,8 +6,9 @@
 //! sub-searchers ([`LexicalSearcher`] / [`SemanticSearcher`]); task 4.3
 //! adds the enricher ([`Enricher`] — document metadata, merged source
 //! type, RFC3339 `updated_at`, reranker flags, domains and chunk
-//! entities); the reranker, graph expander and the `Searcher` trait land
-//! in tasks 4.4–4.6.
+//! entities); task 4.4 adds the reranker ([`Reranker`] — business rules,
+//! freshness and authority boosts with re-rank); the graph expander and
+//! the `Searcher` trait land in tasks 4.5–4.6.
 //!
 //! Result types (oracle `search.go` / `lexical_search.go` /
 //! `semantic_search.go`):
@@ -24,12 +25,14 @@
 pub mod enrich;
 pub mod error;
 pub mod lexical;
+pub mod rerank;
 pub mod rrf;
 pub mod semantic;
 
 pub use enrich::Enricher;
 pub use error::SearchError;
 pub use lexical::LexicalSearcher;
+pub use rerank::Reranker;
 pub use rrf::{DEFAULT_RRF_K, reciprocal_rank_fusion};
 pub use semantic::SemanticSearcher;
 
