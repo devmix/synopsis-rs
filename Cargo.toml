@@ -5,6 +5,7 @@ members = [
     "crates/config",
     "crates/db",
     "crates/vectors",
+    "crates/utils",
     "crates/llm",
     "crates/embedding",
     "crates/ingestion",
@@ -38,11 +39,13 @@ expect_used = "warn" # same as unwrap_used
 [workspace.dependencies]
 # Internal crates - dependency graph fixed by design.md D1 (revised by
 # db-module task 1.18, human decision 2026-08-20: db → config for the
-# SQLite batch-size constants; llm change D1 adds llm to the base tier):
-# config, db, vectors, llm -> embedding, ingestion, graph -> search -> mcp -> cli
+# SQLite batch-size constants; llm change D1 adds llm to the base tier;
+# utils-crate D1 adds utils as a leaf any crate may depend on):
+# config, db, vectors, utils, llm -> embedding, ingestion, graph -> search -> mcp -> cli
 config = { path = "crates/config" }
 db = { path = "crates/db" }
 vectors = { path = "crates/vectors" }
+utils = { path = "crates/utils" }
 # Base tier (llm change D1): OpenAI-compatible LLM client; only internal
 # dependency is config (LlmConfig). graph/embedding depend on it, never
 # the other way around.
@@ -214,3 +217,12 @@ futures = "0.3"
 #   (task 1.1, ADR 0001), ort + tokenizers with the embedding change (task 1.1, ADR 0002),
 #   lancedb with the vectors change (task 1.1, ADR 0003 - pin above).
 # MCP protocol crate: decision made 2026-08-18 -> rmcp 3.x above (design D8).
+
+# Date/time engine (utils-crate change, design D2; human directive 2026-08-25:
+# ready-made date/time libraries everywhere). jiff 0.2.x (BurntSushi,
+# MIT OR Apache-2.0): verified on crates.io 2026-08-26 — 0.2.35 is current
+# (published 2026-07-25), pure Rust with zero native dependencies, MSRV well
+# below our pinned Rust 1.96.0, no known CVEs. Default features OFF: they
+# enable the tz-system/tzdb machinery (IANA timezone database + windows-link)
+# this project never uses — everything is UTC, so only `std` is enabled.
+jiff = { version = "0.2", default-features = false, features = ["std"] }

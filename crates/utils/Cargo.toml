@@ -1,0 +1,14 @@
+[package]
+name = "utils"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# Leaf crate (change utils-crate, design D1): cross-cutting helpers shared by
+# several crates; depends on nothing internal. jiff (design D2) is the single
+# date/time engine — default features OFF: the tz-system/tzdb features bundle
+# the IANA timezone database this project never uses (everything is UTC).
+[dependencies]
+jiff = { workspace = true }
