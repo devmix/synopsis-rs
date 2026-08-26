@@ -22,7 +22,7 @@ workspace-тест и cargo doc гоняет ТОЛЬКО оркестратор
 
 - [x] 1.2 Миграция search + ingestion на utils::temporal
 
-- [ ] 1.3 Миграция embedding на utils::temporal
+- [x] 1.3 Миграция embedding на utils::temporal
   - Цель: устранить пятую рукописную точку (эскалация задачи 1.2, подтверждена ревью).
   - Scope файлов: `crates/embedding/src/library.rs`, `crates/embedding/src/model.rs`
     (если затронут), `crates/embedding/Cargo.toml` (+utils).
