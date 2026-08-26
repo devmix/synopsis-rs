@@ -1970,6 +1970,7 @@ dependencies = [
  "thiserror",
  "tokenizers",
  "ureq",
+ "utils",
  "zip",
 ]
 
@@ -2894,6 +2895,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "utils",
  "vectors",
 ]
 
@@ -5584,6 +5586,7 @@ dependencies = [
  "graph",
  "serde_json",
  "thiserror",
+ "utils",
  "vectors",
 ]
 

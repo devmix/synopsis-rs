@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::downloader::Downloader;
 use crate::error::EmbeddingError;
-use crate::library::{rfc3339_now, safe_relative};
+use crate::library::{installed_at_now, safe_relative};
 
 /// Models directory name under the data directory (oracle parity).
 const MODELS_DIR_NAME: &str = "models";
@@ -318,7 +318,7 @@ impl ModelManager {
             name: info.name.clone(),
             version: info.version.clone(),
             vector_dim: info.vector_dim,
-            installed_at: rfc3339_now(),
+            installed_at: installed_at_now()?,
         })
     }
 

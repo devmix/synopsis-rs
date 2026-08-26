@@ -11,6 +11,9 @@ workspace = true
 # the palette entries carry the version-verification comments.
 [dependencies]
 config = { workspace = true }
+# utils::temporal (change utils-crate, task 1.3): RFC 3339 UTC timestamps
+# for the model/library cache manifests (install_time / installed_at).
+utils = { workspace = true }
 # Public error type (thiserror, per workspace convention for library crates).
 thiserror = { workspace = true }
 # ONNX Runtime bindings, loaded dynamically from the onnx.yaml-managed .so/.dylib
