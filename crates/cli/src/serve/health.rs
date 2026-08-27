@@ -1,0 +1,206 @@
+//! Startup health check (design D4).
+//!
+//! Oracle mapping: `../synopsis/cmd/app/serve.go` (`runHealthCheck`).
+//!
+//! Log-only by contract: the caller treats a returned error as a warning,
+//! never fatal. The database ping is the single hard probe (an error is
+//! returned, mirroring the oracle); the document count and the embedding
+//! probe are logged inline.
+//!
+//! One deliberate deviation: the oracle builds a FRESH provider instance for
+//! the probe (its runner does not exist yet at health-check time). Here the
+//! provider is already built by the bootstrap, and building a second ONNX
+//! session for a probe would be pure waste — the probe verifies the live
+//! instance instead (name + dimension against the config).
+
+use config::Config;
+use db::{ConnectionOrTx, Db, DocumentDao, DocumentFilter};
+use embedding::EmbeddingProvider;
+
+use crate::error::CliError;
+
+/// Runs the startup health check: database ping, document count, embedding
+/// provider probe.
+///
+/// Every finding is logged (`tracing`); nothing here is fatal.
+///
+/// # Errors
+///
+/// [`CliError::Db`] when the database ping fails (the caller logs a warning
+/// and continues, mirroring the oracle's `log.Warn` on the returned error).
+pub fn run_health_check(
+    db: &Db,
+    embed: &dyn EmbeddingProvider,
+    config: &Config,
+) -> Result<(), CliError> {
+    tracing::info!("startup health check started");
+
+    // 1. Database connectivity (oracle `db.DB().Ping()`).
+    match db.with_conn(|conn| conn.query_row("SELECT 1", [], |row| row.get::<_, i32>(0))) {
+        Ok(_) => tracing::info!(
+            component = "database",
+            status = "ok",
+            "startup health check"
+        ),
+        Err(err) => {
+            tracing::error!(
+                component = "database",
+                status = "fail",
+                error = %err,
+                "startup health check"
+            );
+            return Err(CliError::Db(err));
+        }
+    }
+
+    // 2. Check for existing data (oracle `DocumentDAO.Count`).
+    let count = db.with_conn(|conn| {
+        DocumentDao::new(ConnectionOrTx::Connection(conn)).count(&DocumentFilter::default())
+    });
+    match count {
+        Ok(Ok(count)) => {
+            tracing::info!(
+                component = "documents",
+                status = "ok",
+                count,
+                "startup health check"
+            );
+        }
+        Ok(Err(err)) => {
+            tracing::warn!(
+                component = "document_count",
+                error = %err,
+                "startup health check"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                component = "document_count",
+                error = %err,
+                "startup health check"
+            );
+        }
+    }
+
+    // 3. Embedding provider probe: verify the live instance built by the
+    //    bootstrap (a bootstrap failure is already fatal upstream).
+    let dim = embed.vector_dim();
+    if config.vector_dim() as usize != dim {
+        tracing::warn!(
+            component = "embedding_provider",
+            status = "warn",
+            provider = embed.name(),
+            expected_dim = config.vector_dim(),
+            actual_dim = dim,
+            "startup health check: provider dimension differs from the config"
+        );
+    } else {
+        tracing::info!(
+            component = "embedding_provider",
+            status = "ok",
+            provider = embed.name(),
+            vector_dim = dim,
+            "startup health check"
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::sync::Arc;
+
+    use config::preset::{Config, EmbeddingsMode, LocalEmbedding};
+    use db::test_util::in_memory_db;
+    use embedding::EmbeddingError;
+
+    use super::*;
+
+    /// A deterministic in-test provider (no ONNX Runtime).
+    struct ConstProvider {
+        dim: usize,
+        name: &'static str,
+    }
+
+    impl EmbeddingProvider for ConstProvider {
+        fn generate_embeddings(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            Ok(vec![vec![1.0; self.dim]; texts.len()])
+        }
+
+        fn vector_dim(&self) -> usize {
+            self.dim
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    fn local_config(dim: i32) -> Config {
+        Config {
+            embeddings: config::preset::EmbeddingsConfig {
+                mode: EmbeddingsMode::Local,
+                local: LocalEmbedding {
+                    model_name: "test".to_string(),
+                    model_path: String::new(),
+                    tokenizer_path: String::new(),
+                    vector_dim: dim,
+                },
+                api: Default::default(),
+                auto_rebuild_vectors: false,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn health_check_passes_on_fresh_db() {
+        let db = in_memory_db();
+        let provider = Arc::new(ConstProvider {
+            dim: 1024,
+            name: "const",
+        });
+        let config = local_config(1024);
+
+        run_health_check(&db, provider.as_ref(), &config)
+            .expect("health check passes on a fresh migrated db");
+    }
+
+    #[test]
+    fn health_check_reports_document_count() {
+        let db = in_memory_db();
+        // Seed one document so the count is observable.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO documents (source_type, original_path) VALUES ('markdown', '/a.md')",
+                [],
+            )
+        })
+        .expect("insert")
+        .expect("insert row");
+
+        let provider = Arc::new(ConstProvider {
+            dim: 4,
+            name: "const",
+        });
+        let config = local_config(4);
+        run_health_check(&db, provider.as_ref(), &config)
+            .expect("health check passes with documents present");
+    }
+
+    #[test]
+    fn health_check_warns_on_dimension_drift_but_succeeds() {
+        let db = in_memory_db();
+        let provider = Arc::new(ConstProvider {
+            dim: 384,
+            name: "const",
+        });
+        let config = local_config(1024);
+
+        run_health_check(&db, provider.as_ref(), &config)
+            .expect("dimension drift is a warning, not a failure");
+    }
+}

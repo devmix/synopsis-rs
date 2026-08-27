@@ -871,6 +871,8 @@ dependencies = [
  "ingestion",
  "mcp",
  "search",
+ "serde_json",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
  "utils",

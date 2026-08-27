@@ -24,7 +24,11 @@ graph = { workspace = true }
 ingestion = { workspace = true }
 mcp = { workspace = true }
 search = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 utils = { workspace = true }
 vectors = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
