@@ -55,7 +55,7 @@ indicatif 0.18 уже в workspace.
     explicit ModelPath.
   - Критерии приёмки: гейты cli зелёные; bootstrap покрыт тестами.
 
-- [ ] 1.3 Runner-сборка + initial sync
+- [x] 1.3 Runner-сборка + initial sync
   - Цель: собрать RunnerParams и запустить начальную синхронизацию.
   - Scope файлов: `crates/cli/src/serve/bootstrap.rs` (добавить build_runner +
     initial_sync), `crates/cli/src/serve/ingest.rs` (новый: обёртки ingest_all /
