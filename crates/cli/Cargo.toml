@@ -24,7 +24,9 @@ graph = { workspace = true }
 ingestion = { workspace = true }
 mcp = { workspace = true }
 search = { workspace = true }
+notify = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 utils = { workspace = true }

@@ -21,7 +21,7 @@
 //! [`IngestionError::UnknownSourceType`] — never a silent skip (the oracle's
 //! runner failed with `no source for type %q` in the same case).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::error::IngestionError;
@@ -322,6 +322,23 @@ impl Registry {
     pub fn types(&self) -> Vec<String> {
         self.sources.keys().cloned().collect()
     }
+
+    /// The union of the file extensions every registered source handles,
+    /// deduplicated and sorted (deterministic), exactly as the parsers
+    /// report them (leading dot, e.g. `".md"`).
+    ///
+    /// Consumers that filter filesystem events by extension (the CLI file
+    /// watcher) derive their accept list from this instead of keeping a
+    /// parallel hardcoded list that can drift from the pipeline.
+    pub fn supported_extensions(&self) -> Vec<String> {
+        let mut exts: BTreeSet<String> = BTreeSet::new();
+        for source in self.sources.values() {
+            for ext in source.supported_extensions() {
+                exts.insert((*ext).to_owned());
+            }
+        }
+        exts.into_iter().collect()
+    }
 }
 
 #[cfg(test)]
@@ -440,6 +457,47 @@ mod tests {
             registry.types(),
             vec!["json", "markdown", "mediawiki", "unstructured", "webpages"]
         );
+    }
+
+    #[test]
+    fn registry_supported_extensions_is_union_of_parsers() {
+        let mut registry = Registry::new();
+        registry
+            .register(MarkdownSource::SOURCE_TYPE, Box::new(markdown_source()))
+            .unwrap();
+        registry
+            .register(JsonSource::SOURCE_TYPE, Box::new(json_source()))
+            .unwrap();
+        registry
+            .register(MediawikiSource::SOURCE_TYPE, Box::new(mediawiki_source()))
+            .unwrap();
+        registry
+            .register(WebpageSource::SOURCE_TYPE, Box::new(webpage_source()))
+            .unwrap();
+        registry
+            .register(
+                UnstructuredSource::SOURCE_TYPE,
+                Box::new(unstructured_source()),
+            )
+            .unwrap();
+
+        // The union of the per-parser extension lists, deduplicated and
+        // sorted (`.md`/`.json` are claimed by several parsers).
+        assert_eq!(
+            registry.supported_extensions(),
+            vec![".html", ".json", ".markdown", ".md"]
+        );
+
+        // A partial registry reports only what is actually registered.
+        let mut md_only = Registry::new();
+        md_only
+            .register(MarkdownSource::SOURCE_TYPE, Box::new(markdown_source()))
+            .unwrap();
+        // Lexicographic: `".markdown" < ".md"` (`a` < `d` after `".m"`).
+        assert_eq!(md_only.supported_extensions(), vec![".markdown", ".md"]);
+
+        // An empty registry reports no extensions.
+        assert!(Registry::new().supported_extensions().is_empty());
     }
 
     #[test]
