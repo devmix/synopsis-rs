@@ -114,6 +114,19 @@ notify = "8"
 tokio-cron-scheduler = "0.15"
 indicatif = "0.18"
 
+# CLI parsing (cli change, design D1; user-approved stack extension 2026-08-27,
+# recorded in openspec/config.yaml): clap 4.6.6 Builder API for full control
+# over flag/help structure. Help text is Rust-idiomatic — deliberately NOT
+# byte-matched to the Go oracle (user decision 2026-08-27).
+clap = "4.6.6"
+# Structured logging in the cli binary only (cli change, design D2; user-approved
+# 2026-08-27): library crates stay logger-less. Both are already in the lock
+# graph (tracing via lancedb, verified 2026-08-27: tracing 0.1.44 /
+# tracing-subscriber 0.3.23 are the current pins); `env-filter` honors RUST_LOG,
+# `json` is the oracle's other log format (design D2).
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
 # Serialization and config (config crate)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
