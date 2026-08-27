@@ -12,20 +12,26 @@
 //! a mismatch, and the check surfaces from `vectors::LanceEngine::open` as
 //! [`VectorsError::DimensionMismatch`]. The [`Bootstrap::dimension_mismatch`]
 //! flag carries the non-fatal signal to the serve/sync wiring (tasks 1.6/1.7);
-//! this task leaves it `None`.
+//! [`build_runner`] sets it when the stored index disagrees with the
+//! configured dimension.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use config::preset::EmbeddingsMode;
+use config::preset::{ChunkingConfig, EmbeddingsMode};
 use config::{
     Config, ConfigError, DomainConfig, GlobalConfig, OnnxConfig, load, load_domain_config,
     load_global_config, load_onnx_config,
 };
 use db::Db;
 use embedding::{EmbeddingProvider, ModelManager, new_onnx_provider};
-use vectors::VectorsError;
+use ingestion::{
+    IngestionError, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource, MediawikiChunker,
+    MediawikiSource, NerPrompts, Registry, Runner, RunnerParams, SummaryStats, UnstructuredSource,
+    WebpageSource, load_ner_prompts,
+};
+use vectors::{LanceEngine, VectorIndex, VectorIndexConfig, VectorsError};
 
 use crate::error::CliError;
 
@@ -85,10 +91,18 @@ pub struct Bootstrap {
     pub embed: Arc<dyn EmbeddingProvider>,
     /// External ONNX registry (`onnx.yaml`).
     pub onnx: OnnxConfig,
+    /// Source-type registry (oracle `NewRunner` bookkeeping); `None` until
+    /// [`build_runner`] assembles it.
+    pub registry: Option<Registry>,
+    /// NER prompt templates (loaded from `paths.prompts_path` with the
+    /// embedded fallback); `None` until [`build_runner`] loads them.
+    pub prompts: Option<NerPrompts>,
+    /// Opened vector-index engine (design D5); `None` until [`build_runner`]
+    /// opens it (created on first run).
+    pub vectors: Option<Arc<dyn VectorIndex>>,
     /// Vector dimension mismatch detected when opening the ANN index; `None`
-    /// while consistent. Set by the serve/sync wiring (tasks 1.6/1.7) from
-    /// `vectors::LanceEngine::open` via
-    /// [`DimensionMismatch::from_vectors_error`]; this task leaves it `None`.
+    /// while consistent. Set by [`build_runner`] from
+    /// `vectors::LanceEngine::open` via [`DimensionMismatch::from_vectors_error`].
     pub dimension_mismatch: Option<DimensionMismatch>,
 }
 
@@ -165,6 +179,9 @@ pub fn bootstrap(cfg_path: &Path, db_path: Option<&Path>) -> Result<Bootstrap, C
         cache,
         embed,
         onnx,
+        registry: None,
+        prompts: None,
+        vectors: None,
         dimension_mismatch: None,
     })
 }
@@ -301,6 +318,198 @@ pub fn discover_domains(
     Ok((global, domains))
 }
 
+/// Builds the source-type registry from the chunking config (oracle
+/// `NewRunner` registry construction): every supported format gets its
+/// parser + chunker pair, keyed by the `global.xml` `type` word.
+fn build_registry(chunking: &ChunkingConfig) -> Result<Registry, IngestionError> {
+    let md = chunking.markdown.clone();
+    let json = chunking.json.clone();
+    let mut registry = Registry::new();
+    registry.register(
+        MarkdownSource::SOURCE_TYPE,
+        Box::new(MarkdownSource::new(Box::new(MarkdownChunker::new(
+            md.clone(),
+        )))),
+    )?;
+    registry.register(
+        JsonSource::SOURCE_TYPE,
+        Box::new(JsonSource::new(Box::new(JsonChunker::new(json.clone())))),
+    )?;
+    registry.register(
+        MediawikiSource::SOURCE_TYPE,
+        Box::new(MediawikiSource::new(Box::new(MediawikiChunker::new(
+            md.clone(),
+        )))),
+    )?;
+    registry.register(
+        WebpageSource::SOURCE_TYPE,
+        Box::new(WebpageSource::new(Box::new(MarkdownChunker::new(
+            md.clone(),
+        )))),
+    )?;
+    registry.register(
+        UnstructuredSource::SOURCE_TYPE,
+        Box::new(UnstructuredSource::new(
+            Box::new(MarkdownChunker::new(md)),
+            Box::new(JsonChunker::new(json)),
+        )),
+    )?;
+    Ok(registry)
+}
+
+/// Maps the effective config to the ANN index configuration (design D5):
+/// the embedding dimension is authoritative (the engine stores the model's
+/// vectors, so a `vectors.dim` that disagreed would only fail at insert
+/// time), the ANN tuning fields come from the `vectors:` section.
+fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, VectorsError> {
+    let tuning = config.vectors_config();
+    let dim = i32::max(config.vector_dim(), 0) as usize;
+    VectorIndexConfig::new(
+        dim,
+        tuning.m,
+        tuning.ef_construction,
+        tuning.num_partitions,
+        tuning.nprobes,
+        tuning.ef_search,
+    )
+}
+
+/// Opens the vector-index engine (design D5), creating it on first run:
+/// `LanceEngine::open` → `NotFound` → `LanceEngine::create`. The engine is
+/// stored on the bootstrap so the runner and the later search wiring share
+/// one instance.
+///
+/// A dimension mismatch between the configured embedding dimension and the
+/// stored index is recorded on [`Bootstrap::dimension_mismatch`] (the
+/// non-fatal signal the serve/sync wiring acts on) and also returned.
+///
+/// # Errors
+///
+/// [`CliError::Vectors`] when the index cannot be opened/created or its
+/// stored dimension disagrees with the configuration.
+fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
+    let index_config = vectors_index_config(&boot.config)?;
+    let path = Path::new(&boot.config.paths.data_dir);
+    let engine = match LanceEngine::open(path, index_config) {
+        Ok(engine) => engine,
+        Err(VectorsError::NotFound(_)) => LanceEngine::create(path, index_config)?,
+        Err(err) => {
+            if let Some(mismatch) = DimensionMismatch::from_vectors_error(&err) {
+                tracing::error!(
+                    expected = mismatch.expected,
+                    actual = mismatch.actual,
+                    "vector dimension mismatch"
+                );
+                boot.dimension_mismatch = Some(mismatch);
+            }
+            return Err(CliError::Vectors(err));
+        }
+    };
+    tracing::info!(path = %path.display(), dim = index_config.dim, "vector index ready");
+    boot.vectors = Some(Arc::new(engine));
+    Ok(())
+}
+
+/// Assembles the ingestion [`Runner`] from the bootstrap (design D3/D4):
+/// opens the vector engine, builds the source registry, loads the NER
+/// prompts, and fills in the 11-field [`RunnerParams`] (domain discovery was
+/// already done by [`bootstrap`]).
+///
+/// Idempotent: the collaborators are stored on the bootstrap and reused on
+/// later calls — a second call must not re-open the engine.
+///
+/// # Errors
+///
+/// [`CliError::Vectors`] when the engine cannot be opened or the stored
+/// index disagrees with the configured dimension (also recorded on
+/// [`Bootstrap::dimension_mismatch`]), [`CliError::Config`] when the NER
+/// prompt templates fail to load, [`CliError::Unsupported`] for an internal
+/// registry registration conflict.
+pub fn build_runner(boot: &mut Bootstrap) -> Result<Runner<'_>, CliError> {
+    if boot.vectors.is_none() {
+        open_vectors_engine(boot)?;
+    }
+    if boot.registry.is_none() {
+        let registry = build_registry(&boot.config.ingestion.chunking)
+            .map_err(|err| CliError::Unsupported(format!("source registry: {err}")))?;
+        boot.registry = Some(registry);
+    }
+    if boot.prompts.is_none() {
+        let prompts = load_ner_prompts(&boot.config.paths.prompts_path).map_err(|err| {
+            CliError::Config(ConfigError::Validation {
+                message: format!("NER prompts: {err}"),
+            })
+        })?;
+        boot.prompts = Some(prompts);
+    }
+
+    let config = &boot.config;
+    let vectors = match boot.vectors.as_deref() {
+        Some(vectors) => vectors,
+        None => {
+            // Unreachable: opened above. The explicit error keeps the match
+            // exhaustive without an `expect`.
+            return Err(CliError::Vectors(VectorsError::NotFound(
+                "<vector engine not opened>".to_string(),
+            )));
+        }
+    };
+    let (registry, prompts) = match (&boot.registry, &boot.prompts) {
+        (Some(registry), Some(prompts)) => (registry, prompts),
+        _ => {
+            // Unreachable: assembled above.
+            return Err(CliError::Unsupported(
+                "<runner collaborators not assembled>".to_string(),
+            ));
+        }
+    };
+    Ok(Runner::new(RunnerParams {
+        db: &boot.db,
+        ingest_cfg: &config.ingestion,
+        global: boot.global.as_ref(),
+        domains: &boot.domains,
+        registry,
+        embed: boot.embed.as_ref(),
+        vectors,
+        prompts,
+        linker_cfg: &config.linker,
+        prompts_path: &config.paths.prompts_path,
+        llm_cache: boot.cache.clone(),
+    }))
+}
+
+/// Runs the initial multi-source sync (oracle `serve.go` initial-sync block):
+/// assembles the runner (idempotent) and ingests every enabled source so the
+/// index is up to date before the server accepts requests.
+///
+/// `rebuild` clears stored vectors before re-embedding (design D6
+/// rebuild-clear) — the serve wiring passes `false`, the `sync --rebuild`
+/// path passes `true`. Per-source failures are collected in
+/// [`SummaryStats::errors`], never returned (oracle parity).
+///
+/// # Errors
+///
+/// [`CliError`] when the runner cannot be assembled (see [`build_runner`]).
+pub fn initial_sync(boot: &mut Bootstrap, rebuild: bool) -> Result<SummaryStats, CliError> {
+    let runner = build_runner(boot)?;
+    tracing::info!(rebuild, "initial sync started");
+    let stats = runner.ingest_all(rebuild);
+    if !stats.errors.is_empty() {
+        tracing::warn!(
+            errors = stats.errors.len(),
+            "initial sync completed with errors"
+        );
+    }
+    tracing::info!(
+        sources = stats.sources_processed,
+        documents_created = stats.documents_created,
+        documents_updated = stats.documents_updated,
+        documents_skipped = stats.documents_skipped,
+        "initial sync finished"
+    );
+    Ok(stats)
+}
+
 impl std::fmt::Debug for Bootstrap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `Db` (the r2d2 pool) and `dyn EmbeddingProvider` are not `Debug`;
@@ -313,6 +522,9 @@ impl std::fmt::Debug for Bootstrap {
             .field("cache", &self.cache.as_ref().is_some())
             .field("embed", &self.embed.name())
             .field("onnx", &self.onnx)
+            .field("registry", &self.registry.is_some())
+            .field("prompts", &self.prompts.is_some())
+            .field("vectors", &self.vectors.is_some())
             .field("dimension_mismatch", &self.dimension_mismatch)
             .finish()
     }
@@ -329,6 +541,7 @@ mod tests {
         ModelFile, ModelInfo, OnnxModelsConfig, OnnxPlatformConfig, OnnxRuntimeConfig,
     };
     use config::preset::{Config, EmbeddingsMode, LocalEmbedding};
+    use db::{ChunkDao, ConnectionOrTx, DocumentDao, DocumentFilter};
     use embedding::EmbeddingError;
 
     use super::*;
@@ -672,6 +885,184 @@ models:
         );
         let other = VectorsError::NotFound("data".to_string());
         assert!(DimensionMismatch::from_vectors_error(&other).is_none());
+    }
+
+    // --- build_runner / initial_sync -----------------------------------------
+
+    /// Deterministic offline embedding provider (fixed vectors of `dim`).
+    struct MockEmbed {
+        dim: usize,
+    }
+
+    impl EmbeddingProvider for MockEmbed {
+        fn generate_embeddings(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            Ok(texts.iter().map(|_| vec![0.25f32; self.dim]).collect())
+        }
+
+        fn vector_dim(&self) -> usize {
+            self.dim
+        }
+
+        fn name(&self) -> &'static str {
+            "mock-embed"
+        }
+    }
+
+    /// A local-mode config with a 4-dim embedding (matching [`MockEmbed`]),
+    /// NER disabled, chunker parameters normalized.
+    fn sync_config(data_dir: &Path) -> Config {
+        let mut config = local_config(data_dir);
+        config.embeddings.local.vector_dim = 4;
+        config.ingestion.ner.disabled = true;
+        config.apply_defaults();
+        config
+    }
+
+    /// A minimal global config with one enabled markdown source at `src`.
+    fn one_markdown_source(src: &Path) -> GlobalConfig {
+        GlobalConfig {
+            sources: vec![config::ontology::SourceConfig {
+                path: src.to_string_lossy().into_owned(),
+                source_type: config::ontology::SourceType::Markdown,
+                disabled: false,
+                space: String::new(),
+                domains: vec!["default".to_string()],
+                dataset: String::new(),
+            }],
+            cross_domain_links: None,
+            ner: config::ontology::GlobalNerConfig {
+                methods: Vec::new(),
+            },
+            entities: Vec::new(),
+            relations: Vec::new(),
+            extraction: Default::default(),
+        }
+    }
+
+    /// Unwraps a successful `build_runner` result (`Runner` is not `Debug`,
+    /// so `expect` is unavailable).
+    fn must_build(boot: &mut Bootstrap) -> Runner<'_> {
+        match build_runner(boot) {
+            Ok(runner) => runner,
+            Err(err) => panic!("build_runner must succeed: {err}"),
+        }
+    }
+
+    /// A Bootstrap with a mock provider, a temp-file db, and no assembled
+    /// pipeline collaborators (the state right before `build_runner`).
+    fn test_bootstrap(config: Config, global: Option<GlobalConfig>, db: Db) -> Bootstrap {
+        Bootstrap {
+            config,
+            global,
+            domains: HashMap::new(),
+            db,
+            cache: None,
+            embed: Arc::new(MockEmbed { dim: 4 }),
+            onnx: test_onnx(),
+            registry: None,
+            prompts: None,
+            vectors: None,
+            dimension_mismatch: None,
+        }
+    }
+
+    #[test]
+    fn build_runner_minimal_config_does_not_panic() {
+        let dir = TempDir::new("build-runner");
+        let src = dir.as_ref().join("src");
+        std::fs::create_dir_all(&src).expect("create source dir");
+        let config = sync_config(&dir.as_ref().join("data"));
+        let global = one_markdown_source(&src);
+        let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
+        let mut boot = test_bootstrap(config, Some(global), db);
+
+        let runner = must_build(&mut boot);
+        drop(runner);
+        assert!(boot.vectors.is_some(), "engine must be opened");
+        assert!(boot.registry.is_some(), "registry must be built");
+        assert!(boot.prompts.is_some(), "prompts must be loaded");
+
+        // Idempotent: a second call reuses the assembled collaborators.
+        let runner = must_build(&mut boot);
+        drop(runner);
+    }
+
+    #[test]
+    fn build_runner_dimension_mismatch_sets_flag() {
+        let dir = TempDir::new("dim-mismatch");
+        let data_dir = dir.as_ref().join("data");
+        // Pre-create the stored index with a different dimension.
+        let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
+        LanceEngine::create(&data_dir, stored).expect("create stored index");
+
+        let config = sync_config(&data_dir); // 4-dim embedding vs 8-dim index
+        let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
+        let mut boot = test_bootstrap(config, None, db);
+
+        // `Runner` is not `Debug`, so the failure is unwrapped by hand.
+        let err = match build_runner(&mut boot) {
+            Err(err) => err,
+            Ok(_) => panic!("build_runner must fail on dimension mismatch"),
+        };
+        assert!(
+            matches!(
+                err,
+                CliError::Vectors(VectorsError::DimensionMismatch { .. })
+            ),
+            "got: {err:?}"
+        );
+        assert_eq!(
+            boot.dimension_mismatch,
+            Some(DimensionMismatch {
+                expected: 4,
+                actual: 8
+            })
+        );
+    }
+
+    #[test]
+    fn initial_sync_creates_documents_and_chunks() {
+        let dir = TempDir::new("initial-sync");
+        let src = dir.as_ref().join("src");
+        std::fs::create_dir_all(&src).expect("create source dir");
+        std::fs::write(
+            src.join("doc.md"),
+            "# Title\n\nBody text of the document.\n",
+        )
+        .expect("write source document");
+        let config = sync_config(&dir.as_ref().join("data"));
+        let global = one_markdown_source(&src);
+        let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
+        let mut boot = test_bootstrap(config, Some(global), db);
+
+        let stats = initial_sync(&mut boot, false).expect("initial_sync succeeds");
+        assert_eq!(stats.sources_processed, 1, "one source processed");
+        assert_eq!(stats.documents_created, 1, "one document created");
+        assert!(
+            stats.errors.is_empty(),
+            "unexpected errors: {:?}",
+            stats.errors
+        );
+
+        // Persisted rows (the task's count check).
+        let docs = boot
+            .db
+            .with_conn(|conn| {
+                DocumentDao::new(ConnectionOrTx::Connection(conn)).count(&DocumentFilter::default())
+            })
+            .expect("with_conn documents")
+            .expect("count documents");
+        assert_eq!(docs, 1, "one document row");
+        let chunks = boot
+            .db
+            .with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).count())
+            .expect("with_conn chunks")
+            .expect("count chunks");
+        assert!(chunks >= 1, "at least one chunk row: {chunks}");
+
+        // The chunk vector landed in the engine.
+        let vectors = boot.vectors.as_deref().expect("engine opened");
+        assert_eq!(vectors.count().expect("engine count"), 1);
     }
 
     // --- bootstrap -----------------------------------------------------------
