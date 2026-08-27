@@ -71,7 +71,7 @@ indicatif 0.18 уже в workspace.
     initial_sync на temp Db + temp source dir создаёт документы/чанки (проверь count).
   - Критерии приёмки: гейты cli зелёные; Runner собирается из реальных коллабораторов.
 
-- [ ] 1.4 File watcher (notify + debounce)
+- [x] 1.4 File watcher (notify + debounce)
   - Цель: инкрементальная переиндексация при изменении файлов.
   - Scope файлов: `crates/cli/src/serve/watcher.rs` (новый).
   - Содержание: design D5. `notify::PollWatcher` с debounce =
@@ -83,6 +83,14 @@ indicatif 0.18 уже в workspace.
   - Тесты: unit — debounce-логика (таймер); callback вызывает ingest для изменённого
     пути (подмени Runner на stub через trait/closure).
   - Критерии приёмки: гейты cli зелёные; watcher не блокирует старт.
+  - Revision history:
+    - r1 (2026-08-27, user feedback): список расширений НЕ хардкодить
+      (`[md, markdown, json, html]`). Получать поддерживаемые расширения из парсеров
+      (ingestion `Registry` / `Source`-парсеры) — найти в ingestion-крейте API,
+      возвращающий поддерживаемые расширения (напр. `Registry::supported_extensions`
+      или `Source::extensions`), и использовать его в фильтре watcher'а вместо
+      параллельного списка. Reviewer-нит (опц.): добавить doc-заметку о `!Send+Sync`
+      `ChangeHandler`; добавить lifecycle-тест `Watcher::new`+`stop`.
 
 - [ ] 1.5 Scheduler (orphan_cleanup)
   - Цель: периодическая очистка осиротевших данных.
