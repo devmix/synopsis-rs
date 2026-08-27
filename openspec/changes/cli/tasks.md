@@ -92,7 +92,7 @@ indicatif 0.18 уже в workspace.
       параллельного списка. Reviewer-нит (опц.): добавить doc-заметку о `!Send+Sync`
       `ChangeHandler`; добавить lifecycle-тест `Watcher::new`+`stop`.
 
-- [ ] 1.5 Scheduler (orphan_cleanup)
+- [x] 1.5 Scheduler (orphan_cleanup)
   - Цель: периодическая очистка осиротевших данных.
   - Scope файлов: `crates/cli/src/serve/scheduler.rs` (новый).
   - Содержание: design D6. `tokio_cron_scheduler::JobScheduler`; регистрируй job
