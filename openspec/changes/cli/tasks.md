@@ -13,7 +13,7 @@ workspace-гейты гоняет ТОЛЬКО оркестратор. Дире�
 tracing-subscriber 0.3.23 (workspace); notify 8 / tokio-cron-scheduler 0.15 /
 indicatif 0.18 уже в workspace.
 
-- [ ] 1.1 CLI-каркас: clap + глобальные флаги + разрешение конфигурации + dispatch
+- [x] 1.1 CLI-каркас: clap + глобальные флаги + разрешение конфигурации + dispatch
   - Цель: парсинг аргументов и маршрутизация подкоманд.
   - Scope файлов: `crates/cli/Cargo.toml` (добавить clap, tracing,
     tracing-subscriber, ingestion, utils, vectors к зависимостям), `crates/cli/src/main.rs`
@@ -34,7 +34,7 @@ indicatif 0.18 уже в workspace.
   - Критерии приёмки: гейты cli зелёные; `cargo build -p cli` собирается;
     `synopsis --version` печатает версию и exit 0.
 
-- [ ] 1.2 serve bootstrap: DB + миграции + dimension-mismatch + embedding + cache + health
+- [x] 1.2 serve bootstrap: DB + миграции + dimension-mismatch + embedding + cache + health
   - Цель: функция bootstrap и старт-хелсчек.
   - Scope файлов: `crates/cli/src/serve/mod.rs` (новый модуль serve),
     `crates/cli/src/serve/bootstrap.rs` (новый: bootstrap, open_db, ensure_model,
