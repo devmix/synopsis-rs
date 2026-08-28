@@ -51,10 +51,14 @@ const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 /// Builds the ONNX embedding provider from configuration (oracle
 /// `NewONNXProvider`, re-architected — not transcribed).
 ///
+/// `workspace_dir` is the GLOBAL workspace root (`PathsConfig::workspace_dir`):
+/// the models and the ONNX Runtime are shared across datasets
+/// (storage-layout-restructure D3), never per-dataset.
+///
 /// Wiring order (a broken runtime fails fast, before a multi-GB model
 /// download):
 /// 1. [`LibraryManager::ensure_library`] — ensure the ONNX Runtime shared
-///    library is installed under `data_dir` (downloaded on first use);
+///    library is installed under `workspace_dir` (downloaded on first use);
 /// 2. [`init_runtime`] — load the library into this process;
 /// 3. resolve the model (registry download on first use, or an explicit
 ///    `model_path` override), its `tokenizer.json`, and the vector dimension;
@@ -103,17 +107,17 @@ const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 /// };
 /// let onnx = OnnxConfig::default();
 /// let provider: Arc<dyn EmbeddingProvider> =
-///     new_onnx_provider(&cfg, "data", &onnx).expect("provider builds");
+///     new_onnx_provider(&cfg, "workspace", &onnx).expect("provider builds");
 /// ```
 pub fn new_onnx_provider(
     cfg: &LocalEmbedding,
-    data_dir: impl AsRef<Path>,
+    workspace_dir: impl AsRef<Path>,
     onnx_cfg: &OnnxConfig,
 ) -> Result<Arc<dyn EmbeddingProvider>, EmbeddingError> {
-    let data_dir = data_dir.as_ref();
-    let lib_path = LibraryManager::new(data_dir, onnx_cfg)?.ensure_library()?;
+    let workspace_dir = workspace_dir.as_ref();
+    let lib_path = LibraryManager::new(workspace_dir, onnx_cfg)?.ensure_library()?;
     init_runtime(&lib_path)?;
-    let resolved = resolve_model(cfg, data_dir, onnx_cfg)?;
+    let resolved = resolve_model(cfg, workspace_dir, onnx_cfg)?;
     let session = build_session(&resolved.path)?;
     let tokenizer = Tokenizer::from_file(&resolved.tokenizer_path)?;
     let provider = OnnxProvider::new(
@@ -141,11 +145,11 @@ struct ResolvedModel {
 /// config-driven decisions are unit-testable without the ONNX Runtime.
 fn resolve_model(
     cfg: &LocalEmbedding,
-    data_dir: &Path,
+    workspace_dir: &Path,
     onnx_cfg: &OnnxConfig,
 ) -> Result<ResolvedModel, EmbeddingError> {
     if cfg.model_path.is_empty() {
-        resolve_from_registry(cfg, data_dir, onnx_cfg)
+        resolve_from_registry(cfg, workspace_dir, onnx_cfg)
     } else {
         resolve_explicit_path(cfg)
     }
@@ -187,10 +191,10 @@ fn resolve_explicit_path(cfg: &LocalEmbedding) -> Result<ResolvedModel, Embeddin
 /// ensure the model files are installed, and locate the tokenizer.
 fn resolve_from_registry(
     cfg: &LocalEmbedding,
-    data_dir: &Path,
+    workspace_dir: &Path,
     onnx_cfg: &OnnxConfig,
 ) -> Result<ResolvedModel, EmbeddingError> {
-    let manager = ModelManager::new(data_dir, onnx_cfg);
+    let manager = ModelManager::new(workspace_dir, onnx_cfg);
     let name = if cfg.model_name.trim().is_empty() {
         manager.default_model().to_string()
     } else {
@@ -398,8 +402,8 @@ mod tests {
 
     /// Pre-installs the fake runtime library and its cache manifest so
     /// `ensure_library` is a cache hit (no network).
-    fn preinstall_library(data_dir: &Path) -> PathBuf {
-        let cache_dir = data_dir.join("onnxruntime");
+    fn preinstall_library(workspace_dir: &Path) -> PathBuf {
+        let cache_dir = workspace_dir.join("onnxruntime");
         std::fs::create_dir_all(&cache_dir).unwrap();
         let lib = cache_dir.join(LIB_NAME);
         std::fs::write(&lib, FAKE_LIBRARY).unwrap();
@@ -419,14 +423,14 @@ mod tests {
 
     /// Pre-installs the registry model (files + manifest) so `ensure_model` is
     /// a cache hit (no network).
-    fn preinstall_model(data_dir: &Path, with_tokenizer: bool) {
-        let model_dir = data_dir.join("models").join("bge-m3-int8");
+    fn preinstall_model(workspace_dir: &Path, with_tokenizer: bool) {
+        let model_dir = workspace_dir.join("models").join("bge-m3-int8");
         std::fs::create_dir_all(&model_dir).unwrap();
         std::fs::write(model_dir.join("model.onnx"), FAKE_MODEL).unwrap();
         if with_tokenizer {
             std::fs::write(model_dir.join(TOKENIZER_FILE_NAME), FAKE_TOKENIZER).unwrap();
         }
-        ModelCache::new(data_dir.join("models"))
+        ModelCache::new(workspace_dir.join("models"))
             .mark_installed(InstalledModel {
                 name: "bge-m3-int8".to_string(),
                 version: "1.0.0".to_string(),

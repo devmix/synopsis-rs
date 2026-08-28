@@ -3,7 +3,7 @@
 //! [`LibraryManager`] owns the lifecycle of the external ONNX Runtime shared
 //! library: it resolves the platform entry for the current OS/architecture
 //! from `onnx.yaml` ([`OnnxConfig::platform_for_key`]), downloads the release
-//! archive through [`Downloader`], extracts it into `<data_dir>/onnxruntime/`,
+//! archive through [`Downloader`], extracts it into `<workspace_dir>/onnxruntime/`,
 //! and records the installation in a `.cache.json` manifest. A repeat call
 //! with the same version returns the cached path without touching the network.
 //!
@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::downloader::Downloader;
 use crate::error::EmbeddingError;
 
-/// Cache directory name under the data directory (oracle parity).
+/// Cache directory name under the workspace directory (oracle parity).
 const CACHE_DIR_NAME: &str = "onnxruntime";
 /// Installation manifest name inside the cache directory (oracle parity).
 const CACHE_FILE_NAME: &str = ".cache.json";
@@ -66,15 +66,17 @@ pub struct LibraryManager {
 }
 
 impl LibraryManager {
-    /// Creates a manager rooted at `data_dir`, resolving the platform entry
-    /// for the current OS/architecture from `cfg` (oracle `NewLibraryManager`).
+    /// Creates a manager rooted at `workspace_dir` (the GLOBAL workspace
+    /// root, not per-dataset — storage-layout-restructure D3), resolving the
+    /// platform entry for the current OS/architecture from `cfg`
+    /// (oracle `NewLibraryManager`).
     ///
     /// # Errors
     ///
     /// [`EmbeddingError::Config`] when the current platform is not supported
     /// or `cfg` has no matching `runtime.platforms` entry.
-    pub fn new(data_dir: impl AsRef<Path>, cfg: &OnnxConfig) -> Result<Self, EmbeddingError> {
-        Self::with_downloader(data_dir, cfg, Downloader::new())
+    pub fn new(workspace_dir: impl AsRef<Path>, cfg: &OnnxConfig) -> Result<Self, EmbeddingError> {
+        Self::with_downloader(workspace_dir, cfg, Downloader::new())
     }
 
     /// Constructor with an explicit [`Downloader`].
@@ -82,7 +84,7 @@ impl LibraryManager {
     /// Tests use it to reach a local mock server with SSRF checking
     /// disabled; production code uses [`Self::new`].
     pub(crate) fn with_downloader(
-        data_dir: impl AsRef<Path>,
+        workspace_dir: impl AsRef<Path>,
         cfg: &OnnxConfig,
         downloader: Downloader,
     ) -> Result<Self, EmbeddingError> {
@@ -99,7 +101,7 @@ impl LibraryManager {
             ))
         })?;
         Ok(Self {
-            cache_dir: data_dir.as_ref().join(CACHE_DIR_NAME),
+            cache_dir: workspace_dir.as_ref().join(CACHE_DIR_NAME),
             platform,
             version: cfg.runtime.version.clone(),
             downloader,
@@ -143,7 +145,7 @@ impl LibraryManager {
         Some(cache.library_path)
     }
 
-    /// Path of the cache directory (`<data_dir>/onnxruntime`).
+    /// Path of the cache directory (`<workspace_dir>/onnxruntime`).
     #[must_use]
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
@@ -430,9 +432,9 @@ mod tests {
         }
     }
 
-    fn test_manager(data_dir: &Path, cfg: &OnnxConfig) -> LibraryManager {
+    fn test_manager(workspace_dir: &Path, cfg: &OnnxConfig) -> LibraryManager {
         let downloader = Downloader::with_params(0, Duration::ZERO, Duration::from_secs(10), false);
-        LibraryManager::with_downloader(data_dir, cfg, downloader).unwrap()
+        LibraryManager::with_downloader(workspace_dir, cfg, downloader).unwrap()
     }
 
     /// Fresh per-test directory under the system temp dir.
@@ -566,16 +568,16 @@ mod tests {
     /// Fresh install through the mock server; asserts library bytes, request
     /// count, archive cleanup, and the manifest contents.
     fn assert_fresh_install(format: ArchiveFormat, ext: &str) {
-        let data_dir = temp_dir(&format!("fresh-{ext}"));
-        let fixture = data_dir.join(format!("fixture.{ext}"));
+        let workspace_dir = temp_dir(&format!("fresh-{ext}"));
+        let fixture = workspace_dir.join(format!("fixture.{ext}"));
         build_archive(&fixture, &format);
         let server = MockServer::start(200, std::fs::read(&fixture).unwrap());
         let cfg = test_config("1.28.0", format, &server.url);
-        let manager = test_manager(&data_dir, &cfg);
+        let manager = test_manager(&workspace_dir, &cfg);
 
         let lib = manager.ensure_library().unwrap();
 
-        let cache_dir = data_dir.join(CACHE_DIR_NAME);
+        let cache_dir = workspace_dir.join(CACHE_DIR_NAME);
         assert_eq!(lib, cache_dir.join(LIB_NAME));
         assert_eq!(std::fs::read(&lib).unwrap(), FAKE_LIBRARY);
         assert_eq!(server.request_count(), 1);
@@ -613,12 +615,12 @@ mod tests {
 
     #[test]
     fn ensure_library_second_call_skips_download() {
-        let data_dir = temp_dir("second-call");
-        let fixture = data_dir.join("fixture.zip");
+        let workspace_dir = temp_dir("second-call");
+        let fixture = workspace_dir.join("fixture.zip");
         build_archive(&fixture, &ArchiveFormat::Zip);
         let server = MockServer::start(200, std::fs::read(&fixture).unwrap());
         let cfg = test_config("1.28.0", ArchiveFormat::Zip, &server.url);
-        let manager = test_manager(&data_dir, &cfg);
+        let manager = test_manager(&workspace_dir, &cfg);
 
         let first = manager.ensure_library().unwrap();
         let second = manager.ensure_library().unwrap();
@@ -629,21 +631,25 @@ mod tests {
 
     #[test]
     fn version_mismatch_triggers_reinstall() {
-        let data_dir = temp_dir("version-bump");
-        let fixture = data_dir.join("fixture.zip");
+        let workspace_dir = temp_dir("version-bump");
+        let fixture = workspace_dir.join("fixture.zip");
         build_archive(&fixture, &ArchiveFormat::Zip);
         let server = MockServer::start(200, std::fs::read(&fixture).unwrap());
 
         let cfg_v1 = test_config("1.28.0", ArchiveFormat::Zip, &server.url);
-        test_manager(&data_dir, &cfg_v1).ensure_library().unwrap();
+        test_manager(&workspace_dir, &cfg_v1)
+            .ensure_library()
+            .unwrap();
         assert_eq!(server.request_count(), 1);
 
         let cfg_v2 = test_config("1.29.0", ArchiveFormat::Zip, &server.url);
-        test_manager(&data_dir, &cfg_v2).ensure_library().unwrap();
+        test_manager(&workspace_dir, &cfg_v2)
+            .ensure_library()
+            .unwrap();
         assert_eq!(server.request_count(), 2, "version change must re-download");
 
         let manifest: LibraryCache = serde_json::from_slice(
-            &std::fs::read(data_dir.join(CACHE_DIR_NAME).join(CACHE_FILE_NAME)).unwrap(),
+            &std::fs::read(workspace_dir.join(CACHE_DIR_NAME).join(CACHE_FILE_NAME)).unwrap(),
         )
         .unwrap();
         assert_eq!(manifest.version, "1.29.0");
@@ -651,10 +657,10 @@ mod tests {
 
     #[test]
     fn download_failure_leaves_cache_unmarked() {
-        let data_dir = temp_dir("dl-fail");
+        let workspace_dir = temp_dir("dl-fail");
         let server = MockServer::start(404, Vec::new());
         let cfg = test_config("1.28.0", ArchiveFormat::Zip, &server.url);
-        let manager = test_manager(&data_dir, &cfg);
+        let manager = test_manager(&workspace_dir, &cfg);
 
         let err = manager.ensure_library().unwrap_err();
 
@@ -709,14 +715,14 @@ mod tests {
 
     #[test]
     fn unknown_archive_format_is_config_error() {
-        let data_dir = temp_dir("bad-format");
+        let workspace_dir = temp_dir("bad-format");
         let server = MockServer::start(200, b"whatever".to_vec());
         let cfg = test_config(
             "1.28.0",
             ArchiveFormat::Unknown("7z".to_string()),
             &server.url,
         );
-        let manager = test_manager(&data_dir, &cfg);
+        let manager = test_manager(&workspace_dir, &cfg);
 
         let err = manager.ensure_library().unwrap_err();
 
@@ -731,12 +737,12 @@ mod tests {
 
     #[test]
     fn uninstall_removes_cache_dir_and_is_idempotent() {
-        let data_dir = temp_dir("uninstall");
-        let fixture = data_dir.join("fixture.zip");
+        let workspace_dir = temp_dir("uninstall");
+        let fixture = workspace_dir.join("fixture.zip");
         build_archive(&fixture, &ArchiveFormat::Zip);
         let server = MockServer::start(200, std::fs::read(&fixture).unwrap());
         let cfg = test_config("1.28.0", ArchiveFormat::Zip, &server.url);
-        let manager = test_manager(&data_dir, &cfg);
+        let manager = test_manager(&workspace_dir, &cfg);
 
         manager.ensure_library().unwrap();
         assert!(manager.cache_dir().exists());
@@ -749,8 +755,8 @@ mod tests {
 
     #[test]
     fn zip_entry_escaping_cache_dir_is_rejected() {
-        let data_dir = temp_dir("zip-slip");
-        let archive = data_dir.join("evil.zip");
+        let workspace_dir = temp_dir("zip-slip");
+        let archive = workspace_dir.join("evil.zip");
         {
             let file = std::fs::File::create(&archive).unwrap();
             let mut zip = zip::ZipWriter::new(file);
@@ -759,13 +765,16 @@ mod tests {
             zip.write_all(b"pwned").unwrap();
             zip.finish().unwrap();
         }
-        let dest = data_dir.join(CACHE_DIR_NAME);
+        let dest = workspace_dir.join(CACHE_DIR_NAME);
         std::fs::create_dir_all(&dest).unwrap();
 
         let err = extract_zip(&archive, &dest).unwrap_err();
 
         assert!(matches!(err, EmbeddingError::Download(_)), "got: {err}");
-        assert!(!data_dir.join("evil.txt").exists(), "entry must not escape");
+        assert!(
+            !workspace_dir.join("evil.txt").exists(),
+            "entry must not escape"
+        );
     }
 
     #[test]

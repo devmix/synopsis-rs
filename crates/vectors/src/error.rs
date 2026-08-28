@@ -21,7 +21,7 @@ pub enum VectorsError {
         actual: usize,
     },
     /// The requested index does not exist (e.g. opening a path with no table).
-    /// The payload is the data directory that was looked up.
+    /// The payload is the index directory that was looked up.
     #[error("index not found at {0}")]
     NotFound(String),
     /// The ANN engine (LanceDB) reported a failure.

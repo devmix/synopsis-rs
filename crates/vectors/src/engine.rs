@@ -47,7 +47,9 @@ use tokio::runtime::{Builder, Runtime};
 
 use crate::{VectorIndex, VectorIndexConfig, VectorsError};
 
-/// LanceDB table name; the on-disk table directory is `<data_dir>/vectors.lance`.
+/// LanceDB table name; the on-disk table directory is
+/// `<vectors_path>/vectors.lance`, where `vectors_path` is the per-dataset
+/// index directory the caller passes (`<workspace_dir>/datasets/<name>/state/vectors`).
 const TABLE_NAME: &str = "vectors";
 /// Chunk-id column (application-level primary key; uniqueness is the caller's).
 const COL_CHUNK_ID: &str = "chunk_id";
@@ -75,7 +77,9 @@ const RUNTIME_WORKERS: usize = 2;
 pub struct LanceEngine {
     config: VectorIndexConfig,
     runtime: Runtime,
-    /// Data directory holding the LanceDB database.
+    /// Per-dataset vector-index directory holding the LanceDB database
+    /// (the caller passes the dataset's `vectors_path`,
+    /// `<workspace_dir>/datasets/<name>/state/vectors`).
     path: PathBuf,
     table: Table,
 }
@@ -390,7 +394,7 @@ impl LanceEngine {
         &self.config
     }
 
-    /// The data directory holding the index on disk.
+    /// The per-dataset vector-index directory holding the index on disk.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -513,7 +517,7 @@ fn stored_dim(table: &Table, runtime: &Runtime) -> Result<usize, VectorsError> {
     })
 }
 
-/// A `connect` URI for a local data directory.
+/// A `connect` URI for a local index directory.
 fn to_uri(path: &Path) -> Result<String, VectorsError> {
     path.to_str().map(str::to_string).ok_or_else(|| {
         VectorsError::InvalidArgument(format!("path is not valid UTF-8: {}", path.display()))

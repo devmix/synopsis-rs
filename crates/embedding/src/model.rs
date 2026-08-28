@@ -2,7 +2,7 @@
 //! installation manifest (design D5/D8, task 1.5).
 //!
 //! [`ModelManager`] owns the lifecycle of embedding model files under
-//! `<data_dir>/models/<name>/`. [`ModelManager::ensure_model`] resolves the
+//! `<workspace_dir>/models/<name>/`. [`ModelManager::ensure_model`] resolves the
 //! name (an empty name means the config default), checks the installation
 //! against the [`ModelCache`] manifest and the files on disk, and downloads
 //! any missing files through [`Downloader`] (retries, SSRF protection,
@@ -47,7 +47,7 @@ use crate::downloader::Downloader;
 use crate::error::EmbeddingError;
 use crate::library::{installed_at_now, safe_relative};
 
-/// Models directory name under the data directory (oracle parity).
+/// Models directory name under the workspace directory (oracle parity).
 const MODELS_DIR_NAME: &str = "models";
 /// Installation manifest name inside the models directory (oracle parity).
 const CACHE_FILE_NAME: &str = ".cache.json";
@@ -156,11 +156,12 @@ pub struct ModelManager {
 }
 
 impl ModelManager {
-    /// Creates a manager rooted at `data_dir`, reading the model registry and
-    /// the default model name from `cfg` (oracle `NewModelManager`).
+    /// Creates a manager rooted at `workspace_dir` (the GLOBAL workspace root,
+    /// not per-dataset — storage-layout-restructure D3), reading the model
+    /// registry and the default model name from `cfg` (oracle `NewModelManager`).
     #[must_use]
-    pub fn new(data_dir: impl AsRef<Path>, cfg: &OnnxConfig) -> Self {
-        Self::with_downloader(data_dir, cfg, Downloader::new())
+    pub fn new(workspace_dir: impl AsRef<Path>, cfg: &OnnxConfig) -> Self {
+        Self::with_downloader(workspace_dir, cfg, Downloader::new())
     }
 
     /// Constructor with an explicit [`Downloader`].
@@ -168,11 +169,11 @@ impl ModelManager {
     /// Tests use it to reach a local mock server with SSRF checking
     /// disabled; production code uses [`Self::new`].
     pub(crate) fn with_downloader(
-        data_dir: impl AsRef<Path>,
+        workspace_dir: impl AsRef<Path>,
         cfg: &OnnxConfig,
         downloader: Downloader,
     ) -> Self {
-        let models_dir = data_dir.as_ref().join(MODELS_DIR_NAME);
+        let models_dir = workspace_dir.as_ref().join(MODELS_DIR_NAME);
         Self {
             cache: ModelCache::new(&models_dir),
             models_dir,
@@ -250,7 +251,7 @@ impl ModelManager {
         &self.default_name
     }
 
-    /// Directory that holds the model files (`<data_dir>/models/<name>`).
+    /// Directory that holds the model files (`<workspace_dir>/models/<name>`).
     #[must_use]
     pub fn model_dir(&self, name: &str) -> PathBuf {
         self.models_dir.join(name)
@@ -264,7 +265,7 @@ impl ModelManager {
         path.is_file().then_some(path)
     }
 
-    /// Root models directory (`<data_dir>/models`).
+    /// Root models directory (`<workspace_dir>/models`).
     #[must_use]
     pub fn models_dir(&self) -> &Path {
         &self.models_dir
@@ -416,9 +417,9 @@ mod tests {
         }
     }
 
-    fn test_manager(data_dir: &Path, cfg: &OnnxConfig) -> ModelManager {
+    fn test_manager(workspace_dir: &Path, cfg: &OnnxConfig) -> ModelManager {
         ModelManager::with_downloader(
-            data_dir,
+            workspace_dir,
             cfg,
             Downloader::with_params(0, Duration::ZERO, Duration::from_secs(10), false),
         )
@@ -433,12 +434,12 @@ mod tests {
         dir
     }
 
-    fn models_dir_of(data_dir: &Path) -> PathBuf {
-        data_dir.join("models")
+    fn models_dir_of(workspace_dir: &Path) -> PathBuf {
+        workspace_dir.join("models")
     }
 
-    fn model_dir_of(data_dir: &Path, name: &str) -> PathBuf {
-        models_dir_of(data_dir).join(name)
+    fn model_dir_of(workspace_dir: &Path, name: &str) -> PathBuf {
+        models_dir_of(workspace_dir).join(name)
     }
 
     fn default_files() -> HashMap<String, Vec<u8>> {
@@ -552,13 +553,13 @@ mod tests {
     }
 
     /// Marks the default model installed without any network access.
-    fn preinstall(data_dir: &Path) {
-        let target = model_dir_of(data_dir, "bge-m3-int8");
+    fn preinstall(workspace_dir: &Path) {
+        let target = model_dir_of(workspace_dir, "bge-m3-int8");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("model.onnx"), MODEL_ONNX).unwrap();
         std::fs::write(target.join("model.onnx_data"), MODEL_DATA).unwrap();
         std::fs::write(target.join("tokenizer.json"), TOKENIZER_JSON).unwrap();
-        ModelCache::new(models_dir_of(data_dir))
+        ModelCache::new(models_dir_of(workspace_dir))
             .mark_installed(InstalledModel {
                 name: "bge-m3-int8".to_string(),
                 version: "1.0.0".to_string(),
