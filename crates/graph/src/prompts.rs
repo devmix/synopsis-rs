@@ -45,10 +45,10 @@ use crate::error::GraphError;
 
 /// Embedded system-prompt default (the functional Jinja2 rewrite of the oracle
 /// `configs/prompts/entity-linker/system.tmpl`).
-const EMBEDDED_SYSTEM: &str = include_str!("../fixtures/templates/entity-linker/system.tmpl");
+const EMBEDDED_SYSTEM: &str = include_str!("templates/entity-linker/system.tmpl");
 /// Embedded user-prompt default (the functional Jinja2 rewrite of the oracle
 /// `configs/prompts/entity-linker/user.tmpl`).
-const EMBEDDED_USER: &str = include_str!("../fixtures/templates/entity-linker/user.tmpl");
+const EMBEDDED_USER: &str = include_str!("templates/entity-linker/user.tmpl");
 
 /// One entity's data as bound into the user prompt template.
 ///
