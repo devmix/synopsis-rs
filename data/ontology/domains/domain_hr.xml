@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- HR Domain Configuration
+     Defines entity types and relations specific to HR.
+     Shared entities (employee, department, policy, role) and relations
+     (works_in, owns_policy, has_role, belongs_to, manages) live in the
+     global pool: ../../global.xml (<entities>/<relations> blocks).
+     Schema documentation: ../../docs/plan-2/domain-xml-schema.md
+-->
+<domain name="hr" version="1.0.0" description="HR policies, employee data, organizational structure">
+
+    <!-- Entity: Salary -->
+    <entity id="salary" name="Salary" description="Заработная плата">
+        <attribute name="title" type="string" required="true"/>
+        <attribute name="amount" type="number"/>
+        <attribute name="currency" type="string"/>
+        <synonym>зп</synonym>
+        <synonym>оклад</synonym>
+        <synonym>заработная плата</synonym>
+        <synonym>оплата труда</synonym>
+    </entity>
+
+    <!-- Entity: Grade -->
+    <entity id="grade" name="Grade" description="Уровень сотрудника">
+        <attribute name="title" type="string" required="true"/>
+        <attribute name="experience" type="string"/>
+        <synonym>грейд</synonym>
+        <synonym>уровень</synonym>
+        <synonym>опыт</synonym>
+    </entity>
+
+    <!-- Relation: salary_of -->
+    <relation source="grade" predicate="salary_of" target="salary" description="Соотношение уровня сотрудника к заработной плате">
+        <attribute name="amount" type="number"/>
+        <attribute name="currency" type="string"/>
+        <attribute name="experience" type="string"/>
+    </relation>
+
+    <!-- Extraction configuration -->
+    <extraction>
+
+    </extraction>
+
+    <!-- Confidence thresholds -->
+    <confidence auto_publish_threshold="0.7" review_threshold="0.60" reject_threshold="0.40"/>
+</domain>

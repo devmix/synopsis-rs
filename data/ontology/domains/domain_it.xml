@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- IT Landscape Domain Configuration
+     Defines entity types and relations for IT systems, services, and infrastructure.
+-->
+<domain name="it" version="1.0.0" description="IT systems, services, infrastructure">
+    <!-- Entity: System -->
+    <entity id="system" name="System" description="Информационная система или приложение">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="description" type="string"/>
+        <attribute name="system_type" type="string"/>
+        <attribute name="owner" type="string"/>
+        <attribute name="vendor" type="string"/>
+        <attribute name="version" type="string"/>
+        <attribute name="status" type="string"/>
+        <attribute name="deployment_env" type="string"/>
+        <synonym>система</synonym>
+        <synonym>информационная система</synonym>
+        <synonym>приложение</synonym>
+        <synonym>system</synonym>
+        <synonym>application</synonym>
+        <synonym>app</synonym>
+    </entity>
+
+    <!-- Entity: Service -->
+    <entity id="service" name="Service" description="IT сервис или сервисное предложение">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="description" type="string"/>
+        <attribute name="service_type" type="string"/>
+        <attribute name="provider" type="string"/>
+        <attribute name="sla_level" type="string"/>
+        <attribute name="status" type="string"/>
+        <synonym>сервис</synonym>
+        <synonym>IT сервис</synonym>
+        <synonym>service</synonym>
+        <synonym>IT service</synonym>
+    </entity>
+
+    <!-- Entity: Server -->
+    <entity id="server" name="Server" description="Сервер или хост">
+        <attribute name="hostname" type="string" required="true"/>
+        <attribute name="ip_address" type="string"/>
+        <attribute name="server_type" type="string"/>
+        <attribute name="os" type="string"/>
+        <attribute name="location" type="string"/>
+        <attribute name="provider" type="string"/>
+        <synonym>сервер</synonym>
+        <synonym>хост</synonym>
+        <synonym>server</synonym>
+        <synonym>host</synonym>
+    </entity>
+
+    <!-- Entity: Database -->
+    <entity id="database" name="Database" description="База данных">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="dbms" type="string"/>
+        <attribute name="version" type="string"/>
+        <attribute name="host" type="string"/>
+        <attribute name="port" type="string"/>
+        <attribute name="size_gb" type="number"/>
+        <synonym>база данных</synonym>
+        <synonym>БД</synonym>
+        <synonym>database</synonym>
+        <synonym>DB</synonym>
+    </entity>
+
+    <!-- Entity: NetworkComponent -->
+    <entity id="network_component" name="NetworkComponent"
+            description="Сетевой компонент (роутер, коммутатор, firewall)">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="component_type" type="string"/>
+        <attribute name="vendor" type="string"/>
+        <attribute name="model" type="string"/>
+        <attribute name="location" type="string"/>
+        <synonym>сетевой компонент</synonym>
+        <synonym>роутер</synonym>
+        <synonym>коммутатор</synonym>
+        <synonym>firewall</synonym>
+        <synonym>network component</synonym>
+        <synonym>router</synonym>
+        <synonym>switch</synonym>
+    </entity>
+
+    <!-- Relation: runs_on -->
+    <relation source="system" predicate="runs_on" target="server" description="Система работает на сервере">
+        <attribute name="deployment_date" type="date"/>
+    </relation>
+
+    <!-- Relation: uses_database -->
+    <relation source="system" predicate="uses_database" target="database" description="Система использует базу данных">
+        <attribute name="connection_type" type="string"/>
+        <attribute name="is_primary" type="boolean"/>
+    </relation>
+
+    <!-- Relation: provides -->
+    <relation source="system" predicate="provides" target="service" description="Система предоставляет сервис">
+        <attribute name="version" type="string"/>
+    </relation>
+
+    <!-- Relation: consumes -->
+    <relation source="service" predicate="consumes" target="service" description="Сервис использует другой сервис">
+        <attribute name="protocol" type="string"/>
+        <attribute name="api_version" type="string"/>
+    </relation>
+
+    <!-- Relation: hosted_on -->
+    <relation source="server" predicate="hosted_on" target="network_component"
+              description="Сервер подключён к сетевому компоненту">
+        <attribute name="port" type="string"/>
+        <attribute name="vlan" type="string"/>
+    </relation>
+
+    <!-- Relation: depends_on -->
+    <relation source="system" predicate="depends_on" target="system" description="Система зависит от другой системы">
+        <attribute name="dependency_type" type="string"/>
+        <attribute name="criticality" type="string"/>
+    </relation>
+
+    <!-- Relation: replicates_to -->
+    <relation source="database" predicate="replicates_to" target="database"
+              description="База данных реплицируется в другую">
+        <attribute name="replication_type" type="string"/>
+        <attribute name="sync_mode" type="string"/>
+    </relation>
+
+    <!-- Extraction configuration -->
+    <extraction>
+        <regex id="ip_address" entity="ip_address" pattern="\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b" confidence="0.95"/>
+    </extraction>
+
+    <!-- Confidence thresholds -->
+    <confidence auto_publish_threshold="0.7" review_threshold="0.60" reject_threshold="0.40"/>
+</domain>

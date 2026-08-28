@@ -13,6 +13,7 @@ fixtures/*
 # oracle's own data/ copy; provenance and verification live in data/README.md, which stays tracked.
 data/*
 !data/README.md
+!data/ontology/
 
 # Cargo.lock is committed on purpose: this workspace produces a binary and
 # reproducible builds matter for parity testing against the Go oracle.

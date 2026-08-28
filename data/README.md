@@ -38,3 +38,22 @@ config.default.yaml.
 Regeneration from scratch (when the oracle copy is unavailable): fetch each URL from onnx.yaml,
 verify `size_bytes`, place under the same layout; for the runtime archive extract
 `onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0`.
+
+## Ontology (task 1.1, change ship-ontology-demo-data)
+
+Shipped verbatim from the read-only Go oracle so the binary loads the ontology out-of-the-box:
+
+| File | Source in oracle |
+|---|---|
+| `data/ontology/global.xml` | `../synopsis/data/ontology/global.xml` (9480 B before adaptation) |
+| `data/ontology/domains/domain_hr.xml` | `../synopsis/data/ontology/domains/domain_hr.xml` (1935 B, byte-identical) |
+| `data/ontology/domains/domain_it.xml` | `../synopsis/data/ontology/domains/domain_it.xml` (6093 B, byte-identical) |
+| `data/ontology/domains/domain_product.xml` | `../synopsis/data/ontology/domains/domain_product.xml` (5347 B, byte-identical) |
+
+**Path adaptation (design D1):** the oracle's `global.xml` declares ingestion sources under
+`<sources>` with 8 `<source path=>` entries pointing at `./data/storage/edtech/...`. In this repo
+the demo corpus lives under `data/demo/edtech/` (user decision Q4), so those 8 prefixes were
+rewritten `./data/storage/edtech/` → `./data/demo/edtech/` (9456 B after adaptation). Every other
+byte of `global.xml` (entities, relations, expressions, extraction, cross-domain links) is
+identical to the oracle; the three domain XMLs are byte-identical (`cmp`). This is a path
+adaptation, not a semantic change. No sha256 table is kept for these files (user decision Q3=no).

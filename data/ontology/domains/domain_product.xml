@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Product Domain Configuration
+     Defines entity types and relations for product management, features, and sales.
+     Schema documentation: ../../docs/plan-2/domain-xml-schema.md
+-->
+<domain name="product" version="1.0.0" description="Product management, features, sales, and customer data">
+    <!-- Entity: Product -->
+    <entity id="product" name="Product" description="Продукт компании">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="description" type="string"/>
+        <attribute name="category" type="string"/>
+        <attribute name="price" type="number"/>
+        <attribute name="status" type="string"/>
+        <attribute name="version" type="string"/>
+        <attribute name="launch_date" type="date"/>
+        <synonym>продукт</synonym>
+        <synonym>товар</synonym>
+        <synonym>продукция</synonym>
+        <synonym>product</synonym>
+        <synonym>item</synonym>
+    </entity>
+
+    <!-- Entity: Feature -->
+    <entity id="feature" name="Feature" description="Функциональность или особенность продукта">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="description" type="string"/>
+        <attribute name="priority" type="string"/>
+        <attribute name="status" type="string"/>
+        <attribute name="estimated_value" type="number"/>
+        <synonym>функция</synonym>
+        <synonym>особенность</synonym>
+        <synonym>возможность</synonym>
+        <synonym>feature</synonym>
+        <synonym>functionality</synonym>
+    </entity>
+
+    <!-- Entity: Customer -->
+    <entity id="customer" name="Customer" description="Клиент или покупатель">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="email" type="string"/>
+        <attribute name="company" type="string"/>
+        <attribute name="customer_type" type="string"/>
+        <attribute name="registration_date" type="date"/>
+        <synonym>клиент</synonym>
+        <synonym>покупатель</synonym>
+        <synonym>заказчик</synonym>
+        <synonym>customer</synonym>
+        <synonym>buyer</synonym>
+    </entity>
+
+    <!-- Entity: Competitor -->
+    <entity id="competitor" name="Competitor" description="Конкурент на рынке">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="industry" type="string"/>
+        <attribute name="market_share" type="string"/>
+        <attribute name="strengths" type="string"/>
+        <attribute name="weaknesses" type="string"/>
+        <synonym>конкурент</synonym>
+        <synonym>соперник</synonym>
+        <synonym>competitor</synonym>
+        <synonym>rival</synonym>
+    </entity>
+
+    <!-- Entity: MarketSegment -->
+    <entity id="market_segment" name="MarketSegment" description="Сегмент рынка">
+        <attribute name="name" type="string" required="true"/>
+        <attribute name="description" type="string"/>
+        <attribute name="size" type="string"/>
+        <attribute name="growth_rate" type="string"/>
+        <synonym>сегмент рынка</synonym>
+        <synonym>ниша</synonym>
+        <synonym>рыночный сегмент</synonym>
+        <synonym>market segment</synonym>
+        <synonym>niche</synonym>
+    </entity>
+
+    <!-- Relation: has_feature -->
+    <relation source="product" predicate="has_feature" target="feature" description="Продукт имеет функциональность">
+        <attribute name="is_core" type="boolean"/>
+        <attribute name="release_version" type="string"/>
+    </relation>
+
+    <!-- Relation: purchased_by -->
+    <relation source="product" predicate="purchased_by" target="customer" description="Продукт приобретён клиентом">
+        <attribute name="purchase_date" type="date"/>
+        <attribute name="quantity" type="number"/>
+        <attribute name="price_paid" type="number"/>
+    </relation>
+
+    <!-- Relation: competes_with -->
+    <relation source="product" predicate="competes_with" target="product"
+              description="Продукт конкурирует с другим продуктом">
+        <attribute name="competitor_product" type="string"/>
+        <attribute name="competitive_advantage" type="string"/>
+    </relation>
+
+    <!-- Relation: targets_segment -->
+    <relation source="product" predicate="targets_segment" target="market_segment"
+              description="Продукт нацелен на сегмент рынка">
+        <attribute name="market_position" type="string"/>
+        <attribute name="target_share" type="string"/>
+    </relation>
+
+    <!-- Relation: belongs_to_competitor -->
+    <relation source="product" predicate="belongs_to_competitor" target="competitor"
+              description="Продукт принадлежит конкуренту">
+        <attribute name="market_position" type="string"/>
+    </relation>
+
+    <!-- Extraction configuration -->
+    <extraction>
+
+    </extraction>
+
+    <!-- Confidence thresholds -->
+    <confidence auto_publish_threshold="0.7" review_threshold="0.60" reject_threshold="0.40"/>
+</domain>

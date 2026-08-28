@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Global cross-domain ontology configuration.
+     This file defines entities and relations shared by all domains,
+     how domain instances are linked across domain boundaries,
+     and data sources for the ingestion pipeline.
+     Loaded via global_config_path in config.default.yaml.
+-->
+<global>
+
+    <!-- Global entities: schema definitions available to every domain.
+         Each domain's effective schema is its own definitions plus this pool.
+         If a domain defines an entity with the same ID, the domain definition
+         wins (a warning is logged at load time). -->
+    <entities>
+        <entity id="employee" name="Employee" description="Сотрудник компании">
+            <attribute name="full_name" type="string" required="true"/>
+            <attribute name="position" type="string"/>
+            <attribute name="department" type="string"/>
+            <attribute name="email" type="string"/>
+            <attribute name="employee_id" type="string"/>
+            <attribute name="hire_date" type="date"/>
+            <synonym>сотрудник</synonym>
+            <synonym>работник</synonym>
+            <synonym>сотрудник компании</synonym>
+            <synonym>employee</synonym>
+            <synonym>staff member</synonym>
+        </entity>
+
+        <entity id="department" name="Department" description="Подразделение компании">
+            <attribute name="name" type="string" required="true"/>
+            <attribute name="code" type="string"/>
+            <attribute name="location" type="string"/>
+            <attribute name="budget" type="number"/>
+            <synonym>отдел</synonym>
+            <synonym>департамент</synonym>
+            <synonym>управление</synonym>
+            <synonym>подразделение</synonym>
+            <synonym>department</synonym>
+            <synonym>division</synonym>
+        </entity>
+
+        <entity id="policy" name="Policy" description="Политика или регламент компании">
+            <attribute name="title" type="string" required="true"/>
+            <attribute name="version" type="string"/>
+            <attribute name="effective_date" type="date"/>
+            <attribute name="expiry_date" type="date"/>
+            <attribute name="author" type="string"/>
+            <attribute name="category" type="string"/>
+            <synonym>политика</synonym>
+            <synonym>регламент</synonym>
+            <synonym>правило</synonym>
+            <synonym>policy</synonym>
+            <synonym>regulation</synonym>
+            <synonym>procedure</synonym>
+        </entity>
+
+        <entity id="role" name="Role" description="Должность или роль в организации">
+            <attribute name="title" type="string" required="true"/>
+            <attribute name="level" type="string"/>
+            <attribute name="department" type="string"/>
+            <attribute name="responsibilities" type="string"/>
+            <synonym>должность</synonym>
+            <synonym>роль</synonym>
+            <synonym>position</synonym>
+            <synonym>job title</synonym>
+        </entity>
+
+        <entity id="email" name="EMail" description="Электронный почтовый адрес">
+            <synonym>mail</synonym>
+            <synonym>почта</synonym>
+        </entity>
+    </entities>
+
+    <!-- Global relations: schema definitions available to every domain,
+         with the same override semantics as global entities. -->
+    <relations>
+        <relation source="employee" predicate="works_in" target="department" description="Сотрудник работает в отделе">
+            <attribute name="since" type="date"/>
+            <attribute name="is_primary" type="boolean"/>
+        </relation>
+
+        <relation source="employee" predicate="owns_policy" target="policy" description="Сотрудник владеет политикой">
+            <attribute name="role" type="string"/>
+            <attribute name="since" type="date"/>
+        </relation>
+
+        <relation source="employee" predicate="has_role" target="role" description="Сотрудник занимает должность">
+            <attribute name="since" type="date"/>
+            <attribute name="is_primary" type="boolean"/>
+        </relation>
+
+        <relation source="department" predicate="belongs_to" target="department"
+                  description="Подразделение входит в другое подразделение">
+            <attribute name="since" type="date"/>
+        </relation>
+
+        <relation source="employee" predicate="manages" target="department" description="Сотрудник управляет отделом">
+            <attribute name="since" type="date"/>
+            <attribute name="is_direct" type="boolean"/>
+        </relation>
+
+        <relation source="employee" predicate="has_email" target="email" description="Почта сотрудника">
+            <attribute name="is_work" type="boolean"/>
+        </relation>
+    </relations>
+
+    <extraction>
+        <regex id="email" entity="email" pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" confidence="0.95"/>
+    </extraction>
+
+    <!-- Cross-domain linking: methods, expressions, and thresholds for connecting
+         entities across domain boundaries (e.g., hr ↔ it). -->
+    <cross-domain-links>
+
+        <!-- Linking methods to apply, in priority order.
+             "expression" — CEL-based conditional matching defined below.
+             "equals" — automatic matching by normalized name similarity.
+             "llm" — LLM-based entity resolution (requires linker config). -->
+        <method>expression</method>
+        <method>equals</method>
+        <method>llm</method>
+
+        <!-- Equals method: minimum word count for a name to be considered.
+             Names with fewer words are skipped to avoid false matches on short tokens. -->
+        <equals>
+            <min-words>2</min-words>
+        </equals>
+
+        <!-- CEL expressions for cross-domain entity linking.
+             Each expression defines a condition (where clause) evaluated against
+             entity pairs A and B from different domains with the same type and name.
+             Variables: A.domain, A.name, A.type, A.id, A.confidence, A.description, A.metadata_json, A.created_at
+             Functions: facts(id, predicate), has_fact(id, predicate), chunks(id), chunk_contains(id, text),
+                        neighbors(id, hops), path_exists(aID, bID, maxHops), metadata(entity, key) -->
+        <expressions>
+            <!-- Link product entities across HR and IT domains. -->
+            <expression>
+                <name>same-product</name>
+                <description>Link product entities with the same name between domains</description>
+                <priority>80</priority>
+                <where>A.type == 'product' &amp;&amp; A.type == B.type &amp;&amp; A.name == B.name</where>
+                <relation-type>same_entity</relation-type>
+            </expression>
+        </expressions>
+
+    </cross-domain-links>
+
+    <!-- NER extraction methods.
+         These define the pipeline stages for named entity recognition during ingestion.
+         "regex" — rule-based pattern matching against domain entity definitions.
+         "prose" — spaCy-style statistical NER (trained on news text).
+         "llm" — LLM-based entity and relation extraction (requires llm config in YAML). -->
+    <ner>
+        <method>regex</method>
+        <method>llm</method>
+    </ner>
+
+    <!-- Data sources for ingestion pipeline.
+         Each source defines a directory to index, its parser type, and domain metadata. -->
+    <sources>
+        <source path="./data/demo/edtech/documents/demo-all-in-one" type="markdown">
+            <domains>
+                <domain>hr</domain>
+            </domains>
+        </source>
+        <source path="./data/demo/edtech/documents/hr" type="markdown">
+            <domains>
+                <domain>hr</domain>
+            </domains>
+        </source>
+        <source path="./data/demo/edtech/documents/it" type="markdown">
+            <domains>
+                <domain>it</domain>
+            </domains>
+        </source>
+        <source path="./data/demo/edtech/documents/product" type="markdown">
+            <domains>
+                <domain>product</domain>
+            </domains>
+        </source>
+        <source path="./data/demo/edtech/site/api.learntech-solutions.com" type="webpages">
+            <domains>
+                <domain>it</domain>
+            </domains>
+        </source>
+        <source path="./data/demo/edtech/site/instructors.learntech-solutions.com" type="webpages">
+            <domains>
+                <domain>hr</domain>
+            </domains>
+        </source>
+        <source path="./data/demo/edtech/site/learntech-solutions.com" type="webpages">
+            <domains>
+                <domain>product</domain>
+            </domains>
+        </source>
+        <source path="./data/demo/edtech/wiki/internal" type="mediawiki">
+            <domains>
+                <domain>product</domain>
+                <domain>hr</domain>
+                <domain>it</domain>
+            </domains>
+        </source>
+    </sources>
+
+</global>
