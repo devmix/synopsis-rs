@@ -26,7 +26,7 @@ embeddings:
 #    model_name: "bge-m3-int8"  # auto-download
     model_name: "bge-small-en-v1.5"  # auto-download
     # model_path: "" # legacy: explicit path
-    vector_dim: 1024
+    vector_dim: 384
   api:
     base_url: "http://localhost:1234/v1"
     api_key: ""
@@ -53,7 +53,7 @@ ingestion:
       api_base_url: "http://192.168.1.7:1234/v1"
       #      model_name: "qwen3-4b-instruct-2507"
       #      model_name: "meta-llama-3.1-8b-instruct"
-      model_name: "openai/gpt-oss-20b"
+      model_name: "gpt-oss-20b"
       api_key: "sk-none"
       temperature: 0.01
       seed: 12
@@ -87,7 +87,7 @@ linker:
   llm:
     api_base_url: "http://192.168.1.7:1234/v1"     # OpenAI-compatible API endpoint
     #    model_name: "meta-llama-3.1-8b-instruct"
-    model_name: "openai/gpt-oss-20b"
+    model_name: "gpt-oss-20b"
     api_key: "sk-none"                        # Bearer token; empty if not required
     temperature: 0.01
     seed: 12
