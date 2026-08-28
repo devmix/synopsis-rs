@@ -1752,4 +1752,22 @@ vectors:
         let back: Config = noyalib::from_str(&yaml).expect("reparse");
         assert!(back.vectors.is_none());
     }
+
+    // ── Shipped presets (ship-ontology-demo-data task 1.3) ─────────────────
+
+    #[test]
+    fn loads_demo_config() {
+        // The demo preset (configs/config.demo.yaml) must parse through the real
+        // file loader. Ingestion sources live in data/ontology/global.xml, not in
+        // this file, so the preset only needs to point at the shipped ontology
+        // directory.
+        // CARGO_MANIFEST_DIR is `<repo>/crates/config`, so two `..` reach the
+        // repo root where `configs/` lives.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../configs/config.demo.yaml"
+        );
+        let cfg = load(path).expect("demo config must parse");
+        assert_eq!(cfg.paths.global_config_path, "data/ontology");
+    }
 }
