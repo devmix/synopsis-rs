@@ -1,0 +1,27 @@
+Determine if these two entities refer to the same real-world thing:
+
+---
+
+## Entity A
+- Name: {{ entity_a.name }}
+- Type: {{ entity_a.entity_type }}
+- Domain: {{ entity_a.domain }}
+- Description: {{ entity_a.description }}
+{% for i, chunk in entity_a.context|enumerate %}
+- Context [{{ i }}]: {{ chunk }}
+{% endfor %}
+
+---
+
+## Entity B
+- Name: {{ entity_b.name }}
+- Type: {{ entity_b.entity_type }}
+- Domain: {{ entity_b.domain }}
+- Description: {{ entity_b.description }}
+{% for i, chunk in entity_b.context|enumerate %}
+- Context [{{ i }}]: {{ chunk }}
+{% endfor %}
+
+---
+
+Respond with a JSON object containing "same_entity" (boolean), "confidence" (0.0-1.0), and "reasoning" (string, not more 100 symbols).
