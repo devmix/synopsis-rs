@@ -13,61 +13,79 @@
          wins (a warning is logged at load time). -->
     <entities>
         <entity id="employee" name="Employee" description="Сотрудник компании">
-            <attribute name="full_name" type="string" required="true"/>
-            <attribute name="position" type="string"/>
-            <attribute name="department" type="string"/>
-            <attribute name="email" type="string"/>
-            <attribute name="employee_id" type="string"/>
-            <attribute name="hire_date" type="date"/>
-            <synonym>сотрудник</synonym>
-            <synonym>работник</synonym>
-            <synonym>сотрудник компании</synonym>
-            <synonym>employee</synonym>
-            <synonym>staff member</synonym>
+            <attributes>
+                <attribute name="full_name" type="string" required="true"/>
+                <attribute name="position" type="string"/>
+                <attribute name="department" type="string"/>
+                <attribute name="email" type="string"/>
+                <attribute name="employee_id" type="string"/>
+                <attribute name="hire_date" type="date"/>
+            </attributes>
+            <synonyms>
+                <synonym>сотрудник</synonym>
+                <synonym>работник</synonym>
+                <synonym>сотрудник компании</synonym>
+                <synonym>employee</synonym>
+                <synonym>staff member</synonym>
+            </synonyms>
         </entity>
 
         <entity id="department" name="Department" description="Подразделение компании">
-            <attribute name="name" type="string" required="true"/>
-            <attribute name="code" type="string"/>
-            <attribute name="location" type="string"/>
-            <attribute name="budget" type="number"/>
-            <synonym>отдел</synonym>
-            <synonym>департамент</synonym>
-            <synonym>управление</synonym>
-            <synonym>подразделение</synonym>
-            <synonym>department</synonym>
-            <synonym>division</synonym>
+            <attributes>
+                <attribute name="name" type="string" required="true"/>
+                <attribute name="code" type="string"/>
+                <attribute name="location" type="string"/>
+                <attribute name="budget" type="number"/>
+            </attributes>
+            <synonyms>
+                <synonym>отдел</synonym>
+                <synonym>департамент</synonym>
+                <synonym>управление</synonym>
+                <synonym>подразделение</synonym>
+                <synonym>department</synonym>
+                <synonym>division</synonym>
+            </synonyms>
         </entity>
 
         <entity id="policy" name="Policy" description="Политика или регламент компании">
-            <attribute name="title" type="string" required="true"/>
-            <attribute name="version" type="string"/>
-            <attribute name="effective_date" type="date"/>
-            <attribute name="expiry_date" type="date"/>
-            <attribute name="author" type="string"/>
-            <attribute name="category" type="string"/>
-            <synonym>политика</synonym>
-            <synonym>регламент</synonym>
-            <synonym>правило</synonym>
-            <synonym>policy</synonym>
-            <synonym>regulation</synonym>
-            <synonym>procedure</synonym>
+            <attributes>
+                <attribute name="title" type="string" required="true"/>
+                <attribute name="version" type="string"/>
+                <attribute name="effective_date" type="date"/>
+                <attribute name="expiry_date" type="date"/>
+                <attribute name="author" type="string"/>
+                <attribute name="category" type="string"/>
+            </attributes>
+            <synonyms>
+                <synonym>политика</synonym>
+                <synonym>регламент</synonym>
+                <synonym>правило</synonym>
+                <synonym>policy</synonym>
+                <synonym>regulation</synonym>
+                <synonym>procedure</synonym>
+            </synonyms>
         </entity>
 
         <entity id="role" name="Role" description="Должность или роль в организации">
-            <attribute name="title" type="string" required="true"/>
-            <attribute name="level" type="string"/>
-            <attribute name="department" type="string"/>
-            <attribute name="responsibilities" type="string"/>
-            <synonym>должность</synonym>
-            <synonym>роль</synonym>
-            <synonym>position</synonym>
-            <synonym>job title</synonym>
+            <attributes>
+                <attribute name="title" type="string" required="true"/>
+                <attribute name="level" type="string"/>
+                <attribute name="department" type="string"/>
+                <attribute name="responsibilities" type="string"/>
+            </attributes>
+            <synonyms>
+                <synonym>должность</synonym>
+                <synonym>роль</synonym>
+                <synonym>position</synonym>
+                <synonym>job title</synonym>
+            </synonyms>
         </entity>
 
         <entity id="email" name="EMail" description="Электронный почтовый адрес">
-            <synonym>mail</synonym>
-            <synonym>почта</synonym>
+            <synonyms>
+                <synonym>mail</synonym>
+                <synonym>почта</synonym>
+            </synonyms>
         </entity>
     </entities>
 
@@ -75,37 +93,52 @@
          with the same override semantics as global entities. -->
     <relations>
         <relation source="employee" predicate="works_in" target="department" description="Сотрудник работает в отделе">
-            <attribute name="since" type="date"/>
-            <attribute name="is_primary" type="boolean"/>
+            <attributes>
+                <attribute name="since" type="date"/>
+                <attribute name="is_primary" type="boolean"/>
+            </attributes>
         </relation>
 
         <relation source="employee" predicate="owns_policy" target="policy" description="Сотрудник владеет политикой">
-            <attribute name="role" type="string"/>
-            <attribute name="since" type="date"/>
+            <attributes>
+                <attribute name="role" type="string"/>
+                <attribute name="since" type="date"/>
+            </attributes>
         </relation>
 
         <relation source="employee" predicate="has_role" target="role" description="Сотрудник занимает должность">
-            <attribute name="since" type="date"/>
-            <attribute name="is_primary" type="boolean"/>
+            <attributes>
+                <attribute name="since" type="date"/>
+                <attribute name="is_primary" type="boolean"/>
+            </attributes>
         </relation>
 
         <relation source="department" predicate="belongs_to" target="department"
                   description="Подразделение входит в другое подразделение">
-            <attribute name="since" type="date"/>
+            <attributes>
+                <attribute name="since" type="date"/>
+            </attributes>
         </relation>
 
         <relation source="employee" predicate="manages" target="department" description="Сотрудник управляет отделом">
-            <attribute name="since" type="date"/>
-            <attribute name="is_direct" type="boolean"/>
+            <attributes>
+                <attribute name="since" type="date"/>
+                <attribute name="is_direct" type="boolean"/>
+            </attributes>
         </relation>
 
         <relation source="employee" predicate="has_email" target="email" description="Почта сотрудника">
-            <attribute name="is_work" type="boolean"/>
+            <attributes>
+                <attribute name="is_work" type="boolean"/>
+            </attributes>
         </relation>
     </relations>
 
     <extraction>
-        <regex id="email" entity="email" pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" confidence="0.95"/>
+        <regex-rules>
+            <regex id="email" entity="email" pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"
+                   confidence="0.95"/>
+        </regex-rules>
     </extraction>
 
     <!-- Cross-domain linking: methods, expressions, and thresholds for connecting
@@ -116,9 +149,11 @@
              "expression" — CEL-based conditional matching defined below.
              "equals" — automatic matching by normalized name similarity.
              "llm" — LLM-based entity resolution (requires linker config). -->
-        <method>expression</method>
-        <method>equals</method>
-        <method>llm</method>
+        <methods>
+            <method>expression</method>
+            <method>equals</method>
+            <method>llm</method>
+        </methods>
 
         <!-- Equals method: minimum word count for a name to be considered.
              Names with fewer words are skipped to avoid false matches on short tokens. -->
@@ -151,49 +186,51 @@
          "prose" — spaCy-style statistical NER (trained on news text).
          "llm" — LLM-based entity and relation extraction (requires llm config in YAML). -->
     <ner>
-        <method>regex</method>
-        <method>llm</method>
+        <methods>
+            <method>regex</method>
+            <method>llm</method>
+        </methods>
     </ner>
 
     <!-- Data sources for ingestion pipeline.
          Each source defines a directory to index, its parser type, and domain metadata. -->
     <sources>
-        <source path="./workspace/datasets/edtech/content/documents/demo-all-in-one" type="markdown">
+        <source path="../content/documents/demo-all-in-one" type="markdown">
             <domains>
                 <domain>hr</domain>
             </domains>
         </source>
-        <source path="./workspace/datasets/edtech/content/documents/hr" type="markdown">
+        <source path="../content/documents/hr" type="markdown">
             <domains>
                 <domain>hr</domain>
             </domains>
         </source>
-        <source path="./workspace/datasets/edtech/content/documents/it" type="markdown">
+        <source path="../content/documents/it" type="markdown">
             <domains>
                 <domain>it</domain>
             </domains>
         </source>
-        <source path="./workspace/datasets/edtech/content/documents/product" type="markdown">
+        <source path="../content/documents/product" type="markdown">
             <domains>
                 <domain>product</domain>
             </domains>
         </source>
-        <source path="./workspace/datasets/edtech/content/site/api.learntech-solutions.com" type="webpages">
+        <source path="../content/site/api.learntech-solutions.com" type="webpages">
             <domains>
                 <domain>it</domain>
             </domains>
         </source>
-        <source path="./workspace/datasets/edtech/content/site/instructors.learntech-solutions.com" type="webpages">
+        <source path="../content/site/instructors.learntech-solutions.com" type="webpages">
             <domains>
                 <domain>hr</domain>
             </domains>
         </source>
-        <source path="./workspace/datasets/edtech/content/site/learntech-solutions.com" type="webpages">
+        <source path="../content/site/learntech-solutions.com" type="webpages">
             <domains>
                 <domain>product</domain>
             </domains>
         </source>
-        <source path="./workspace/datasets/edtech/content/wiki/internal" type="mediawiki">
+        <source path="../content/wiki/internal" type="mediawiki">
             <domains>
                 <domain>product</domain>
                 <domain>hr</domain>

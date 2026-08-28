@@ -236,7 +236,8 @@ impl<'de> Deserialize<'de> for SourceType {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
     /// Ingestion data sources (`<sources><source/></sources>`); empty when absent. Every loaded
-    /// source has at least one domain (`["default"]` fallback applied by the loader).
+    /// source has at least one domain (`["default"]` fallback applied by the loader) and its
+    /// relative `path` anchored to the ontology directory (see [`load_global_config`]).
     #[serde(default, deserialize_with = "de_sources")]
     pub sources: Vec<SourceConfig>,
     /// Cross-domain linking settings; `None` when the file has no `<cross-domain-links>`. When
@@ -266,7 +267,9 @@ pub struct GlobalConfig {
 /// `<domains><domain/></domains>` wrapper of domain names.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SourceConfig {
-    /// Directory to index (`path` attribute); required — enforced at load time.
+    /// Directory to index (`path` attribute); required — enforced at load time. In a loaded
+    /// config a relative value is anchored to the ontology directory (the directory holding
+    /// `global.xml`), so it resolves against the file rather than the working directory.
     #[serde(default, rename = "@path")]
     pub path: String,
     /// Parser format (`type` attribute); required — see [`SourceType`] (absent → `Unknown("")`).
@@ -838,6 +841,21 @@ impl GlobalConfig {
         }
     }
 
+    /// Anchors every non-empty relative source path to the ontology directory (the directory
+    /// holding `global.xml`) so consumers resolve sources against the file, not the process
+    /// working directory. Absolute paths are left untouched.
+    fn resolve_source_paths(&mut self, ontology_dir: &Path) {
+        for source in &mut self.sources {
+            if source.path.is_empty() {
+                continue;
+            }
+            let path = Path::new(&source.path);
+            if !path.is_absolute() {
+                source.path = ontology_dir.join(path).to_string_lossy().into_owned();
+            }
+        }
+    }
+
     /// Validates every section in the oracle's error precedence and compiles the regex rules in
     /// place (design D5): cross-domain link methods, NER methods, per-source path/type, then the
     /// entity pool (ids, attribute names, ref targets), relation pool (predicates, endpoint
@@ -944,14 +962,15 @@ impl GlobalConfig {
 // ── Loader ─────────────────────────────────────────────────────────────────
 
 /// Loads the global ontology from `ontology_dir/global.xml`: parse → oracle defaults →
-/// validation + regex compilation (design D5/D6) in one pass.
+/// source-path anchoring → validation + regex compilation (design D5/D6) in one pass.
 ///
 /// File-presence semantics follow the oracle exactly: an empty directory name or a missing file
 /// yields `Ok(None)`; any other I/O failure, malformed XML, a structurally unexpected document,
 /// a violated semantic invariant, or an uncompilable regex pattern is an error
 /// ([`ConfigError::Io`] / [`Xml`](ConfigError::Xml) / [`Validation`](ConfigError::Validation) /
 /// [`Regex`](ConfigError::Regex)). The returned config is fully normalized: defaults applied,
-/// every section validated, every rule compiled.
+/// every relative source path anchored to `ontology_dir`, every section validated, every rule
+/// compiled.
 pub fn load_global_config(
     ontology_dir: impl AsRef<Path>,
 ) -> Result<Option<GlobalConfig>, ConfigError> {
@@ -966,6 +985,7 @@ pub fn load_global_config(
         Ok(_) => {
             let mut config = crate::io_util::read_xml_file::<GlobalConfig>(&path)?;
             config.apply_defaults();
+            config.resolve_source_paths(dir);
             config.validate(&crate::io_util::display_path(&path))?;
             Ok(Some(config))
         }
@@ -1007,6 +1027,55 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         assert!(load_global_config(&dir).is_ok_and(|cfg| cfg.is_none()));
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn load_anchors_relative_source_paths_to_the_ontology_dir() {
+        // Relative source paths resolve against the directory holding global.xml, not the
+        // process working directory (a `..` segment is preserved verbatim in the join).
+        let dir =
+            std::env::temp_dir().join(format!("synopsis-ontology-anchor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("global.xml"),
+            r#"<global><sources>
+<source path="../content/documents/hr" type="markdown"/>
+<source path="docs" type="markdown"/>
+</sources></global>"#,
+        )
+        .unwrap();
+
+        let cfg = load_global_config(&dir)
+            .unwrap()
+            .expect("global.xml present");
+        assert_eq!(
+            cfg.sources[0].path,
+            dir.join("../content/documents/hr").to_string_lossy()
+        );
+        assert_eq!(cfg.sources[1].path, dir.join("docs").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_keeps_absolute_source_paths_verbatim() {
+        let dir =
+            std::env::temp_dir().join(format!("synopsis-ontology-absolute-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let absolute = std::env::temp_dir().join("synopsis-ontology-abs-source");
+        std::fs::write(
+            dir.join("global.xml"),
+            format!(
+                r#"<global><sources><source path="{absolute}" type="markdown"/></sources></global>"#,
+                absolute = absolute.display()
+            ),
+        )
+        .unwrap();
+
+        let cfg = load_global_config(&dir)
+            .unwrap()
+            .expect("global.xml present");
+        assert_eq!(cfg.sources[0].path, absolute.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

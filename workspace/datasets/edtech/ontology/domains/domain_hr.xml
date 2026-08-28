@@ -9,33 +9,48 @@
 <domain name="hr" version="1.0.0" description="HR policies, employee data, organizational structure">
 
     <!-- Entity: Salary -->
-    <entity id="salary" name="Salary" description="Заработная плата">
-        <attribute name="title" type="string" required="true"/>
-        <attribute name="amount" type="number"/>
-        <attribute name="currency" type="string"/>
-        <synonym>зп</synonym>
-        <synonym>оклад</synonym>
-        <synonym>заработная плата</synonym>
-        <synonym>оплата труда</synonym>
-    </entity>
+    <entities>
+        <entity id="salary" name="Salary" description="Заработная плата">
+            <attributes>
+                <attribute name="title" type="string" required="true"/>
+                <attribute name="amount" type="number"/>
+                <attribute name="currency" type="string"/>
+            </attributes>
+            <synonyms>
+                <synonym>зп</synonym>
+                <synonym>оклад</synonym>
+                <synonym>заработная плата</synonym>
+                <synonym>оплата труда</synonym>
+            </synonyms>
+        </entity>
 
-    <!-- Entity: Grade -->
-    <entity id="grade" name="Grade" description="Уровень сотрудника">
-        <attribute name="title" type="string" required="true"/>
-        <attribute name="experience" type="string"/>
-        <synonym>грейд</synonym>
-        <synonym>уровень</synonym>
-        <synonym>опыт</synonym>
-    </entity>
+        <!-- Entity: Grade -->
+        <entity id="grade" name="Grade" description="Уровень сотрудника">
+            <attributes>
+                <attribute name="title" type="string" required="true"/>
+                <attribute name="experience" type="string"/>
+            </attributes>
+            <synonyms>
+                <synonym>грейд</synonym>
+                <synonym>уровень</synonym>
+                <synonym>опыт</synonym>
+            </synonyms>
+        </entity>
 
-    <!-- Relation: salary_of -->
-    <relation source="grade" predicate="salary_of" target="salary" description="Соотношение уровня сотрудника к заработной плате">
-        <attribute name="amount" type="number"/>
-        <attribute name="currency" type="string"/>
-        <attribute name="experience" type="string"/>
-    </relation>
+        <!-- Relation: salary_of -->
+    </entities>
+    <relations>
+        <relation source="grade" predicate="salary_of" target="salary"
+                  description="Соотношение уровня сотрудника к заработной плате">
+            <attributes>
+                <attribute name="amount" type="number"/>
+                <attribute name="currency" type="string"/>
+                <attribute name="experience" type="string"/>
+            </attributes>
+        </relation>
 
-    <!-- Extraction configuration -->
+        <!-- Extraction configuration -->
+    </relations>
     <extraction>
 
     </extraction>

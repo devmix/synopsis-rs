@@ -82,9 +82,14 @@ fn assert_fixture_sources(cfg: &config::GlobalConfig) {
     assert_eq!(cfg.sources[7].source_type, SourceType::Mediawiki);
 
     let first = &cfg.sources[0];
+    // Relative source paths are anchored to the ontology directory at load time, so the stored
+    // value is the fixture dir joined with the file's relative path.
     assert_eq!(
         first.path,
-        "./data/storage/edtech/documents/demo-all-in-one"
+        fixture_dir()
+            .join("./data/storage/edtech/documents/demo-all-in-one")
+            .to_string_lossy()
+            .into_owned()
     );
     assert!(!first.disabled);
     assert!(first.space.is_empty());
