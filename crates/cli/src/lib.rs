@@ -7,5 +7,6 @@
 pub mod cli;
 pub mod config_resolver;
 pub mod error;
+pub mod model;
 pub mod serve;
 pub mod sync;

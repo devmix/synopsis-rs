@@ -58,10 +58,10 @@ fn subcommand_stub_prints_error_and_exits_one() {
         std::env::temp_dir().join(format!("synopsis-cli-bin-test-{}-stub", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = write_config(&dir);
-    // `serve` (task 1.6) and `sync` (task 1.7) are implemented and no longer
-    // stub; the remaining subcommands still dispatch to the not-implemented
-    // stub.
-    for sub in ["model list", "onnx-runtime status", "load-test"] {
+    // `serve` (task 1.6), `sync` (task 1.7) and `model` (task 1.8) are
+    // implemented and no longer stub; the remaining subcommands still
+    // dispatch to the not-implemented stub.
+    for sub in ["onnx-runtime status", "load-test"] {
         let args: Vec<&str> = ["--config", cfg.to_str().unwrap()]
             .into_iter()
             .chain(sub.split_whitespace())
@@ -100,10 +100,10 @@ fn global_flags_precede_subcommand() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = write_config(&dir);
-    // `serve` (task 1.6) and `sync` (task 1.7) are implemented and would do
-    // real work, so the parsing contract is probed with a still-stub
-    // subcommand: global flags before the subcommand, per-command arguments
-    // after it.
+    // `serve` (task 1.6), `sync` (task 1.7) and `model` (task 1.8) are
+    // implemented and would do real work, so the parsing contract is probed
+    // with a still-stub subcommand: global flags before the subcommand,
+    // per-command arguments after it.
     let out = run(&[
         "--preset",
         "default",
@@ -111,12 +111,52 @@ fn global_flags_precede_subcommand() {
         cfg.to_str().unwrap(),
         "--db",
         "/tmp/knowledge.db",
-        "model",
-        "list",
-        "bge-m3-int8",
+        "onnx-runtime",
+        "status",
     ]);
     assert_eq!(out.status.code(), Some(1), "stub must still exit 1");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not yet implemented"), "stderr: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `model list` (task 1.8) prints the registry table and exits 0: the binary
+/// end-to-end path (parse → resolve config → load → model_flow) with a
+/// temp-dir config and an uninstalled registry entry.
+#[test]
+fn model_list_prints_registry_table_and_exits_zero() {
+    let dir = std::env::temp_dir().join(format!(
+        "synopsis-cli-bin-test-{}-model",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let onnx = dir.join("onnx.yaml");
+    std::fs::write(
+        &onnx,
+        "models:\n  default: bge-m3-int8\n  entries:\n    - name: bge-m3-int8\n      display_name: BGE-M3 int8\n      version: 1.0.0\n      vector_dim: 1024\n",
+    )
+    .unwrap();
+    let cfg = dir.join("config.yaml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "paths:\n  data_dir: {data}\n  onnx_config: {onnx}\n",
+            data = dir.join("data").display(),
+            onnx = onnx.display()
+        ),
+    )
+    .unwrap();
+
+    let out = run(&["--config", cfg.to_str().unwrap(), "model", "list"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Available Models:"), "{stdout:?}");
+    assert!(stdout.contains("BGE-M3 int8"), "{stdout:?}");
+    assert!(stdout.contains("not installed"), "{stdout:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
