@@ -131,7 +131,7 @@ indicatif 0.18 уже в workspace.
   - Критерии приёмки: гейты cli зелёные; summary блок совпадает по полям с оракулом
     (sources/created/updated/skipped/errors/duration).
 
-- [ ] 1.8 model subcommand
+- [x] 1.8 model subcommand
   - Цель: управление моделями эмбеддингов.
   - Scope файлов: `crates/cli/src/model.rs` (новый).
   - Содержание: design D9. `model list|download|delete|info|benchmark` через
