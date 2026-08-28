@@ -321,7 +321,17 @@ pub fn discover_domains(
 /// Builds the source-type registry from the chunking config (oracle
 /// `NewRunner` registry construction): every supported format gets its
 /// parser + chunker pair, keyed by the `global.xml` `type` word.
-fn build_registry(chunking: &ChunkingConfig) -> Result<Registry, IngestionError> {
+///
+/// Public because the serve wiring (task 1.6) builds the registry as an
+/// owned local before constructing the `Runner` (the runner borrows the
+/// local, keeping the bootstrap state unpinned).
+///
+/// # Errors
+///
+/// [`IngestionError::AlreadyRegistered`] on an internal registration
+/// conflict (programmer error — the registry is built from a fixed source
+/// list).
+pub fn build_registry(chunking: &ChunkingConfig) -> Result<Registry, IngestionError> {
     let md = chunking.markdown.clone();
     let json = chunking.json.clone();
     let mut registry = Registry::new();
@@ -361,7 +371,10 @@ fn build_registry(chunking: &ChunkingConfig) -> Result<Registry, IngestionError>
 /// the embedding dimension is authoritative (the engine stores the model's
 /// vectors, so a `vectors.dim` that disagreed would only fail at insert
 /// time), the ANN tuning fields come from the `vectors:` section.
-fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, VectorsError> {
+///
+/// Shared with the serve wiring (task 1.6), which recreates the engine with
+/// this config on a dimension-mismatch auto-rebuild.
+pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, VectorsError> {
     let tuning = config.vectors_config();
     let dim = i32::max(config.vector_dim(), 0) as usize;
     VectorIndexConfig::new(
@@ -383,11 +396,15 @@ fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, VectorsErr
 /// stored index is recorded on [`Bootstrap::dimension_mismatch`] (the
 /// non-fatal signal the serve/sync wiring acts on) and also returned.
 ///
+/// Idempotent: a second call reuses the stored engine. The serve wiring
+/// (task 1.6) calls this directly before building the `Runner` so it can
+/// capture the engine's `Arc` into an owned local.
+///
 /// # Errors
 ///
 /// [`CliError::Vectors`] when the index cannot be opened/created or its
 /// stored dimension disagrees with the configuration.
-fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
+pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = vectors_index_config(&boot.config)?;
     let path = Path::new(&boot.config.paths.data_dir);
     let engine = match LanceEngine::open(path, index_config) {

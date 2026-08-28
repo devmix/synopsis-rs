@@ -6,11 +6,12 @@
 //! arrive in tasks 1.6-1.10; for now each dispatches to a stub that prints
 //! an error to stderr and exits 1.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cli::cli::{Cli, Subcommand};
 use cli::config_resolver::resolve_config_path;
+use cli::serve::server::{ServeRequest, run_serve};
 
 fn main() -> ExitCode {
     let cli = match Cli::parse() {
@@ -40,14 +41,27 @@ fn main() -> ExitCode {
     };
     init_tracing(&cfg.logging.level);
 
-    dispatch(cli)
+    dispatch(cli, cfg_path)
 }
 
-/// Routes the parsed subcommand to its handler.
-fn dispatch(cli: Cli) -> ExitCode {
+/// Routes the parsed subcommand to its handler. `cfg_path` is the resolved
+/// configuration path (explicit `--config` > preset auto-search) the
+/// subcommand bootstraps from.
+fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
+    let db_path = cli.db.as_ref().map(Path::new).map(PathBuf::from);
     match cli.command {
         Subcommand::Sync { .. } => not_implemented("sync"),
-        Subcommand::Serve { .. } => not_implemented("serve"),
+        Subcommand::Serve {
+            no_initial_sync,
+            port,
+            auto_rebuild_vectors,
+        } => run_serve(&ServeRequest {
+            cfg_path,
+            db_path,
+            no_initial_sync,
+            port,
+            auto_rebuild_vectors,
+        }),
         Subcommand::Model { .. } => not_implemented("model"),
         Subcommand::OnnxRuntime { .. } => not_implemented("onnx-runtime"),
         Subcommand::LoadTest { .. } => not_implemented("load-test"),

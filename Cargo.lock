@@ -863,6 +863,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "clap",
  "config",
  "db",
@@ -871,6 +872,7 @@ dependencies = [
  "ingestion",
  "mcp",
  "notify",
+ "reqwest 0.13.4",
  "search",
  "serde_json",
  "thiserror",

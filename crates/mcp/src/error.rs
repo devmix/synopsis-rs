@@ -28,6 +28,11 @@ pub enum McpError {
         /// The human-readable detail (e.g. "fact with id 42 not found").
         what: String,
     },
+    /// An internal failure outside the typed collaborator error channels
+    /// (design D7: panics never cross the handler boundary — the dispatch
+    /// worker's `JoinError` is the only source).
+    #[error("internal error: {0}")]
+    Internal(String),
     /// Argument parse/validation failure for a registered tool.
     #[error("invalid arguments for tool '{tool}': {reason}")]
     InvalidArguments {

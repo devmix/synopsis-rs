@@ -16,6 +16,7 @@ path = "src/main.rs"
 # ingestion/utils/vectors are declared now for the later subcommand tasks
 # (1.3-1.10) per the D1 edge list.
 [dependencies]
+axum = { workspace = true }
 clap = { workspace = true }
 config = { workspace = true }
 db = { workspace = true }
@@ -34,4 +35,7 @@ utils = { workspace = true }
 vectors = { workspace = true }
 
 [dev-dependencies]
+# Plain-HTTP GET /health assertion for the serve integration test (task 1.6):
+# the same workspace palette entry the mcp crate's integration test uses.
+reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }

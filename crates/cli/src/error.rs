@@ -14,6 +14,7 @@ use thiserror::Error;
 use config::ConfigError;
 use db::DbError;
 use embedding::EmbeddingError;
+use graph::GraphError;
 use vectors::VectorsError;
 
 /// Boundary error of the `synopsis` CLI: wraps the upstream crate errors that
@@ -35,6 +36,13 @@ pub enum CliError {
     /// format).
     #[error("vectors: {0}")]
     Vectors(#[from] VectorsError),
+    /// I/O failure outside the storage layer (binding the listen address,
+    /// dropping the stored vector table on a dimension-mismatch rebuild).
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    /// Knowledge-graph failure (index build / reload).
+    #[error("graph: {0}")]
+    Graph(#[from] GraphError),
     /// A configuration value the build does not support (e.g.
     /// `embeddings.mode: api`, a duplicate domain name).
     #[error("{0}")]

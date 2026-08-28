@@ -8,7 +8,7 @@
 //! transcribed from `tools.go` as `rmcp::model::Tool` objects, and every
 //! registered tool is backed by a real handler (design D2).
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use axum::Router;
 use axum::routing::get;
@@ -31,13 +31,20 @@ use crate::tools;
 
 /// The MCP server: injected collaborators (design D1) + the frozen tool
 /// registry. Cloned per session by the rmcp service factory.
+///
+/// The search and graph handles are hot-swappable (the design D8 seam): the
+/// search crate's hybrid searcher is immutable by design, so the CLI
+/// rebuilds it after a knowledge-graph reload and swaps both handles in via
+/// [`Self::set_searcher`] / [`Self::set_graph`]. Every session clone shares
+/// the same lock pair, so a swap is visible to all in-flight and future
+/// sessions — the Rust form of the oracle's `mcpSrv.SetGraph`.
 #[derive(Clone)]
 pub struct Server {
     name: String,
     version: String,
     db: db::Db,
-    searcher: Arc<dyn Searcher + Send + Sync>,
-    graph: Arc<graph::GraphIndex>,
+    searcher: Arc<RwLock<Arc<dyn Searcher + Send + Sync>>>,
+    graph: Arc<RwLock<Arc<graph::GraphIndex>>>,
     tools: Vec<Tool>,
 }
 
@@ -58,8 +65,8 @@ impl Server {
             name,
             version,
             db,
-            searcher,
-            graph,
+            searcher: Arc::new(RwLock::new(searcher)),
+            graph: Arc::new(RwLock::new(graph)),
             tools: tool_definitions(),
         }
     }
@@ -91,14 +98,34 @@ impl Server {
         &self.db
     }
 
-    /// The injected search contract handle.
-    pub fn searcher(&self) -> &Arc<dyn Searcher + Send + Sync> {
-        &self.searcher
+    /// The current search contract handle (a clone of the active handle).
+    #[must_use]
+    pub fn searcher(&self) -> Arc<dyn Searcher + Send + Sync> {
+        read_slot(&self.searcher)
     }
 
-    /// The injected knowledge-graph index (Ready/Unavailable per config).
-    pub fn graph(&self) -> &Arc<graph::GraphIndex> {
-        &self.graph
+    /// The current knowledge-graph index handle (Ready/Unavailable per
+    /// config; a clone of the active handle).
+    #[must_use]
+    pub fn graph(&self) -> Arc<graph::GraphIndex> {
+        read_slot(&self.graph)
+    }
+
+    /// Replaces the active search handle (design D8 hot-swap seam).
+    ///
+    /// The search crate's hybrid searcher is immutable by design — there is
+    /// no `SetGraph`-style mutation. The CLI (task 1.6) rebuilds the
+    /// searcher after a knowledge-graph reload and swaps it in here; the
+    /// swap is visible to every session clone (they share this lock).
+    pub fn set_searcher(&self, searcher: Arc<dyn Searcher + Send + Sync>) {
+        write_slot(&self.searcher, searcher);
+    }
+
+    /// Replaces the active knowledge-graph handle — the Rust form of the
+    /// oracle's `mcpSrv.SetGraph`: after a graph reload the CLI swaps the
+    /// freshly loaded index in so the graph tools serve the new state.
+    pub fn set_graph(&self, graph: Arc<graph::GraphIndex>) {
+        write_slot(&self.graph, graph);
     }
 
     /// The frozen tool registry (12 tools, `mcp-contract`).
@@ -111,8 +138,10 @@ impl Server {
     /// name never reaches this method — `call_tool` rejects it as a protocol
     /// error first; the catch-all arm is defense in depth.
     pub fn dispatch(&self, name: &str, args: Option<&Value>) -> Result<Value, McpError> {
+        let searcher = self.searcher.read().unwrap_or_else(PoisonError::into_inner);
+        let graph = self.graph.read().unwrap_or_else(PoisonError::into_inner);
         match name {
-            "search" => tools::search::handle_search(&self.db, &*self.searcher, args),
+            "search" => tools::search::handle_search(&self.db, &**searcher, args),
             "catalog_overview" => tools::catalog::handle_catalog_overview(&self.db, args),
             "catalog_documents" => tools::catalog::handle_catalog_documents(&self.db, args),
             "catalog_entities" => tools::entities_catalog::handle_catalog_entities(&self.db, args),
@@ -124,16 +153,32 @@ impl Server {
             "get_document_context" => tools::documents::handle_get_document_context(&self.db, args),
             "get_chunk_by_id" => tools::documents::handle_get_chunk_by_id(&self.db, args),
             "get_entity_dossier" => {
-                tools::dossier::handle_get_entity_dossier(&self.db, &self.graph, args)
+                tools::dossier::handle_get_entity_dossier(&self.db, &graph, args)
             }
             "get_entity_relations" => {
-                tools::graph_tools::handle_get_entity_relations(&self.db, &self.graph, args)
+                tools::graph_tools::handle_get_entity_relations(&self.db, &graph, args)
             }
             "get_entity_links" => tools::graph_tools::handle_get_entity_links(&self.db, args),
             // Defense in depth: unregistered names are rejected upstream.
             _ => Err(McpError::NotYetImplemented(name.to_owned())),
         }
     }
+}
+
+/// Reads the current handle from a hot-swap slot, recovering from a
+/// poisoned lock: a swap can only poison the lock if a holder panics, and
+/// the previous value is still intact and usable.
+fn read_slot<T>(slot: &Arc<RwLock<T>>) -> T
+where
+    T: Clone,
+{
+    slot.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Replaces the handle in a hot-swap slot (poison recovery as in
+/// [`read_slot`]).
+fn write_slot<T>(slot: &Arc<RwLock<T>>, value: T) {
+    *slot.write().unwrap_or_else(PoisonError::into_inner) = value;
 }
 
 impl ServerHandler for Server {
@@ -179,8 +224,19 @@ impl ServerHandler for Server {
             .arguments
             .as_ref()
             .map(|map| Value::Object(map.clone()));
-        match self.dispatch(&name, args.as_ref()) {
-            Ok(payload) => {
+        // The handler body is synchronous and may block (SQLite through the
+        // pool, the ONNX embedding model, the Lance index — the db/vectors/
+        // embedding crate docs: those sync facades run only in sync
+        // contexts or on `spawn_blocking` workers, never inside an async
+        // task). One hop at the dispatch boundary covers all 12 tools and
+        // keeps panics from crossing the handler boundary (design D7) —
+        // the same precedent as `GET /health`.
+        let server = self.clone();
+        let dispatched = tokio::task::spawn_blocking(move || server.dispatch(&name, args.as_ref()))
+            .await
+            .map_err(|join_err| McpError::Internal(format!("tool dispatch failed: {join_err}")));
+        match dispatched {
+            Ok(Ok(payload)) => {
                 // A serde_json::Value always serializes; the fallback keeps
                 // the no-panic rule (design D7) without an unwrap.
                 let text = serde_json::to_string(&payload).unwrap_or_else(|err| err.to_string());
@@ -188,7 +244,7 @@ impl ServerHandler for Server {
                     ContentBlock::text(text),
                 ])))
             }
-            Err(err) => Ok(err.into_tool_result()),
+            Ok(Err(err)) | Err(err) => Ok(err.into_tool_result()),
         }
     }
 
@@ -664,6 +720,7 @@ mod tests {
     use db::test_util;
     use graph::GraphIndex;
     use search::{SearchError, SearchResult};
+    use serde_json::Map;
 
     /// The 12 frozen tool names (`mcp-contract` "Набор инструментов"), in
     /// registration order.
@@ -921,6 +978,102 @@ mod tests {
                 McpError::NotYetImplemented(ref name) if name == "no_such_tool"
             ),
             "got: {err:?}"
+        );
+    }
+
+    /// A searcher that answers hybrid search with one canned result (the
+    /// swap target for the hot-swap test).
+    struct CannedSearcher;
+
+    impl Searcher for CannedSearcher {
+        fn hybrid_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Ok(vec![SearchResult {
+                chunk_id: 7,
+                chunk_text: "canned".to_owned(),
+                document_id: 1,
+                sequence_num: 0,
+                start_offset: None,
+                end_offset: None,
+                document_path: String::new(),
+                score: 1.0,
+                rank: 1,
+                source_type: "lexical".to_owned(),
+                metadata: Map::new(),
+                entities: Vec::new(),
+            }])
+        }
+
+        fn lexical_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Ok(Vec::new())
+        }
+
+        fn semantic_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The design D8 hot-swap seam: a swapped-in searcher and graph are what
+    /// `dispatch` serves from then on, and every session clone (the rmcp
+    /// factory clones the server per session) shares the swapped handles.
+    #[test]
+    fn set_searcher_and_set_graph_swap_the_active_handles() {
+        use graph::Graph;
+
+        let server = test_server();
+
+        // Before the swap: the stub's lexical error surfaces as a tool
+        // error and the scaffold graph is Unavailable.
+        let err = server
+            .dispatch("search", Some(&json!({ "query": "q" })))
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::Search(SearchError::Lexical(_))),
+            "got: {err:?}"
+        );
+        assert!(!server.graph().is_available());
+
+        // Swap the searcher: the search now resolves with the canned hit.
+        server.set_searcher(Arc::new(CannedSearcher));
+        let payload = server
+            .dispatch("search", Some(&json!({ "query": "q" })))
+            .unwrap();
+        assert_eq!(payload["total_count"], json!(1));
+        assert_eq!(payload["results"][0]["chunk_id"], json!(7));
+
+        // Swap the graph: the server reports the new (Ready) handle.
+        server.set_graph(Arc::new(GraphIndex::Ready(Graph::from_rows(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))));
+        assert!(
+            server.graph().is_available(),
+            "the swapped graph must be served"
+        );
+
+        // A session clone sees the same swapped handles.
+        let session = server.clone();
+        assert!(session.graph().is_available());
+        assert_eq!(
+            session
+                .dispatch("search", Some(&json!({ "query": "q" })))
+                .unwrap()["total_count"],
+            json!(1)
         );
     }
 
