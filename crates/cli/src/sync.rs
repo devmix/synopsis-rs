@@ -269,7 +269,7 @@ mod tests {
                 auto_rebuild_vectors: false,
             },
             paths: config::preset::PathsConfig {
-                data_dir: data_dir.to_string_lossy().into_owned(),
+                workspace_dir: data_dir.to_string_lossy().into_owned(),
                 ..Default::default()
             },
             ..Default::default()

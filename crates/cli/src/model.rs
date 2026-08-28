@@ -96,7 +96,7 @@ pub fn model_flow(req: &ModelRequest, out: &mut dyn Write) -> Result<(), CliErro
     let mut config = load(&req.cfg_path)?;
     config.apply_defaults();
     let onnx = load_onnx_config(&config.paths.onnx_config)?;
-    let manager = ModelManager::new(&config.paths.data_dir, &onnx);
+    let manager = ModelManager::new(&config.paths.workspace_dir, &onnx);
 
     match req.action {
         ModelAction::List => list_models(&manager, &onnx, out),
@@ -106,7 +106,7 @@ pub fn model_flow(req: &ModelRequest, out: &mut dyn Write) -> Result<(), CliErro
         ModelAction::Benchmark => benchmark(
             &manager,
             &onnx,
-            &config.paths.data_dir,
+            &config.paths.workspace_dir,
             req.name.as_deref(),
             out,
         ),
@@ -552,7 +552,7 @@ mod tests {
     /// pointing at `dir/data` and `dir/onnx.yaml`; returns the config path.
     fn write_config(dir: &TempDir) -> PathBuf {
         let yaml = format!(
-            "paths:\n  data_dir: {data}\n  onnx_config: {onnx}\n",
+            "paths:\n  workspace_dir: {data}\n  onnx_config: {onnx}\n",
             data = dir.as_ref().join("data").display(),
             onnx = dir.as_ref().join("onnx.yaml").display(),
         );

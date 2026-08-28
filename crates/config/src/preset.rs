@@ -2,7 +2,9 @@
 //!
 //! This module mirrors the Go oracle's `internal/config/config.go`: YAML
 //! structures, `Load` and `Validate`, and `ApplyDefaults` with the derived
-//! helpers `vector_dim` / `db_path` / `cache_db_path`. Field names, YAML keys
+//! helpers `vector_dim` / `cache_db_path`. The knowledge-DB path is NOT a
+//! config field: it is derived from `workspace_dir` + `dataset.name` via
+//! [`DatasetConfig::db_path`]. Field names, YAML keys
 //! and validation semantics stay faithful to the oracle; defaulting follows
 //! design D12/D13 (revision of task 1.2):
 //!
@@ -154,14 +156,24 @@ macro_rules! empty_string_default {
     };
 }
 
-// The eight string fields with unconditional oracle defaults (design D12 list):
-// five paths + three server identification fields. `server_*` helpers are prefixed
-// to keep the names unambiguous at module level.
-empty_string_default!(default_data_dir, de_data_dir, "data");
-empty_string_default!(default_documents_dir, de_documents_dir, "documents");
+// The string fields with unconditional defaults (design D12 list, revised by
+// storage-layout-restructure D1 + revision 1.1): four paths + three server
+// identification fields. `server_*` helpers are prefixed to keep the names
+// unambiguous at module level. The dataset name has default `""` (no dataset)
+// and the database path no longer exists (derived, not configurable), so
+// neither needs a D12 helper.
+empty_string_default!(default_workspace_dir, de_workspace_dir, "workspace");
 empty_string_default!(default_migrations_dir, de_migrations_dir, "migrations");
-empty_string_default!(default_prompts_path, de_prompts_path, "configs/prompts");
-empty_string_default!(default_onnx_config, de_onnx_config, "configs/onnx.yaml");
+empty_string_default!(
+    default_prompts_path,
+    de_prompts_path,
+    "workspace/configs/prompts"
+);
+empty_string_default!(
+    default_onnx_config,
+    de_onnx_config,
+    "workspace/configs/onnx.yaml"
+);
 empty_string_default!(default_server_name, de_server_name, "synopsis");
 empty_string_default!(default_server_version, de_server_version, "0.1.0-dev");
 empty_string_default!(default_server_host, de_server_host, "0.0.0.0");
@@ -180,6 +192,10 @@ pub struct Config {
     pub ingestion: IngestionConfig,
     /// Filesystem paths used across the application.
     pub paths: PathsConfig,
+    /// Active dataset: per-dataset artifacts (ontology, content, state,
+    /// knowledge DB, vector index) resolve under
+    /// `<workspace_dir>/datasets/<name>/` (storage-layout-restructure D1).
+    pub dataset: DatasetConfig,
     /// MCP server identification and bind settings.
     pub server: ServerConfig,
     /// Hybrid (lexical + semantic) search tuning.
@@ -273,8 +289,6 @@ impl Config {
     ///   fully enabled (`enabled = initial_sync = true`); a present one is respected as
     ///   parsed. Presence rides on the [`Option`] itself (design D8) instead of Go's
     ///   hidden `autoUpdateConfigured` flag that scans YAML nodes.
-    /// * `paths.global_config_path` is deliberately NOT defaulted: an empty value
-    ///   disables cross-domain linking (Go parity).
     pub fn apply_defaults(&mut self) {
         // Ingestion ------------------------------------------------------------------
         if self.ingestion.batch_size <= 0 {
@@ -363,9 +377,8 @@ impl Config {
             orphan_cleanup.interval_seconds = 3600;
         }
 
-        // Logging and paths are normalized at deserialization time (design D12); the
-        // only field without an oracle default is `paths.global_config_path`, which Go
-        // deliberately leaves empty (empty disables cross-domain linking).
+        // Logging, paths and dataset name are normalized at deserialization
+        // time (design D12) — nothing to do here.
 
         // NER LLM (Go applies these to the NER provider only; `linker.llm` is untouched) ----
         let llm = &mut self.ingestion.ner.llm;
@@ -434,31 +447,12 @@ impl Config {
         self.vectors.unwrap_or_default()
     }
 
-    /// Returns the main SQLite database path (Go `DBPath`): the explicit
-    /// [`DatabaseConfig::path`] when set, otherwise `paths.data_dir/knowledge.db`.
-    /// Call after [`apply_defaults`](Self::apply_defaults) so `data_dir` is populated.
-    pub fn db_path(&self) -> PathBuf {
-        if self.database.path.is_empty() {
-            PathBuf::from(self.paths.data_dir.as_str()).join("knowledge.db")
-        } else {
-            PathBuf::from(self.database.path.as_str())
-        }
-    }
-
-    /// Returns the cache database path (Go `CacheDBPath`): the explicit
-    /// [`DatabaseConfig::cache_path`] when set, otherwise `cache.db` in the
-    /// directory of [`db_path`](Self::db_path).
+    /// Returns the global cache database path
+    /// ([`PathsConfig::cache_db_path`]): `<workspace_dir>/db/cache/cache.db`.
+    /// The cache is global (LLM linker/NER + embeddings), not per-dataset
+    /// (storage-layout-restructure D1).
     pub fn cache_db_path(&self) -> PathBuf {
-        if self.database.cache_path.is_empty() {
-            // Go: filepath.Dir(DBPath()) — "." for a bare relative file name. `parent()`
-            // agrees, and `join` drops the CurDir component, so the result spells the
-            // same string as Go's cleaned Join(".", "cache.db") == "cache.db".
-            let db = self.db_path();
-            let dir = db.parent().unwrap_or_else(|| Path::new("."));
-            dir.join("cache.db")
-        } else {
-            PathBuf::from(self.database.cache_path.as_str())
-        }
+        self.paths.cache_db_path()
     }
 }
 
@@ -472,13 +466,13 @@ fn validation(message: &str) -> ConfigError {
 // ── Database ──────────────────────────────────────────────────────────────
 
 /// SQLite storage settings.
+///
+/// The knowledge-DB path is intentionally NOT a field here (revision 1.1):
+/// it is derived from `workspace_dir` + `dataset.name` via
+/// [`DatasetConfig::db_path`] and cannot be overridden in a preset.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DatabaseConfig {
-    /// Path to the main SQLite database file.
-    pub path: String,
-    /// Explicit cache DB path (overrides the derived default).
-    pub cache_path: String,
     /// Custom PRAGMA overrides keyed by pragma name.
     pub pragma: HashMap<String, String>,
 }
@@ -938,46 +932,103 @@ pub struct LoggingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PathsConfig {
-    /// Data directory for DB / cache. Absent or `""` → `"data"` at parse time (D12).
-    #[serde(default = "default_data_dir", deserialize_with = "de_data_dir")]
-    pub data_dir: String,
-    /// Documents storage directory. Absent or `""` → `"documents"` (D12).
+    /// Workspace root directory for the global artifacts (models, onnxruntime,
+    /// cache DB, and the `datasets/` tree). Absent or `""` → `"workspace"` at
+    /// parse time (D12; storage-layout-restructure D1).
     #[serde(
-        default = "default_documents_dir",
-        deserialize_with = "de_documents_dir"
+        default = "default_workspace_dir",
+        deserialize_with = "de_workspace_dir"
     )]
-    pub documents_dir: String,
+    pub workspace_dir: String,
     /// Database migrations directory. Absent or `""` → `"migrations"` (D12).
     #[serde(
         default = "default_migrations_dir",
         deserialize_with = "de_migrations_dir"
     )]
     pub migrations_dir: String,
-    /// Ontology directory (contains `global.xml` and `domains/`). No oracle default —
-    /// an empty value deliberately disables cross-domain linking (Go parity).
-    pub global_config_path: String,
-    /// Prompt template files directory. Absent or `""` → `"configs/prompts"` (D12).
+    /// Prompt template files directory. Absent or `""` →
+    /// `"workspace/configs/prompts"` (D12).
     #[serde(default = "default_prompts_path", deserialize_with = "de_prompts_path")]
     pub prompts_path: String,
     /// Path to the external `onnx.yaml` registry file. Absent or `""` →
-    /// `"configs/onnx.yaml"` (D12).
+    /// `"workspace/configs/onnx.yaml"` (D12).
     #[serde(default = "default_onnx_config", deserialize_with = "de_onnx_config")]
     pub onnx_config: String,
+}
+
+impl PathsConfig {
+    /// Global cache database: `<workspace_dir>/db/cache/cache.db`
+    /// (storage-layout-restructure D1 — the cache is global, not per-dataset).
+    pub fn cache_db_path(&self) -> PathBuf {
+        Path::new(self.workspace_dir.as_str())
+            .join("db")
+            .join("cache")
+            .join("cache.db")
+    }
 }
 
 impl Default for PathsConfig {
     fn default() -> Self {
         // Serde calls this when the whole `paths:` section is absent — per-field D12
         // attributes do not apply to a missing struct, so the defaults live here too.
-        // `global_config_path` stays empty (no oracle default; Go parity).
         Self {
-            data_dir: "data".to_string(),
-            documents_dir: "documents".to_string(),
+            workspace_dir: "workspace".to_string(),
             migrations_dir: "migrations".to_string(),
-            global_config_path: String::new(),
-            prompts_path: "configs/prompts".to_string(),
-            onnx_config: "configs/onnx.yaml".to_string(),
+            prompts_path: "workspace/configs/prompts".to_string(),
+            onnx_config: "workspace/configs/onnx.yaml".to_string(),
         }
+    }
+}
+
+/// Active dataset (storage-layout-restructure D1): per-dataset artifacts
+/// (ontology, content, state, knowledge DB, vector index) live under
+/// `<workspace_dir>/datasets/<name>/`. The helpers take the workspace dir as
+/// an argument so a single [`Config`] can resolve any dataset (the `--dataset`
+/// override rewrites [`Self::name`] before resolution).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DatasetConfig {
+    /// Dataset name (directory under `<workspace_dir>/datasets/`). Default
+    /// `""` — NO dataset (revision 1.1): an empty name means "no data", and
+    /// the bootstrap (task 1.3) skips ontology load + ingestion for it.
+    /// `edtech` is NOT a default; only presets that ingest the demo corpus
+    /// set it.
+    pub name: String,
+}
+
+impl DatasetConfig {
+    /// Dataset root: `<workspace_dir>/datasets/<name>`.
+    fn root(&self, workspace_dir: &str) -> PathBuf {
+        Path::new(workspace_dir)
+            .join("datasets")
+            .join(self.name.as_str())
+    }
+
+    /// Ontology directory (`global.xml` + `domains/`).
+    pub fn ontology_path(&self, workspace_dir: &str) -> PathBuf {
+        self.root(workspace_dir).join("ontology")
+    }
+
+    /// Ingestable content directory.
+    pub fn content_path(&self, workspace_dir: &str) -> PathBuf {
+        self.root(workspace_dir).join("content")
+    }
+
+    /// Dataset state directory.
+    pub fn state_path(&self, workspace_dir: &str) -> PathBuf {
+        self.root(workspace_dir).join("state")
+    }
+
+    /// Dataset-bound knowledge database file.
+    pub fn db_path(&self, workspace_dir: &str) -> PathBuf {
+        self.state_path(workspace_dir)
+            .join("db")
+            .join("knowledge.db")
+    }
+
+    /// Dataset-bound ANN index directory.
+    pub fn vectors_path(&self, workspace_dir: &str) -> PathBuf {
+        self.state_path(workspace_dir).join("vectors")
     }
 }
 
@@ -1264,17 +1315,17 @@ mod tests {
         assert!(!oc.enabled);
         assert_eq!(oc.interval_seconds, 3600);
 
-        // Logging / paths (global_config_path is intentionally NOT defaulted).
+        // Logging / paths / dataset / database (all normalized at parse time).
         assert_eq!(cfg.logging.level, LogLevel::Info);
         assert_eq!(cfg.logging.format, LogFormat::Console);
         assert_eq!(cfg.logging.output, LogOutput::Stderr);
         let p = &cfg.paths;
-        assert_eq!(p.data_dir, "data");
-        assert_eq!(p.documents_dir, "documents");
+        assert_eq!(p.workspace_dir, "workspace");
         assert_eq!(p.migrations_dir, "migrations");
-        assert!(p.global_config_path.is_empty());
-        assert_eq!(p.prompts_path, "configs/prompts");
-        assert_eq!(p.onnx_config, "configs/onnx.yaml");
+        assert_eq!(p.prompts_path, "workspace/configs/prompts");
+        assert_eq!(p.onnx_config, "workspace/configs/onnx.yaml");
+        // No dataset by default (revision 1.1): empty name means "no data".
+        assert_eq!(cfg.dataset.name, "");
 
         // NER LLM defaults; linker.llm must stay untouched (Go: NER provider only).
         let llm = &cfg.ingestion.ner.llm;
@@ -1333,8 +1384,9 @@ scheduler:
 logging:
   level: warn
 paths:
-  data_dir: /var/synopsis
-  global_config_path: ont
+  workspace_dir: /var/synopsis
+dataset:
+  name: custom
 embeddings:
   mode: local
   local:
@@ -1378,8 +1430,8 @@ server:
         assert_eq!(oc.interval_seconds, 1800); // explicit interval respected
 
         assert_eq!(cfg.logging.level, LogLevel::Warn); // not reset to info
-        assert_eq!(cfg.paths.data_dir, "/var/synopsis");
-        assert_eq!(cfg.paths.global_config_path, "ont"); // preserved (Go never defaults it)
+        assert_eq!(cfg.paths.workspace_dir, "/var/synopsis");
+        assert_eq!(cfg.dataset.name, "custom"); // explicit dataset name preserved
 
         assert_eq!(cfg.embeddings.local.model_name, "custom-model"); // not bge-m3-int8
 
@@ -1415,47 +1467,80 @@ server:
     }
 
     #[test]
-    fn db_path_explicit_wins_over_data_dir_fallback() {
-        // Criterion (d).
+    fn db_path_is_dataset_derived_and_not_configurable() {
+        // storage-layout-restructure D1 (revision 1.1): the knowledge-DB path
+        // is NOT configurable — `database.path` is gone; the path is derived
+        // from workspace_dir + dataset.name via DatasetConfig::db_path.
         let mut cfg = Config::default();
-        cfg.paths.data_dir = "mydata".to_string();
-
-        // Fallback: data_dir/knowledge.db.
-        assert_eq!(cfg.db_path(), PathBuf::from("mydata").join("knowledge.db"));
-
-        // Explicit database.path wins.
-        cfg.database.path = "./custom/main.sqlite".to_string();
-        assert_eq!(cfg.db_path(), PathBuf::from("./custom/main.sqlite"));
-    }
-
-    #[test]
-    fn cache_db_path_explicit_wins_over_sibling_fallback() {
-        // Criterion (d).
-        let mut cfg = Config::default();
-        cfg.paths.data_dir = "mydata".to_string();
-
-        // Sibling of the derived main DB.
+        cfg.paths.workspace_dir = "mydata".to_string();
+        cfg.dataset.name = "edtech".to_string();
         assert_eq!(
-            cfg.cache_db_path(),
-            PathBuf::from("mydata").join("cache.db")
+            cfg.dataset.db_path(&cfg.paths.workspace_dir),
+            PathBuf::from("mydata").join("datasets/edtech/state/db/knowledge.db")
         );
 
-        // Explicit cache_path wins.
-        cfg.database.cache_path = "/var/synopsis/cache.sqlite".to_string();
+        // The default empty name (no dataset) yields the degenerate form;
+        // guarding against it is the bootstrap's job (task 1.3), not the
+        // config model's.
+        let mut no_dataset = Config::default();
+        no_dataset.paths.workspace_dir = "mydata".to_string();
         assert_eq!(
-            cfg.cache_db_path(),
-            PathBuf::from("/var/synopsis/cache.sqlite")
+            no_dataset.dataset.db_path(&no_dataset.paths.workspace_dir),
+            PathBuf::from("mydata").join("datasets/state/db/knowledge.db")
         );
     }
 
     #[test]
-    fn cache_db_path_sibling_of_bare_relative_main_db() {
-        // Go: filepath.Dir("main.sqlite") == "." and Join(".", "cache.db") cleans to
-        // "cache.db"; `Path::push` normalizes the CurDir component away, so this port
-        // spells the same string.
+    fn cache_db_path_is_global_under_workspace_dir() {
+        // storage-layout-restructure D1: the cache is global, at
+        // <workspace_dir>/db/cache/cache.db, independent of the dataset.
         let mut cfg = Config::default();
-        cfg.database.path = "main.sqlite".to_string();
-        assert_eq!(cfg.cache_db_path(), PathBuf::from("cache.db"));
+        cfg.paths.workspace_dir = "mydata".to_string();
+        assert_eq!(
+            cfg.cache_db_path(),
+            PathBuf::from("mydata").join("db/cache/cache.db")
+        );
+        assert_eq!(cfg.paths.cache_db_path(), cfg.cache_db_path());
+    }
+
+    #[test]
+    fn dataset_helpers_resolve_under_workspace_dir() {
+        // storage-layout-restructure D1: the five per-dataset helpers.
+        // The default is NO dataset (revision 1.1); the helper assertions
+        // below use an explicit name.
+        assert_eq!(DatasetConfig::default().name, "");
+        let dataset = DatasetConfig {
+            name: "edtech".to_string(),
+        };
+        assert_eq!(
+            dataset.ontology_path("ws"),
+            PathBuf::from("ws").join("datasets/edtech/ontology")
+        );
+        assert_eq!(
+            dataset.content_path("ws"),
+            PathBuf::from("ws").join("datasets/edtech/content")
+        );
+        assert_eq!(
+            dataset.state_path("ws"),
+            PathBuf::from("ws").join("datasets/edtech/state")
+        );
+        assert_eq!(
+            dataset.db_path("ws"),
+            PathBuf::from("ws").join("datasets/edtech/state/db/knowledge.db")
+        );
+        assert_eq!(
+            dataset.vectors_path("ws"),
+            PathBuf::from("ws").join("datasets/edtech/state/vectors")
+        );
+
+        // A different dataset name rewrites every helper.
+        let other = DatasetConfig {
+            name: "medtech".to_string(),
+        };
+        assert_eq!(
+            other.db_path("ws"),
+            PathBuf::from("ws").join("datasets/medtech/state/db/knowledge.db")
+        );
     }
 
     #[test]
@@ -1571,11 +1656,12 @@ auto_update:
         let cfg = parse(
             r#"
 paths:
-  data_dir: ""
-  documents_dir: ""
+  workspace_dir: ""
   migrations_dir: ""
   prompts_path: ""
   onnx_config: ""
+dataset:
+  name: ""
 server:
   name: ""
   version: ""
@@ -1594,11 +1680,12 @@ ingestion:
 "#,
         );
         let p = &cfg.paths;
-        assert_eq!(p.data_dir, "data");
-        assert_eq!(p.documents_dir, "documents");
+        assert_eq!(p.workspace_dir, "workspace");
         assert_eq!(p.migrations_dir, "migrations");
-        assert_eq!(p.prompts_path, "configs/prompts");
-        assert_eq!(p.onnx_config, "configs/onnx.yaml");
+        assert_eq!(p.prompts_path, "workspace/configs/prompts");
+        assert_eq!(p.onnx_config, "workspace/configs/onnx.yaml");
+        // An explicit empty dataset name stays empty (revision 1.1: no data).
+        assert_eq!(cfg.dataset.name, "");
         let sv = &cfg.server;
         assert_eq!(sv.name, "synopsis");
         assert_eq!(sv.version, "0.1.0-dev");
@@ -1620,9 +1707,13 @@ ingestion:
     fn absent_sections_default_to_oracle_values_at_parse_time() {
         // Design D12: a whole section missing from YAML yields the struct's Default —
         // serde does not run per-field attributes on an absent struct.
+        // The fixture's `database.path` key no longer exists in the schema
+        // (revision 1.1): it is ignored like any unknown key (Go parity).
         let cfg = parse("database:\n  path: x\n");
-        assert_eq!(cfg.paths.data_dir, "data");
-        assert_eq!(cfg.paths.onnx_config, "configs/onnx.yaml");
+        assert_eq!(cfg.paths.workspace_dir, "workspace");
+        assert_eq!(cfg.paths.onnx_config, "workspace/configs/onnx.yaml");
+        // No dataset by default (revision 1.1).
+        assert_eq!(cfg.dataset.name, "");
         assert_eq!(cfg.server.name, "synopsis");
         assert_eq!(cfg.server.host, "0.0.0.0");
         assert!(cfg.graph.enable_graph);
@@ -1755,12 +1846,26 @@ vectors:
 
     // ── Shipped presets (ship-ontology-demo-data task 1.3) ─────────────────
 
+    /// Shared new-shape assertions for the shipped presets
+    /// (storage-layout-restructure D1/D8). The per-preset `dataset.name` and
+    /// its derived DB path are asserted by each test (revision 1.1: no
+    /// default dataset; the DB path is derived, not configurable).
+    fn assert_workspace_shape(cfg: &Config) {
+        assert_eq!(cfg.paths.workspace_dir, "workspace");
+        assert_eq!(cfg.paths.prompts_path, "workspace/configs/prompts");
+        assert_eq!(cfg.paths.onnx_config, "workspace/configs/onnx.yaml");
+        // The global cache path is identical for every preset.
+        assert_eq!(
+            cfg.paths.cache_db_path(),
+            PathBuf::from("workspace/db/cache/cache.db")
+        );
+    }
+
     #[test]
     fn loads_demo_config() {
         // The demo preset (configs/config.demo.yaml) must parse through the real
-        // file loader. Ingestion sources live in data/ontology/global.xml, not in
-        // this file, so the preset only needs to point at the shipped ontology
-        // directory.
+        // file loader into the storage-layout-restructure shape. Ingestion
+        // sources live in the dataset ontology (global.xml), not in this file.
         // CARGO_MANIFEST_DIR is `<repo>/crates/config`, so two `..` reach the
         // repo root where `configs/` lives.
         let path = concat!(
@@ -1768,6 +1873,30 @@ vectors:
             "/../../configs/config.demo.yaml"
         );
         let cfg = load(path).expect("demo config must parse");
-        assert_eq!(cfg.paths.global_config_path, "data/ontology");
+        assert_workspace_shape(&cfg);
+        // The demo preset ingests the shipped corpus: its dataset is edtech.
+        assert_eq!(cfg.dataset.name, "edtech");
+        assert_eq!(
+            cfg.dataset.db_path(&cfg.paths.workspace_dir),
+            PathBuf::from("workspace/datasets/edtech/state/db/knowledge.db")
+        );
+        assert_eq!(
+            cfg.dataset.ontology_path(&cfg.paths.workspace_dir),
+            PathBuf::from("workspace/datasets/edtech/ontology")
+        );
+    }
+
+    #[test]
+    fn loads_default_config() {
+        // The default preset must parse into the same new shape — with NO
+        // dataset (revision 1.1): empty name means "no data", and the
+        // bootstrap (task 1.3) skips ontology load + ingestion for it.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../configs/config.default.yaml"
+        );
+        let cfg = load(path).expect("default config must parse");
+        assert_workspace_shape(&cfg);
+        assert_eq!(cfg.dataset.name, "");
     }
 }

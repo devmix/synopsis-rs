@@ -75,7 +75,7 @@ pub fn onnx_runtime_flow(req: &OnnxRuntimeRequest, out: &mut dyn Write) -> Resul
     let mut config = load(&req.cfg_path)?;
     config.apply_defaults();
     let onnx = load_onnx_config(&config.paths.onnx_config)?;
-    let manager = LibraryManager::new(&config.paths.data_dir, &onnx)?;
+    let manager = LibraryManager::new(&config.paths.workspace_dir, &onnx)?;
 
     match req.action {
         OnnxRuntimeAction::Install => install(&manager, out),
@@ -228,7 +228,7 @@ mod tests {
     /// config path.
     fn write_config(dir: &TempDir) -> PathBuf {
         let yaml = format!(
-            "paths:\n  data_dir: {data}\n  onnx_config: {onnx}\n",
+            "paths:\n  workspace_dir: {data}\n  onnx_config: {onnx}\n",
             data = dir.as_ref().join("data").display(),
             onnx = dir.as_ref().join("onnx.yaml").display(),
         );

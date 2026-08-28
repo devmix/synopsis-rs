@@ -73,8 +73,7 @@ impl DimensionMismatch {
 /// Assembled application state shared by the `serve` and `sync` subcommands
 /// (design D3).
 pub struct Bootstrap {
-    /// Effective configuration (defaults applied, validated, `--db` override
-    /// applied).
+    /// Effective configuration (defaults applied, validated).
     pub config: Config,
     /// Global ontology (`global.xml`); `None` when the section is absent or
     /// empty (no configured sources, no cross-domain linking).
@@ -108,8 +107,9 @@ pub struct Bootstrap {
 
 /// Assembles the shared application state (design D3).
 ///
-/// `db_path` is the effective database path override (the `--db` flag);
-/// `None` keeps the config file's value. The assembly order mirrors the
+/// `db_path` is the `--db` flag override; `None` uses the dataset-derived
+/// path (`<workspace_dir>/datasets/<name>/state/db/knowledge.db` — the DB
+/// path is not configurable, revision 1.1). The assembly order mirrors the
 /// oracle: config → domain discovery → onnx.yaml → `--db` override → main
 /// database → model provisioning → provider → cache database.
 ///
@@ -145,30 +145,33 @@ pub fn bootstrap(cfg_path: &Path, db_path: Option<&Path>) -> Result<Bootstrap, C
         }
     }
 
-    // 3. Domain discovery (port of domain.DiscoveryWithLogger).
-    let (global, domains) = discover_domains(&config.paths.global_config_path)?;
+    // 3. Domain discovery (port of domain.DiscoveryWithLogger). The ontology
+    //    directory is per-dataset: <workspace_dir>/datasets/<name>/ontology.
+    let (global, domains) =
+        discover_domains(config.dataset.ontology_path(&config.paths.workspace_dir))?;
 
     // 4. External ONNX registry.
     let onnx = load_onnx_config(&config.paths.onnx_config)?;
 
-    // 5. Effective database path: CLI flag > config file.
-    if let Some(db_path) = db_path {
-        config.database.path = db_path.to_string_lossy().into_owned();
-    }
+    // 5. Effective database path: the `--db` flag override wins, otherwise
+    //    the path is derived from workspace_dir + dataset.name.
+    let db_path = db_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| config.dataset.db_path(&config.paths.workspace_dir));
 
     // 6. Main database + migrations.
-    let db = open_db(&config.db_path())?;
+    let db = open_db(&db_path)?;
 
     // 7. Model provisioning + provider.
     ensure_model(&config, &onnx)?;
-    let embed = new_onnx_provider(&config.embeddings.local, &config.paths.data_dir, &onnx)?;
+    let embed = new_onnx_provider(&config.embeddings.local, &config.paths.workspace_dir, &onnx)?;
 
     // 8. Cache database (nil-on-failure).
     let cache = open_cache(&config.cache_db_path());
 
     tracing::info!(
         config = %cfg_path.display(),
-        db = %config.db_path().display(),
+        db = %db_path.display(),
         "configuration loaded"
     );
     Ok(Bootstrap {
@@ -230,7 +233,7 @@ pub fn ensure_model(config: &Config, onnx: &OnnxConfig) -> Result<(), CliError> 
     } else {
         local.model_name.as_str()
     };
-    let manager = ModelManager::new(&config.paths.data_dir, onnx);
+    let manager = ModelManager::new(&config.paths.workspace_dir, onnx);
     let model_path = manager.ensure_model(model_name)?;
     tracing::info!(name = model_name, path = %model_path.display(), "model ensured");
     Ok(())
@@ -269,15 +272,16 @@ pub fn open_cache(path: &Path) -> Option<Db> {
 /// [`CliError::Config`] for I/O, XML, validation or regex failures of the
 /// ontology files, and for a duplicate domain name.
 pub fn discover_domains(
-    ontology_dir: &str,
+    ontology_dir: impl AsRef<Path>,
 ) -> Result<(Option<GlobalConfig>, HashMap<String, DomainConfig>), CliError> {
-    let global = load_global_config(ontology_dir)?;
+    let dir = ontology_dir.as_ref();
+    let global = load_global_config(dir)?;
     let mut domains: HashMap<String, DomainConfig> = HashMap::new();
 
-    if ontology_dir.is_empty() {
+    if dir.as_os_str().is_empty() {
         return Ok((global, domains));
     }
-    let domain_dir = Path::new(ontology_dir).join("domains");
+    let domain_dir = dir.join("domains");
     let entries = match std::fs::read_dir(&domain_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok((global, domains)),
@@ -406,7 +410,7 @@ pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, Vector
 /// stored dimension disagrees with the configuration.
 pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = vectors_index_config(&boot.config)?;
-    let path = Path::new(&boot.config.paths.data_dir);
+    let path = Path::new(&boot.config.paths.workspace_dir);
     let engine = match LanceEngine::open(path, index_config) {
         Ok(engine) => engine,
         Err(VectorsError::NotFound(_)) => LanceEngine::create(path, index_config)?,
@@ -609,7 +613,9 @@ mod tests {
     }
 
     /// Writes a valid local-mode config into `dir` and returns its path.
-    /// `data_dir` / `ontology` / `onnx` point inside `dir`.
+    /// `workspace_dir` / `onnx` point inside `dir`; the dataset ontology
+    /// resolves to `<workspace_dir>/datasets/edtech/ontology` (absent here —
+    /// discovery then yields no domains).
     fn write_config(dir: &TempDir, mode: &str) -> PathBuf {
         let dir = dir.as_ref();
         let yaml = format!(
@@ -624,13 +630,13 @@ embeddings:
     model_name: test-model
     vector_dim: 1024
 paths:
-  data_dir: {data_dir}
+  workspace_dir: {workspace_dir}
   onnx_config: {onnx}
-  global_config_path: {ontology}
+dataset:
+  name: edtech
 "#,
-            data_dir = dir.join("data").display(),
+            workspace_dir = dir.join("data").display(),
             onnx = dir.join("onnx.yaml").display(),
-            ontology = dir.join("ontology").display(),
         );
         let path = dir.join("config.yaml");
         std::fs::write(&path, yaml).expect("write config");
@@ -713,7 +719,7 @@ models:
                 auto_rebuild_vectors: false,
             },
             paths: config::preset::PathsConfig {
-                data_dir: data_dir.to_string_lossy().into_owned(),
+                workspace_dir: data_dir.to_string_lossy().into_owned(),
                 ..Default::default()
             },
             ..Default::default()
@@ -1139,8 +1145,8 @@ embeddings:
             override_path.exists(),
             "db must be opened at the overridden path"
         );
-        // And NOT at the config-derived default path.
-        let default_path = dir.as_ref().join("data").join("knowledge.db");
+        // And NOT at the config-derived default path (the edtech dataset path).
+        let default_path = PathBuf::from("./workspace/datasets/edtech/state/db/knowledge.db");
         assert!(!default_path.exists(), "default path must be untouched");
     }
 
@@ -1227,7 +1233,9 @@ models:
         );
         std::fs::write(dir.as_ref().join("onnx.yaml"), onnx_yaml).expect("write onnx.yaml");
 
-        // Config with the explicit model path (skips the auto-download).
+        // Config with the explicit model path (skips the auto-download). The
+        // database path is derived inside the temp workspace dir (dataset
+        // edtech), so this (ignored) e2e run stays inside the temp dir.
         let yaml = format!(
             r#"
 embeddings:
@@ -1237,14 +1245,14 @@ embeddings:
     model_path: {model_path}
     vector_dim: {dim}
 paths:
-  data_dir: {data_dir}
+  workspace_dir: {workspace_dir}
   onnx_config: {onnx}
-  global_config_path: {ontology}
+dataset:
+  name: edtech
 "#,
-            data_dir = data_dir.display(),
+            workspace_dir = data_dir.display(),
             model_path = model_dir.join("model.onnx").display(),
             onnx = dir.as_ref().join("onnx.yaml").display(),
-            ontology = dir.as_ref().join("ontology").display(),
         );
         let cfg_path = dir.as_ref().join("config.yaml");
         std::fs::write(&cfg_path, yaml).expect("write config");

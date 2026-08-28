@@ -330,7 +330,7 @@ impl Watcher {
     }
 
     /// Watcher over every enabled source of the global ontology (design D5):
-    /// `config.paths.global_config_path` → `global.xml` → non-disabled
+    /// `<workspace_dir>/datasets/<name>/ontology` → `global.xml` → non-disabled
     /// sources, with a trailing `debounce`. The extension accept list is
     /// derived from the parsers registered in `registry`
     /// ([`Registry::supported_extensions`](ingestion::Registry::supported_extensions)).
@@ -430,7 +430,10 @@ async fn wait_timer(wait: Option<Duration>) {
 /// source of the global ontology, resolved to an absolute path and verified
 /// to be an existing directory.
 fn watchable_sources(config: &Config) -> Result<Vec<PathBuf>, WatcherError> {
-    let Some(global) = load_global_config(&config.paths.global_config_path)? else {
+    // The ontology directory is per-dataset: <workspace_dir>/datasets/<name>/ontology.
+    let Some(global) =
+        load_global_config(config.dataset.ontology_path(&config.paths.workspace_dir))?
+    else {
         tracing::info!("no global ontology: nothing to watch");
         return Ok(Vec::new());
     };
@@ -1081,7 +1084,9 @@ mod tests {
     #[test]
     fn watchable_sources_returns_enabled_dirs_only() {
         let root = TempDir::new("sources-ok");
-        let ontology = root.sub("ontology");
+        // The ontology is per-dataset: <workspace_dir>/datasets/edtech/ontology.
+        let ontology = root.sub("datasets").join("edtech").join("ontology");
+        fs::create_dir_all(&ontology).unwrap();
         let src1 = root.sub("src1");
         let src_disabled = root.sub("srcdisabled");
         fs::write(
@@ -1097,7 +1102,9 @@ mod tests {
         )
         .unwrap();
         let mut config = Config::default();
-        config.paths.global_config_path = ontology.to_string_lossy().into_owned();
+        config.paths.workspace_dir = root.0.to_string_lossy().into_owned();
+        // No dataset by default (revision 1.1): name the fixture's dataset.
+        config.dataset.name = "edtech".to_string();
         let sources = watchable_sources(&config).unwrap();
         assert_eq!(
             sources,
@@ -1108,7 +1115,9 @@ mod tests {
     #[test]
     fn watchable_sources_rejects_non_directory_source() {
         let root = TempDir::new("sources-bad");
-        let ontology = root.sub("ontology");
+        // The ontology is per-dataset: <workspace_dir>/datasets/edtech/ontology.
+        let ontology = root.sub("datasets").join("edtech").join("ontology");
+        fs::create_dir_all(&ontology).unwrap();
         let file = root.0.join("just-a-file");
         fs::write(&file, "x").unwrap();
         fs::write(
@@ -1122,7 +1131,9 @@ mod tests {
         )
         .unwrap();
         let mut config = Config::default();
-        config.paths.global_config_path = ontology.to_string_lossy().into_owned();
+        config.paths.workspace_dir = root.0.to_string_lossy().into_owned();
+        // No dataset by default (revision 1.1): name the fixture's dataset.
+        config.dataset.name = "edtech".to_string();
         let err = watchable_sources(&config).unwrap_err();
         assert!(
             matches!(err, WatcherError::SourceNotADirectory { .. }),
@@ -1133,9 +1144,13 @@ mod tests {
     #[test]
     fn watchable_sources_empty_without_global() {
         let root = TempDir::new("sources-none");
-        let ontology = root.sub("ontology");
+        // The dataset ontology dir exists but has no global.xml.
+        let ontology = root.sub("datasets").join("edtech").join("ontology");
+        fs::create_dir_all(&ontology).unwrap();
         let mut config = Config::default();
-        config.paths.global_config_path = ontology.to_string_lossy().into_owned();
+        config.paths.workspace_dir = root.0.to_string_lossy().into_owned();
+        // No dataset by default (revision 1.1): name the fixture's dataset.
+        config.dataset.name = "edtech".to_string();
         assert!(watchable_sources(&config).unwrap().is_empty());
     }
 }

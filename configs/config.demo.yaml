@@ -11,7 +11,8 @@
 # Default configuration file. Use flag --config configs/config.default.yaml or use --preset default.
 
 database:
-  path: "./data/knowledge.db"
+  # The knowledge-DB path is NOT configurable: it is derived from
+  # workspace_dir + dataset.name (<workspace>/datasets/<name>/state/db/knowledge.db).
   pragma:
     mmap_size: "268435456"   # 256MB
     journal_mode: WAL
@@ -141,19 +142,21 @@ logging:
   format: "console"
   output: "stderr"
 
+# Active dataset: per-dataset artifacts live under
+# <workspace_dir>/datasets/<name>/ (ontology, content, state/db, state/vectors).
+# The demo preset ingests the shipped corpus (edtech); an empty name would
+# mean NO dataset (run with no data).
+dataset:
+  name: "edtech"
+
 paths:
-  data_dir: "data"
-  documents_dir: "documents"
+  workspace_dir: "workspace"
   migrations_dir: "migrations"
-  # Path to ontology directory (contains global.xml and domains/*.xml).
-  # Can be absolute or relative to executable/CWD.
-  # If empty, cross-domain linking is disabled.
-  global_config_path: "data/ontology"
   # Path to prompt template files (.tmpl). Templates are loaded at startup;
   # embedded defaults serve as fallback if files are missing.
-  prompts_path: "configs/prompts"
+  prompts_path: "workspace/configs/prompts"
   # Path to the external ONNX model registry (task 1.2 ships it next to this file).
-  onnx_config: "configs/onnx.yaml"
+  onnx_config: "workspace/configs/onnx.yaml"
 
 server:
   name: "synopsis"

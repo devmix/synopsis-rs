@@ -166,13 +166,13 @@ fn open_vectors_with_recreate(boot: &mut Bootstrap, no_fill: bool) -> Result<(),
 
 /// Verifies the embedding model is installed; fails loudly if not.
 fn require_embedding_model(boot: &Bootstrap) -> Result<(), CliError> {
-    let manager = embedding::model::ModelManager::new(&boot.config.paths.data_dir, &boot.onnx);
+    let manager = embedding::model::ModelManager::new(&boot.config.paths.workspace_dir, &boot.onnx);
     let model_name = boot.config.embeddings.local.model_name.as_str();
     if !manager.is_installed(model_name) {
         return Err(CliError::Unsupported(format!(
             "embedding model {model_name:?} is not installed. \
-             Run `synopsis model download` first, or place the model in {}",
-            boot.config.paths.data_dir
+              Run `synopsis model download` first, or place the model in {}",
+            boot.config.paths.workspace_dir
         )));
     }
     Ok(())
@@ -242,7 +242,7 @@ mod tests {
         let mut config = Config::default();
         config.embeddings.local.model_name = "bge-m3-int8".to_string();
         config.embeddings.local.vector_dim = 4;
-        config.paths.data_dir = data_dir.to_string_lossy().into_owned();
+        config.paths.workspace_dir = data_dir.to_string_lossy().into_owned();
         config.apply_defaults();
         let db = open_db(data_dir.join("knowledge.db").as_path()).expect("open db");
         Bootstrap {

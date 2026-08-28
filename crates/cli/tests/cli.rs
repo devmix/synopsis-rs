@@ -126,7 +126,7 @@ fn global_flags_precede_subcommand() {
     std::fs::write(
         &cfg,
         format!(
-            "paths:\n  data_dir: {data}\n  onnx_config: {onnx}\n",
+            "paths:\n  workspace_dir: {data}\n  onnx_config: {onnx}\n",
             data = dir.join("data").display(),
             onnx = onnx.display()
         ),
@@ -175,7 +175,7 @@ fn model_list_prints_registry_table_and_exits_zero() {
     std::fs::write(
         &cfg,
         format!(
-            "paths:\n  data_dir: {data}\n  onnx_config: {onnx}\n",
+            "paths:\n  workspace_dir: {data}\n  onnx_config: {onnx}\n",
             data = dir.join("data").display(),
             onnx = onnx.display()
         ),

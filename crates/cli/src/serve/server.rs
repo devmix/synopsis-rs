@@ -637,8 +637,8 @@ fn run_orphan_cleanup(runner: &Runner<'_>) {
 /// anyway).
 pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = bootstrap::vectors_index_config(&boot.config)?;
-    let path = Path::new(&boot.config.paths.data_dir);
-    // The engine stores its table under `<data_dir>/vectors.lance` (Lance
+    let path = Path::new(&boot.config.paths.workspace_dir);
+    // The engine stores its table under `<workspace_dir>/vectors.lance` (Lance
     // layout); it must be dropped before the engine can be recreated with
     // the new schema.
     let table_dir = path.join("vectors.lance");
@@ -794,7 +794,7 @@ mod tests {
                 auto_rebuild_vectors: false,
             },
             paths: config::preset::PathsConfig {
-                data_dir: data_dir.to_string_lossy().into_owned(),
+                workspace_dir: data_dir.to_string_lossy().into_owned(),
                 ..Default::default()
             },
             ..Default::default()

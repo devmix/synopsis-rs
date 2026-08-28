@@ -30,8 +30,10 @@ fn fixture_parses_all_sections_with_expected_values() {
     let cfg: Config = load(fixture()).expect("config.default.yaml must parse and be valid YAML");
 
     // database --------------------------------------------------------------
-    assert_eq!(cfg.database.path, "./data/knowledge.db");
-    assert!(cfg.database.cache_path.is_empty());
+    // The verbatim oracle fixture still carries `database.path`, but the
+    // field is gone (revision 1.1: the DB path is derived from
+    // workspace_dir + dataset.name, not configurable) — the key is now
+    // ignored like any unknown key (Go parity).
     assert_eq!(
         cfg.database.pragma.get("mmap_size").map(String::as_str),
         Some("268435456")
@@ -154,14 +156,22 @@ fn fixture_parses_all_sections_with_expected_values() {
     assert_eq!(cfg.logging.output, LogOutput::Stderr);
 
     // paths -----------------------------------------------------------------
+    // The verbatim oracle fixture predates the storage-layout-restructure: its
+    // `data_dir` / `documents_dir` / `global_config_path` keys are now ignored
+    // (unknown-key tolerance, Go parity), so the fields resolve to their new
+    // defaults.
     let p = &cfg.paths;
-    assert_eq!(p.data_dir, "data");
-    assert_eq!(p.documents_dir, "documents");
+    assert_eq!(p.workspace_dir, "workspace");
     assert_eq!(p.migrations_dir, "migrations");
-    assert_eq!(p.global_config_path, "data/ontology");
+    // Explicit fixture value survives: `prompts_path` still exists in the new
+    // schema, so the oracle's "configs/prompts" is respected.
     assert_eq!(p.prompts_path, "configs/prompts");
-    // Absent in the fixture -> normalized to its oracle default at parse time (D12).
-    assert_eq!(p.onnx_config, "configs/onnx.yaml");
+    // Absent in the fixture -> normalized to its default at parse time (D12).
+    assert_eq!(p.onnx_config, "workspace/configs/onnx.yaml");
+
+    // dataset (absent in the fixture -> default) -----------------------------
+    // No dataset by default (revision 1.1): empty name means "no data".
+    assert_eq!(cfg.dataset.name, "");
 
     // server ----------------------------------------------------------------
     let sv = &cfg.server;
@@ -203,7 +213,8 @@ fn apply_defaults_does_not_change_explicit_fixture_values() {
     cfg.apply_defaults();
 
     // Explicit values that differ from the oracle defaults (survival checks).
-    assert_eq!(cfg.database.path, "./data/knowledge.db");
+    // (The fixture's `database.path` no longer exists in the schema —
+    // revision 1.1 — so it has nothing to survive.)
     assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Local);
     assert_eq!(
         cfg.embeddings.local.model_name,
@@ -247,11 +258,21 @@ fn apply_defaults_does_not_change_explicit_fixture_values() {
 
     assert_eq!(cfg.logging.level, LogLevel::Debug); // not reset to info
     let p = &cfg.paths;
-    assert_eq!(p.global_config_path, "data/ontology");
+    // The fixture's `data_dir` key is ignored by the new schema -> default.
+    assert_eq!(p.workspace_dir, "workspace");
     // Fields ABSENT from the fixture get their defaults:
-    assert_eq!(p.onnx_config, "configs/onnx.yaml");
+    assert_eq!(p.onnx_config, "workspace/configs/onnx.yaml");
 
-    // Derived helpers see the explicit values (criterion d on the fixture).
-    assert_eq!(cfg.db_path(), PathBuf::from("./data/knowledge.db"));
-    assert_eq!(cfg.cache_db_path(), PathBuf::from("./data/cache.db"));
+    // Derived helpers: the knowledge DB is dataset-derived (the fixture has
+    // no `dataset:` section, so the default empty name yields the degenerate
+    // form — revision 1.1), while the cache is global under workspace_dir
+    // (storage-layout-restructure D1).
+    assert_eq!(
+        cfg.dataset.db_path(&cfg.paths.workspace_dir),
+        PathBuf::from("workspace/datasets/state/db/knowledge.db")
+    );
+    assert_eq!(
+        cfg.cache_db_path(),
+        PathBuf::from("workspace/db/cache/cache.db")
+    );
 }
