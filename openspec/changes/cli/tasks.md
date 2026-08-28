@@ -118,7 +118,7 @@ indicatif 0.18 уже в workspace.
     или in-process с tokio runtime в тесте).
   - Критерии приёмки: гейты cli зелёные; serve стартует и корректно останавливается.
 
-- [ ] 1.7 sync subcommand
+- [x] 1.7 sync subcommand
   - Цель: одноразовая полная реиндексация.
   - Scope файлов: `crates/cli/src/sync.rs` (новый).
   - Содержание: design D8. `run_sync(cfg_path, db_path, rebuild, auto_rebuild_vectors)`:
