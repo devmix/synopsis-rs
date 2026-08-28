@@ -631,7 +631,11 @@ fn run_orphan_cleanup(runner: &Runner<'_>) {
 /// Drops the stored ANN table and recreates the engine with the configured
 /// dimension (the Rust form of the oracle's `DropVectorTable` +
 /// `InitVectorTable` inside `ReEmbedChunks`).
-fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
+///
+/// Shared with the `sync` subcommand (design D8), which takes the same
+/// recreate path on a dimension mismatch (`--rebuild` resets everything
+/// anyway).
+pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = bootstrap::vectors_index_config(&boot.config)?;
     let path = Path::new(&boot.config.paths.data_dir);
     // The engine stores its table under `<data_dir>/vectors.lance` (Lance

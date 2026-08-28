@@ -8,3 +8,4 @@ pub mod cli;
 pub mod config_resolver;
 pub mod error;
 pub mod serve;
+pub mod sync;

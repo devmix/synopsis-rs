@@ -3,8 +3,8 @@
 //! Parse global flags + subcommand → resolve the config path → load the
 //! config just for the logging level (the full bootstrap arrives with the
 //! per-subcommand tasks) → init tracing → dispatch. Real subcommand bodies
-//! arrive in tasks 1.6-1.10; for now each dispatches to a stub that prints
-//! an error to stderr and exits 1.
+//! arrive in tasks 1.6-1.10 (`serve` and `sync` are implemented; the rest
+//! dispatch to stubs that print an error to stderr and exit 1).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use cli::cli::{Cli, Subcommand};
 use cli::config_resolver::resolve_config_path;
 use cli::serve::server::{ServeRequest, run_serve};
+use cli::sync::{SyncRequest, run_sync};
 
 fn main() -> ExitCode {
     let cli = match Cli::parse() {
@@ -50,7 +51,15 @@ fn main() -> ExitCode {
 fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
     let db_path = cli.db.as_ref().map(Path::new).map(PathBuf::from);
     match cli.command {
-        Subcommand::Sync { .. } => not_implemented("sync"),
+        Subcommand::Sync {
+            rebuild,
+            auto_rebuild_vectors,
+        } => run_sync(&SyncRequest {
+            cfg_path,
+            db_path,
+            rebuild,
+            auto_rebuild_vectors,
+        }),
         Subcommand::Serve {
             no_initial_sync,
             port,

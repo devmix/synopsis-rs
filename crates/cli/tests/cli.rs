@@ -58,9 +58,10 @@ fn subcommand_stub_prints_error_and_exits_one() {
         std::env::temp_dir().join(format!("synopsis-cli-bin-test-{}-stub", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = write_config(&dir);
-    // `serve` is implemented (task 1.6) and no longer stubs; the remaining
-    // subcommands still dispatch to the not-implemented stub.
-    for sub in ["sync", "model list", "onnx-runtime status", "load-test"] {
+    // `serve` (task 1.6) and `sync` (task 1.7) are implemented and no longer
+    // stub; the remaining subcommands still dispatch to the not-implemented
+    // stub.
+    for sub in ["model list", "onnx-runtime status", "load-test"] {
         let args: Vec<&str> = ["--config", cfg.to_str().unwrap()]
             .into_iter()
             .chain(sub.split_whitespace())
@@ -99,9 +100,10 @@ fn global_flags_precede_subcommand() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = write_config(&dir);
-    // `serve` is implemented (task 1.6) and would start a real server, so the
-    // parsing contract is probed with `sync` (still a stub): global flags
-    // before the subcommand, per-command flags after it.
+    // `serve` (task 1.6) and `sync` (task 1.7) are implemented and would do
+    // real work, so the parsing contract is probed with a still-stub
+    // subcommand: global flags before the subcommand, per-command arguments
+    // after it.
     let out = run(&[
         "--preset",
         "default",
@@ -109,8 +111,9 @@ fn global_flags_precede_subcommand() {
         cfg.to_str().unwrap(),
         "--db",
         "/tmp/knowledge.db",
-        "sync",
-        "--rebuild",
+        "model",
+        "list",
+        "bge-m3-int8",
     ]);
     assert_eq!(out.status.code(), Some(1), "stub must still exit 1");
     let stderr = String::from_utf8_lossy(&out.stderr);
