@@ -264,7 +264,7 @@ mod tests {
     }
 
     /// A 4-dim local-mode config (matching [`FakeEmbed`]), NER disabled.
-    fn test_config(data_dir: &Path) -> Config {
+    fn test_config(workspace_dir: &Path) -> Config {
         let mut config = Config {
             embeddings: config::preset::EmbeddingsConfig {
                 mode: config::preset::EmbeddingsMode::Local,
@@ -278,7 +278,7 @@ mod tests {
                 auto_rebuild_vectors: false,
             },
             paths: config::preset::PathsConfig {
-                workspace_dir: data_dir.to_string_lossy().into_owned(),
+                workspace_dir: workspace_dir.to_string_lossy().into_owned(),
                 ..Default::default()
             },
             ..Default::default()
@@ -338,7 +338,7 @@ mod tests {
             "# Title\n\nBody text of the document.\n",
         )
         .expect("write source document");
-        let mut config = test_config(&dir.as_ref().join("data"));
+        let mut config = test_config(&dir.as_ref().join("workspace"));
         // An active dataset (design D2): named + directory present, so the
         // sync flow ingests instead of short-circuiting with no data.
         config.dataset.name = "edtech".to_string();
@@ -458,7 +458,7 @@ mod tests {
     fn precreate_mismatched_index(dir: &TempDir) {
         let vectors_path = dir
             .as_ref()
-            .join("data")
+            .join("workspace")
             .join("datasets")
             .join("edtech")
             .join("state")

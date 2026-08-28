@@ -1,6 +1,6 @@
 # Synopsis[MEMEX] Configuration
 #
-# Default configuration file. Use flag --config configs/config.default.yaml or use --preset default.
+# Default configuration file. Use flag --config workspace/configs/config.default.yaml or use --preset default.
 
 database:
   # The knowledge-DB path is NOT configurable: it is derived from

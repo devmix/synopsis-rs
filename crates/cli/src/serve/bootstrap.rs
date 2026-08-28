@@ -674,7 +674,7 @@ paths:
 dataset:
   name: edtech
 "#,
-            workspace_dir = dir.join("data").display(),
+            workspace_dir = dir.join("workspace").display(),
             onnx = dir.join("onnx.yaml").display(),
         );
         let path = dir.join("config.yaml");
@@ -744,7 +744,7 @@ models:
         }
     }
 
-    fn local_config(data_dir: &Path) -> Config {
+    fn local_config(workspace_dir: &Path) -> Config {
         Config {
             embeddings: config::preset::EmbeddingsConfig {
                 mode: EmbeddingsMode::Local,
@@ -758,7 +758,7 @@ models:
                 auto_rebuild_vectors: false,
             },
             paths: config::preset::PathsConfig {
-                workspace_dir: data_dir.to_string_lossy().into_owned(),
+                workspace_dir: workspace_dir.to_string_lossy().into_owned(),
                 ..Default::default()
             },
             ..Default::default()
@@ -972,8 +972,8 @@ models:
 
     /// A local-mode config with a 4-dim embedding (matching [`MockEmbed`]),
     /// NER disabled, chunker parameters normalized.
-    fn sync_config(data_dir: &Path) -> Config {
-        let mut config = local_config(data_dir);
+    fn sync_config(workspace_dir: &Path) -> Config {
+        let mut config = local_config(workspace_dir);
         config.embeddings.local.vector_dim = 4;
         config.ingestion.ner.disabled = true;
         config.apply_defaults();
@@ -1033,7 +1033,7 @@ models:
         let dir = TempDir::new("build-runner");
         let src = dir.as_ref().join("src");
         std::fs::create_dir_all(&src).expect("create source dir");
-        let config = sync_config(&dir.as_ref().join("data"));
+        let config = sync_config(&dir.as_ref().join("workspace"));
         let global = one_markdown_source(&src);
         let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
         let mut boot = test_bootstrap(config, Some(global), db);
@@ -1052,8 +1052,8 @@ models:
     #[test]
     fn build_runner_dimension_mismatch_sets_flag() {
         let dir = TempDir::new("dim-mismatch");
-        let data_dir = dir.as_ref().join("data");
-        let mut config = sync_config(&data_dir); // 4-dim embedding vs 8-dim index
+        let workspace_dir = dir.as_ref().join("workspace");
+        let mut config = sync_config(&workspace_dir); // 4-dim embedding vs 8-dim index
         config.dataset.name = "edtech".to_string();
         // Pre-create the stored index (at the dataset's vectors path) with a
         // different dimension.
@@ -1098,7 +1098,7 @@ models:
             "# Title\n\nBody text of the document.\n",
         )
         .expect("write source document");
-        let config = sync_config(&dir.as_ref().join("data"));
+        let config = sync_config(&dir.as_ref().join("workspace"));
         let global = one_markdown_source(&src);
         let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
         let mut boot = test_bootstrap(config, Some(global), db);
@@ -1182,7 +1182,7 @@ embeddings:
         let dir = TempDir::new("boot-dataset-override");
         write_onnx(&dir);
         let cfg_path = write_config(&dir, "local");
-        let ws = dir.as_ref().join("data");
+        let ws = dir.as_ref().join("workspace");
         let overridden_db = ws
             .join("datasets")
             .join("other")
@@ -1255,10 +1255,10 @@ embeddings:
             .expect("CLI_TEST_DIM must be a number");
 
         let dir = TempDir::new("boot-e2e");
-        let data_dir = dir.as_ref().join("data");
+        let workspace_dir = dir.as_ref().join("workspace");
 
         // Pre-install the ONNX runtime library through the cache manifest.
-        let cache_dir = data_dir.join("onnxruntime");
+        let cache_dir = workspace_dir.join("onnxruntime");
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
         let lib_name = std::path::Path::new(&lib)
             .file_name()
@@ -1282,7 +1282,7 @@ embeddings:
 
         // Pre-install the model + tokenizer next to each other (explicit
         // model_path flow: the tokenizer is derived from the model's dir).
-        let model_dir = data_dir.join("models").join("bge-m3-int8");
+        let model_dir = workspace_dir.join("models").join("bge-m3-int8");
         std::fs::create_dir_all(&model_dir).expect("create model dir");
         std::fs::copy(&model, model_dir.join("model.onnx")).expect("copy model");
         std::fs::copy(&tokenizer, model_dir.join("tokenizer.json")).expect("copy tokenizer");
@@ -1330,7 +1330,7 @@ paths:
 dataset:
   name: edtech
 "#,
-            workspace_dir = data_dir.display(),
+            workspace_dir = workspace_dir.display(),
             model_path = model_dir.join("model.onnx").display(),
             onnx = dir.as_ref().join("onnx.yaml").display(),
         );

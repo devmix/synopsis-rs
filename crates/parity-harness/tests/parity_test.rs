@@ -23,17 +23,18 @@
 //!
 //! The comparison stays like-for-like: the corpus is embedded with
 //! **bge-small-en-v1.5 (384-dim)**, the same model the Go oracle used for
-//! knowledge.db and the `configs/onnx.yaml` registry default, loaded from
-//! the pre-installed copy under the repo `data/` directory (provenance:
-//! `data/README.md`). The product default (bge-m3-int8, 1024-dim, 2.3 GB)
+//! knowledge.db and the `workspace/configs/onnx.yaml` registry default,
+//! loaded from the pre-installed copy under the repo `workspace/`
+//! directory (provenance: `workspace/README.md`). The product default
+//! (bge-m3-int8, 1024-dim, 2.3 GB)
 //! is deliberately not used: it would make the test several times heavier
 //! than the product startup path without adding parity signal.
 //!
 //! # Graceful skip
 //!
 //! If the ONNX runtime library or model cannot be loaded in this
-//! environment (missing `data/` artifacts, unsupported platform), the test
-//! prints a clear message and returns without failing the suite.
+//! environment (missing `workspace/` artifacts, unsupported platform), the
+//! test prints a clear message and returns without failing the suite.
 //!
 //! # Unindexed Lance table
 //!
@@ -138,8 +139,8 @@ fn mcp_tool_latency_meets_go_gates() {
         Some(provider) => provider,
         None => {
             eprintln!(
-                "SKIP: the ONNX runtime or the bge-small-en-v1.5 model under data/ is \
-                 not usable in this environment; see data/README.md"
+                "SKIP: the ONNX runtime or the bge-small-en-v1.5 model under \
+                 workspace/ is not usable in this environment; see workspace/README.md"
             );
             return;
         }
@@ -386,15 +387,22 @@ fn assert_search_gates(stats: &TimingStats) {
 }
 
 /// Build the ONNX embedding provider from the pre-installed artifacts under
-/// the repo `data/` directory, or `None` when they are not usable here.
+/// the repo `workspace/` directory, or `None` when they are not usable here.
 ///
 /// Uses the explicit `model_path` override (oracle `NewONNXProvider`
 /// semantics): the file is used as-is — no registry lookup, no download, no
 /// manifest mutation — keeping the test fully offline.
 fn build_provider(repo_root: &Path) -> Option<Arc<dyn EmbeddingProvider>> {
-    let onnx_path = repo_root.join("configs/onnx.yaml");
+    let onnx_path = repo_root
+        .join("workspace")
+        .join("configs")
+        .join("onnx.yaml");
     let onnx_cfg = config::load_onnx_config(&onnx_path).ok()?;
-    let model_path = repo_root.join("data/models/bge-small-en-v1.5/model.onnx");
+    let model_path = repo_root
+        .join("workspace")
+        .join("models")
+        .join("bge-small-en-v1.5")
+        .join("model.onnx");
     if !model_path.is_file() {
         return None;
     }
@@ -404,7 +412,7 @@ fn build_provider(repo_root: &Path) -> Option<Arc<dyn EmbeddingProvider>> {
         vector_dim: 384,
         ..Default::default()
     };
-    new_onnx_provider(&cfg, repo_root.join("data"), &onnx_cfg).ok()
+    new_onnx_provider(&cfg, repo_root.join("workspace"), &onnx_cfg).ok()
 }
 
 /// ADR 0003 ANN parameters for the test dimension (the index itself is

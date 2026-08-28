@@ -1,14 +1,15 @@
 # Demo preset — a copy of config.default.yaml that ingests the demo corpus
-# shipped in this repository (data/demo/edtech/). Ingestion sources are NOT
-# declared in this file: they live in data/ontology/global.xml, which already
-# points at ./data/demo/edtech/... (see data/README.md). Use this preset to
-# ingest the demo out-of-the-box:
+# shipped in this repository (workspace/datasets/edtech/content/). Ingestion
+# sources are NOT declared in this file: they live in
+# workspace/datasets/edtech/ontology/global.xml, which already points at
+# ./workspace/datasets/edtech/content/... (see workspace/README.md). Use this
+# preset to ingest the demo out-of-the-box:
 #
-#   synopsis serve --config configs/config.demo.yaml
+#   synopsis serve --config workspace/configs/config.demo.yaml
 #
 # Synopsis[MEMEX] Configuration
 #
-# Default configuration file. Use flag --config configs/config.default.yaml or use --preset default.
+# Default configuration file. Use flag --config workspace/configs/config.default.yaml or use --preset default.
 
 database:
   # The knowledge-DB path is NOT configurable: it is derived from

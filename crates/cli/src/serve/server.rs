@@ -788,7 +788,7 @@ mod tests {
     }
 
     /// A 4-dim local-mode config (matching [`FakeEmbed`]), NER disabled.
-    fn test_config(data_dir: &Path) -> Config {
+    fn test_config(workspace_dir: &Path) -> Config {
         let mut config = Config {
             embeddings: config::preset::EmbeddingsConfig {
                 mode: config::preset::EmbeddingsMode::Local,
@@ -802,7 +802,7 @@ mod tests {
                 auto_rebuild_vectors: false,
             },
             paths: config::preset::PathsConfig {
-                workspace_dir: data_dir.to_string_lossy().into_owned(),
+                workspace_dir: workspace_dir.to_string_lossy().into_owned(),
                 ..Default::default()
             },
             ..Default::default()
@@ -815,7 +815,7 @@ mod tests {
     /// The fixture's dataset vectors path (dataset `edtech`).
     fn dataset_vectors_path(dir: &TempDir) -> PathBuf {
         dir.as_ref()
-            .join("data")
+            .join("workspace")
             .join("datasets")
             .join("edtech")
             .join("state")
@@ -826,7 +826,7 @@ mod tests {
     /// (global `None`) — the task's "no real sources" shape. The dataset is
     /// active (design D2): named `edtech` with the directory present.
     fn test_bootstrap(dir: &TempDir) -> Bootstrap {
-        let mut config = test_config(&dir.as_ref().join("data"));
+        let mut config = test_config(&dir.as_ref().join("workspace"));
         config.dataset.name = "edtech".to_string();
         std::fs::create_dir_all(config.dataset.state_path(&config.paths.workspace_dir))
             .expect("create dataset state dir");

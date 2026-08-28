@@ -240,16 +240,16 @@ mod tests {
     /// A 4-dim Bootstrap with a temp-file DB (matching [`FakeEmbed`]). The
     /// dataset is active (design D2): named `edtech` with the directory
     /// present.
-    fn test_bootstrap(data_dir: &Path) -> Bootstrap {
+    fn test_bootstrap(workspace_dir: &Path) -> Bootstrap {
         let mut config = Config::default();
         config.embeddings.local.model_name = "bge-m3-int8".to_string();
         config.embeddings.local.vector_dim = 4;
-        config.paths.workspace_dir = data_dir.to_string_lossy().into_owned();
+        config.paths.workspace_dir = workspace_dir.to_string_lossy().into_owned();
         config.dataset.name = "edtech".to_string();
         config.apply_defaults();
         std::fs::create_dir_all(config.dataset.state_path(&config.paths.workspace_dir))
             .expect("create dataset state dir");
-        let db = open_db(data_dir.join("knowledge.db").as_path()).expect("open db");
+        let db = open_db(workspace_dir.join("knowledge.db").as_path()).expect("open db");
         Bootstrap {
             config,
             global: None,
@@ -267,9 +267,9 @@ mod tests {
 
     /// Pre-creates a stored ANN index with the given dimension at the
     /// fixture's dataset vectors path (dataset `edtech`).
-    fn stored_index(data_dir: &Path, dim: usize) {
+    fn stored_index(workspace_dir: &Path, dim: usize) {
         let stored = VectorIndexConfig::new(dim, 16, 100, 256, 32, 200).expect("index config");
-        let vectors_path = data_dir
+        let vectors_path = workspace_dir
             .join("datasets")
             .join("edtech")
             .join("state")
@@ -399,10 +399,10 @@ mod tests {
     #[test]
     fn dimension_mismatch_recreates_vector_table_by_default() {
         let dir = TempDir::new("dim-recreate");
-        let data_dir = dir.as_ref().join("data");
-        stored_index(&data_dir, 8);
+        let workspace_dir = dir.as_ref().join("workspace");
+        stored_index(&workspace_dir, 8);
 
-        let mut boot = test_bootstrap(&data_dir); // 4-dim config vs 8-dim index
+        let mut boot = test_bootstrap(&workspace_dir); // 4-dim config vs 8-dim index
         open_vectors_with_recreate(&mut boot, false).expect("recreate path must succeed");
 
         assert!(boot.dimension_mismatch.is_none(), "mismatch flag cleared");
@@ -415,10 +415,10 @@ mod tests {
     #[test]
     fn dimension_mismatch_is_fatal_under_no_fill() {
         let dir = TempDir::new("dim-fatal");
-        let data_dir = dir.as_ref().join("data");
-        stored_index(&data_dir, 8);
+        let workspace_dir = dir.as_ref().join("workspace");
+        stored_index(&workspace_dir, 8);
 
-        let mut boot = test_bootstrap(&data_dir);
+        let mut boot = test_bootstrap(&workspace_dir);
         let err = open_vectors_with_recreate(&mut boot, true)
             .expect_err("the mismatch must be fatal under --no-fill");
         assert!(
@@ -435,10 +435,10 @@ mod tests {
     #[test]
     fn consistent_index_opens_without_recreate() {
         let dir = TempDir::new("dim-consistent");
-        let data_dir = dir.as_ref().join("data");
-        stored_index(&data_dir, 4);
+        let workspace_dir = dir.as_ref().join("workspace");
+        stored_index(&workspace_dir, 4);
 
-        let mut boot = test_bootstrap(&data_dir);
+        let mut boot = test_bootstrap(&workspace_dir);
         open_vectors_with_recreate(&mut boot, true).expect("consistent index must open");
 
         assert!(boot.dimension_mismatch.is_none());
