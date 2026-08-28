@@ -28,27 +28,27 @@ pub fn resolve_config_path(cli_path: Option<&Path>, preset: &str) -> PathBuf {
 
 /// Searches for `config.{preset}.yaml` in candidate order:
 ///
-/// 1. `<exeDir>/configs/`
+/// 1. `<exeDir>/workspace/configs/`
 /// 2. `<exeDir>/`
 /// 3. `<parent(exeDir)>/`
-/// 4. `<parent(exeDir)>/configs/`
-/// 5. `<cwd>/configs/`
+/// 4. `<parent(exeDir)>/workspace/configs/`
+/// 5. `<cwd>/workspace/configs/`
 /// 6. `<cwd>/`
 ///
 /// When nothing exists (or `exe` / `cwd` are unavailable), falls back to the
-/// relative `configs/config.{preset}.yaml` so that `config::load` surfaces the
-/// error with the path the user would have passed via `--config`.
+/// relative `workspace/configs/config.{preset}.yaml` so that `config::load`
+/// surfaces the error with the path the user would have passed via `--config`.
 pub fn resolve_config_candidates(exe: Option<&Path>, cwd: Option<&Path>, preset: &str) -> PathBuf {
     let config_name = format!("config.{preset}.yaml");
 
     if let Some(exe_dir) = exe.and_then(Path::parent) {
         for candidate in [
-            Some(exe_dir.join("configs").join(&config_name)),
+            Some(exe_dir.join("workspace").join("configs").join(&config_name)),
             Some(exe_dir.join(&config_name)),
             exe_dir.parent().map(|parent| parent.join(&config_name)),
             exe_dir
                 .parent()
-                .map(|parent| parent.join("configs").join(&config_name)),
+                .map(|parent| parent.join("workspace").join("configs").join(&config_name)),
         ]
         .into_iter()
         .flatten()
@@ -61,7 +61,7 @@ pub fn resolve_config_candidates(exe: Option<&Path>, cwd: Option<&Path>, preset:
 
     if let Some(cwd) = cwd {
         for candidate in [
-            cwd.join("configs").join(&config_name),
+            cwd.join("workspace").join("configs").join(&config_name),
             cwd.join(&config_name),
         ] {
             if candidate.exists() {
@@ -70,7 +70,7 @@ pub fn resolve_config_candidates(exe: Option<&Path>, cwd: Option<&Path>, preset:
         }
     }
 
-    PathBuf::from("configs").join(config_name)
+    PathBuf::from("workspace").join("configs").join(config_name)
 }
 
 #[cfg(test)]
@@ -135,6 +135,7 @@ mod tests {
         let match_path = dir
             .0
             .join("bin")
+            .join("workspace")
             .join("configs")
             .join("config.default.yaml");
         file(&match_path);
@@ -173,7 +174,11 @@ mod tests {
     fn parent_configs_candidate_is_found() {
         let dir = TempDir::new();
         let exe = dir.0.join("bin").join("synopsis");
-        let match_path = dir.0.join("configs").join("config.default.yaml");
+        let match_path = dir
+            .0
+            .join("workspace")
+            .join("configs")
+            .join("config.default.yaml");
         file(&match_path);
         assert_eq!(
             resolve_config_candidates(Some(&exe), None, "default"),
@@ -184,7 +189,11 @@ mod tests {
     #[test]
     fn cwd_configs_candidate_is_found() {
         let dir = TempDir::new();
-        let match_path = dir.0.join("configs").join("config.default.yaml");
+        let match_path = dir
+            .0
+            .join("workspace")
+            .join("configs")
+            .join("config.default.yaml");
         file(&match_path);
         assert_eq!(
             resolve_config_candidates(None, Some(&dir.0), "default"),
@@ -210,6 +219,7 @@ mod tests {
         let exe_match = dir
             .0
             .join("bin")
+            .join("workspace")
             .join("configs")
             .join("config.default.yaml");
         let cwd_match = dir.0.join("config.default.yaml");
@@ -237,7 +247,9 @@ mod tests {
         let dir = TempDir::new();
         assert_eq!(
             resolve_config_candidates(Some(&dir.0.join("synopsis")), Some(&dir.0), "default"),
-            PathBuf::from("configs").join("config.default.yaml")
+            PathBuf::from("workspace")
+                .join("configs")
+                .join("config.default.yaml")
         );
     }
 
@@ -245,7 +257,9 @@ mod tests {
     fn fallback_carries_preset() {
         assert_eq!(
             resolve_config_candidates(None, None, "nightly"),
-            PathBuf::from("configs").join("config.nightly.yaml")
+            PathBuf::from("workspace")
+                .join("configs")
+                .join("config.nightly.yaml")
         );
     }
 

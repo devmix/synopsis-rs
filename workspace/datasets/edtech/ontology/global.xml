@@ -158,42 +158,42 @@
     <!-- Data sources for ingestion pipeline.
          Each source defines a directory to index, its parser type, and domain metadata. -->
     <sources>
-        <source path="./data/demo/edtech/documents/demo-all-in-one" type="markdown">
+        <source path="./workspace/datasets/edtech/content/documents/demo-all-in-one" type="markdown">
             <domains>
                 <domain>hr</domain>
             </domains>
         </source>
-        <source path="./data/demo/edtech/documents/hr" type="markdown">
+        <source path="./workspace/datasets/edtech/content/documents/hr" type="markdown">
             <domains>
                 <domain>hr</domain>
             </domains>
         </source>
-        <source path="./data/demo/edtech/documents/it" type="markdown">
+        <source path="./workspace/datasets/edtech/content/documents/it" type="markdown">
             <domains>
                 <domain>it</domain>
             </domains>
         </source>
-        <source path="./data/demo/edtech/documents/product" type="markdown">
+        <source path="./workspace/datasets/edtech/content/documents/product" type="markdown">
             <domains>
                 <domain>product</domain>
             </domains>
         </source>
-        <source path="./data/demo/edtech/site/api.learntech-solutions.com" type="webpages">
+        <source path="./workspace/datasets/edtech/content/site/api.learntech-solutions.com" type="webpages">
             <domains>
                 <domain>it</domain>
             </domains>
         </source>
-        <source path="./data/demo/edtech/site/instructors.learntech-solutions.com" type="webpages">
+        <source path="./workspace/datasets/edtech/content/site/instructors.learntech-solutions.com" type="webpages">
             <domains>
                 <domain>hr</domain>
             </domains>
         </source>
-        <source path="./data/demo/edtech/site/learntech-solutions.com" type="webpages">
+        <source path="./workspace/datasets/edtech/content/site/learntech-solutions.com" type="webpages">
             <domains>
                 <domain>product</domain>
             </domains>
         </source>
-        <source path="./data/demo/edtech/wiki/internal" type="mediawiki">
+        <source path="./workspace/datasets/edtech/content/wiki/internal" type="mediawiki">
             <domains>
                 <domain>product</domain>
                 <domain>hr</domain>

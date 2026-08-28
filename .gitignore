@@ -8,13 +8,14 @@
 fixtures/*
 !fixtures/README.md
 
-# Runtime artifacts downloaded per ../synopsis/configs/onnx.yaml (task 2.1):
-# ONNX Runtime .so (~24 MB) + bge-m3-int8 model files (~2.3 GB). Preloaded from the
-# oracle's own data/ copy; provenance and verification live in data/README.md, which stays tracked.
-data/*
-!data/README.md
-!data/ontology/
-!data/demo/
+# Runtime artifacts under workspace/ (storage-layout-restructure task 1.4):
+# ONNX Runtime .so (~24 MB), model files (~2.3 GB), the global cache DB, and
+# per-dataset state (knowledge.db + vectors) are all gitignored; provenance and
+# verification live in workspace/README.md.
+workspace/*
+!workspace/configs/
+!workspace/datasets/edtech/ontology/
+!workspace/datasets/edtech/content/
 
 # Cargo.lock is committed on purpose: this workspace produces a binary and
 # reproducible builds matter for parity testing against the Go oracle.

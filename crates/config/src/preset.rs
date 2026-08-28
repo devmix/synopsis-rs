@@ -1863,14 +1863,14 @@ vectors:
 
     #[test]
     fn loads_demo_config() {
-        // The demo preset (configs/config.demo.yaml) must parse through the real
-        // file loader into the storage-layout-restructure shape. Ingestion
-        // sources live in the dataset ontology (global.xml), not in this file.
-        // CARGO_MANIFEST_DIR is `<repo>/crates/config`, so two `..` reach the
-        // repo root where `configs/` lives.
+        // The demo preset (workspace/configs/config.demo.yaml) must parse
+        // through the real file loader into the storage-layout-restructure
+        // shape. Ingestion sources live in the dataset ontology (global.xml),
+        // not in this file. CARGO_MANIFEST_DIR is `<repo>/crates/config`, so
+        // two `..` reach the repo root where `workspace/configs/` lives.
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../configs/config.demo.yaml"
+            "/../../workspace/configs/config.demo.yaml"
         );
         let cfg = load(path).expect("demo config must parse");
         assert_workspace_shape(&cfg);
@@ -1893,7 +1893,7 @@ vectors:
         // bootstrap (task 1.3) skips ontology load + ingestion for it.
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../configs/config.default.yaml"
+            "/../../workspace/configs/config.default.yaml"
         );
         let cfg = load(path).expect("default config must parse");
         assert_workspace_shape(&cfg);
