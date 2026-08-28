@@ -154,7 +154,7 @@ indicatif 0.18 уже в workspace.
     неизвестная подкоманда → exit 1.
   - Критерии приёмки: гейты cli зелёные; вывод совпадает по полям с оракулом.
 
-- [ ] 1.10 load-test subcommand
+- [x] 1.10 load-test subcommand
   - Цель: бенчмарк 12 MCP-инструментов на сгенерированных данных.
   - Scope файлов: `crates/cli/src/loadtest/mod.rs` (новый), `generator.rs`,
     `filler.rs`, `runner.rs`, `report.rs` (новые).
@@ -172,3 +172,18 @@ indicatif 0.18 уже в workspace.
     in-memory Db + seeded данные).
   - Критерии приёмки: гейты cli зелёные; `synopsis load-test --scale small` печатает
     таблицу задержек по кейсам (структура как у Go оригинала).
+  - Revision history:
+    - r1 (2026-08-27, rust-reviewer request_changes): (1) MAJOR — dimension
+      mismatch не обрабатывался: код всегда падал на mismatch вместо
+      drop+recreate vector table (если не --no-fill) per тела задачи
+      (строки 162-163) и design D11. Исправить: после open_vectors_engine
+      проверить boot.dimension_mismatch; если Some и !req.no_fill →
+      drop+recreate vector table (переиспользовать recreate_vectors_engine из
+      serve/server.rs, pub(crate)); если Some и req.no_fill → fatal CliError;
+      если None → продолжить. (2) MINOR — таблица отчёта имела PAGES/ERRORS
+      вместо MAX_MS; тело задачи (строка 167) и критерий приёмки требуют
+      CALLS/AVG/P50/P95/P99/MAX ms/QPS (структура как у Go оригинала
+      ../synopsis/internal/benchmark/report.go). Добавить колонку MAX_MS
+      (поле max_ms уже есть в runner.rs); PAGES/ERRORS можно оставить как
+      доп. колонки, но MAX_MS обязателен. (3) NIT (опц.) — FTS trigger drop
+      через format! с константами в filler.rs: можно заменить на литералы.
