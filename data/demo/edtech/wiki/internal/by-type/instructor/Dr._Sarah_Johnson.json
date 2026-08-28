@@ -1,0 +1,26 @@
+{
+  "title": "Dr. Sarah Johnson",
+  "url": "https://wiki.edtech-company.com/wiki/Dr._Sarah_Johnson",
+  "wikitext": "== Profile ==\n'''Dr. Sarah Johnson''' is a leading instructor in data science and machine learning at LearnTech Solutions.\n\n== Background ==\n* PhD in Computer Science, Stanford University\n* Former data scientist at Google\n* 10+ years experience in ML/AI\n\n== Courses ==\n* [[Python for Data Science]]\n* [[Introduction to Statistics]]\n\n== Teaching Philosophy ==\n\"Making complex data science concepts accessible to everyone through practical, hands-on learning.\"\n\n== Student Reviews ==\n* \"Best instructor for data science!\" - 4.9/5\n* \"Made ML concepts so clear\" - 4.8/5",
+  "html": "<div class=\"mw-parser-output\"><h2>Profile</h2><p><b>Dr. Sarah Johnson</b> is a leading instructor in data science and machine learning at LearnTech Solutions.</p><h2>Background</h2><ul><li>PhD in Computer Science, Stanford University</li><li>Former data scientist at Google</li><li>10+ years experience in ML/AI</li></ul><h2>Courses</h2><ul><li><a href=\"/wiki/Python_for_Data_Science\">Python for Data Science</a></li><li><a href=\"/wiki/Introduction_to_Statistics\">Introduction to Statistics</a></li></ul><h2>Teaching Philosophy</h2><blockquote>\"Making complex data science concepts accessible to everyone through practical, hands-on learning.\"</blockquote><h2>Student Reviews</h2><ul><li>\"Best instructor for data science!\" - 4.9/5</li><li>\"Made ML concepts so clear\" - 4.8/5</li></ul></div>",
+  "images": [
+    "Dr_Sarah_Johnson_Portrait.png",
+    "Stanford_Campus.jpg",
+    "Google_Office.jpg"
+  ],
+  "links": [
+    "Python for Data Science",
+    "Introduction to Statistics",
+    "Stanford University",
+    "Google"
+  ],
+  "categories": [
+    "Instructors",
+    "Data Science"
+  ],
+  "templates": [
+    "InstructorProfile"
+  ],
+  "externallinks": [],
+  "entity_type": "instructor"
+}

@@ -1,0 +1,26 @@
+{
+  "title": "Mike Chen",
+  "url": "https://wiki.edtech-company.com/wiki/Mike_Chen",
+  "wikitext": "== Profile ==\n'''Mike Chen''' is an experienced web development instructor specializing in JavaScript and modern frameworks.\n\n== Background ==\n* BS in Computer Science, MIT\n* Senior developer at Facebook\n* 8+ years full-stack development experience\n\n== Courses ==\n* [[Full Stack JavaScript]]\n* [[React Native Development]]\n\n== Teaching Philosophy ==\n\"Building real-world applications is the best way to learn web development.\"\n\n== Student Reviews ==\n* \"Practical and project-based learning\" - 4.7/5\n* \"Great for beginners and intermediates\" - 4.6/5",
+  "html": "<div class=\"mw-parser-output\"><h2>Profile</h2><p><b>Mike Chen</b> is an experienced web development instructor specializing in JavaScript and modern frameworks.</p><h2>Background</h2><ul><li>BS in Computer Science, MIT</li><li>Senior developer at Facebook</li><li>8+ years full-stack development experience</li></ul><h2>Courses</h2><ul><li><a href=\"/wiki/Full_Stack_JavaScript\">Full Stack JavaScript</a></li><li><a href=\"/wiki/React_Native_Development\">React Native Development</a></li></ul><h2>Teaching Philosophy</h2><blockquote>\"Building real-world applications is the best way to learn web development.\"</blockquote><h2>Student Reviews</h2><ul><li>\"Practical and project-based learning\" - 4.7/5</li><li>\"Great for beginners and intermediates\" - 4.6/5</li></ul></div>",
+  "images": [
+    "Mike_Chen_Portrait.png",
+    "MIT_Campus.jpg",
+    "Facebook_Office.jpg"
+  ],
+  "links": [
+    "Full Stack JavaScript",
+    "React Native Development",
+    "MIT",
+    "Facebook"
+  ],
+  "categories": [
+    "Instructors",
+    "Web Development"
+  ],
+  "templates": [
+    "InstructorProfile"
+  ],
+  "externallinks": [],
+  "entity_type": "instructor"
+}

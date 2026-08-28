@@ -1,0 +1,26 @@
+{
+  "title": "Course Platform",
+  "url": "https://wiki.edtech-company.com/wiki/Course_Platform",
+  "wikitext": "== Overview ==\n'''Course Platform''' is LearnTech Solutions' flagship product - a comprehensive learning management system (LMS).\n\n== Features ==\n=== For Students ===\n* Interactive video player\n* Quiz and assessment builder\n* Progress tracking\n* Certificates of completion\n\n=== For Instructors ===\n* Rich text editor\n* Video upload and hosting\n* Quiz builder\n* Course analytics\n\n== Pricing ==\n| Free Preview | $0 |\n| Single Course | $49-$199 |\n| Pro Membership | $29/month |\n\n== See Also ==\n* [[Learning Analytics]]\n* [[Adaptive Learning]]",
+  "html": "<div class=\"mw-parser-output\"><h2>Overview</h2><p><b>Course Platform</b> is LearnTech Solutions' flagship product - a comprehensive learning management system (LMS).</p><h2>Features</h2><h3>For Students</h3><ul><li>Interactive video player</li><li>Quiz and assessment builder</li><li>Progress tracking</li><li>Certificates of completion</li></ul><h3>For Instructors</h3><ul><li>Rich text editor</li><li>Video upload and hosting</li><li>Quiz builder</li><li>Course analytics</li></ul><h2>Pricing</h2><table class=\"wikitable\"><tr><th>Plan</th><th>Price</th></tr><tr><td>Free Preview</td><td>$0</td></tr><tr><td>Single Course</td><td>$49-$199</td></tr><tr><td>Pro Membership</td><td>$29/month</td></tr></table><h2>See Also</h2><ul><li><a href=\"/wiki/Learning_Analytics\">Learning Analytics</a></li><li><a href=\"/wiki/Adaptive_Learning\">Adaptive Learning</a></li></ul></div>",
+  "images": [
+    "Course_Platform_Screenshot.png",
+    "Video_Player_UI.png",
+    "Quiz_Builder.png"
+  ],
+  "links": [
+    "Learning Analytics",
+    "Adaptive Learning",
+    "Student Dashboard",
+    "Instructor Tools"
+  ],
+  "categories": [
+    "Products",
+    "Learning Management Systems"
+  ],
+  "templates": [
+    "ProductInfo"
+  ],
+  "externallinks": [],
+  "entity_type": "product"
+}

@@ -1,0 +1,26 @@
+{
+  "title": "Hiring Policy",
+  "url": "https://wiki.edtech-company.com/wiki/Hiring_Policy",
+  "wikitext": "== Overview ==\nThis document defines the hiring policy for LearnTech Solutions.\n\n== Recruitment Process ==\n=== Step 1: Job Requisition ===\n* Department head submits hiring request\n* HR reviews budget approval\n* Position classification (Junior, Mid, Senior, Lead)\n\n=== Step 2: Candidate Sourcing ===\n* Internal referrals (recommended)\n* LinkedIn and job boards\n* University partnerships\n\n=== Step 3: Screening ===\n* HR initial screening (30 minutes)\n* Technical assessment for engineering roles\n* Portfolio review for design roles\n\n=== Step 4: Interviews ===\n* Technical interview (1 hour)\n* Cultural fit interview (45 minutes)\n* Final interview with department head (30 minutes)\n\n=== Step 5: Offer ===\n* Salary negotiation based on level\n* Benefits package explanation\n* Start date coordination\n\n== Compensation Levels ==\n| Level | Salary Range | Experience |\n| Junior | $65,000-$85,000 | 0-2 years |\n| Mid | $85,000-$110,000 | 2-5 years |\n| Senior | $110,000-$145,000 | 5-8 years |\n| Lead | $145,000-$180,000 | 8+ years |\n\n== See Also ==\n* [[Performance Review Process]]\n* [[Employee Benefits]]",
+  "html": "<div class=\"mw-parser-output\"><h2>Overview</h2><p>This document defines the hiring policy for LearnTech Solutions.</p><h2>Recruitment Process</h2><h3>Step 1: Job Requisition</h3><ul><li>Department head submits hiring request</li><li>HR reviews budget approval</li><li>Position classification (Junior, Mid, Senior, Lead)</li></ul><h3>Step 2: Candidate Sourcing</h3><ul><li>Internal referrals (recommended)</li><li>LinkedIn and job boards</li><li>University partnerships</li></ul><h3>Step 3: Screening</h3><ul><li>HR initial screening (30 minutes)</li><li>Technical assessment for engineering roles</li><li>Portfolio review for design roles</li></ul><h3>Step 4: Interviews</h3><ul><li>Technical interview (1 hour)</li><li>Cultural fit interview (45 minutes)</li><li>Final interview with department head (30 minutes)</li></ul><h3>Step 5: Offer</h3><ul><li>Salary negotiation based on level</li><li>Benefits package explanation</li><li>Start date coordination</li></ul><h2>Compensation Levels</h2><table class=\"wikitable\"><tr><th>Level</th><th>Salary Range</th><th>Experience</th></tr><tr><td>Junior</td><td>$65,000-$85,000</td><td>0-2 years</td></tr><tr><td>Mid</td><td>$85,000-$110,000</td><td>2-5 years</td></tr><tr><td>Senior</td><td>$110,000-$145,000</td><td>5-8 years</td></tr><tr><td>Lead</td><td>$145,000-$180,000</td><td>8+ years</td></tr></table><h2>See Also</h2><ul><li><a href=\"/wiki/Performance_Review_Process\">Performance Review Process</a></li><li><a href=\"/wiki/Employee_Benefits\">Employee Benefits</a></li></ul></div>",
+  "images": [
+    "Hiring_Process_Flowchart.png",
+    "Company_Office.jpg",
+    "Interview_Room.jpg"
+  ],
+  "links": [
+    "Performance Review Process",
+    "Employee Benefits",
+    "Remote Work Policy"
+  ],
+  "categories": [
+    "Policies",
+    "Human Resources",
+    "Hiring"
+  ],
+  "templates": [
+    "PolicyPage"
+  ],
+  "externallinks": [],
+  "entity_type": "policy"
+}

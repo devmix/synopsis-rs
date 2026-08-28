@@ -57,3 +57,20 @@ rewritten `./data/storage/edtech/` → `./data/demo/edtech/` (9456 B after adapt
 byte of `global.xml` (entities, relations, expressions, extraction, cross-domain links) is
 identical to the oracle; the three domain XMLs are byte-identical (`cmp`). This is a path
 adaptation, not a semantic change. No sha256 table is kept for these files (user decision Q3=no).
+
+## Demo data (task 1.2, change ship-ontology-demo-data)
+
+Full demo corpus copied from the read-only Go oracle so ingestion has something to consume:
+
+- **Source in oracle:** `../synopsis/data/storage/edtech/` (entire tree: `documents/`, `wiki/`, `site/`).
+- **Destination:** `data/demo/edtech/` (user decision Q4; the `documents/`, `wiki/`, `site/`
+  subtree is preserved exactly — markdown docs, mediawiki wiki, scraped website HTML/static, and
+  images).
+- **Size:** ~46 MB (37 png, 19 md, 12 json, 2 jpg, 2 gitkeep). The repo-growth tradeoff is
+  accepted by the user (Q1 = all). No sha256 table (Q3=no).
+- **Ingest:** `synopsis serve --config configs/config.demo.yaml` — the demo preset (task 1.3)
+  makes the binary ingest this corpus; the ingestion sources themselves are declared in
+  `data/ontology/global.xml` (D1 already points them at `./data/demo/edtech/`).
+
+Copy command: `cp -r ../synopsis/data/storage/edtech/. data/demo/edtech/` (verified
+byte-identical with `diff -rq`).

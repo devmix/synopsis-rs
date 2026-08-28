@@ -1,0 +1,28 @@
+{
+  "title": "Adaptive Learning",
+  "url": "https://wiki.edtech-company.com/wiki/Adaptive_Learning",
+  "wikitext": "== Overview ==\n'''Adaptive Learning''' is an AI-powered personalization engine that dynamically adjusts learning content difficulty and recommendations based on individual student performance.\n\n== Features ==\n=== Student Profiling ===\n* Initial assessment\n* Learning style detection\n* Continuous profiling\n\n=== Content Adjustment ===\n* Dynamic difficulty scaling\n* Learning path adaptation\n* Intelligent recommendations\n\n== ML Models ==\n* Bayesian Knowledge Tracing (BKT)\n* Deep Knowledge Tracing (DKT)\n* Item Response Theory (IRT)\n* Collaborative Filtering\n\n== See Also ==\n* [[Course Platform]]\n* [[Learning Analytics]]",
+  "html": "<div class=\"mw-parser-output\"><h2>Overview</h2><p><b>Adaptive Learning</b> is an AI-powered personalization engine that dynamically adjusts learning content difficulty and recommendations based on individual student performance.</p><h2>Features</h2><h3>Student Profiling</h3><ul><li>Initial assessment</li><li>Learning style detection</li><li>Continuous profiling</li></ul><h3>Content Adjustment</h3><ul><li>Dynamic difficulty scaling</li><li>Learning path adaptation</li><li>Intelligent recommendations</li></ul><h2>ML Models</h2><ul><li>Bayesian Knowledge Tracing (BKT)</li><li>Deep Knowledge Tracing (DKT)</li><li>Item Response Theory (IRT)</li><li>Collaborative Filtering</li></ul><h2>See Also</h2><ul><li><a href=\"/wiki/Course_Platform\">Course Platform</a></li><li><a href=\"/wiki/Learning_Analytics\">Learning Analytics</a></li></ul></div>",
+  "images": [
+    "Adaptive_Learning_Flow.png",
+    "Student_Profile_Diagram.png",
+    "Knowledge_Tracing_Visualization.png"
+  ],
+  "links": [
+    "Course Platform",
+    "Learning Analytics",
+    "Bayesian Knowledge Tracing",
+    "Machine Learning",
+    "Personalization"
+  ],
+  "categories": [
+    "Products",
+    "AI/ML",
+    "Adaptive Learning"
+  ],
+  "templates": [
+    "ProductInfo"
+  ],
+  "externallinks": [],
+  "entity_type": "product"
+}

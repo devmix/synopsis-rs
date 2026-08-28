@@ -1,0 +1,28 @@
+{
+  "title": "Machine Learning A-Z",
+  "url": "https://wiki.edtech-company.com/wiki/Machine_Learning_A-Z",
+  "wikitext": "== Course Overview ==\n'''Machine Learning A-Z''' is an advanced comprehensive course covering supervised and unsupervised learning algorithms.\n\n== Instructor ==\n[[Dr. James Liu]]\n\n== Course Details ==\n| Level | Advanced |\n| Duration | 18 hours |\n| Lessons | 55 |\n| Price | $149 |\n| Rating | 4.9/5 (3,156 reviews)\n\n== What You'll Learn ==\n* Regression and classification\n* Neural networks and deep learning\n* Clustering and dimensionality reduction\n* Model evaluation and optimization\n\n== Prerequisites ==\nPython for Data Science or equivalent knowledge required.",
+  "html": "<div class=\"mw-parser-output\"><h2>Course Overview</h2><p><b>Machine Learning A-Z</b> is an advanced comprehensive course covering supervised and unsupervised learning algorithms.</p><h2>Instructor</h2><p><a href=\"/wiki/Dr._James_Liu\">Dr. James Liu</a></p><h2>Course Details</h2><table class=\"wikitable\"><tr><th>Level</th><td>Advanced</td></tr><tr><th>Duration</th><td>18 hours</td></tr><tr><th>Lessons</th><td>55</td></tr><tr><th>Price</th><td>$149</td></tr><tr><th>Rating</th><td>4.9/5 (3,156 reviews)</td></tr></table><h2>What You'll Learn</h2><ul><li>Regression and classification</li><li>Neural networks and deep learning</li><li>Clustering and dimensionality reduction</li><li>Model evaluation and optimization</li></ul><h2>Prerequisites</h2><p>Python for Data Science or equivalent knowledge required.</p></div>",
+  "images": [
+    "ML_Course_Cover.png",
+    "Neural_Network_Visualization.png",
+    "Model_Performance_Chart.png"
+  ],
+  "links": [
+    "Dr. James Liu",
+    "Python for Data Science",
+    "Deep Learning",
+    "Neural Networks",
+    "TensorFlow"
+  ],
+  "categories": [
+    "Courses",
+    "Machine Learning",
+    "AI"
+  ],
+  "templates": [
+    "CourseInfo"
+  ],
+  "externallinks": [],
+  "entity_type": "course"
+}

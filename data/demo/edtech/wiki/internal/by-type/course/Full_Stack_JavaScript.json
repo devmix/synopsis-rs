@@ -1,0 +1,28 @@
+{
+  "title": "Full Stack JavaScript",
+  "url": "https://wiki.edtech-company.com/wiki/Full_Stack_JavaScript",
+  "wikitext": "== Course Overview ==\n'''Full Stack JavaScript''' is an intermediate course teaching modern web development with JavaScript.\n\n== Instructor ==\n[[Mike Chen]]\n\n== Course Details ==\n| Level | Intermediate |\n| Duration | 24 hours |\n| Lessons | 68 |\n| Price | $129 |\n| Rating | 4.7/5 (1,892 reviews)\n\n== What You'll Learn ==\n* React and modern frontend development\n* Node.js and Express backend\n* Database integration with MongoDB\n* Authentication and authorization\n\n== Prerequisites ==\nBasic JavaScript knowledge required.",
+  "html": "<div class=\"mw-parser-output\"><h2>Course Overview</h2><p><b>Full Stack JavaScript</b> is an intermediate course teaching modern web development with JavaScript.</p><h2>Instructor</h2><p><a href=\"/wiki/Mike_Chen\">Mike Chen</a></p><h2>Course Details</h2><table class=\"wikitable\"><tr><th>Level</th><td>Intermediate</td></tr><tr><th>Duration</th><td>24 hours</td></tr><tr><th>Lessons</th><td>68</td></tr><tr><th>Price</th><td>$129</td></tr><tr><th>Rating</th><td>4.7/5 (1,892 reviews)</td></tr></table><h2>What You'll Learn</h2><ul><li>React and modern frontend development</li><li>Node.js and Express backend</li><li>Database integration with MongoDB</li><li>Authentication and authorization</li></ul><h2>Prerequisites</h2><p>Basic JavaScript knowledge required.</p></div>",
+  "images": [
+    "JavaScript_Course_Cover.png",
+    "React_Component_Diagram.png",
+    "Node_JS_Architecture.png"
+  ],
+  "links": [
+    "Mike Chen",
+    "React",
+    "Node.js",
+    "MongoDB",
+    "Express"
+  ],
+  "categories": [
+    "Courses",
+    "Web Development",
+    "JavaScript"
+  ],
+  "templates": [
+    "CourseInfo"
+  ],
+  "externallinks": [],
+  "entity_type": "course"
+}

@@ -1,0 +1,28 @@
+{
+  "title": "Python for Data Science",
+  "url": "https://wiki.edtech-company.com/wiki/Python_for_Data_Science",
+  "wikitext": "== Course Overview ==\n'''Python for Data Science''' is a beginner-friendly course teaching Python programming fundamentals and data science applications.\n\n== Instructor ==\n[[Dr. Sarah Johnson]]\n\n== Course Details ==\n| Level | Beginner |\n| Duration | 12 hours |\n| Lessons | 42 |\n| Price | $89 |\n| Rating | 4.8/5 (2,341 reviews)\n\n== What You'll Learn ==\n* Python syntax and data structures\n* Data manipulation with pandas\n* Data visualization with matplotlib\n* Introduction to machine learning\n\n== Prerequisites ==\nNo prior programming experience required.",
+  "html": "<div class=\"mw-parser-output\"><h2>Course Overview</h2><p><b>Python for Data Science</b> is a beginner-friendly course teaching Python programming fundamentals and data science applications.</p><h2>Instructor</h2><p><a href=\"/wiki/Dr._Sarah_Johnson\">Dr. Sarah Johnson</a></p><h2>Course Details</h2><table class=\"wikitable\"><tr><th>Level</th><td>Beginner</td></tr><tr><th>Duration</th><td>12 hours</td></tr><tr><th>Lessons</th><td>42</td></tr><tr><th>Price</th><td>$89</td></tr><tr><th>Rating</th><td>4.8/5 (2,341 reviews)</td></tr></table><h2>What You'll Learn</h2><ul><li>Python syntax and data structures</li><li>Data manipulation with pandas</li><li>Data visualization with matplotlib</li><li>Introduction to machine learning</li></ul><h2>Prerequisites</h2><p>No prior programming experience required.</p></div>",
+  "images": [
+    "Python_Course_Cover.png",
+    "Python_Code_Example.png",
+    "Data_Viz_Screenshot.png"
+  ],
+  "links": [
+    "Dr. Sarah Johnson",
+    "Machine Learning A-Z",
+    "Full Stack JavaScript",
+    "Pandas",
+    "Matplotlib"
+  ],
+  "categories": [
+    "Courses",
+    "Programming",
+    "Data Science"
+  ],
+  "templates": [
+    "CourseInfo"
+  ],
+  "externallinks": [],
+  "entity_type": "course"
+}

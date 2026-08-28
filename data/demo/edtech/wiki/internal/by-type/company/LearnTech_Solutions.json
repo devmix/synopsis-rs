@@ -1,0 +1,30 @@
+{
+  "title": "LearnTech Solutions",
+  "url": "https://wiki.edtech-company.com/wiki/LearnTech_Solutions",
+  "wikitext": "== Overview ==\n'''LearnTech Solutions''' is an educational technology company specializing in adaptive learning platforms and online course management.\n\nFounded: 2019\nHeadquarters: San Francisco, CA\nCEO: Sarah Chen\nEmployees: 150-200\n\n== Products ==\n* [[Course Platform]]\n* [[Learning Analytics]]\n* [[Adaptive Learning]]\n\n== Mission ==\nTo democratize education through adaptive learning technology that personalizes the learning experience for every student.",
+  "html": "<div class=\"mw-parser-output\"><h2>Overview</h2><p><b>LearnTech Solutions</b> is an educational technology company specializing in adaptive learning platforms and online course management.</p><table class=\"wikitable\"><tr><th>Founded</th><td>2019</td></tr><tr><th>Headquarters</th><td>San Francisco, CA</td></tr><tr><th>CEO</th><td>Sarah Chen</td></tr><tr><th>Employees</th><td>150-200</td></tr></table><h2>Products</h2><ul><li><a href=\"/wiki/Course_Platform\">Course Platform</a></li><li><a href=\"/wiki/Learning_Analytics\">Learning Analytics</a></li><li><a href=\"/wiki/Adaptive_Learning\">Adaptive Learning</a></li></ul><h2>Mission</h2><p>To democratize education through adaptive learning technology that personalizes the learning experience for every student.</p></div>",
+  "images": [
+    "Company_Logo.png",
+    "Headquarters_Building.jpg",
+    "CEO_Portrait.jpg"
+  ],
+  "links": [
+    "Course Platform",
+    "Learning Analytics",
+    "Adaptive Learning",
+    "Sarah Chen",
+    "Engineering Team",
+    "HR Policies"
+  ],
+  "categories": [
+    "Companies",
+    "EdTech"
+  ],
+  "templates": [
+    "CompanyInfo"
+  ],
+  "externallinks": [
+    "https://www.edtech-company.com"
+  ],
+  "entity_type": "company"
+}

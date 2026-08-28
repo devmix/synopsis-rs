@@ -1,0 +1,26 @@
+{
+  "title": "Learning Analytics",
+  "url": "https://wiki.edtech-company.com/wiki/Learning_Analytics",
+  "wikitext": "== Overview ==\n'''Learning Analytics''' provides data-driven insights into student performance, engagement, and learning outcomes.\n\n== Features ==\n* Real-time dashboards\n* Student progress tracking\n* Predictive analytics\n* Engagement metrics\n* A/B testing framework\n\n== Use Cases ==\n* Instructors: Optimize course content\n* Administrators: Track platform performance\n* Students: Understand learning progress\n\n== See Also ==\n* [[Course Platform]]\n* [[Adaptive Learning]]",
+  "html": "<div class=\"mw-parser-output\"><h2>Overview</h2><p><b>Learning Analytics</b> provides data-driven insights into student performance, engagement, and learning outcomes.</p><h2>Features</h2><ul><li>Real-time dashboards</li><li>Student progress tracking</li><li>Predictive analytics</li><li>Engagement metrics</li><li>A/B testing framework</li></ul><h2>Use Cases</h2><ul><li>Instructors: Optimize course content</li><li>Administrators: Track platform performance</li><li>Students: Understand learning progress</li></ul><h2>See Also</h2><ul><li><a href=\"/wiki/Course_Platform\">Course Platform</a></li><li><a href=\"/wiki/Adaptive_Learning\">Adaptive Learning</a></li></ul></div>",
+  "images": [
+    "Analytics_Dashboard.png",
+    "Student_Progress_Chart.png",
+    "Engagement_Metrics.png"
+  ],
+  "links": [
+    "Course Platform",
+    "Adaptive Learning",
+    "Student Dashboard",
+    "Predictive Analytics"
+  ],
+  "categories": [
+    "Products",
+    "Analytics"
+  ],
+  "templates": [
+    "ProductInfo"
+  ],
+  "externallinks": [],
+  "entity_type": "product"
+}

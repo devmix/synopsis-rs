@@ -1,0 +1,27 @@
+{
+  "title": "Performance Review Process",
+  "url": "https://wiki.edtech-company.com/wiki/Performance_Review_Process",
+  "wikitext": "== Overview ==\nLearnTech Solutions conducts performance reviews twice annually to support employee growth and align individual goals with company objectives.\n\n== Review Cycle ==\n=== Mid-Year Review (June) ===\n* Focus on progress assessment\n* Goal adjustment if needed\n* Development planning\n\n=== Year-End Review (December) ===\n* Comprehensive performance evaluation\n* Compensation review\n* Promotion consideration\n\n== Rating Scale ==\n| Rating | Description | Distribution |\n| Exceeds | Consistently above requirements | 15-20% |\n| Meets | Fully meets requirements | 65-75% |\n| Needs Improvement | Partially meets requirements | 5-10% |\n| Does Not Meet | Significantly below | 0-5% |\n\n== Competency Framework ==\n* Technical Skills\n* Collaboration\n* Leadership\n\n== See Also ==\n* [[Hiring Policy]]\n* [[Employee Benefits]]",
+  "html": "<div class=\"mw-parser-output\"><h2>Overview</h2><p>LearnTech Solutions conducts performance reviews twice annually to support employee growth and align individual goals with company objectives.</p><h2>Review Cycle</h2><h3>Mid-Year Review (June)</h3><ul><li>Focus on progress assessment</li><li>Goal adjustment if needed</li><li>Development planning</li></ul><h3>Year-End Review (December)</h3><ul><li>Comprehensive performance evaluation</li><li>Compensation review</li><li>Promotion consideration</li></ul><h2>Rating Scale</h2><table class=\"wikitable\"><tr><th>Rating</th><th>Description</th><th>Distribution</th></tr><tr><td>Exceeds</td><td>Consistently above requirements</td><td>15-20%</td></tr><tr><td>Meets</td><td>Fully meets requirements</td><td>65-75%</td></tr><tr><td>Needs Improvement</td><td>Partially meets requirements</td><td>5-10%</td></tr><tr><td>Does Not Meet</td><td>Significantly below</td><td>0-5%</td></tr></table><h2>Competency Framework</h2><ul><li>Technical Skills</li><li>Collaboration</li><li>Leadership</li></ul><h2>See Also</h2><ul><li><a href=\"/wiki/Hiring_Policy\">Hiring Policy</a></li><li><a href=\"/wiki/Employee_Benefits\">Employee Benefits</a></li></ul></div>",
+  "images": [
+    "Review_Calendar.png",
+    "Rating_Scale_Diagram.png",
+    "Team_Meeting.jpg"
+  ],
+  "links": [
+    "Hiring Policy",
+    "Employee Benefits",
+    "Career Development",
+    "Promotion Process"
+  ],
+  "categories": [
+    "Policies",
+    "Human Resources",
+    "Performance"
+  ],
+  "templates": [
+    "PolicyPage"
+  ],
+  "externallinks": [],
+  "entity_type": "policy"
+}

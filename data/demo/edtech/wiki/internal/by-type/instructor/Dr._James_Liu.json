@@ -1,0 +1,29 @@
+{
+  "title": "Dr. James Liu",
+  "url": "https://wiki.edtech-company.com/wiki/Dr._James_Liu",
+  "wikitext": "== Profile ==\n'''Dr. James Liu''' is a renowned machine learning expert and instructor at LearnTech Solutions.\n\n== Background ==\n* PhD in Artificial Intelligence, Carnegie Mellon\n* Research scientist at DeepMind\n* Published 50+ papers in ML/AI\n\n== Courses ==\n* [[Machine Learning A-Z]]\n* [[Deep Learning Specialization]]\n\n== Research Areas ==\n* Natural Language Processing\n* Computer Vision\n* Reinforcement Learning\n\n== Student Reviews ==\n* \"World-class ML education\" - 4.9/5\n* \"Challenging but rewarding\" - 4.8/5",
+  "html": "<div class=\"mw-parser-output\"><h2>Profile</h2><p><b>Dr. James Liu</b> is a renowned machine learning expert and instructor at LearnTech Solutions.</p><h2>Background</h2><ul><li>PhD in Artificial Intelligence, Carnegie Mellon</li><li>Research scientist at DeepMind</li><li>Published 50+ papers in ML/AI</li></ul><h2>Courses</h2><ul><li><a href=\"/wiki/Machine_Learning_A-Z\">Machine Learning A-Z</a></li><li><a href=\"/wiki/Deep_Learning_Specialization\">Deep Learning Specialization</a></li></ul><h2>Research Areas</h2><ul><li>Natural Language Processing</li><li>Computer Vision</li><li>Reinforcement Learning</li></ul><h2>Student Reviews</h2><ul><li>\"World-class ML education\" - 4.9/5</li><li>\"Challenging but rewarding\" - 4.8/5</li></ul></div>",
+  "images": [
+    "Dr_James_Liu_Portrait.png",
+    "Carnegie_Mellon_Campus.jpg",
+    "DeepMind_Lab.jpg"
+  ],
+  "links": [
+    "Machine Learning A-Z",
+    "Deep Learning Specialization",
+    "Carnegie Mellon",
+    "DeepMind",
+    "NLP",
+    "Computer Vision"
+  ],
+  "categories": [
+    "Instructors",
+    "Machine Learning",
+    "AI Research"
+  ],
+  "templates": [
+    "InstructorProfile"
+  ],
+  "externallinks": [],
+  "entity_type": "instructor"
+}
