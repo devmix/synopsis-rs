@@ -1,3 +1,18 @@
+[profile.release]
+opt-level = 3        # Optimize for size "z" (or "s" for aggressive size optimization)
+lto = "thin"         # Enable Link-Time Optimization (removes dead code across dependencies)
+codegen-units = 1    # Reduces parallel generation; maximizes LTO optimization
+panic = "abort"      # Strips unwinding code, panic messages, and dependency landing pads
+strip = true         # Automatically strips all debug symbols and local path information
+
+[profile.dev]
+debug = 1            # Line-tables only: gives you filenames and line numbers for panic backtraces, but strips heavy variable debugging data. Drops build size drastically.
+split-debuginfo = "unpacked" # Keeps debug symbols in separate files instead of bundling them into the binary
+
+[profile.dev.package."*"]
+opt-level = 2 # Forces all dependencies (crates.io) to compile with optimizations. Since you rarely debug external libraries, this prevents them from generating huge debug files.
+debug = false
+
 [workspace]
 # Edition 2024 default resolver (requires Rust >= 1.85).
 resolver = "3"

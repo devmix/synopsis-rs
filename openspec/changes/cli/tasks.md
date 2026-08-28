@@ -102,7 +102,7 @@ indicatif 0.18 уже в workspace.
   - Тесты: unit — регистрация job только если enabled; shutdown не паникует.
   - Критерии приёмки: гейты cli зелёные.
 
-- [ ] 1.6 MCP mount + graceful shutdown
+- [x] 1.6 MCP mount + graceful shutdown
   - Цель: поднять MCP over Streamable HTTP на порту и корректно гасить.
   - Scope файлов: `crates/cli/src/serve/server.rs` (новый: HybridSearcher + mcp::Server
     + axum listener + shutdown), `crates/cli/src/serve/mod.rs` (связать watcher/
