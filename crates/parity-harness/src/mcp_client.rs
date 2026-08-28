@@ -114,6 +114,13 @@ impl McpClient {
         &self.stats
     }
 
+    /// Drop all recorded timing samples. The latency gate uses this to
+    /// exclude a warm-up phase from the measured percentiles: record the
+    /// warm-up calls, reset, then measure the steady state.
+    pub fn reset_stats(&mut self) {
+        self.stats.reset();
+    }
+
     /// Gracefully close the session and wait for cleanup to complete. Recorded
     /// statistics remain available on `self` afterwards.
     pub async fn close(&mut self) -> Result<(), HarnessError> {
@@ -144,7 +151,7 @@ fn service_error_to_harness(err: ServiceError, tool: Option<&str>) -> HarnessErr
 }
 
 /// Per-operation latency samples with nearest-rank percentile queries.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TimingStats {
     samples: std::collections::BTreeMap<String, Vec<Duration>>,
 }
@@ -156,6 +163,12 @@ impl TimingStats {
             .entry(operation.into())
             .or_default()
             .push(duration);
+    }
+
+    /// Drop all recorded samples (e.g. to exclude a warm-up phase from the
+    /// measured percentiles).
+    pub fn reset(&mut self) {
+        self.samples.clear();
     }
 
     /// Number of samples recorded for `operation`.
@@ -171,6 +184,21 @@ impl TimingStats {
     /// 95th-percentile latency for `operation`, if any sample was recorded.
     pub fn p95(&self, operation: &str) -> Option<Duration> {
         self.percentile(operation, 95)
+    }
+
+    /// Arithmetic mean latency for `operation`, if any sample was recorded.
+    pub fn avg(&self, operation: &str) -> Option<Duration> {
+        let values = self.samples.get(operation)?;
+        if values.is_empty() {
+            return None;
+        }
+        let total: f64 = values.iter().map(Duration::as_secs_f64).sum();
+        Some(Duration::from_secs_f64(total / values.len() as f64))
+    }
+
+    /// Maximum (p100) latency for `operation`, if any sample was recorded.
+    pub fn max(&self, operation: &str) -> Option<Duration> {
+        self.samples.get(operation)?.iter().copied().max()
     }
 
     /// Nearest-rank percentile `p` (0..=100) of the samples for `operation`.
@@ -279,6 +307,48 @@ mod tests {
         assert_eq!(stats.count("nope"), 0);
         assert_eq!(stats.p50("nope"), None);
         assert_eq!(stats.p95("nope"), None);
+    }
+
+    #[test]
+    fn timing_stats_avg_max_and_reset() {
+        let mut stats = TimingStats::default();
+        for n in [1u64, 2, 3] {
+            stats.record("tools/call:echo", ms(n));
+        }
+        // Mean of [1, 2, 3] is 2 ms; max is 3 ms.
+        assert_eq!(stats.avg("tools/call:echo"), Some(ms(2)));
+        assert_eq!(stats.max("tools/call:echo"), Some(ms(3)));
+
+        // Unknown / empty operations have no samples.
+        assert_eq!(stats.avg("nope"), None);
+        assert_eq!(stats.max("nope"), None);
+
+        // reset() drops every sample: the warm-up exclusion contract.
+        stats.record("tools/list", ms(9));
+        stats.reset();
+        assert_eq!(stats.count("tools/call:echo"), 0);
+        assert_eq!(stats.count("tools/list"), 0);
+        assert_eq!(stats.p50("tools/call:echo"), None);
+        assert_eq!(stats.avg("tools/call:echo"), None);
+        assert_eq!(stats.max("tools/call:echo"), None);
+
+        // Fresh samples after a reset are measured independently.
+        stats.record("tools/call:echo", ms(10));
+        assert_eq!(stats.count("tools/call:echo"), 1);
+        assert_eq!(stats.avg("tools/call:echo"), Some(ms(10)));
+        assert_eq!(stats.max("tools/call:echo"), Some(ms(10)));
+    }
+
+    #[test]
+    fn timing_stats_is_cloneable_for_owned_snapshots() {
+        let mut stats = TimingStats::default();
+        stats.record("tools/call:echo", ms(7));
+        let snapshot = stats.clone();
+        stats.record("tools/call:echo", ms(9));
+        assert_eq!(snapshot.count("tools/call:echo"), 1);
+        assert_eq!(stats.count("tools/call:echo"), 2);
+        assert_eq!(snapshot.avg("tools/call:echo"), Some(ms(7)));
+        assert_eq!(stats.avg("tools/call:echo"), Some(ms(8)));
     }
 
     #[test]
