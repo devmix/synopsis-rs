@@ -8,5 +8,6 @@ pub mod cli;
 pub mod config_resolver;
 pub mod error;
 pub mod model;
+pub mod onnx_runtime;
 pub mod serve;
 pub mod sync;

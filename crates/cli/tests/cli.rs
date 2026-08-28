@@ -58,28 +58,29 @@ fn subcommand_stub_prints_error_and_exits_one() {
         std::env::temp_dir().join(format!("synopsis-cli-bin-test-{}-stub", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = write_config(&dir);
-    // `serve` (task 1.6), `sync` (task 1.7) and `model` (task 1.8) are
-    // implemented and no longer stub; the remaining subcommands still
-    // dispatch to the not-implemented stub.
-    for sub in ["onnx-runtime status", "load-test"] {
-        let args: Vec<&str> = ["--config", cfg.to_str().unwrap()]
-            .into_iter()
-            .chain(sub.split_whitespace())
-            .collect();
-        let out = run(&args);
-        assert_eq!(
-            out.status.code(),
-            Some(1),
-            "subcommand {sub:?}: stderr: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stderr.contains("not yet implemented"),
-            "subcommand {sub:?}: stderr: {stderr}"
-        );
-    }
+    // `serve` (task 1.6), `sync` (task 1.7), `model` (task 1.8) and
+    // `onnx-runtime` (task 1.9) are implemented and no longer stub; the
+    // remaining subcommand still dispatches to the not-implemented stub.
+    let out = run(&["--config", cfg.to_str().unwrap(), "load-test"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not yet implemented"), "stderr: {stderr}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `onnx-runtime` with an undeclared sub-action is a clap usage error:
+/// exit 1 (oracle parity: `Unknown command` + usage + `os.Exit(1)`).
+#[test]
+fn onnx_runtime_unknown_subaction_exits_one() {
+    let out = run(&["onnx-runtime", "bogus"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("error"), "stderr: {stderr}");
 }
 
 #[test]
@@ -93,17 +94,46 @@ fn missing_config_exits_one_with_error() {
 #[test]
 fn global_flags_precede_subcommand() {
     // Frozen contract scenario: global flags before the subcommand, per-command
-    // flags after it.
+    // flags after it. `onnx-runtime status` (task 1.9) is a read-only
+    // subcommand, so the parsing contract is probed end-to-end: if the global
+    // flags were not parsed before the subcommand, clap would reject the
+    // invocation with exit 1.
     let dir = std::env::temp_dir().join(format!(
         "synopsis-cli-bin-test-{}-flags",
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let cfg = write_config(&dir);
-    // `serve` (task 1.6), `sync` (task 1.7) and `model` (task 1.8) are
-    // implemented and would do real work, so the parsing contract is probed
-    // with a still-stub subcommand: global flags before the subcommand,
-    // per-command arguments after it.
+    // `status` needs an onnx.yaml with a platform entry for the current host.
+    let os = if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        std::env::consts::OS
+    };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "amd64"
+    } else {
+        "arm64"
+    };
+    let key = format!("{os}-{arch}");
+    let onnx = dir.join("onnx.yaml");
+    std::fs::write(
+        &onnx,
+        format!(
+            "runtime:\n  version: \"1.28.0\"\n  platforms:\n    - key: {key}\n      os: {os}\n      arch: {arch}\n      archive_url: http://127.0.0.1:1/onnxruntime-{key}.zip\n      archive_format: zip\n      library_name: libonnxruntime.so.1.28.0\n      library_path: onnxruntime-pkg/lib/libonnxruntime.so.1.28.0\n"
+        ),
+    )
+    .unwrap();
+    let cfg = dir.join("config.yaml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "paths:\n  data_dir: {data}\n  onnx_config: {onnx}\n",
+            data = dir.join("data").display(),
+            onnx = onnx.display()
+        ),
+    )
+    .unwrap();
+
     let out = run(&[
         "--preset",
         "default",
@@ -114,9 +144,15 @@ fn global_flags_precede_subcommand() {
         "onnx-runtime",
         "status",
     ]);
-    assert_eq!(out.status.code(), Some(1), "stub must still exit 1");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not yet implemented"), "stderr: {stderr}");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ONNX Runtime Status"), "{stdout:?}");
+    assert!(stdout.contains("Status:      Not installed"), "{stdout:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
