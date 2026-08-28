@@ -24,7 +24,11 @@ embedding = { workspace = true }
 graph = { workspace = true }
 ingestion = { workspace = true }
 mcp = { workspace = true }
+rusqlite = { workspace = true }
 search = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 notify = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

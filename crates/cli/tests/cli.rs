@@ -58,9 +58,8 @@ fn subcommand_stub_prints_error_and_exits_one() {
         std::env::temp_dir().join(format!("synopsis-cli-bin-test-{}-stub", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = write_config(&dir);
-    // `serve` (task 1.6), `sync` (task 1.7), `model` (task 1.8) and
-    // `onnx-runtime` (task 1.9) are implemented and no longer stub; the
-    // remaining subcommand still dispatches to the not-implemented stub.
+    // `load-test` (task 1.10) is implemented; without an installed embedding
+    // model it exits 1 with a model-not-found error.
     let out = run(&["--config", cfg.to_str().unwrap(), "load-test"]);
     assert_eq!(
         out.status.code(),
@@ -69,7 +68,7 @@ fn subcommand_stub_prints_error_and_exits_one() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not yet implemented"), "stderr: {stderr}");
+    assert!(stderr.contains("error"), "stderr: {stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

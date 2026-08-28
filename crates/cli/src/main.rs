@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use cli::cli::{Cli, Subcommand};
 use cli::config_resolver::resolve_config_path;
+use cli::loadtest::LoadTestRequest;
 use cli::model::{ModelRequest, run_model};
 use cli::onnx_runtime::{OnnxRuntimeRequest, run_onnx_runtime};
 use cli::serve::server::{ServeRequest, run_serve};
@@ -82,14 +83,49 @@ fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
         Subcommand::OnnxRuntime { action } => {
             run_onnx_runtime(&OnnxRuntimeRequest { cfg_path, action })
         }
-        Subcommand::LoadTest { .. } => not_implemented("load-test"),
+        Subcommand::LoadTest {
+            scale,
+            seed,
+            iterations,
+            json,
+            no_fill,
+        } => run_load_test(
+            &cfg_path,
+            db_path.as_deref(),
+            &scale,
+            seed,
+            iterations,
+            json,
+            no_fill,
+        ),
     }
 }
 
-/// Stub handler: the real body arrives in a later task (1.6-1.10).
-fn not_implemented(command: &str) -> ExitCode {
-    eprintln!("error: {command} is not yet implemented");
-    ExitCode::FAILURE
+/// Runs the `load-test` subcommand (task 1.10).
+fn run_load_test(
+    cfg_path: &Path,
+    db_path: Option<&Path>,
+    scale: &str,
+    seed: i64,
+    iterations: u32,
+    json: Option<String>,
+    no_fill: bool,
+) -> ExitCode {
+    let req = LoadTestRequest {
+        scale: scale.to_owned(),
+        seed,
+        iterations: iterations as usize,
+        json,
+        no_fill,
+    };
+
+    match cli::loadtest::run_load_test(cfg_path, db_path, &req) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Prints a clap usage error to stderr and exits 1.
