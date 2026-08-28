@@ -143,7 +143,7 @@ indicatif 0.18 уже в workspace.
     таблицу; `model info <known>` печатает поля; неизвестная подкоманда → exit 1.
   - Критерии приёмки: гейты cli зелёные; вывод таблиц совпадает по полям с оракулом.
 
-- [ ] 1.9 onnx-runtime subcommand
+- [x] 1.9 onnx-runtime subcommand
   - Цель: управление ONNX Runtime библиотекой.
   - Scope файлов: `crates/cli/src/onnx_runtime.rs` (новый).
   - Содержание: design D10. `onnx-runtime install|status|uninstall` через
