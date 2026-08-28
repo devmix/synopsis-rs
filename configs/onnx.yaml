@@ -1,0 +1,100 @@
+# Synopsis ONNX Configuration
+# External configuration for model registry and ONNX Runtime platform settings.
+# Referenced from main config via paths.onnx_config.
+
+runtime:
+  version: "1.28.0"
+  platforms:
+    - key: "windows-amd64"
+      os: "windows"
+      arch: "amd64"
+      archive_url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-1.28.0.zip"
+      archive_format: "zip"
+      library_name: "onnxruntime.dll"
+      library_path: "onnxruntime-win-x64-1.28.0/lib/onnxruntime.dll"
+
+    - key: "linux-amd64"
+      os: "linux"
+      arch: "amd64"
+      archive_url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz"
+      archive_format: "tgz"
+      library_name: "libonnxruntime.so.1.28.0"
+      library_path: "onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0"
+
+    - key: "linux-arm64"
+      os: "linux"
+      arch: "arm64"
+      archive_url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-aarch64-1.28.0.tgz"
+      archive_format: "tgz"
+      library_name: "libonnxruntime.so.1.28.0"
+      library_path: "onnxruntime-linux-aarch64-1.28.0/lib/libonnxruntime.so.1.28.0"
+
+    - key: "darwin-amd64"
+      os: "darwin"
+      arch: "amd64"
+      archive_url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-osx-x64-1.28.0.tgz"
+      archive_format: "tgz"
+      library_name: "libonnxruntime.1.28.0.dylib"
+      library_path: "onnxruntime-osx-x64-1.28.0/lib/libonnxruntime.1.28.0.dylib"
+
+    - key: "darwin-arm64"
+      os: "darwin"
+      arch: "arm64"
+      archive_url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-osx-arm64-1.28.0.tgz"
+      archive_format: "tgz"
+      library_name: "libonnxruntime.1.28.0.dylib"
+      library_path: "onnxruntime-osx-arm64-1.28.0/lib/libonnxruntime.1.28.0.dylib"
+
+models:
+  default: "bge-small-en-v1.5"
+  entries:
+    - name: bge-m3-int8
+      display_name: "BGE-M3 INT8 Quantized"
+      description: "BAAI bge-m3 int8 quantized ONNX model for multilingual embeddings"
+      version: "1.0.0"
+      vector_dim: 1024
+      files:
+        - name: model.onnx
+          url: "https://huggingface.co/BAAI/bge-m3/resolve/main/onnx/model.onnx"
+          size_bytes: 724923
+        - name: model.onnx_data
+          url: "https://huggingface.co/BAAI/bge-m3/resolve/main/onnx/model.onnx_data"
+          size_bytes: 2266820608
+        - name: tokenizer.json
+          url: "https://huggingface.co/BAAI/bge-m3/resolve/main/onnx/tokenizer.json"
+          size_bytes: 17082821
+      source: "huggingface"
+      repo: "BAAI/bge-m3"
+
+    - name: bge-small-en-v1.5
+      display_name: "BGE Small English v1.5"
+      description: "Lightweight BGE model for English text embeddings"
+      version: "1.5.0"
+      vector_dim: 384
+      files:
+        - name: model.onnx
+          url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx"
+          size_bytes: 133093490
+        - name: tokenizer.json
+          url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json"
+          size_bytes: 711396
+        - name: tokenizer_config.json
+          url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer_config.json"
+          size_bytes: 366
+      source: "huggingface"
+      repo: "BAAI/bge-small-en-v1.5"
+
+    - name: paraphrase-multilingual-MiniLM-L12-v2
+      display_name: "Paraphrase Multilingual MiniLM"
+      description: "Sentence-transformers multilingual model for semantic search"
+      version: "2.0.0"
+      vector_dim: 384
+      files:
+        - name: model.onnx
+          url: "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model.onnx"
+          size_bytes: 470301610
+        - name: tokenizer.json
+          url: "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json"
+          size_bytes: 9081518
+      source: "huggingface"
+      repo: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
