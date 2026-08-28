@@ -13,6 +13,12 @@
 //! [`FixtureSet::load`] validates that a fixture set exists on disk and exposes
 //! its paths; [`FixtureSet::load_vectors`] opens the dump as a streaming row
 //! iterator over `vectors::synx` — the ~4 GB target file is never loaded whole.
+//!
+//! [`load_fixture_set_from_dir`] loads the committed vector dump
+//! (`vectors.bin` alone — the Go `knowledge.db` is never committed and never
+//! opened, design D5 of `parity-harness-real-fixtures`) into memory as
+//! `(chunk_id, vector)` rows; it is the input of the recall@k differential
+//! test (design D3).
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -119,6 +125,38 @@ impl Iterator for FixtureVectors {
     }
 }
 
+/// Loads the SYNX vector dump `dir/vectors.bin` into memory as
+/// `(chunk_id, vector)` rows in file order (ascending `chunk_id`, a format
+/// requirement).
+///
+/// Unlike [`FixtureSet::load`], only the vector dump is required: the
+/// committed parity fixture set ships `vectors.bin` alone (the Go
+/// `knowledge.db` is never committed and never opened — legacy DB rule,
+/// design D5 of `parity-harness-real-fixtures`).
+///
+/// Every failure — missing/unreadable file, malformed SYNX header or row
+/// (bad magic, unsupported version, zero dim, truncation) — surfaces as
+/// [`HarnessError::Fixture`] carrying the file path.
+pub fn load_fixture_set_from_dir(
+    dir: impl Into<PathBuf>,
+) -> Result<Vec<(u32, Vec<f32>)>, HarnessError> {
+    let path = dir.into().join(VECTORS_BIN);
+    let file = File::open(&path).map_err(|err| HarnessError::Fixture {
+        path: path.clone(),
+        reason: format!("cannot open: {err}"),
+    })?;
+    let reader = vectors::synx::open(file).map_err(|err| HarnessError::Fixture {
+        path: path.clone(),
+        reason: err.to_string(),
+    })?;
+    reader
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| HarnessError::Fixture {
+            path,
+            reason: err.to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -150,9 +188,8 @@ mod tests {
     #[test]
     fn load_present_files_exposes_paths() {
         let dir = scratch_dir("present");
-        for name in [KNOWNLEDGE_DB, VECTORS_BIN] {
-            std::fs::write(dir.join(name), b"stub").expect("write stub fixture");
-        }
+        std::fs::write(dir.join(KNOWNLEDGE_DB), DB_PLACEHOLDER).expect("write db placeholder");
+        write_synx_file(dir.join(VECTORS_BIN), 16, &tiny_rows());
 
         let set = FixtureSet::load(&dir).unwrap();
         assert_eq!(set.db_path, dir.join(KNOWNLEDGE_DB));
@@ -166,18 +203,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Write a tiny SYNX fixture set (stub db + generated vectors.bin) into a
-    /// fresh scratch dir and return its path.
-    fn write_fixture_set(tag: &str, dim: u32, rows: &[(u32, Vec<f32>)]) -> PathBuf {
-        let dir = scratch_dir(tag);
-        std::fs::write(dir.join(KNOWNLEDGE_DB), b"stub").expect("write db stub");
-        let mut file = File::create(dir.join(VECTORS_BIN)).expect("create vectors.bin");
+    /// Placeholder bytes for the `knowledge.db` in scratch fixture dirs: the
+    /// existence checks under test never parse the file.
+    const DB_PLACEHOLDER: &[u8] = b"sqlite-placeholder";
+
+    /// Writes `rows` as a SYNX file at `path` (test helper; panics are
+    /// intentional — writing to a scratch path cannot fail in practice).
+    fn write_synx_file(path: impl AsRef<Path>, dim: u32, rows: &[(u32, Vec<f32>)]) {
+        let mut file = File::create(path.as_ref()).expect("create vectors.bin");
         vectors::synx::write(
             &mut file,
             dim,
             rows.iter().map(|(id, vector)| (*id, vector.as_slice())),
         )
         .expect("write SYNX rows");
+    }
+
+    /// Write a tiny SYNX fixture set (placeholder db + generated vectors.bin)
+    /// into a fresh scratch dir and return its path.
+    fn write_fixture_set(tag: &str, dim: u32, rows: &[(u32, Vec<f32>)]) -> PathBuf {
+        let dir = scratch_dir(tag);
+        std::fs::write(dir.join(KNOWNLEDGE_DB), DB_PLACEHOLDER).expect("write db placeholder");
+        write_synx_file(dir.join(VECTORS_BIN), dim, rows);
         dir
     }
 
@@ -329,6 +376,104 @@ mod tests {
 
         // Farthest-first candidates score exactly zero.
         assert_eq!(recall_at_k(&farthest, &ground_truth).unwrap(), 0.0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Real-fixture recall gate (task 1.1, design D3): load the committed
+    /// `fixtures/vectors.bin` (SYNX, dim=384, 270 rows extracted from the Go
+    /// oracle's vec0 — task 1.2), build a LanceEngine ANN index over it in a
+    /// scratch dir, and score the engine's top-10 against exact-L2
+    /// brute-force ground truth computed here. The committed fixture is only
+    /// ever READ, never regenerated or overwritten.
+    ///
+    /// Gate: recall@10 >= 0.95 relative to brute-force ground truth
+    /// (`openspec/specs/data-schema/spec.md`).
+    #[test]
+    fn recall_at_k_on_real_fixture_meets_the_gate() {
+        use crate::metrics::recall_at_k;
+        use vectors::{LanceEngine, VectorIndexConfig};
+
+        const K: usize = 10;
+        // 20 queries spread across the corpus: fixture rows 0, 13, ..., 247.
+        const QUERY_STRIDE: usize = 13;
+        const QUERY_COUNT: usize = 20;
+        const RECALL_GATE: f64 = 0.95;
+
+        // The committed fixture (task 1.2), read from the crate's fixtures dir.
+        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let rows = load_fixture_set_from_dir(&fixture_dir).expect("committed fixture loads");
+        assert_eq!(rows.len(), 270, "fixture row count");
+        assert!(
+            rows.iter().all(|(_, vector)| vector.len() == 384),
+            "fixture dim is 384"
+        );
+
+        // ANN index over the fixture in a scratch dir. nprobes = all
+        // partitions, ef_search larger than any partition: the search is
+        // exhaustive per partition, so recall must be (near) perfect.
+        let dir = scratch_dir("recall-lance");
+        let config = VectorIndexConfig::new(384, 16, 100, 8, 8, 200).expect("config is valid");
+        let engine = LanceEngine::create(dir.join("lance"), config).expect("create engine");
+        let refs: Vec<(u32, &[f32])> = rows
+            .iter()
+            .map(|(id, vector)| (*id, vector.as_slice()))
+            .collect();
+        engine.insert_batch(&refs).expect("insert fixture rows");
+        engine.build_index().expect("build index");
+        assert_eq!(engine.count().expect("count"), 270);
+
+        // Queries: 20 fixture vectors, spread by stride (each query is a
+        // stored row, so its own id is the exact top-1).
+        let queries: Vec<&Vec<f32>> = rows
+            .iter()
+            .step_by(QUERY_STRIDE)
+            .take(QUERY_COUNT)
+            .map(|(_, vector)| vector)
+            .collect();
+        assert_eq!(queries.len(), QUERY_COUNT, "query count");
+
+        // Ground truth: exact squared-L2 top-K per query (f64 accumulation),
+        // ties broken by chunk id.
+        let ground_truth: Vec<Vec<u32>> = queries
+            .iter()
+            .map(|query| {
+                let mut dists: Vec<(f64, u32)> = rows
+                    .iter()
+                    .map(|(id, vector)| {
+                        let acc = query
+                            .iter()
+                            .zip(vector)
+                            .map(|(a, b)| {
+                                let d = *a as f64 - *b as f64;
+                                d * d
+                            })
+                            .sum();
+                        (acc, *id)
+                    })
+                    .collect();
+                dists.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+                dists.into_iter().take(K).map(|(_, id)| id).collect()
+            })
+            .collect();
+
+        let candidates: Vec<Vec<u32>> = queries
+            .iter()
+            .map(|query| {
+                engine
+                    .search(query, K)
+                    .expect("search")
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect()
+            })
+            .collect();
+
+        let recall = recall_at_k(&candidates, &ground_truth).expect("recall defined");
+        assert!(
+            recall >= RECALL_GATE,
+            "recall@{K} = {recall} is below the {RECALL_GATE} gate"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

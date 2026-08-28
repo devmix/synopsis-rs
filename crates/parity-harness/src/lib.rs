@@ -12,7 +12,8 @@
 //! - [`mcp_client`]: MCP client wrapper (`initialize`/`tools/list`/`tools/call`)
 //!   with per-operation p50/p95 timing;
 //! - [`fixtures`]: fixture loader API (knowledge.db + SYNX vectors.bin rows,
-//!   streamed via `vectors::synx`);
+//!   streamed via `vectors::synx`; `load_fixture_set_from_dir` reads the
+//!   committed `vectors.bin` dump into memory for the recall@k gate);
 //! - [`metrics`]: recall@k against provided ground truth;
 //! - [`diff`]: JSON/text diff utilities for parity reports.
 
