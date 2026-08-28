@@ -13,9 +13,13 @@ database:
 embeddings:
   mode: "local"
   local:
-    model_name: "bge-m3-int8"  # auto-download
+#    model_name: "bge-m3-int8"  # auto-download
+    model_name: "bge-small-en-v1.5"  # auto-download
     # model_path: "" # legacy: explicit path
-    vector_dim: 1024
+    # Local dev override: bge-small-en-v1.5 is 384-dim. Frozen default is
+    # bge-m3-int8 with vector_dim 1024; this pairing is a deliberate local
+    # deviation for faster local testing on the 384-dim model.
+    vector_dim: 384
   api:
     base_url: "http://localhost:1234/v1"
     api_key: ""
