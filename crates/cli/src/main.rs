@@ -53,14 +53,14 @@ fn main() -> ExitCode {
 /// configuration path (explicit `--config` > preset auto-search) the
 /// subcommand bootstraps from.
 fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
-    let db_path = cli.db.as_ref().map(Path::new).map(PathBuf::from);
+    let dataset = cli.dataset;
     match cli.command {
         Subcommand::Sync {
             rebuild,
             auto_rebuild_vectors,
         } => run_sync(&SyncRequest {
             cfg_path,
-            db_path,
+            dataset,
             rebuild,
             auto_rebuild_vectors,
         }),
@@ -70,7 +70,7 @@ fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
             auto_rebuild_vectors,
         } => run_serve(&ServeRequest {
             cfg_path,
-            db_path,
+            dataset,
             no_initial_sync,
             port,
             auto_rebuild_vectors,
@@ -91,7 +91,7 @@ fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
             no_fill,
         } => run_load_test(
             &cfg_path,
-            db_path.as_deref(),
+            dataset.as_deref(),
             &scale,
             seed,
             iterations,
@@ -104,7 +104,7 @@ fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
 /// Runs the `load-test` subcommand (task 1.10).
 fn run_load_test(
     cfg_path: &Path,
-    db_path: Option<&Path>,
+    dataset: Option<&str>,
     scale: &str,
     seed: i64,
     iterations: u32,
@@ -119,7 +119,7 @@ fn run_load_test(
         no_fill,
     };
 
-    match cli::loadtest::run_load_test(cfg_path, db_path, &req) {
+    match cli::loadtest::run_load_test(cfg_path, dataset, &req) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");

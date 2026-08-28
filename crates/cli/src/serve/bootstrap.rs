@@ -76,7 +76,8 @@ pub struct Bootstrap {
     /// Effective configuration (defaults applied, validated).
     pub config: Config,
     /// Global ontology (`global.xml`); `None` when the section is absent or
-    /// empty (no configured sources, no cross-domain linking).
+    /// empty (no configured sources, no cross-domain linking), or when there
+    /// is no active dataset (design D2 no-data semantics).
     pub global: Option<GlobalConfig>,
     /// Domain ontologies by name (discovered from `domains/*.xml`).
     pub domains: HashMap<String, DomainConfig>,
@@ -105,13 +106,34 @@ pub struct Bootstrap {
     pub dimension_mismatch: Option<DimensionMismatch>,
 }
 
+/// Whether an active dataset is configured (design D2): a non-empty
+/// `dataset.name` AND an existing dataset directory
+/// `<workspace_dir>/datasets/<name>`. Without an active dataset the
+/// application runs with no data (no ontology loaded, nothing to ingest).
+#[must_use]
+pub fn has_active_dataset(config: &Config) -> bool {
+    if config.dataset.name.is_empty() {
+        return false;
+    }
+    let root = Path::new(config.paths.workspace_dir.as_str())
+        .join("datasets")
+        .join(config.dataset.name.as_str());
+    root.is_dir()
+}
+
 /// Assembles the shared application state (design D3).
 ///
-/// `db_path` is the `--db` flag override; `None` uses the dataset-derived
-/// path (`<workspace_dir>/datasets/<name>/state/db/knowledge.db` — the DB
-/// path is not configurable, revision 1.1). The assembly order mirrors the
-/// oracle: config → domain discovery → onnx.yaml → `--db` override → main
-/// database → model provisioning → provider → cache database.
+/// `dataset_override` is the `--dataset` flag value; when present it wins
+/// over `config.dataset.name` before any path resolution. The knowledge-DB
+/// path is derived, not configurable (revision 1.1):
+/// `<workspace_dir>/datasets/<name>/state/db/knowledge.db`. The assembly
+/// order mirrors the oracle: config → dataset gate → domain discovery →
+/// onnx.yaml → main database → model provisioning → provider → cache
+/// database.
+///
+/// No-data semantics (design D2): without an active dataset
+/// ([`has_active_dataset`]) the ontology load is skipped, the server runs
+/// with no data, and a warning is logged — never an error.
 ///
 /// # Errors
 ///
@@ -119,11 +141,16 @@ pub struct Bootstrap {
 /// [`CliError::Db`] for the main database, [`CliError::Embedding`] for model
 /// provisioning and provider construction, [`CliError::Unsupported`] when the
 /// configured embeddings mode is not available in this build.
-pub fn bootstrap(cfg_path: &Path, db_path: Option<&Path>) -> Result<Bootstrap, CliError> {
+pub fn bootstrap(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Bootstrap, CliError> {
     // 1. Config: load → defaults → validate.
     let mut config = load(cfg_path)?;
     config.apply_defaults();
     config.validate()?;
+
+    // 1b. `--dataset` CLI flag wins over the config value.
+    if let Some(name) = dataset_override {
+        config.dataset.name = name.to_string();
+    }
 
     // 2. Embeddings mode gate: this build ships the local ONNX provider only.
     //    (The oracle supports an api provider; see the change report.)
@@ -145,22 +172,30 @@ pub fn bootstrap(cfg_path: &Path, db_path: Option<&Path>) -> Result<Bootstrap, C
         }
     }
 
-    // 3. Domain discovery (port of domain.DiscoveryWithLogger). The ontology
-    //    directory is per-dataset: <workspace_dir>/datasets/<name>/ontology.
-    let (global, domains) =
-        discover_domains(config.dataset.ontology_path(&config.paths.workspace_dir))?;
+    // 3. Dataset gate (design D2) + domain discovery (port of
+    //    domain.DiscoveryWithLogger). The ontology directory is per-dataset:
+    //    <workspace_dir>/datasets/<name>/ontology. Without an active dataset
+    //    there is no ontology to load and nothing to ingest: run with no
+    //    data (a warning, never an error).
+    let (global, domains) = if has_active_dataset(&config) {
+        discover_domains(config.dataset.ontology_path(&config.paths.workspace_dir))?
+    } else {
+        tracing::warn!(
+            dataset = %config.dataset.name,
+            "no dataset configured, running with no data"
+        );
+        (None, HashMap::new())
+    };
 
     // 4. External ONNX registry.
     let onnx = load_onnx_config(&config.paths.onnx_config)?;
 
-    // 5. Effective database path: the `--db` flag override wins, otherwise
-    //    the path is derived from workspace_dir + dataset.name.
-    let db_path = db_path
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| config.dataset.db_path(&config.paths.workspace_dir));
+    // 5. Knowledge database: the path is derived from workspace_dir +
+    //    dataset.name (not configurable, revision 1.1).
+    let knowledge_db = config.dataset.db_path(&config.paths.workspace_dir);
 
     // 6. Main database + migrations.
-    let db = open_db(&db_path)?;
+    let db = open_db(&knowledge_db)?;
 
     // 7. Model provisioning + provider.
     ensure_model(&config, &onnx)?;
@@ -171,7 +206,7 @@ pub fn bootstrap(cfg_path: &Path, db_path: Option<&Path>) -> Result<Bootstrap, C
 
     tracing::info!(
         config = %cfg_path.display(),
-        db = %db_path.display(),
+        db = %knowledge_db.display(),
         "configuration loaded"
     );
     Ok(Bootstrap {
@@ -410,10 +445,14 @@ pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, Vector
 /// stored dimension disagrees with the configuration.
 pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = vectors_index_config(&boot.config)?;
-    let path = Path::new(&boot.config.paths.workspace_dir);
-    let engine = match LanceEngine::open(path, index_config) {
+    // The ANN index is per-dataset: <workspace_dir>/datasets/<name>/state/vectors.
+    let path = boot
+        .config
+        .dataset
+        .vectors_path(&boot.config.paths.workspace_dir);
+    let engine = match LanceEngine::open(&path, index_config) {
         Ok(engine) => engine,
-        Err(VectorsError::NotFound(_)) => LanceEngine::create(path, index_config)?,
+        Err(VectorsError::NotFound(_)) => LanceEngine::create(&path, index_config)?,
         Err(err) => {
             if let Some(mismatch) = DimensionMismatch::from_vectors_error(&err) {
                 tracing::error!(
@@ -613,9 +652,9 @@ mod tests {
     }
 
     /// Writes a valid local-mode config into `dir` and returns its path.
-    /// `workspace_dir` / `onnx` point inside `dir`; the dataset ontology
-    /// resolves to `<workspace_dir>/datasets/edtech/ontology` (absent here —
-    /// discovery then yields no domains).
+    /// `workspace_dir` / `onnx` point inside `dir`; the dataset directory
+    /// `<workspace_dir>/datasets/edtech` is absent here, so the no-data gate
+    /// (design D2) skips the ontology load.
     fn write_config(dir: &TempDir, mode: &str) -> PathBuf {
         let dir = dir.as_ref();
         let yaml = format!(
@@ -1014,11 +1053,17 @@ models:
     fn build_runner_dimension_mismatch_sets_flag() {
         let dir = TempDir::new("dim-mismatch");
         let data_dir = dir.as_ref().join("data");
-        // Pre-create the stored index with a different dimension.
+        let mut config = sync_config(&data_dir); // 4-dim embedding vs 8-dim index
+        config.dataset.name = "edtech".to_string();
+        // Pre-create the stored index (at the dataset's vectors path) with a
+        // different dimension.
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        LanceEngine::create(&data_dir, stored).expect("create stored index");
+        LanceEngine::create(
+            config.dataset.vectors_path(&config.paths.workspace_dir),
+            stored,
+        )
+        .expect("create stored index");
 
-        let config = sync_config(&data_dir); // 4-dim embedding vs 8-dim index
         let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
         let mut boot = test_bootstrap(config, None, db);
 
@@ -1129,25 +1174,60 @@ embeddings:
     }
 
     #[test]
-    fn bootstrap_db_override_is_applied() {
+    fn bootstrap_dataset_override_is_applied() {
         // The override is applied before the provider step; the provider
         // then fails (no ONNX library in the test env), but the database
-        // file must exist at the OVERRIDDEN path, proving the order.
-        let dir = TempDir::new("boot-db-override");
+        // file must exist at the OVERRIDDEN dataset's derived path, proving
+        // the order.
+        let dir = TempDir::new("boot-dataset-override");
         write_onnx(&dir);
         let cfg_path = write_config(&dir, "local");
-        let override_path = dir.as_ref().join("override").join("custom.db");
+        let ws = dir.as_ref().join("data");
+        let overridden_db = ws
+            .join("datasets")
+            .join("other")
+            .join("state")
+            .join("db")
+            .join("knowledge.db");
+        let config_db = ws
+            .join("datasets")
+            .join("edtech")
+            .join("state")
+            .join("db")
+            .join("knowledge.db");
 
-        bootstrap(&cfg_path, Some(override_path.as_path()))
+        bootstrap(&cfg_path, Some("other"))
             .expect_err("provider creation must fail in the test env");
 
         assert!(
-            override_path.exists(),
-            "db must be opened at the overridden path"
+            overridden_db.exists(),
+            "db must be opened at the overridden dataset path"
         );
-        // And NOT at the config-derived default path (the edtech dataset path).
-        let default_path = PathBuf::from("./workspace/datasets/edtech/state/db/knowledge.db");
-        assert!(!default_path.exists(), "default path must be untouched");
+        assert!(!config_db.exists(), "config dataset path must be untouched");
+    }
+
+    #[test]
+    fn has_active_dataset_requires_name_and_directory() {
+        let dir = TempDir::new("dataset-active");
+        // Empty name (the default): no dataset.
+        let config = local_config(dir.as_ref());
+        assert!(!has_active_dataset(&config), "empty name must mean no data");
+
+        let mut config = local_config(dir.as_ref());
+        config.dataset.name = "edtech".to_string();
+        // Named but absent: no dataset.
+        assert!(
+            !has_active_dataset(&config),
+            "absent directory must mean no data"
+        );
+
+        // Named and present: active (workspace_dir is `dir` itself).
+        std::fs::create_dir_all(dir.as_ref().join("datasets").join("edtech"))
+            .expect("create dataset dir");
+        assert!(
+            has_active_dataset(&config),
+            "named + present must be active"
+        );
     }
 
     // --- e2e (ignored): full bootstrap with a real model --------------------

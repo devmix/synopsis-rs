@@ -38,8 +38,8 @@ use crate::serve::server;
 pub struct SyncRequest {
     /// Resolved configuration file path.
     pub cfg_path: PathBuf,
-    /// `--db` database path override.
-    pub db_path: Option<PathBuf>,
+    /// `--dataset` dataset name override (wins over `config.dataset.name`).
+    pub dataset: Option<String>,
     /// `--rebuild`: clear all existing data before re-indexing.
     pub rebuild: bool,
     /// `--auto-rebuild-vectors` (OR-ed with the config flag).
@@ -66,7 +66,7 @@ pub fn run_sync(req: &SyncRequest) -> ExitCode {
 
 /// Bootstrap + sync flow (the production path of [`run_sync`]).
 fn sync_flow(req: &SyncRequest, start: Instant) -> Result<(), CliError> {
-    let mut boot = bootstrap::bootstrap(&req.cfg_path, req.db_path.as_deref())?;
+    let mut boot = bootstrap::bootstrap(&req.cfg_path, req.dataset.as_deref())?;
     sync(&mut boot, req, start, &mut std::io::stderr())?;
     Ok(())
 }
@@ -87,6 +87,15 @@ pub fn sync(
     start: Instant,
     summary_out: &mut dyn Write,
 ) -> Result<SummaryStats, CliError> {
+    // No-data semantics (design D2): without an active dataset there is no
+    // ontology and no content to index — report an empty summary and exit 0
+    // (the bootstrap already logged the warning).
+    if !bootstrap::has_active_dataset(&boot.config) {
+        let stats = SummaryStats::default();
+        print_summary(summary_out, &stats, start.elapsed())?;
+        return Ok(stats);
+    }
+
     // CLI flag overrides config (oracle: autoRebuildVectorsCLI || cfg).
     let auto_rebuild = req.auto_rebuild_vectors || boot.config.embeddings.auto_rebuild_vectors;
 
@@ -329,13 +338,18 @@ mod tests {
             "# Title\n\nBody text of the document.\n",
         )
         .expect("write source document");
-        let config = test_config(&dir.as_ref().join("data"));
+        let mut config = test_config(&dir.as_ref().join("data"));
+        // An active dataset (design D2): named + directory present, so the
+        // sync flow ingests instead of short-circuiting with no data.
+        config.dataset.name = "edtech".to_string();
+        std::fs::create_dir_all(config.dataset.state_path(&config.paths.workspace_dir))
+            .expect("create dataset state dir");
         let global = one_markdown_source(&src);
         let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
         let boot = test_bootstrap(config, Some(global), db);
         let req = SyncRequest {
             cfg_path: dir.as_ref().join("unused.yaml").to_path_buf(),
-            db_path: None,
+            dataset: None,
             rebuild: false,
             auto_rebuild_vectors: false,
         };
@@ -439,11 +453,18 @@ mod tests {
     // --- sync: dimension mismatch ---------------------------------------------
 
     /// Pre-creates a stored ANN index with a different dimension (8 vs the
-    /// 4-dim test config) so `open_vectors_engine` reports a mismatch.
+    /// 4-dim test config) so `open_vectors_engine` reports a mismatch. The
+    /// index lands at the fixture's dataset vectors path (dataset `edtech`).
     fn precreate_mismatched_index(dir: &TempDir) {
-        let data_dir = dir.as_ref().join("data");
+        let vectors_path = dir
+            .as_ref()
+            .join("data")
+            .join("datasets")
+            .join("edtech")
+            .join("state")
+            .join("vectors");
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        LanceEngine::create(&data_dir, stored).expect("create stored index");
+        LanceEngine::create(&vectors_path, stored).expect("create stored index");
     }
 
     #[test]

@@ -1,11 +1,11 @@
 //! Command-line interface definition (clap 4.6.6 Builder API, design D1).
 //!
-//! Invocation format: `synopsis [--config PATH] [--preset NAME] [--db PATH]
-//! <subcommand> [flags...]`. Global flags precede the subcommand; per-command
-//! flags follow it. Help text is Rust-idiomatic and deliberately NOT
-//! byte-matched to the Go oracle (user decision 2026-08-27); flags, defaults
-//! and behavior stay faithful to the frozen cli-surface spec and the oracle
-//! (`../synopsis/cmd/app/main.go`).
+//! Invocation format: `synopsis [--config PATH] [--preset NAME]
+//! [--dataset NAME] <subcommand> [flags...]`. Global flags precede the
+//! subcommand; per-command flags follow it. Help text is Rust-idiomatic and
+//! deliberately NOT byte-matched to the Go oracle (user decision
+//! 2026-08-27); flags, defaults and behavior stay faithful to the frozen
+//! cli-surface spec and the oracle (`../synopsis/cmd/app/main.go`).
 
 use clap::{Arg, ArgAction, Command as ClapCommand};
 
@@ -31,8 +31,8 @@ pub struct Cli {
     pub config: Option<String>,
     /// Configuration preset name (`--preset`, default `default`).
     pub preset: String,
-    /// SQLite database path override (`--db`).
-    pub db: Option<String>,
+    /// Dataset name override (`--dataset`); wins over `config.dataset.name`.
+    pub dataset: Option<String>,
     /// The subcommand to run.
     pub command: Subcommand,
 }
@@ -129,11 +129,11 @@ fn build_command() -> ClapCommand {
                 .global(true),
         )
         .arg(
-            Arg::new("db")
-                .long("db")
-                .value_name("PATH")
+            Arg::new("dataset")
+                .long("dataset")
+                .value_name("NAME")
                 .action(ArgAction::Set)
-                .help("path to SQLite database file (overrides config)")
+                .help("dataset name (overrides config dataset.name)")
                 .global(true),
         )
         .subcommand_required(true)
@@ -362,7 +362,7 @@ impl Cli {
                 .get_one::<String>("preset")
                 .cloned()
                 .unwrap_or_else(|| DEFAULT_PRESET.to_string()),
-            db: matches.get_one::<String>("db").cloned(),
+            dataset: matches.get_one::<String>("dataset").cloned(),
             command,
         }
     }

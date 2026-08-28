@@ -90,6 +90,34 @@ fn missing_config_exits_one_with_error() {
     assert!(stderr.contains("failed to load config"), "stderr: {stderr}");
 }
 
+/// `--db` was dropped and `--dataset` added (storage-layout-restructure D2):
+/// the help text lists the new flag and no longer mentions the old one.
+/// (Note: `--help` exits 1 in this binary — the pre-existing
+/// DisplayHelp → usage-error path; only the printed text is asserted.)
+#[test]
+fn help_lists_dataset_flag_and_not_db_flag() {
+    let out = run(&["--help"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--dataset"),
+        "help must list --dataset: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--db"),
+        "help must not list --db: {stdout}"
+    );
+}
+
+/// The removed `--db` flag is rejected as an unknown flag (exit 1, oracle
+/// parity for usage errors).
+#[test]
+fn removed_db_flag_is_rejected() {
+    let out = run(&["--db", "/tmp/knowledge.db", "onnx-runtime", "status"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unexpected argument"), "stderr: {stderr}");
+}
+
 #[test]
 fn global_flags_precede_subcommand() {
     // Frozen contract scenario: global flags before the subcommand, per-command
@@ -138,8 +166,8 @@ fn global_flags_precede_subcommand() {
         "default",
         "--config",
         cfg.to_str().unwrap(),
-        "--db",
-        "/tmp/knowledge.db",
+        "--dataset",
+        "edtech",
         "onnx-runtime",
         "status",
     ]);

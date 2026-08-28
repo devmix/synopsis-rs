@@ -39,11 +39,11 @@ pub struct LoadTestRequest {
 
 /// Runs the load-test subcommand.
 ///
-/// `cfg_path` is the resolved configuration file path; `db_path` is the
-/// optional `--db` override.
+/// `cfg_path` is the resolved configuration file path; `dataset` is the
+/// optional `--dataset` override (wins over `config.dataset.name`).
 pub fn run_load_test(
     cfg_path: &Path,
-    db_path: Option<&Path>,
+    dataset: Option<&str>,
     req: &LoadTestRequest,
 ) -> Result<(), CliError> {
     // 1. Parse scale.
@@ -51,7 +51,7 @@ pub fn run_load_test(
         .map_err(|e| CliError::Unsupported(format!("invalid scale: {e}")))?;
 
     // 2. Bootstrap (config, DB, embedding, vectors).
-    let mut boot = bootstrap(cfg_path, db_path)?;
+    let mut boot = bootstrap(cfg_path, dataset)?;
     require_embedding_model(&boot)?;
 
     // 3. Open the vector engine (dimension mismatch → recreate unless
@@ -237,13 +237,18 @@ mod tests {
         }
     }
 
-    /// A 4-dim Bootstrap with a temp-file DB (matching [`FakeEmbed`]).
+    /// A 4-dim Bootstrap with a temp-file DB (matching [`FakeEmbed`]). The
+    /// dataset is active (design D2): named `edtech` with the directory
+    /// present.
     fn test_bootstrap(data_dir: &Path) -> Bootstrap {
         let mut config = Config::default();
         config.embeddings.local.model_name = "bge-m3-int8".to_string();
         config.embeddings.local.vector_dim = 4;
         config.paths.workspace_dir = data_dir.to_string_lossy().into_owned();
+        config.dataset.name = "edtech".to_string();
         config.apply_defaults();
+        std::fs::create_dir_all(config.dataset.state_path(&config.paths.workspace_dir))
+            .expect("create dataset state dir");
         let db = open_db(data_dir.join("knowledge.db").as_path()).expect("open db");
         Bootstrap {
             config,
@@ -260,10 +265,16 @@ mod tests {
         }
     }
 
-    /// Pre-creates a stored ANN index with the given dimension.
+    /// Pre-creates a stored ANN index with the given dimension at the
+    /// fixture's dataset vectors path (dataset `edtech`).
     fn stored_index(data_dir: &Path, dim: usize) {
         let stored = VectorIndexConfig::new(dim, 16, 100, 256, 32, 200).expect("index config");
-        LanceEngine::create(data_dir, stored).expect("create stored index");
+        let vectors_path = data_dir
+            .join("datasets")
+            .join("edtech")
+            .join("state")
+            .join("vectors");
+        LanceEngine::create(&vectors_path, stored).expect("create stored index");
     }
 
     /// A no-op embedding provider for tests.

@@ -70,7 +70,7 @@
 //! exited 0 (a bug — a bind failure must not look like success).
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,8 +104,8 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct ServeRequest {
     /// Resolved configuration file path.
     pub cfg_path: PathBuf,
-    /// `--db` database path override.
-    pub db_path: Option<PathBuf>,
+    /// `--dataset` dataset name override (wins over `config.dataset.name`).
+    pub dataset: Option<String>,
     /// `--no-initial-sync`: skip the full source scan on startup.
     pub no_initial_sync: bool,
     /// `--port` override; `0` keeps the `server.port` config value.
@@ -274,7 +274,7 @@ pub fn run_serve(req: &ServeRequest) -> ExitCode {
 /// API needs a runtime handle) and feeds the stop broadcast the owner loop
 /// selects on.
 pub fn serve(runtime: &Runtime, req: &ServeRequest) -> Result<(), CliError> {
-    let mut boot = bootstrap::bootstrap(&req.cfg_path, req.db_path.as_deref())?;
+    let mut boot = bootstrap::bootstrap(&req.cfg_path, req.dataset.as_deref())?;
     let (signal_tx, mut stop) = broadcast::channel::<()>(1);
     runtime.spawn(async move {
         shutdown_signal().await;
@@ -383,7 +383,10 @@ pub fn serve_with_stop(
 
     // Initial sync: scan all sources so the index is up to date before the
     // server accepts requests. Forced after a vector rebuild (re-embed).
-    let initial_sync_due = auto_update.initial_sync && !req.no_initial_sync;
+    // No-data semantics (design D2): without an active dataset there is
+    // nothing to ingest — the server simply starts with an empty index.
+    let initial_sync_due =
+        bootstrap::has_active_dataset(&config) && auto_update.initial_sync && !req.no_initial_sync;
     if initial_sync_due || force_rebuild {
         tracing::info!("initial sync started");
         let stats = ingest::ingest_all(&runner, force_rebuild);
@@ -637,15 +640,19 @@ fn run_orphan_cleanup(runner: &Runner<'_>) {
 /// anyway).
 pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = bootstrap::vectors_index_config(&boot.config)?;
-    let path = Path::new(&boot.config.paths.workspace_dir);
-    // The engine stores its table under `<workspace_dir>/vectors.lance` (Lance
+    // The ANN index is per-dataset: <workspace_dir>/datasets/<name>/state/vectors.
+    let path = boot
+        .config
+        .dataset
+        .vectors_path(&boot.config.paths.workspace_dir);
+    // The engine stores its table under `<vectors_path>/vectors.lance` (Lance
     // layout); it must be dropped before the engine can be recreated with
     // the new schema.
     let table_dir = path.join("vectors.lance");
     if table_dir.exists() {
         std::fs::remove_dir_all(&table_dir)?;
     }
-    let engine = LanceEngine::create(path, index_config)?;
+    let engine = LanceEngine::create(&path, index_config)?;
     tracing::info!(
         path = %path.display(),
         dim = index_config.dim,
@@ -661,6 +668,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::collections::BTreeMap;
+    use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
@@ -804,10 +812,24 @@ mod tests {
         config
     }
 
+    /// The fixture's dataset vectors path (dataset `edtech`).
+    fn dataset_vectors_path(dir: &TempDir) -> PathBuf {
+        dir.as_ref()
+            .join("data")
+            .join("datasets")
+            .join("edtech")
+            .join("state")
+            .join("vectors")
+    }
+
     /// A Bootstrap with a fake provider and a temp-file db; no sources
-    /// (global `None`) — the task's "no real sources" shape.
+    /// (global `None`) — the task's "no real sources" shape. The dataset is
+    /// active (design D2): named `edtech` with the directory present.
     fn test_bootstrap(dir: &TempDir) -> Bootstrap {
-        let config = test_config(&dir.as_ref().join("data"));
+        let mut config = test_config(&dir.as_ref().join("data"));
+        config.dataset.name = "edtech".to_string();
+        std::fs::create_dir_all(config.dataset.state_path(&config.paths.workspace_dir))
+            .expect("create dataset state dir");
         let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
         Bootstrap {
             config,
@@ -907,7 +929,7 @@ mod tests {
         let mut boot = test_bootstrap(&dir);
         let req = ServeRequest {
             cfg_path: dir.as_ref().join("unused.yaml").to_path_buf(),
-            db_path: None,
+            dataset: None,
             no_initial_sync: true,
             port,
             auto_rebuild_vectors: false,
@@ -970,16 +992,16 @@ mod tests {
     #[test]
     fn serve_rebuilds_vectors_on_dimension_mismatch() {
         let dir = TempDir::new("dim-rebuild");
-        let data_dir = dir.as_ref().join("data");
-        // Pre-create the stored index with a different dimension.
+        // Pre-create the stored index (at the fixture's dataset vectors
+        // path) with a different dimension.
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        LanceEngine::create(&data_dir, stored).expect("create stored index");
+        LanceEngine::create(dataset_vectors_path(&dir), stored).expect("create stored index");
 
         let port = free_port();
         let mut boot = test_bootstrap(&dir); // 4-dim embedding vs 8-dim index
         let req = ServeRequest {
             cfg_path: dir.as_ref().join("unused.yaml").to_path_buf(),
-            db_path: None,
+            dataset: None,
             no_initial_sync: true,
             port,
             auto_rebuild_vectors: true,
@@ -1025,14 +1047,13 @@ mod tests {
     #[test]
     fn serve_mismatch_without_auto_rebuild_is_fatal() {
         let dir = TempDir::new("dim-fatal");
-        let data_dir = dir.as_ref().join("data");
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        LanceEngine::create(&data_dir, stored).expect("create stored index");
+        LanceEngine::create(dataset_vectors_path(&dir), stored).expect("create stored index");
 
         let mut boot = test_bootstrap(&dir);
         let req = ServeRequest {
             cfg_path: dir.as_ref().join("unused.yaml").to_path_buf(),
-            db_path: None,
+            dataset: None,
             no_initial_sync: true,
             port: free_port(),
             auto_rebuild_vectors: false,
