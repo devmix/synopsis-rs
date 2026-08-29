@@ -193,14 +193,15 @@ fn confirm_deletion(out: &mut dyn Write, input: &mut dyn BufRead) -> Result<bool
 
 /// Deletes the dataset's ENTIRE state directory
 /// (`<workspace_dir>/datasets/<name>/state`) from disk (the `db clear`
-/// action; reused by the `serve` force-rebuild recovery path,
-/// remove-direct-ingest task 1.2).
+/// action, remove-direct-ingest task 1.1).
 ///
 /// The state directory holds the knowledge database
 /// (`state/db/knowledge.db`) and the vector index (`state/vectors/`), so
 /// both go away in one shot — no per-table deletes, no cascade ordering.
-/// After a clear, a `serve` restart re-enqueues the source files at startup
-/// reconcile and the worker re-embeds them, recreating the directory.
+/// The `db clear` command closes the database connection BEFORE calling
+/// this. After a clear, a `serve` restart re-enqueues the source files at
+/// startup reconcile and the worker re-embeds them, recreating the
+/// directory.
 ///
 /// A missing directory is not an error: clearing an already-empty dataset
 /// succeeds.
@@ -212,6 +213,38 @@ pub(crate) fn clear_dataset(state_path: &Path) -> Result<(), CliError> {
     if state_path.exists() {
         std::fs::remove_dir_all(state_path)?;
     }
+    Ok(())
+}
+
+/// Clears the knowledge database tables IN PLACE (the `serve` forced-rebuild
+/// recovery, remove-direct-ingest task 1.2). The `serve` process holds the
+/// `Db` handle open and borrowed by the runner / job queue / worker, so the
+/// state directory must NOT be deleted here (that would orphan the pooled
+/// connections and later writes would land on a deleted inode) — the rows
+/// go, the file stays.
+///
+/// One transaction deleting in dependency order: `entity_links`, `facts`,
+/// `chunks`, `entities`, `documents`, `document_jobs`. The join tables
+/// (`chunk_entities`, `fact_sources`, `entity_sources`) are cleared by the
+/// schema's `ON DELETE CASCADE` (`foreign_keys=ON` on every pooled
+/// connection), and the `chunks_fts` FTS5 external-content index follows the
+/// `chunks` deletes through its triggers.
+///
+/// # Errors
+///
+/// [`CliError::Db`] when a delete fails or the transaction cannot commit.
+pub(crate) fn clear_dataset_tables(db: &Db) -> Result<(), CliError> {
+    db.exec_tx(|tx| -> Result<(), DbError> {
+        tx.execute_batch(
+            "DELETE FROM entity_links;
+             DELETE FROM facts;
+             DELETE FROM chunks;
+             DELETE FROM entities;
+             DELETE FROM documents;
+             DELETE FROM document_jobs;",
+        )?;
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -463,6 +496,47 @@ mod tests {
         result.expect("an aborted clear exits 0");
         assert!(stdout.contains("aborted"), "{stdout:?}");
         assert_seeded(&f.db);
+    }
+
+    // --- clear_dataset_tables (serve forced-rebuild, task 1.2) -------------------
+
+    #[test]
+    fn clear_dataset_tables_empties_every_table_in_place() {
+        let f = DbFixture::new("clear-tables");
+        assert_seeded(&f.db);
+
+        clear_dataset_tables(&f.db).expect("clear succeeds");
+
+        // Every knowledge table is empty (join tables via ON DELETE CASCADE).
+        for table in [
+            "documents",
+            "chunks",
+            "entities",
+            "entity_links",
+            "facts",
+            "document_jobs",
+            "chunk_entities",
+            "fact_sources",
+            "entity_sources",
+        ] {
+            assert_eq!(table_count(&f.db, table), 0, "{table} must be empty");
+        }
+
+        // The database file is untouched and still usable in place (the
+        // serve process keeps its pooled connections open).
+        assert!(f.state_dir().exists(), "the state directory must remain");
+        let doc =
+            f.db.with_conn(|conn| {
+                DocumentDao::new(ConnectionOrTx::Connection(conn)).create(
+                    "markdown",
+                    "/docs/after.md",
+                    None,
+                    None,
+                )
+            })
+            .expect("with_conn")
+            .expect("post-clear insert must work");
+        assert!(doc > 0);
     }
 
     // --- config / exit codes ------------------------------------------------------

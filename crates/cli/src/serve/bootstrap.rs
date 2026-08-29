@@ -11,7 +11,7 @@
 //! the ANN index, not SQLite — the squashed DDL migrations can never produce
 //! a mismatch, and the check surfaces from `vectors::LanceEngine::open` as
 //! [`VectorsError::DimensionMismatch`]. The [`Bootstrap::dimension_mismatch`]
-//! flag carries the non-fatal signal to the serve/sync wiring (tasks 1.6/1.7);
+//! flag carries the non-fatal signal to the serve wiring (tasks 1.6/1.7);
 //! [`build_runner`] sets it when the stored index disagrees with the
 //! configured dimension.
 
@@ -28,8 +28,8 @@ use db::Db;
 use embedding::{EmbeddingProvider, ModelManager, new_onnx_provider};
 use ingestion::{
     IngestionError, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource, MediawikiChunker,
-    MediawikiSource, NerPrompts, Registry, Runner, RunnerParams, SummaryStats, UnstructuredSource,
-    WebpageSource, load_ner_prompts,
+    MediawikiSource, NerPrompts, Registry, Runner, RunnerParams, UnstructuredSource, WebpageSource,
+    load_ner_prompts,
 };
 use vectors::{LanceEngine, VectorIndex, VectorIndexConfig, VectorsError};
 
@@ -70,8 +70,7 @@ impl DimensionMismatch {
     }
 }
 
-/// Assembled application state shared by the `serve` and `sync` subcommands
-/// (design D3).
+/// Assembled application state of the `serve` subcommand (design D3).
 pub struct Bootstrap {
     /// Effective configuration (defaults applied, validated).
     pub config: Config,
@@ -541,38 +540,6 @@ pub fn build_runner(boot: &mut Bootstrap) -> Result<Runner<'_>, CliError> {
     }))
 }
 
-/// Runs the initial multi-source sync (oracle `serve.go` initial-sync block):
-/// assembles the runner (idempotent) and ingests every enabled source so the
-/// index is up to date before the server accepts requests.
-///
-/// `rebuild` clears stored vectors before re-embedding (design D6
-/// rebuild-clear) — the serve wiring passes `false`, the `sync --rebuild`
-/// path passes `true`. Per-source failures are collected in
-/// [`SummaryStats::errors`], never returned (oracle parity).
-///
-/// # Errors
-///
-/// [`CliError`] when the runner cannot be assembled (see [`build_runner`]).
-pub fn initial_sync(boot: &mut Bootstrap, rebuild: bool) -> Result<SummaryStats, CliError> {
-    let runner = build_runner(boot)?;
-    tracing::info!(rebuild, "initial sync started");
-    let stats = runner.ingest_all(rebuild);
-    if !stats.errors.is_empty() {
-        tracing::warn!(
-            errors = stats.errors.len(),
-            "initial sync completed with errors"
-        );
-    }
-    tracing::info!(
-        sources = stats.sources_processed,
-        documents_created = stats.documents_created,
-        documents_updated = stats.documents_updated,
-        documents_skipped = stats.documents_skipped,
-        "initial sync finished"
-    );
-    Ok(stats)
-}
-
 impl std::fmt::Debug for Bootstrap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `Db` (the r2d2 pool) and `dyn EmbeddingProvider` are not `Debug`;
@@ -604,7 +571,6 @@ mod tests {
         ModelFile, ModelInfo, OnnxModelsConfig, OnnxPlatformConfig, OnnxRuntimeConfig,
     };
     use config::preset::{Config, EmbeddingsMode, LocalEmbedding};
-    use db::{ChunkDao, ConnectionOrTx, DocumentDao, DocumentFilter};
     use embedding::EmbeddingError;
 
     use super::*;
@@ -952,7 +918,7 @@ models:
         assert!(DimensionMismatch::from_vectors_error(&other).is_none());
     }
 
-    // --- build_runner / initial_sync -----------------------------------------
+    // --- build_runner ----------------------------------------------------------
 
     /// Deterministic offline embedding provider (fixed vectors of `dim`).
     struct MockEmbed {
@@ -1089,51 +1055,6 @@ models:
                 actual: 8
             })
         );
-    }
-
-    #[test]
-    fn initial_sync_creates_documents_and_chunks() {
-        let dir = TempDir::new("initial-sync");
-        let src = dir.as_ref().join("src");
-        std::fs::create_dir_all(&src).expect("create source dir");
-        std::fs::write(
-            src.join("doc.md"),
-            "# Title\n\nBody text of the document.\n",
-        )
-        .expect("write source document");
-        let config = sync_config(&dir.as_ref().join("workspace"));
-        let global = one_markdown_source(&src);
-        let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
-        let mut boot = test_bootstrap(config, Some(global), db);
-
-        let stats = initial_sync(&mut boot, false).expect("initial_sync succeeds");
-        assert_eq!(stats.sources_processed, 1, "one source processed");
-        assert_eq!(stats.documents_created, 1, "one document created");
-        assert!(
-            stats.errors.is_empty(),
-            "unexpected errors: {:?}",
-            stats.errors
-        );
-
-        // Persisted rows (the task's count check).
-        let docs = boot
-            .db
-            .with_conn(|conn| {
-                DocumentDao::new(ConnectionOrTx::Connection(conn)).count(&DocumentFilter::default())
-            })
-            .expect("with_conn documents")
-            .expect("count documents");
-        assert_eq!(docs, 1, "one document row");
-        let chunks = boot
-            .db
-            .with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).count())
-            .expect("with_conn chunks")
-            .expect("count chunks");
-        assert!(chunks >= 1, "at least one chunk row: {chunks}");
-
-        // The chunk vector landed in the engine.
-        let vectors = boot.vectors.as_deref().expect("engine opened");
-        assert_eq!(vectors.count().expect("engine count"), 1);
     }
 
     // --- bootstrap -----------------------------------------------------------

@@ -39,13 +39,6 @@ pub struct Cli {
 
 /// A parsed subcommand with its per-command flags.
 pub enum Subcommand {
-    /// `sync`: one-shot full re-index of all sources.
-    Sync {
-        /// Clear all existing data before re-indexing.
-        rebuild: bool,
-        /// Automatically rebuild vectors on dimension mismatch.
-        auto_rebuild_vectors: bool,
-    },
     /// `serve`: long-running MCP server mode.
     Serve {
         /// Skip the full source scan on startup.
@@ -145,7 +138,7 @@ pub enum OnnxRuntimeAction {
     Uninstall,
 }
 
-/// Builds the top-level clap command: global flags + five subcommands.
+/// Builds the top-level clap command: global flags + six subcommands.
 fn build_command() -> ClapCommand {
     ClapCommand::new("synopsis")
         .about("Synopsis RAG service")
@@ -176,17 +169,6 @@ fn build_command() -> ClapCommand {
                 .global(true),
         )
         .subcommand_required(true)
-        .subcommand(
-            ClapCommand::new("sync")
-                .about("force a full re-index of all sources and exit")
-                .arg(
-                    Arg::new("rebuild")
-                        .long("rebuild")
-                        .action(ArgAction::SetTrue)
-                        .help("clear all existing data before re-indexing"),
-                )
-                .arg(auto_rebuild_vectors_flag()),
-        )
         .subcommand(
             ClapCommand::new("serve")
                 .about("start MCP server with auto-update (initial sync + file watching)")
@@ -256,7 +238,7 @@ fn build_command() -> ClapCommand {
         )
 }
 
-/// The `--auto-rebuild-vectors` flag shared by `sync` and `serve`.
+/// The `--auto-rebuild-vectors` flag of the `serve` subcommand.
 fn auto_rebuild_vectors_flag() -> Arg {
     Arg::new("auto_rebuild_vectors")
         .long("auto-rebuild-vectors")
@@ -400,10 +382,6 @@ impl Cli {
             None => unreachable!("clap rejected the command: subcommand is required"),
         };
         let command = match name {
-            "sync" => Subcommand::Sync {
-                rebuild: sub.get_flag("rebuild"),
-                auto_rebuild_vectors: sub.get_flag("auto_rebuild_vectors"),
-            },
             "serve" => Subcommand::Serve {
                 no_initial_sync: sub.get_flag("no_initial_sync"),
                 port: sub.get_one::<u16>("port").copied().unwrap_or(0),

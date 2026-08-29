@@ -13,4 +13,3 @@ pub mod model;
 pub mod onnx_runtime;
 pub mod queue;
 pub mod serve;
-pub mod sync;

@@ -3,8 +3,8 @@
 //! Parse global flags + subcommand → resolve the config path → load the
 //! config just for the logging level (the full bootstrap arrives with the
 //! per-subcommand tasks) → init tracing → dispatch. Real subcommand bodies
-//! arrive in tasks 1.6-1.10 (`serve`, `sync`, `model` and `onnx-runtime`
-//! are implemented; `load-test` still dispatches to a stub that prints an
+//! arrive in tasks 1.6-1.10 (`serve`, `model` and `onnx-runtime` are
+//! implemented; `load-test` still dispatches to a stub that prints an
 //! error to stderr and exits 1).
 
 use std::path::{Path, PathBuf};
@@ -18,7 +18,6 @@ use cli::model::{ModelRequest, run_model};
 use cli::onnx_runtime::{OnnxRuntimeRequest, run_onnx_runtime};
 use cli::queue::{QueueRequest, run_queue};
 use cli::serve::server::{ServeRequest, run_serve};
-use cli::sync::{SyncRequest, run_sync};
 
 fn main() -> ExitCode {
     let cli = match Cli::parse() {
@@ -57,15 +56,6 @@ fn main() -> ExitCode {
 fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
     let dataset = cli.dataset;
     match cli.command {
-        Subcommand::Sync {
-            rebuild,
-            auto_rebuild_vectors,
-        } => run_sync(&SyncRequest {
-            cfg_path,
-            dataset,
-            rebuild,
-            auto_rebuild_vectors,
-        }),
         Subcommand::Serve {
             no_initial_sync,
             port,

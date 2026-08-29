@@ -84,7 +84,9 @@ fn onnx_runtime_unknown_subaction_exits_one() {
 
 #[test]
 fn missing_config_exits_one_with_error() {
-    let out = run(&["--config", "/nonexistent/path/config.default.yaml", "sync"]);
+    // `serve` (any recognized subcommand) triggers the config load in
+    // `main()` before dispatch, so a missing config exits 1 there.
+    let out = run(&["--config", "/nonexistent/path/config.default.yaml", "serve"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("failed to load config"), "stderr: {stderr}");

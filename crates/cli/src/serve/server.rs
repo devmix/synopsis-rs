@@ -23,11 +23,11 @@
 //! The serve flow is therefore a *synchronous* function on the main
 //! thread:
 //!
-//! - all Lance-touching work (engine open/create/recreate, forced-rebuild
-//!   re-ingest, and the document worker's per-job pipeline + GC sweep) runs
-//!   inline on the main thread *between* runtime-context entries (the
-//!   watcher batch and the startup reconcile only enqueue `document_jobs`
-//!   rows — no Lance);
+//! - all Lance-touching work (engine open/create/recreate, and the document
+//!   worker's per-job pipeline + GC sweep) runs inline on the main thread
+//!   *between* runtime-context entries (the watcher batch, the startup
+//!   reconcile and the forced-rebuild clear + reconcile only enqueue
+//!   `document_jobs` rows — no Lance);
 //! - the runtime is entered only for short async bits that require it:
 //!   creating the watcher debounce task, spawning the worker's sweep-tick
 //!   timer, binding the listener, and the owner-loop event select
@@ -55,8 +55,10 @@
 //!
 //! In the Rust codebase the mismatch surfaces from the ANN engine at open
 //! time, so the auto-rebuild drops the stored Lance table and recreates
-//! the engine, then forces a full re-ingest (the Rust form of the oracle's
-//! `DropVectorTable` + `ReEmbedChunks`).
+//! the engine, then clears the knowledge DB tables in place and re-enqueues
+//! every source through the startup reconcile — clear-then-queue (the Rust
+//! form of the oracle's `DropVectorTable` + `ReEmbedChunks`); the worker
+//! re-embeds every file.
 //!
 //! # Shutdown
 //!
@@ -78,6 +80,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::GlobalConfig;
 use config::preset::{GraphConfig, SearchConfig};
 use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao};
 use embedding::EmbeddingProvider;
@@ -93,10 +96,10 @@ use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, mpsc};
 use vectors::{LanceEngine, VectorIndex, VectorsError};
 
+use crate::db::clear_dataset_tables;
 use crate::error::CliError;
 use crate::serve::bootstrap::{self, Bootstrap};
 use crate::serve::health::run_health_check;
-use crate::serve::ingest;
 use crate::serve::watcher::{ChangeHandler, IngestChangeHandler, Watcher};
 
 /// Graceful-shutdown bound (oracle `shutdownCtx`: 10 s).
@@ -329,8 +332,8 @@ pub fn serve_with_stop(
 
     // Runner assembly + vector dimension-mismatch handling (D4). The
     // mismatch surfaces from the ANN engine at open time; auto-rebuild
-    // recreates the engine and forces a full re-ingest below (the Rust form
-    // of the oracle's `rebuildVectorsIfNeeded` → `ReEmbedChunks`). The
+    // recreates the engine and forces a clear + re-enqueue below (the Rust
+    // form of the oracle's `rebuildVectorsIfNeeded` → `ReEmbedChunks`). The
     // engine is opened before the runner so its `Arc` can be captured
     // into a local while `boot` is still borrowable.
     let mut force_rebuild = false;
@@ -401,46 +404,26 @@ pub fn serve_with_stop(
     if force_rebuild {
         // The vector engine was recreated: the stored vectors are gone, and
         // the producer's content-hash diff cannot force re-embedding of
-        // unchanged documents — the recovery stays the full rebuild-clear
-        // re-ingest (the Rust form of the oracle's `ReEmbedChunks`).
-        tracing::info!("initial sync started (forced rebuild)");
-        let stats = ingest::ingest_all(&runner, true);
-        if !stats.errors.is_empty() {
-            tracing::warn!(
-                errors = stats.errors.len(),
-                "initial sync completed with errors"
-            );
-        }
+        // unchanged documents. The recovery is clear-then-queue (the Rust
+        // form of the oracle's `ReEmbedChunks`): clear the knowledge DB
+        // tables IN PLACE (the `Db` handle is still open and borrowed by
+        // the runner/job queue/worker — deleting the state directory would
+        // orphan the pooled connections), then run the same startup
+        // reconcile so the worker re-embeds every source file.
+        tracing::info!("forced rebuild started (clear dataset tables + queue reconcile)");
+        clear_dataset_tables(&db)?;
+        let (enqueued_indexed, enqueued_deleted, failed_sources) =
+            reconcile_enabled_sources(&job_queue, &runner, &global, "forced rebuild");
         tracing::info!(
-            sources = stats.sources_processed,
-            documents_created = stats.documents_created,
-            documents_updated = stats.documents_updated,
-            documents_skipped = stats.documents_skipped,
-            "initial sync finished"
+            enqueued_indexed,
+            enqueued_deleted,
+            failed_sources,
+            "forced rebuild finished (jobs enqueued; the worker processes them)"
         );
     } else if initial_sync_due {
         tracing::info!("initial sync started (queue reconcile)");
-        let mut enqueued_indexed = 0usize;
-        let mut enqueued_deleted = 0usize;
-        let mut failed_sources = 0usize;
-        if let Some(global) = global.as_ref() {
-            for src in global.sources.iter().filter(|src| !src.disabled) {
-                match job_queue.reconcile_source(&runner, &src.path) {
-                    Ok(stats) => {
-                        enqueued_indexed += stats.indexed;
-                        enqueued_deleted += stats.deleted;
-                    }
-                    Err(err) => {
-                        failed_sources += 1;
-                        tracing::warn!(
-                            source = %src.path,
-                            error = %err,
-                            "startup reconcile failed"
-                        );
-                    }
-                }
-            }
-        }
+        let (enqueued_indexed, enqueued_deleted, failed_sources) =
+            reconcile_enabled_sources(&job_queue, &runner, &global, "startup");
         tracing::info!(
             enqueued_indexed,
             enqueued_deleted,
@@ -697,6 +680,42 @@ fn run_worker_cycle(worker: &DocumentWorker<'_>) {
     }
 }
 
+/// Reconciles every enabled source against the disk through the job queue
+/// and returns the accumulated counters: files enqueued for (re)indexing,
+/// files enqueued for deletion, and the number of sources whose reconcile
+/// failed (each logged with the `context` name). Both the forced-rebuild
+/// recovery and the startup reconcile share this loop so their behavior
+/// cannot drift (remove-direct-ingest task 1.2).
+fn reconcile_enabled_sources(
+    job_queue: &DocumentJobQueue<'_>,
+    runner: &Runner<'_>,
+    global: &Option<GlobalConfig>,
+    context: &str,
+) -> (usize, usize, usize) {
+    let mut enqueued_indexed = 0usize;
+    let mut enqueued_deleted = 0usize;
+    let mut failed_sources = 0usize;
+    if let Some(global) = global {
+        for src in global.sources.iter().filter(|src| !src.disabled) {
+            match job_queue.reconcile_source(runner, &src.path) {
+                Ok(stats) => {
+                    enqueued_indexed += stats.indexed;
+                    enqueued_deleted += stats.deleted;
+                }
+                Err(err) => {
+                    failed_sources += 1;
+                    tracing::warn!(
+                        source = %src.path,
+                        error = %err,
+                        "{context} reconcile failed"
+                    );
+                }
+            }
+        }
+    }
+    (enqueued_indexed, enqueued_deleted, failed_sources)
+}
+
 /// Current Unix time in seconds (the worker's claim/backoff clock).
 fn now_unix_seconds() -> i64 {
     std::time::SystemTime::now()
@@ -708,10 +727,6 @@ fn now_unix_seconds() -> i64 {
 /// Drops the stored ANN table and recreates the engine with the configured
 /// dimension (the Rust form of the oracle's `DropVectorTable` +
 /// `InitVectorTable` inside `ReEmbedChunks`).
-///
-/// Shared with the `sync` subcommand (design D8), which takes the same
-/// recreate path on a dimension mismatch (`--rebuild` resets everything
-/// anyway).
 pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = bootstrap::vectors_index_config(&boot.config)?;
     // The ANN index is per-dataset: <workspace_dir>/datasets/<name>/state/vectors.
@@ -1268,7 +1283,8 @@ mod tests {
 
     /// A stored index with a different dimension + `--auto-rebuild-vectors`:
     /// the engine is recreated with the configured dimension and the serve
-    /// completes (the forced re-ingest is a no-op with no sources).
+    /// completes (the forced-rebuild clear + reconcile is a no-op with no
+    /// sources).
     #[test]
     fn serve_rebuilds_vectors_on_dimension_mismatch() {
         let dir = TempDir::new("dim-rebuild");
