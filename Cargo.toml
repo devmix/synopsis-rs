@@ -252,6 +252,18 @@ lancedb = { version = "0.37", default-features = false }
 # in scaffold task 5.1 ("they come back per module change"); already in the
 # lock graph via lancedb (0.3.34 locked), so no new code is compiled.
 futures = "0.3"
+# ANN engine candidate (add-usearch-ann-engine, task 1.1 spike, 2026-08-29):
+# usearch 2.26.1 - C++11 single-file HNSW core compiled in-tree via cxx FFI
+# (its only build deps are cxx + cxx-build - no datafusion/arrow/parquet).
+# Verified on crates.io: 2.26.1 is the latest 2.x (published 2026-08-22,
+# ~980k downloads, Apache-2.0). Default features OFF: the `numkong`
+# SIMD-kernel crate is optional and the vendored C++ core ships its own
+# distance kernels, so it stays out of the graph (single binary, laptop
+# footprint). Disk-backed serving via `Index::restore_view` (mmap).
+usearch = { version = "2.26", default-features = false }
+# cxx FFI glue for usearch: the Rust bindings surface `cxx::Exception` error
+# types, so vectors depends on cxx directly to map them into VectorsError.
+cxx = "1"
 
 # Intentionally NOT pinned here - decisions deferred to module changes:
 # - Spike-only pins (ort/tokenizers/lancedb/futures) were removed from this palette in task

@@ -36,10 +36,14 @@
 //! oracle ↔ harness vector-dump contract (native-seam-spikes design D4): a streaming
 //! reader and a chunk_id-sorted writer.
 
+#[cfg(feature = "engine-lance")]
 pub mod engine;
 pub mod error;
 pub mod synx;
+#[cfg(feature = "engine-usearch")]
+pub mod usearch_engine;
 
+#[cfg(feature = "engine-lance")]
 pub use engine::LanceEngine;
 pub use error::VectorsError;
 
