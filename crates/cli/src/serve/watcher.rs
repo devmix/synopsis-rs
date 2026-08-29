@@ -6,10 +6,14 @@
 //! debounced tokio loop; once a quiet period of
 //! `config.auto_update.debounce_seconds` has elapsed, the accumulated batch is
 //! delivered to the caller through [`Watcher::next_batch`]. The production
-//! callback ([`IngestChangeHandler`]) re-indexes each affected source once,
-//! prunes deleted documents, and — when the graph is enabled — reloads the
-//! knowledge graph and hands the fresh index to the injected
-//! `on_graph_reload` hook.
+//! callback ([`IngestChangeHandler`]) is a producer (document-jobs-queue task
+//! 1.5): it enqueues one `document_jobs` row per changed file through the
+//! [`DocumentJobQueue`] — `index` (fresh content hash) for a file present on
+//! disk, `delete` for a removed one — and, when the graph is enabled, reloads
+//! the knowledge graph and hands the fresh index to the injected
+//! `on_graph_reload` hook. The background worker runs the ingestion pipeline
+//! later; the handler never ingests directly (state flows through the
+//! `document_jobs` table only).
 //!
 //! Architectural notes (functional copy, not a code copy):
 //! - **Threading.** The ingestion [`Runner`] borrows the source
@@ -38,7 +42,7 @@
 //! - The watcher runs entirely on a background task, so it never blocks
 //!   startup (acceptance criterion).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,14 +51,13 @@ use config::preset::GraphConfig;
 use config::{Config, load_global_config};
 use db::Db;
 use graph::GraphIndex;
-use ingestion::{Registry, Runner};
+use ingestion::ingester::compute_content_hash;
+use ingestion::{DocumentJobQueue, Registry, Runner};
 use notify::Watcher as _;
 use notify::{Event, EventKind, PollWatcher, RecursiveMode};
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-
-use crate::serve::ingest;
 
 /// Polling interval of the notify backend. notify's default is 30 s — too
 /// sluggish for interactive re-indexing on a laptop (the oracle's fsnotify
@@ -94,8 +97,9 @@ pub enum WatcherError {
 /// thread. Tests substitute the collaborators through this seam (the task's
 /// "trait/closure" hook).
 pub trait ChangeHandler {
-    /// Re-indexes every affected source once, prunes deleted documents and —
-    /// when the graph is enabled — reloads the graph index.
+    /// Enqueues a `document_jobs` row per changed file (index for a file
+    /// present on disk, delete for a removed one) and — when the graph is
+    /// enabled — reloads the graph index.
     fn handle_changes(&self, paths: &[PathBuf]);
 }
 
@@ -110,7 +114,8 @@ where
 }
 
 /// Production [`ChangeHandler`] (design D5): the oracle `setupFileWatcher`
-/// callback body.
+/// callback body, re-architected as a queue producer (document-jobs-queue
+/// task 1.5).
 ///
 /// `on_graph_reload` receives the freshly reloaded graph index after a
 /// successful reload; the serve wiring (task 1.6) uses it to rebuild the
@@ -121,6 +126,9 @@ pub struct IngestChangeHandler<'a> {
     db: &'a Db,
     graph_cfg: &'a GraphConfig,
     on_graph_reload: Option<Arc<dyn Fn(Arc<GraphIndex>) + Send + Sync>>,
+    /// The `document_jobs` producer: one row per changed file, processed by
+    /// the background worker (the handler never ingests directly).
+    job_queue: &'a DocumentJobQueue<'a>,
 }
 
 impl<'a> IngestChangeHandler<'a> {
@@ -131,12 +139,14 @@ impl<'a> IngestChangeHandler<'a> {
         db: &'a Db,
         graph_cfg: &'a GraphConfig,
         on_graph_reload: Option<Arc<dyn Fn(Arc<GraphIndex>) + Send + Sync>>,
+        job_queue: &'a DocumentJobQueue<'a>,
     ) -> Self {
         Self {
             runner,
             db,
             graph_cfg,
             on_graph_reload,
+            job_queue,
         }
     }
 }
@@ -148,24 +158,50 @@ impl ChangeHandler for IngestChangeHandler<'_> {
         }
         tracing::info!(files_changed = paths.len(), "auto-update triggered");
 
-        // Re-index each affected source once, deduplicated by source path
-        // (oracle `affected` map).
-        let mut affected: BTreeMap<&str, ()> = BTreeMap::new();
+        // Producer (document-jobs-queue task 1.5): one job per changed file,
+        // resolved against the configured sources. A file present on disk is
+        // queued for (re)indexing with its fresh content hash (the pipeline's
+        // dedup key); a removed file is queued for deletion. The background
+        // worker runs the pipeline later — no direct ingestion here (state
+        // flows through `document_jobs` only). The debouncer already dedupes
+        // paths within a batch, so no per-source dedup map is needed.
         for path in paths {
-            let Some(source) = self.runner.find_source_for_path(&path.to_string_lossy()) else {
+            let path_str = path.to_string_lossy();
+            let Some(source) = self.runner.find_source_for_path(&path_str) else {
                 tracing::info!(path = %path.display(), "changed file not in any configured source");
                 continue;
             };
-            if affected.insert(source.path.as_str(), ()).is_some() {
-                continue;
+            match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    let hash = compute_content_hash(&content);
+                    if let Err(err) =
+                        self.job_queue
+                            .enqueue_index(&path_str, &source.path, Some(&hash))
+                    {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %err,
+                            "enqueue index job failed"
+                        );
+                    }
+                }
+                Err(read_err) if read_err.kind() == std::io::ErrorKind::NotFound => {
+                    if let Err(err) = self.job_queue.enqueue_delete(&path_str) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %err,
+                            "enqueue delete job failed"
+                        );
+                    }
+                }
+                Err(read_err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %read_err,
+                        "changed file unreadable; no job enqueued"
+                    );
+                }
             }
-            // The wrapper logs the per-source outcome (serve/ingest.rs).
-            let _ = ingest::ingest_source_by_path(self.runner, &source.path);
-        }
-
-        // Remove indexed documents whose files were deleted.
-        if let Err(err) = ingest::prune_deleted(self.runner) {
-            tracing::warn!(error = %err, "prune deleted failed");
         }
 
         // Refresh the in-memory knowledge graph so search stays current.
@@ -509,12 +545,12 @@ mod tests {
     use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
     use config::preset::{GraphConfig, IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, DocumentDao};
+    use db::{ConnectionOrTx, DocumentDao, DocumentJobDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
     use ingestion::{
-        JsonChunker, JsonSource, MarkdownChunker, MarkdownSource, MediawikiChunker,
-        MediawikiSource, NerPrompts, Registry, Runner, RunnerParams, UnstructuredSource,
-        WebpageSource, load_ner_prompts,
+        DocumentJobQueue, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource,
+        MediawikiChunker, MediawikiSource, NerPrompts, Registry, Runner, RunnerParams,
+        UnstructuredSource, WebpageSource, ingester::compute_content_hash, load_ner_prompts,
     };
     use notify::event::{AccessKind, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind};
     use vectors::{VectorIndex, VectorsError};
@@ -707,6 +743,13 @@ mod tests {
 
     fn doc_count(db: &db::Db) -> usize {
         doc_paths(db).len()
+    }
+
+    /// All `document_jobs` rows (the producer's output).
+    fn job_rows(db: &db::Db) -> Vec<db::DocumentJob> {
+        db.with_conn(|conn| DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+            .unwrap()
+            .unwrap()
     }
 
     fn doc_paths(db: &db::Db) -> Vec<String> {
@@ -952,7 +995,7 @@ mod tests {
     // --- IngestChangeHandler (real Runner, fake embed) ---------------------
 
     #[test]
-    fn handler_reindexes_affected_sources_and_ignores_foreign_paths() {
+    fn handler_enqueues_jobs_for_changed_files_and_ignores_foreign_paths() {
         let root = TempDir::new("handler");
         let src_a = root.sub("a");
         let src_b = root.sub("b");
@@ -965,13 +1008,14 @@ mod tests {
         ]);
         let fixture = Fixture::new(global);
         let runner = fixture.runner();
+        let queue = DocumentJobQueue::new(&fixture.db);
         let graph_cfg = GraphConfig {
             enable_graph: false,
             max_depth: 5,
             max_nodes: 100,
             load_on_startup: true,
         };
-        let handler = IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, None);
+        let handler = IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, None, &queue);
 
         // Two files of source A (one of them never existed) + one of B + a
         // file outside every configured source.
@@ -982,25 +1026,51 @@ mod tests {
             foreign.join("x.md"),
         ]);
 
-        // Both real documents ingested (dedup: ghost and foreign contributed
-        // nothing).
-        let paths = doc_paths(&fixture.db);
-        assert_eq!(paths.len(), 2, "both real documents ingested");
-        assert!(paths.iter().any(|p| p.ends_with("a/a.md")), "{paths:?}");
-        assert!(paths.iter().any(|p| p.ends_with("b/b.md")), "{paths:?}");
-        // The foreign file (no configured source) and the ghost (a nonexistent
-        // file inside a source) contributed no document of their own.
-        assert!(!paths.iter().any(|p| p.contains("foreign")), "{paths:?}");
-        assert!(!paths.iter().any(|p| p.contains("ghost")), "{paths:?}");
+        // The handler is a producer: pending jobs, no documents (the worker
+        // ingests later). The foreign file (no configured source) contributes
+        // nothing.
+        let jobs = job_rows(&fixture.db);
+        assert_eq!(jobs.len(), 3, "a.md + ghost.md + b.md enqueued; {jobs:?}");
+        let by_path: HashMap<&str, &db::DocumentJob> =
+            jobs.iter().map(|job| (job.path.as_str(), job)).collect();
+
+        // a.md: present on disk → pending index with the fresh hash.
+        let a = by_path
+            .get(src_a.join("a.md").to_string_lossy().as_ref())
+            .expect("a.md must be queued");
+        assert_eq!(a.op, "index");
+        assert_eq!(a.status, "pending");
+        assert_eq!(a.source_path, src_a.to_string_lossy().into_owned());
+        assert_eq!(
+            a.content_hash.as_deref(),
+            Some(compute_content_hash("# Doc A\ncontent a\n").as_str())
+        );
+
+        // ghost.md: absent on disk → pending delete.
+        let ghost = by_path
+            .get(src_a.join("ghost.md").to_string_lossy().as_ref())
+            .expect("ghost.md must be queued");
+        assert_eq!(ghost.op, "delete");
+        assert_eq!(ghost.status, "pending");
+
+        // b.md: present on disk → pending index.
+        let b = by_path
+            .get(src_b.join("b.md").to_string_lossy().as_ref())
+            .expect("b.md must be queued");
+        assert_eq!(b.op, "index");
+        assert_eq!(b.status, "pending");
+
+        assert!(
+            doc_count(&fixture.db) == 0,
+            "no document until the worker runs"
+        );
     }
 
     #[test]
-    fn handler_prunes_deleted_documents() {
+    fn handler_enqueues_delete_for_a_removed_file() {
         let root = TempDir::new("prune");
         let src_a = root.sub("a");
         let src_b = root.sub("b");
-        // A heading alone is an "empty document" the chunker skips; give each
-        // file a body so it produces a document.
         fs::write(src_a.join("a.md"), "# A\n\nBody text for document A.\n").unwrap();
         fs::write(src_b.join("b.md"), "# B\n\nBody text for document B.\n").unwrap();
         let global = global_config(vec![
@@ -1009,21 +1079,54 @@ mod tests {
         ]);
         let fixture = Fixture::new(global);
         let runner = fixture.runner();
+        let queue = DocumentJobQueue::new(&fixture.db);
         let graph_cfg = GraphConfig {
             enable_graph: false,
             max_depth: 5,
             max_nodes: 100,
             load_on_startup: true,
         };
-        let handler = IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, None);
+        let handler = IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, None, &queue);
 
         handler.handle_changes(&[src_a.join("a.md"), src_b.join("b.md")]);
-        assert_eq!(doc_count(&fixture.db), 2);
+        // Two pending index jobs; the documents table is still empty.
+        let jobs = job_rows(&fixture.db);
+        assert_eq!(jobs.len(), 2, "{jobs:?}");
+        assert!(
+            jobs.iter()
+                .all(|job| job.op == "index" && job.status == "pending"),
+            "{jobs:?}"
+        );
+        assert_eq!(
+            doc_count(&fixture.db),
+            0,
+            "no document until the worker runs"
+        );
 
         fs::remove_file(src_a.join("a.md")).unwrap();
         handler.handle_changes(&[src_a.join("a.md")]);
-        // The vanished document is pruned; the live one survives.
-        assert_eq!(doc_count(&fixture.db), 1);
+        // The vanished file's job is replaced by a pending delete (upsert by
+        // path); the live file's job survives. The documents table is still
+        // unchanged (the worker removes the row later).
+        let jobs = job_rows(&fixture.db);
+        assert_eq!(jobs.len(), 2, "{jobs:?}");
+        let a = jobs
+            .iter()
+            .find(|job| job.path.ends_with("a/a.md"))
+            .expect("a.md job present");
+        assert_eq!(a.op, "delete");
+        assert_eq!(a.status, "pending");
+        let b = jobs
+            .iter()
+            .find(|job| job.path.ends_with("b/b.md"))
+            .expect("b.md job present");
+        assert_eq!(b.op, "index");
+        assert_eq!(b.status, "pending");
+        assert_eq!(
+            doc_count(&fixture.db),
+            0,
+            "documents unchanged until the worker runs"
+        );
     }
 
     #[test]
@@ -1040,6 +1143,7 @@ mod tests {
             max_nodes: 100,
             load_on_startup: true,
         };
+        let queue = DocumentJobQueue::new(&fixture.db);
         let reloaded: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
         let hook: Arc<dyn Fn(Arc<GraphIndex>) + Send + Sync> = Arc::new({
             let reloaded = reloaded.clone();
@@ -1047,7 +1151,8 @@ mod tests {
                 reloaded.lock().unwrap().push(g.is_available());
             }
         });
-        let handler = IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, Some(hook));
+        let handler =
+            IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, Some(hook), &queue);
         handler.handle_changes(&[src_a.join("a.md")]);
         // An empty-but-valid graph reloads to Ready.
         assert_eq!(reloaded.lock().unwrap().as_slice(), &[true]);
@@ -1067,6 +1172,7 @@ mod tests {
             max_nodes: 100,
             load_on_startup: true,
         };
+        let queue = DocumentJobQueue::new(&fixture.db);
         let reloaded: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
         let hook: Arc<dyn Fn(Arc<GraphIndex>) + Send + Sync> = Arc::new({
             let reloaded = reloaded.clone();
@@ -1074,7 +1180,8 @@ mod tests {
                 reloaded.lock().unwrap().push(g.is_available());
             }
         });
-        let handler = IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, Some(hook));
+        let handler =
+            IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, Some(hook), &queue);
         handler.handle_changes(&[src_a.join("a.md")]);
         assert!(reloaded.lock().unwrap().is_empty(), "hook must not fire");
     }

@@ -1,7 +1,14 @@
-//! Ingestion run wrappers (design D4): the serve/sync call sites (initial
-//! sync, file watcher, periodic jobs) invoke the ingestion [`Runner`] through
-//! these facades instead of the runner directly — one logging site per
-//! operation (oracle `serve.go` / `sync.go` call sites).
+//! Ingestion run wrappers (design D4): the call sites that still ingest
+//! directly (the one-off `sync` subcommand, the serve forced-rebuild
+//! recovery, the periodic orphan cleanup) invoke the ingestion [`Runner`]
+//! through these facades instead of the runner directly — one logging site
+//! per operation (oracle `serve.go` / `sync.go` call sites).
+//!
+//! The serve producer path no longer goes through here: since
+//! document-jobs-queue task 1.5 the file watcher and the startup reconcile
+//! enqueue `document_jobs` rows via [`ingestion::DocumentJobQueue`], and the
+//! background worker runs the pipeline (state flows through the queue table
+//! only).
 //!
 //! The wrappers are thin: they add logging only. Failure semantics are
 //! unchanged — a full run collects per-source errors in
@@ -30,7 +37,12 @@ pub fn ingest_all(runner: &Runner<'_>, rebuild: bool) -> SummaryStats {
 }
 
 /// Re-ingests the configured source containing `path` (oracle
-/// `IngestSourceByPath` — the file-watcher entry point, design D5).
+/// `IngestSourceByPath`).
+///
+/// The serve file watcher used this as its entry point (design D5); since
+/// document-jobs-queue task 1.5 the watcher enqueues `document_jobs` rows
+/// through the producer instead. No call site remains — task 1.9 removes
+/// it if it stays unused.
 ///
 /// # Errors
 ///
@@ -58,6 +70,11 @@ pub fn ingest_source_by_path(
 
 /// Removes indexed documents whose source file no longer exists on disk
 /// (oracle `PruneDeleted`).
+///
+/// The serve file watcher used this as its prune step (design D5); since
+/// document-jobs-queue task 1.5 the watcher enqueues `delete` jobs instead
+/// (the worker removes the rows). No call site remains — task 1.9 removes
+/// it if it stays unused.
 ///
 /// # Errors
 ///

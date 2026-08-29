@@ -23,9 +23,10 @@
 //! The serve flow is therefore a *synchronous* function on the main
 //! thread:
 //!
-//! - all Lance-touching work (engine open/create/recreate, initial sync,
-//!   watcher-batch re-index, orphan cleanup) runs inline on the main
-//!   thread *between* runtime-context entries;
+//! - all Lance-touching work (engine open/create/recreate, forced-rebuild
+//!   re-ingest, orphan cleanup) runs inline on the main thread *between*
+//!   runtime-context entries (the watcher batch and the startup reconcile
+//!   only enqueue `document_jobs` rows — no Lance);
 //! - the runtime is entered only for short async bits that require it:
 //!   creating the watcher debounce task, creating/starting the scheduler,
 //!   binding the listener, and the owner-loop event select (`select!` over
@@ -79,7 +80,7 @@ use config::preset::{GraphConfig, SearchConfig};
 use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao};
 use embedding::EmbeddingProvider;
 use graph::GraphIndex;
-use ingestion::{Runner, RunnerParams};
+use ingestion::{DocumentJobQueue, Runner, RunnerParams};
 use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
     Searcher, SemanticSearcher,
@@ -106,7 +107,8 @@ pub struct ServeRequest {
     pub cfg_path: PathBuf,
     /// `--dataset` dataset name override (wins over `config.dataset.name`).
     pub dataset: Option<String>,
-    /// `--no-initial-sync`: skip the full source scan on startup.
+    /// `--no-initial-sync`: skip the startup reconcile (the `document_jobs`
+    /// enqueue) on startup.
     pub no_initial_sync: bool,
     /// `--port` override; `0` keeps the `server.port` config value.
     pub port: u16,
@@ -381,15 +383,26 @@ pub fn serve_with_stop(
         llm_cache: cache,
     });
 
-    // Initial sync: scan all sources so the index is up to date before the
-    // server accepts requests. Forced after a vector rebuild (re-embed).
+    // The `document_jobs` producer (document-jobs-queue task 1.5): the
+    // startup reconcile and the watcher enqueue through it; the background
+    // worker (task 1.6) is the sole consumer.
+    let job_queue = DocumentJobQueue::new(&db);
+
+    // Initial sync (document-jobs-queue task 1.5): startup is a producer —
+    // reconcile every enabled source against the disk and enqueue the diff
+    // into `document_jobs`; the background worker runs the pipeline before
+    // the index is up to date. No direct ingestion at startup.
     // No-data semantics (design D2): without an active dataset there is
-    // nothing to ingest — the server simply starts with an empty index.
+    // nothing to reconcile — the server simply starts with an empty index.
     let initial_sync_due =
         bootstrap::has_active_dataset(&config) && auto_update.initial_sync && !req.no_initial_sync;
-    if initial_sync_due || force_rebuild {
-        tracing::info!("initial sync started");
-        let stats = ingest::ingest_all(&runner, force_rebuild);
+    if force_rebuild {
+        // The vector engine was recreated: the stored vectors are gone, and
+        // the producer's content-hash diff cannot force re-embedding of
+        // unchanged documents — the recovery stays the full rebuild-clear
+        // re-ingest (the Rust form of the oracle's `ReEmbedChunks`).
+        tracing::info!("initial sync started (forced rebuild)");
+        let stats = ingest::ingest_all(&runner, true);
         if !stats.errors.is_empty() {
             tracing::warn!(
                 errors = stats.errors.len(),
@@ -402,6 +415,35 @@ pub fn serve_with_stop(
             documents_updated = stats.documents_updated,
             documents_skipped = stats.documents_skipped,
             "initial sync finished"
+        );
+    } else if initial_sync_due {
+        tracing::info!("initial sync started (queue reconcile)");
+        let mut enqueued_indexed = 0usize;
+        let mut enqueued_deleted = 0usize;
+        let mut failed_sources = 0usize;
+        if let Some(global) = global.as_ref() {
+            for src in global.sources.iter().filter(|src| !src.disabled) {
+                match job_queue.reconcile_source(&runner, &src.path) {
+                    Ok(stats) => {
+                        enqueued_indexed += stats.indexed;
+                        enqueued_deleted += stats.deleted;
+                    }
+                    Err(err) => {
+                        failed_sources += 1;
+                        tracing::warn!(
+                            source = %src.path,
+                            error = %err,
+                            "startup reconcile failed"
+                        );
+                    }
+                }
+            }
+        }
+        tracing::info!(
+            enqueued_indexed,
+            enqueued_deleted,
+            failed_sources,
+            "initial sync finished (jobs enqueued; the worker processes them)"
         );
     }
 
@@ -462,7 +504,8 @@ pub fn serve_with_stop(
         let debounce = Duration::from_secs(auto_update.debounce_seconds.max(0) as u64);
         match runtime.block_on(async { Watcher::from_config(debounce, &config, &registry) }) {
             Ok(new_watcher) => {
-                let new_handler = IngestChangeHandler::new(&runner, &db, &config.graph, Some(hook));
+                let new_handler =
+                    IngestChangeHandler::new(&runner, &db, &config.graph, Some(hook), &job_queue);
                 watcher = Some(new_watcher);
                 handler = Some(new_handler);
             }
@@ -673,8 +716,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
-    use config::{Config, OnnxConfig};
-    use db::{ChunkDao, ConnectionOrTx, DocumentDao};
+    use config::{Config, GlobalConfig, OnnxConfig};
+    use db::{ChunkDao, ConnectionOrTx, DocumentDao, DocumentJobDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
     use graph::GraphIndex;
     use search::Searcher;
@@ -982,6 +1025,172 @@ mod tests {
         // The flow opened the vector engine on the bootstrap (registry and
         // prompts are serve-level locals, not stored on the bootstrap).
         assert!(boot.vectors.is_some(), "engine opened");
+    }
+
+    /// A minimal global config with one enabled markdown source at `src`.
+    fn one_markdown_source(src: &Path) -> GlobalConfig {
+        GlobalConfig {
+            sources: vec![config::ontology::SourceConfig {
+                path: src.to_string_lossy().into_owned(),
+                source_type: config::ontology::SourceType::Markdown,
+                disabled: false,
+                space: String::new(),
+                domains: vec!["default".to_string()],
+                dataset: String::new(),
+            }],
+            cross_domain_links: None,
+            ner: config::ontology::GlobalNerConfig {
+                methods: Vec::new(),
+            },
+            entities: Vec::new(),
+            relations: Vec::new(),
+            extraction: Default::default(),
+        }
+    }
+
+    // --- serve_with_stop: startup reconcile (producer, no direct ingest) -------
+
+    /// The task 1.5 acceptance shape: with an active dataset and one enabled
+    /// markdown source, the startup reconcile enqueues the disk diff (new,
+    /// changed, removed) into `document_jobs` — the documents table stays
+    /// untouched until the worker (task 1.6) processes the queue.
+    #[test]
+    fn serve_startup_reconcile_enqueues_jobs_without_ingesting() {
+        let dir = TempDir::new("startup-reconcile");
+        let port = free_port();
+        // One markdown source: a new file, a changed file and an unchanged
+        // file on disk; the prior ingestion state below adds a document row
+        // for a file that is gone.
+        let src = dir.as_ref().join("src");
+        std::fs::create_dir_all(&src).expect("create source dir");
+        let new_content = "# New\n\nA brand new document.\n";
+        let changed_content = "# Changed\n\nFresh body after an edit.\n";
+        let same_content = "# Same\n\nBody that never changed.\n";
+        std::fs::write(src.join("new.md"), new_content).expect("write new.md");
+        std::fs::write(src.join("changed.md"), changed_content).expect("write changed.md");
+        std::fs::write(src.join("same.md"), same_content).expect("write same.md");
+        let mut boot = test_bootstrap(&dir);
+        boot.global = Some(one_markdown_source(&src));
+        // Prior ingestion state: `changed.md` with a stale hash, `same.md`
+        // with its current hash, and `gone.md` (no file on disk anymore).
+        let changed_path = src.join("changed.md").to_string_lossy().into_owned();
+        let same_path = src.join("same.md").to_string_lossy().into_owned();
+        let gone_path = src.join("gone.md").to_string_lossy().into_owned();
+        boot.db
+            .with_conn(|conn| -> Result<(), db::DbError> {
+                let dao = DocumentDao::new(ConnectionOrTx::Connection(conn));
+                dao.create("markdown", &changed_path, None, Some("stale-hash"))?;
+                dao.create(
+                    "markdown",
+                    &same_path,
+                    None,
+                    Some(&ingestion::ingester::compute_content_hash(same_content)),
+                )?;
+                dao.create("markdown", &gone_path, None, Some("old-hash"))?;
+                Ok(())
+            })
+            .expect("with_conn seed")
+            .expect("seed documents");
+        let req = ServeRequest {
+            cfg_path: dir.as_ref().join("unused.yaml").to_path_buf(),
+            dataset: None,
+            no_initial_sync: false,
+            port,
+            auto_rebuild_vectors: false,
+        };
+
+        let (stop_tx, mut stop_rx) = broadcast::channel::<()>(1);
+        let runtime = Runtime::new().expect("test runtime");
+        let killer = runtime.spawn(async move {
+            let client = reqwest::Client::new();
+            let url = format!("http://127.0.0.1:{port}/health");
+            for _ in 0..200 {
+                if client
+                    .get(&url)
+                    .send()
+                    .await
+                    .is_ok_and(|res| res.status().as_u16() == 200)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let _ = stop_tx.send(());
+        });
+
+        let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx);
+        runtime.block_on(killer).expect("killer task");
+
+        assert!(
+            result.is_ok(),
+            "serve_with_stop must succeed: {:?}",
+            result.err()
+        );
+
+        // Startup is a producer: the disk diff is enqueued as pending jobs
+        // (fresh content hashes recorded at enqueue time), and the documents
+        // table is still untouched (the worker processes the queue later,
+        // task 1.6).
+        let jobs = boot
+            .db
+            .with_conn(|conn| {
+                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None)
+            })
+            .expect("with_conn jobs")
+            .expect("list jobs");
+        let by_path: BTreeMap<&str, &db::DocumentJob> =
+            jobs.iter().map(|job| (job.path.as_str(), job)).collect();
+        assert_eq!(
+            by_path.len(),
+            3,
+            "new + changed indexed, gone deleted, same untouched: {jobs:?}"
+        );
+
+        // new.md: on disk, no document row → pending index, fresh hash.
+        let new_job = by_path
+            .get(src.join("new.md").to_string_lossy().as_ref())
+            .expect("new.md must be queued");
+        assert_eq!(new_job.op, "index");
+        assert_eq!(new_job.status, "pending");
+        assert_eq!(
+            new_job.content_hash.as_deref(),
+            Some(ingestion::ingester::compute_content_hash(new_content).as_str())
+        );
+
+        // changed.md: document row with a stale hash → pending index with the
+        // fresh hash (the worker re-ingests).
+        let changed_job = by_path
+            .get(src.join("changed.md").to_string_lossy().as_ref())
+            .expect("changed.md must be queued");
+        assert_eq!(changed_job.op, "index");
+        assert_eq!(changed_job.status, "pending");
+        assert_eq!(
+            changed_job.content_hash.as_deref(),
+            Some(ingestion::ingester::compute_content_hash(changed_content).as_str())
+        );
+
+        // gone.md: document row, file absent on disk → pending delete.
+        let gone_job = by_path
+            .get(src.join("gone.md").to_string_lossy().as_ref())
+            .expect("gone.md must be queued");
+        assert_eq!(gone_job.op, "delete");
+        assert_eq!(gone_job.status, "pending");
+
+        // same.md: unchanged content hash → no job at all.
+        assert!(
+            !by_path.contains_key(src.join("same.md").to_string_lossy().as_ref()),
+            "same.md must stay unqueued: {jobs:?}"
+        );
+
+        // The documents table is untouched until the worker runs.
+        let doc_count: i64 = boot
+            .db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
+            })
+            .expect("with_conn documents")
+            .expect("count documents");
+        assert_eq!(doc_count, 3, "documents unchanged until the worker runs");
     }
 
     // --- serve_with_stop: dimension-mismatch auto-rebuild ----------------------
