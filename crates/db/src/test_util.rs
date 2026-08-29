@@ -12,11 +12,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OpenFlags;
 
-use crate::connection::{Db, POOL_MAX_SIZE, apply_pragmas};
+use crate::connection::{Db, KNOWLEDGE_MIGRATIONS, POOL_MAX_SIZE, apply_pragmas};
 
-/// Open an in-memory database with the full init migration and D8 PRAGMAs
-/// applied (`journal_mode` degrades to `memory`, inherent to in-memory
-/// databases; every other PRAGMA reads back exactly).
+/// Open an in-memory KNOWLEDGE database with the knowledge init migration
+/// and D8 PRAGMAs applied (`journal_mode` degrades to `memory`, inherent to
+/// in-memory databases; every other PRAGMA reads back exactly).
+///
+/// This is a knowledge database (task 1.9, storage-layout-restructure): the
+/// cache tables (`app_kv`, `llm_ner_cache`, `llm_linker_cache`) are NOT
+/// created — DAOs that need them (e.g. [`crate::AppKv`]) create them lazily
+/// at runtime, mirroring `LlmNerCache`.
 ///
 /// Every pooled connection shares ONE database (design D12): the manager
 /// opens each connection against the same shared-cache URI
@@ -29,7 +34,8 @@ pub fn in_memory_db() -> Db {
     // panic with the message rather than force `Result` plumbing everywhere.
     let manager = SqliteConnectionManager::memory().with_init(|conn| apply_pragmas(conn));
     let db = Db::new(manager, POOL_MAX_SIZE).expect("in-memory pool build");
-    db.run_migrations().expect("migrate in-memory database");
+    db.run_migrations(&KNOWLEDGE_MIGRATIONS)
+        .expect("migrate in-memory database");
     db
 }
 
@@ -89,7 +95,7 @@ pub fn temp_file_db() -> TempDb {
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    let db = Db::open(&path).expect("open temp file database");
+    let db = Db::open_knowledge(&path).expect("open temp file database");
     TempDb { db, path }
 }
 
@@ -187,12 +193,16 @@ mod tests {
         // A clone (a plain Db, no cleanup) writes through the same file.
         db_clone
             .exec_tx(|tx| {
-                tx.execute("INSERT INTO app_kv (key, value) VALUES ('k', 'v')", [])
-                    .map_err(DbError::from)
+                tx.execute(
+                    "INSERT INTO documents (source_type, original_path) \
+                     VALUES ('markdown', '/x.md')",
+                    [],
+                )
+                .map_err(DbError::from)
             })
             .expect("insert via clone");
         let count: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
         assert_eq!(count, 1, "clone write must be visible in the same file");

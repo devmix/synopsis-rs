@@ -7,6 +7,13 @@
 //! `last_linking_run`). `set` is an upsert that refreshes `updated_at` on
 //! every write; `get` returns `None` for a missing key.
 //!
+//! The table belongs to the CACHE database schema
+//! (`migrations/cache/1-init/up.sql`, task 1.9, storage-layout-restructure);
+//! on a database that does not have it yet (e.g. a knowledge database still
+//! used for the pre-1.10 linker decision cache) it is created lazily at
+//! runtime on first use — the same pattern as
+//! `ingestion::ner::llm_cache::LlmNerCache`.
+//!
 //! **Conscious deviation from the oracle:** the Go `Get` swallows driver
 //! errors and reports "missing key" (best-effort semantics); the Rust `get`
 //! propagates them as [`DbError`]. A broken database must not look empty —
@@ -52,6 +59,7 @@ impl<'conn> AppKv<'conn> {
     /// A stored `NULL` value reads back as an empty string, matching the
     /// oracle (`sql.NullString` zero value).
     pub fn get(&self, key: &str) -> Result<Option<String>, DbError> {
+        self.ensure_table()?;
         let value = self
             .exec
             .query_row("SELECT value FROM app_kv WHERE key = ?", [key], |row| {
@@ -68,10 +76,25 @@ impl<'conn> AppKv<'conn> {
     /// Store `value` under `key`, creating the row or overwriting an
     /// existing one, and refresh `updated_at` (oracle upsert semantics).
     pub fn set(&self, key: &str, value: &str) -> Result<(), DbError> {
+        self.ensure_table()?;
         self.exec.execute(
             "INSERT INTO app_kv (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
             [key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Create the key-value table if it does not exist yet (task 1.9):
+    /// `app_kv` belongs to the cache-database schema, so a database without
+    /// it (e.g. a knowledge database) gets the table lazily at runtime on
+    /// first use — the same pattern as `LlmNerCache::ensure_table`.
+    fn ensure_table(&self) -> Result<(), DbError> {
+        self.exec.execute(
+            "CREATE TABLE IF NOT EXISTS app_kv \
+             (key TEXT PRIMARY KEY, value TEXT, \
+              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+            [],
         )?;
         Ok(())
     }

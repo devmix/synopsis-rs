@@ -1,4 +1,6 @@
--- Migration 1-init: squashed final v5 schema state for a fresh Rust database.
+-- Migration 1-init: squashed final v5 schema state for a fresh Rust
+-- KNOWLEDGE database (the cache database has its own migration tree,
+-- `migrations/cache`; task 1.9, storage-layout-restructure).
 --
 -- Derived mechanically (2026-08-18) from the full schema dump of
 -- fixtures/knowledge.db (sqlite_master + PRAGMA table_info; provenance in
@@ -19,7 +21,9 @@
 -- (its row dedup is a data migration — nothing to replay on an empty DB); 003 drops
 -- documents.domain and idx_documents_domain (so documents has NO domain column below,
 -- while entities/facts keep theirs); 004 extracted_at backfill (data migration, no DDL);
--- 005 app_kv. The dump reflects exactly that final state.
+-- 005 app_kv (MOVED to the cache migration `migrations/cache/1-init/up.sql`
+-- by task 1.9, storage-layout-restructure: it is a cache, not knowledge).
+-- The DDL below reflects the final state minus that table.
 --
 -- Deliberate deviation from the oracle (human decision 2026-08-20, db-module task 1.14
 -- revision 2): fact_sources.document_id is INTEGER with an FK to documents(id) ON DELETE
@@ -151,9 +155,3 @@ CREATE TRIGGER chunks_fts_au AFTER UPDATE ON chunks BEGIN
 END;
 
 CREATE UNIQUE INDEX idx_documents_original_path ON documents(original_path);
-
-CREATE TABLE app_kv (
-    key        TEXT PRIMARY KEY,
-    value      TEXT,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);

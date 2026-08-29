@@ -224,9 +224,10 @@ pub fn bootstrap(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Boot
     })
 }
 
-/// Opens the main database (creating the file and parent directories if
-/// absent) and applies the embedded migrations — `Db::open` runs them
-/// internally, `PRAGMA user_version` being the sole schema authority.
+/// Opens the main KNOWLEDGE database (creating the file and parent
+/// directories if absent) and applies the knowledge migrations —
+/// `Db::open_knowledge` runs them internally, `PRAGMA user_version` being
+/// the sole schema authority.
 ///
 /// All failures are fatal: the squashed DDL migrations contain no vector
 /// dimension, so the oracle's non-fatal `IsDimensionMismatchError` branch has
@@ -236,7 +237,7 @@ pub fn bootstrap(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Boot
 ///
 /// [`CliError::Db`] when the file cannot be created or the migrations fail.
 pub fn open_db(path: &Path) -> Result<Db, CliError> {
-    let db = Db::open(path)?;
+    let db = Db::open_knowledge(path)?;
     tracing::info!(path = %path.display(), "database ready");
     Ok(db)
 }
@@ -274,11 +275,13 @@ pub fn ensure_model(config: &Config, onnx: &OnnxConfig) -> Result<(), CliError> 
     Ok(())
 }
 
-/// Opens the separate cache database. Returns `None` (not an error) when it
+/// Opens the separate cache database (cache schema ONLY — never the
+/// knowledge schema; `Db::open_cache` applies the cache migrations, task
+/// 1.9, storage-layout-restructure). Returns `None` (not an error) when it
 /// cannot be opened — the application continues without caching (nil-on-
 /// failure port of the oracle's `openCacheStore`).
 pub fn open_cache(path: &Path) -> Option<Db> {
-    match Db::open(path) {
+    match Db::open_cache(path) {
         Ok(db) => {
             tracing::info!(path = %path.display(), "cache database opened");
             Some(db)
@@ -793,8 +796,8 @@ models:
     #[test]
     fn open_cache_invalid_path_returns_none() {
         let dir = TempDir::new("cache-fail");
-        // A regular file as the parent directory: `Db::open` cannot create
-        // the parent and fails → nil-on-failure port → `None`.
+        // A regular file as the parent directory: `Db::open_cache` cannot
+        // create the parent and fails → nil-on-failure port → `None`.
         let blocker = dir.as_ref().join("blocker");
         std::fs::write(&blocker, b"not a directory").expect("write blocker file");
         let path = blocker.join("cache.db");

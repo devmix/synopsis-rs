@@ -25,11 +25,19 @@ use rusqlite_migration::Migrations;
 
 use crate::error::DbError;
 
-/// The migration tree embedded at compile time from the repo-root
-/// `migrations/` directory (D3): one squashed v5 init migration for now;
-/// future migrations are added as numbered `<id>-<slug>/up.sql` directories,
-/// forward-only, and shipped files are never edited.
-static MIGRATIONS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../../migrations");
+/// The knowledge migration tree embedded at compile time from the repo-root
+/// `migrations/knowledge` directory (D3): one squashed v5 init migration for
+/// now; future migrations are added as numbered `<id>-<slug>/up.sql`
+/// directories, forward-only, and shipped files are never edited.
+pub(crate) static KNOWLEDGE_MIGRATIONS: Dir =
+    include_dir!("$CARGO_MANIFEST_DIR/../../migrations/knowledge");
+
+/// The cache migration tree embedded at compile time from the repo-root
+/// `migrations/cache` directory (task 1.9, storage-layout-restructure): the
+/// cache database holds ONLY cache tables (`llm_ner_cache`,
+/// `llm_linker_cache`, `app_kv`) — never the knowledge schema.
+pub(crate) static CACHE_MIGRATIONS: Dir =
+    include_dir!("$CARGO_MANIFEST_DIR/../../migrations/cache");
 
 /// Pool size (design D1, re-decided 2026-08-20): a laptop, read-heavy
 /// workload; 4 concurrent connections is the agreed default.
@@ -60,15 +68,46 @@ pub struct Db {
 }
 
 impl Db {
-    /// Open the database at `path` (creating the file and its parent
-    /// directories if absent), apply the D8 PRAGMAs to every pooled
-    /// connection and run the embedded migrations once.
+    /// Open the KNOWLEDGE database at `path` (creating the file and its
+    /// parent directories if absent), apply the D8 PRAGMAs to every pooled
+    /// connection and run the knowledge migrations once.
     ///
     /// Only Rust-created databases are supported: reopening one re-checks
     /// `PRAGMA user_version` and applies nothing further (design D3). Legacy
     /// Go-created `knowledge.db` is never opened, upgraded or migrated
     /// (decision 2026-08-18).
+    pub fn open_knowledge<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
+        Self::open_with(path, &KNOWLEDGE_MIGRATIONS)
+    }
+
+    /// Open the CACHE database at `path` (creating the file and its parent
+    /// directories if absent), apply the D8 PRAGMAs to every pooled
+    /// connection and run the cache migrations once.
+    ///
+    /// The cache database holds ONLY cache tables (`llm_ner_cache`,
+    /// `llm_linker_cache`, `app_kv`) — it must never receive the knowledge
+    /// schema (task 1.9, storage-layout-restructure).
+    pub fn open_cache<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
+        Self::open_with(path, &CACHE_MIGRATIONS)
+    }
+
+    /// Open the knowledge database at `path` (equivalent to
+    /// [`Db::open_knowledge`]).
+    ///
+    /// Kept for callers that do not need to name the database kind
+    /// explicitly; new call sites should use [`Db::open_knowledge`] or
+    /// [`Db::open_cache`].
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
+        Self::open_knowledge(path)
+    }
+
+    /// Shared open path: create the file and its parent directories if
+    /// absent, build the pool with the D8 PRAGMAs applied to every
+    /// connection, and run `migrations` once.
+    fn open_with<P: AsRef<Path>>(
+        path: P,
+        migrations: &'static Dir<'static>,
+    ) -> Result<Self, DbError> {
         let path = path.as_ref();
         // SQLite does not create parent directories; the oracle does it in Open().
         if let Some(parent) = path.parent()
@@ -88,7 +127,7 @@ impl Db {
         let db = Self::new(manager, POOL_MAX_SIZE)?;
         // Migrations run once, on the first pooled connection (D3): state
         // lives in the file's `PRAGMA user_version`, so a re-open is a no-op.
-        db.run_migrations()?;
+        db.run_migrations(migrations)?;
         Ok(db)
     }
 
@@ -102,11 +141,11 @@ impl Db {
         Ok(Self { pool })
     }
 
-    /// Run the embedded migrations on a pooled connection (D3). Re-running
-    /// on a migrated database is a no-op.
-    pub(crate) fn run_migrations(&self) -> Result<(), DbError> {
+    /// Run `migrations` on a pooled connection (D3). Re-running on a
+    /// migrated database is a no-op.
+    pub(crate) fn run_migrations(&self, migrations: &'static Dir<'static>) -> Result<(), DbError> {
         let mut conn = self.pool.get().map_err(DbError::from)?;
-        apply_migrations(&mut conn)
+        apply_migrations(&mut conn, migrations)
     }
 
     /// Run `f` on a connection checked out of the pool (design D11).
@@ -177,11 +216,13 @@ impl Db {
     }
 }
 
-/// Apply the embedded migrations; state is tracked in `PRAGMA user_version`
-/// (the sole source of truth, design D3). Re-running on a migrated database
-/// is a no-op.
-fn apply_migrations(conn: &mut Connection) -> Result<(), DbError> {
-    let migrations = Migrations::from_directory(&MIGRATIONS).map_err(DbError::from)?;
+/// Apply `migrations`; state is tracked in `PRAGMA user_version` (the sole
+/// source of truth, design D3). Re-running on a migrated database is a no-op.
+fn apply_migrations(
+    conn: &mut Connection,
+    migrations: &'static Dir<'static>,
+) -> Result<(), DbError> {
+    let migrations = Migrations::from_directory(migrations).map_err(DbError::from)?;
     migrations.to_latest(conn).map_err(DbError::from)?;
     Ok(())
 }
@@ -254,10 +295,11 @@ mod tests {
         }
     }
 
-    /// Open a fresh file-backed database, returning it with its cleanup guard.
+    /// Open a fresh file-backed knowledge database, returning it with its
+    /// cleanup guard.
     fn open_temp_db() -> (Db, TempDb) {
         let path = temp_db_path();
-        let db = Db::open(&path).expect("open temp db");
+        let db = Db::open_knowledge(&path).expect("open temp db");
         (db, TempDb::new(path))
     }
 
@@ -317,8 +359,9 @@ mod tests {
                 .collect()
             })
             .unwrap();
+        // `app_kv` is NOT in the set: task 1.9 moved it to the cache
+        // migration (`migrations/cache`) — it is a cache, not knowledge.
         let expected: HashSet<String> = [
-            "app_kv",
             "chunk_entities",
             "chunks",
             "chunks_fts",
@@ -336,7 +379,11 @@ mod tests {
         .into_iter()
         .map(String::from)
         .collect();
-        assert_eq!(names, expected, "fresh DB must have exactly the v5 schema");
+        assert_eq!(
+            names, expected,
+            "fresh knowledge DB must have exactly the knowledge schema \
+             (no app_kv / llm_ner_cache)"
+        );
 
         let triggers: Vec<String> = db
             .with_conn(|conn| {
@@ -354,6 +401,45 @@ mod tests {
         assert_eq!(
             triggers,
             vec!["chunks_fts_ad", "chunks_fts_ai", "chunks_fts_au"]
+        );
+    }
+
+    // (a, 1.9) a freshly created cache database contains EXACTLY the cache
+    // tables — never the knowledge schema (task 1.9,
+    // storage-layout-restructure: the defect was that open_cache ran the
+    // full knowledge migration on the cache Db).
+    #[test]
+    fn open_cache_creates_cache_only_schema() {
+        let path = temp_db_path();
+        let _temp = TempDb::new(path.clone());
+        let db = Db::open_cache(&path).expect("open cache db");
+
+        let user_version: i64 = db
+            .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(user_version, 1, "PRAGMA user_version must be 1 after init");
+
+        let names: HashSet<String> = db
+            .with_conn(|conn| {
+                conn.prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+                )
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+            })
+            .unwrap();
+        let expected: HashSet<String> = ["app_kv", "llm_linker_cache", "llm_ner_cache"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            names, expected,
+            "fresh cache DB must have exactly the cache tables \
+             (no knowledge schema)"
         );
     }
 
@@ -382,8 +468,12 @@ mod tests {
     fn concurrent_with_conn_reads_do_not_deadlock() {
         let db = in_memory_db();
         db.exec_tx(|tx| {
-            tx.execute("INSERT INTO app_kv (key, value) VALUES ('k', 'v')", [])
-                .map_err(DbError::from)
+            tx.execute(
+                "INSERT INTO documents (source_type, original_path) \
+                 VALUES ('markdown', '/x.md')",
+                [],
+            )
+            .map_err(DbError::from)
         })
         .expect("seed commit");
 
@@ -393,7 +483,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let count: i64 = db
                     .with_conn(|conn| {
-                        conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0))
+                        conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
                     })
                     .unwrap()
                     .unwrap();
@@ -414,8 +504,12 @@ mod tests {
     fn read_not_blocked_by_write_transaction_in_wal() {
         let (db, _temp) = open_temp_db();
         db.exec_tx(|tx| {
-            tx.execute("INSERT INTO app_kv (key, value) VALUES ('seed', '1')", [])
-                .map_err(DbError::from)
+            tx.execute(
+                "INSERT INTO documents (source_type, original_path) \
+                 VALUES ('markdown', '/seed.md')",
+                [],
+            )
+            .map_err(DbError::from)
         })
         .expect("seed commit");
 
@@ -423,7 +517,11 @@ mod tests {
         let (writer_started, rx_writer_started) = mpsc::channel();
         let writer = std::thread::spawn(move || {
             writer_db.exec_tx(|tx| -> Result<(), DbError> {
-                tx.execute("INSERT INTO app_kv (key, value) VALUES ('w', '1')", [])?;
+                tx.execute(
+                    "INSERT INTO documents (source_type, original_path) \
+                     VALUES ('markdown', '/w.md')",
+                    [],
+                )?;
                 writer_started.send(()).unwrap();
                 // Hold the write transaction open while the reader runs.
                 std::thread::sleep(Duration::from_millis(500));
@@ -435,14 +533,14 @@ mod tests {
         // pooled connection: in WAL mode the read must not block on it.
         rx_writer_started.recv().unwrap();
         let during: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
         assert_eq!(during, 1, "the reader sees pre-transaction data, unblocked");
 
         writer.join().unwrap().expect("writer commits");
         let after: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
         assert_eq!(after, 2, "the committed row is visible afterwards");
@@ -456,29 +554,37 @@ mod tests {
         let _temp = TempDb::new(path.clone());
 
         {
-            let db = Db::open(&path).expect("first open");
+            let db = Db::open_knowledge(&path).expect("first open");
             db.exec_tx(|tx| {
-                tx.execute("INSERT INTO app_kv (key, value) VALUES ('k', 'v')", [])
-                    .map_err(DbError::from)
+                tx.execute(
+                    "INSERT INTO documents (source_type, original_path, content_hash) \
+                     VALUES ('markdown', '/x.md', 'abc')",
+                    [],
+                )
+                .map_err(DbError::from)
             })
             .expect("insert");
         } // db dropped → pool closed
 
         // A migration re-run would fail on the existing tables, so a clean
         // reopen is proof that to_latest() skipped the init migration.
-        let db = Db::open(&path).expect("reopen");
+        let db = Db::open_knowledge(&path).expect("reopen");
         let user_version: i64 = db
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
         assert_eq!(user_version, 1);
-        let value: String = db
+        let hash: String = db
             .with_conn(|conn| {
-                conn.query_row("SELECT value FROM app_kv WHERE key = 'k'", [], |r| r.get(0))
+                conn.query_row(
+                    "SELECT content_hash FROM documents WHERE original_path = '/x.md'",
+                    [],
+                    |r| r.get(0),
+                )
             })
             .unwrap()
             .unwrap();
-        assert_eq!(value, "v");
+        assert_eq!(hash, "abc");
     }
 
     // (d1) exec_tx success → COMMIT: data visible afterwards.
@@ -486,15 +592,23 @@ mod tests {
     fn exec_tx_commits_on_success() {
         let db = in_memory_db();
         db.exec_tx(|tx| {
-            tx.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])
-                .map_err(DbError::from)?;
-            tx.execute("INSERT INTO app_kv (key, value) VALUES ('b', '2')", [])
-                .map_err(DbError::from)
+            tx.execute(
+                "INSERT INTO documents (source_type, original_path) \
+                 VALUES ('markdown', '/a.md')",
+                [],
+            )
+            .map_err(DbError::from)?;
+            tx.execute(
+                "INSERT INTO documents (source_type, original_path) \
+                 VALUES ('markdown', '/b.md')",
+                [],
+            )
+            .map_err(DbError::from)
         })
         .expect("commit");
 
         let count: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
         assert_eq!(count, 2, "committed rows must be visible");
@@ -506,7 +620,11 @@ mod tests {
         let db = in_memory_db();
         let err = db
             .exec_tx(|tx| -> Result<(), DbError> {
-                tx.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])?;
+                tx.execute(
+                    "INSERT INTO documents (source_type, original_path) \
+                     VALUES ('markdown', '/a.md')",
+                    [],
+                )?;
                 // A genuine SQL failure after a partial write (CHECK violation).
                 tx.execute(
                     "INSERT INTO facts (predicate, status) VALUES ('p', 'bogus')",
@@ -518,7 +636,7 @@ mod tests {
         assert!(matches!(err, DbError::Sqlite { .. }));
 
         let count: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
         assert_eq!(count, 0, "rolled-back rows must not be visible");
@@ -530,15 +648,19 @@ mod tests {
         let db = in_memory_db();
         let panicked = catch_unwind(AssertUnwindSafe(|| {
             let _ = db.exec_tx(|tx| -> Result<(), DbError> {
-                tx.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])
-                    .unwrap();
+                tx.execute(
+                    "INSERT INTO documents (source_type, original_path) \
+                     VALUES ('markdown', '/a.md')",
+                    [],
+                )
+                .unwrap();
                 panic!("simulated DAO panic");
             });
         }));
         assert!(panicked.is_err(), "the panic must propagate");
 
         let count: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
         assert_eq!(count, 0, "panicked transaction must be rolled back");
@@ -550,7 +672,11 @@ mod tests {
     fn nested_exec_tx_is_rejected_without_deadlock() {
         let db = in_memory_db();
         db.exec_tx(|tx| -> Result<(), DbError> {
-            tx.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])?;
+            tx.execute(
+                "INSERT INTO documents (source_type, original_path) \
+                 VALUES ('markdown', '/a.md')",
+                [],
+            )?;
             let nested = db.exec_tx(|_| -> Result<(), DbError> { Ok(()) });
             assert!(
                 matches!(nested, Err(DbError::NestedTransaction)),
@@ -561,7 +687,7 @@ mod tests {
         .expect("outer transaction commits");
 
         let count: i64 = db
-            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0)))
+            .with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
         assert_eq!(count, 1, "the outer transaction committed");
@@ -572,18 +698,28 @@ mod tests {
     fn with_conn_reads_and_writes() {
         let db = in_memory_db();
         let rows: usize = db
-            .with_conn(|conn| conn.execute("INSERT INTO app_kv (key, value) VALUES ('w', '1')", []))
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO documents (source_type, original_path, content_hash) \
+                     VALUES ('markdown', '/w.md', '1')",
+                    [],
+                )
+            })
             .expect("checkout")
             .expect("single-statement write");
         assert_eq!(rows, 1);
 
-        let value: String = db
+        let hash: String = db
             .with_conn(|conn| {
-                conn.query_row("SELECT value FROM app_kv WHERE key = 'w'", [], |r| r.get(0))
+                conn.query_row(
+                    "SELECT content_hash FROM documents WHERE original_path = '/w.md'",
+                    [],
+                    |r| r.get(0),
+                )
             })
             .unwrap()
             .unwrap();
-        assert_eq!(value, "1");
+        assert_eq!(hash, "1");
     }
 
     // (z, 1.9) in_memory_db: one shared database across the pool — a write
@@ -602,7 +738,7 @@ mod tests {
                     reader_ready.send(()).unwrap(); // this checkout is held
                     rx_writer_done.recv().unwrap(); // wait for the writer's commit
                     let count: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM app_kv", [], |r| r.get(0))
+                        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
                         .unwrap();
                     count
                 })
@@ -612,8 +748,12 @@ mod tests {
         let writer = std::thread::spawn(move || {
             writer_db
                 .with_conn(|conn| {
-                    conn.execute("INSERT INTO app_kv (key, value) VALUES ('a', '1')", [])
-                        .unwrap();
+                    conn.execute(
+                        "INSERT INTO documents (source_type, original_path) \
+                         VALUES ('markdown', '/a.md')",
+                        [],
+                    )
+                    .unwrap();
                     writer_done.send(()).unwrap();
                 })
                 .unwrap()
