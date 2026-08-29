@@ -23,7 +23,10 @@ context: |
     пересобираются по тексту чанков
   - rmcp 3.x — MCP протокол (Streamable HTTP, design D8; legacy SSE оракула намеренно
     не поддерживается); cel-interpreter — выражения линковки сущностей; tokenizers,
-    notify, tokio-cron-scheduler, indicatif
+    notify, indicatif
+  - tokio-cron-scheduler — был в стеке, удалён в change `document-jobs-queue` (задача
+    1.9): standalone orphan-cleanup scheduler заменён GC внутри worker'а; зависимость
+    стала сиротской и убрана из workspace + cli Cargo.toml и Cargo.lock.
   - clap 4.6.6 (Builder API) — парсинг CLI-флагов и подкоманд (change `cli`,
     user-approved расширение стека 2026-08-27; help-текст НЕ байт-паритетен с Go —
     функциональная копия, не кодовая)
