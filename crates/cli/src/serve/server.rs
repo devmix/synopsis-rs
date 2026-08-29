@@ -2,8 +2,8 @@
 //!
 //! Oracle mapping: `../synopsis/cmd/app/serve.go` (`runServe`): bootstrap →
 //! port override → dimension-mismatch handling → startup health check →
-//! runner → initial sync → scheduler → graph load → searcher → MCP server →
-//! file watcher → signal wait → graceful shutdown.
+//! runner → initial sync → document worker → graph load → searcher → MCP
+//! server → file watcher → signal wait → graceful shutdown.
 //!
 //! # Owner-thread architecture (verified runtime-context constraint)
 //!
@@ -24,14 +24,15 @@
 //! thread:
 //!
 //! - all Lance-touching work (engine open/create/recreate, forced-rebuild
-//!   re-ingest, orphan cleanup) runs inline on the main thread *between*
-//!   runtime-context entries (the watcher batch and the startup reconcile
-//!   only enqueue `document_jobs` rows — no Lance);
+//!   re-ingest, and the document worker's per-job pipeline + GC sweep) runs
+//!   inline on the main thread *between* runtime-context entries (the
+//!   watcher batch and the startup reconcile only enqueue `document_jobs`
+//!   rows — no Lance);
 //! - the runtime is entered only for short async bits that require it:
-//!   creating the watcher debounce task, creating/starting the scheduler,
-//!   binding the listener, and the owner-loop event select (`select!` over
-//!   the serve task, the stop signal, the watcher batches, and the
-//!   cleanup token — fresh futures per iteration);
+//!   creating the watcher debounce task, spawning the worker's sweep-tick
+//!   timer, binding the listener, and the owner-loop event select
+//!   (`select!` over the serve task, the stop signal, the watcher batches,
+//!   the sweep tick, and the retry token — fresh futures per iteration);
 //! - the axum HTTP listener runs as a spawned task with
 //!   `with_graceful_shutdown` on the stop signal; the MCP tool dispatch is
 //!   hopped to `spawn_blocking` at the mcp crate boundary (`call_tool`,
@@ -62,8 +63,9 @@
 //! SIGINT/SIGTERM (design D7) are installed as a spawned task (the tokio
 //! signal API needs a runtime handle) and feed a broadcast the owner loop
 //! selects on. axum stops accepting and drains in-flight requests; the
-//! serve task, the scheduler, and the watcher debounce task all stop under
-//! one 10 s bound (oracle `shutdownCtx`).
+//! serve task and the watcher debounce task stop under one 10 s bound
+//! (oracle `shutdownCtx`). The document worker runs inline on the owner
+//! thread, so it stops with the loop — no separate abort.
 //!
 //! # Deviation
 //!
@@ -80,6 +82,7 @@ use config::preset::{GraphConfig, SearchConfig};
 use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao};
 use embedding::EmbeddingProvider;
 use graph::GraphIndex;
+use ingestion::worker::DocumentWorker;
 use ingestion::{DocumentJobQueue, Runner, RunnerParams};
 use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
@@ -94,7 +97,6 @@ use crate::error::CliError;
 use crate::serve::bootstrap::{self, Bootstrap};
 use crate::serve::health::run_health_check;
 use crate::serve::ingest;
-use crate::serve::scheduler::Scheduler;
 use crate::serve::watcher::{ChangeHandler, IngestChangeHandler, Watcher};
 
 /// Graceful-shutdown bound (oracle `shutdownCtx`: 10 s).
@@ -291,9 +293,9 @@ pub fn serve(runtime: &Runtime, req: &ServeRequest) -> Result<(), CliError> {
 /// broadcast sent from a killer task instead of SIGINT/SIGTERM.
 ///
 /// Synchronous by design (module docs): port override → health check →
-/// runner + dimension-mismatch handling → initial sync → scheduler → graph
-/// load → searcher + MCP server → file watcher → bind → owner loop →
-/// graceful shutdown under the 10 s bound.
+/// runner + dimension-mismatch handling → initial sync → worker startup
+/// drain → graph load → searcher + MCP server → file watcher → sweep-tick
+/// spawn → bind → owner loop → graceful shutdown under the 10 s bound.
 pub fn serve_with_stop(
     runtime: &Runtime,
     boot: &mut Bootstrap,
@@ -447,6 +449,47 @@ pub fn serve_with_stop(
         );
     }
 
+    // The document-jobs worker (document-jobs-queue task 1.6): the sole
+    // consumer of the queue. The Runner is `!Send`, so the worker runs on
+    // this owner thread: one immediate drain right here (the startup
+    // reconcile's diff is processed before the index serves traffic), then
+    // the owner-loop select! keeps it ticking — the periodic sweep (below)
+    // and an on-demand cycle after a watcher batch enqueues new work.
+    let worker = DocumentWorker::new(&db, &runner, config.ingestion.max_retries);
+    if let Err(err) = worker.run_once(now_unix_seconds()) {
+        tracing::warn!(error = %err, "worker startup cycle failed");
+    }
+
+    // The periodic retry sweep (document-jobs-queue 1.6): a spawned timer
+    // hands a tick token to the owner loop every poll interval; the worker
+    // cycle itself runs inline (the Runner is `!Send`). The `retry_failed`
+    // config (task 1.2) gates the sweep: disabled → no timer, and the
+    // sender kept alive below keeps the channel open so the select arm
+    // stays pending instead of hot-looping on a closed channel.
+    let (tick_tx, mut tick_rx) = mpsc::unbounded_channel::<()>();
+    let poll_interval =
+        Duration::from_secs(auto_update.retry_failed.poll_interval_seconds.max(1) as u64);
+    if auto_update.retry_failed.enabled {
+        let tick_tx = tick_tx.clone();
+        runtime.spawn(async move {
+            let mut interval = tokio::time::interval(poll_interval);
+            // The first tick is immediate; the startup drain above already
+            // ran a cycle, so the first scheduled one is a full interval out.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if tick_tx.send(()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    // On-demand worker wake-up: a settled watcher batch enqueues new jobs
+    // (the change handler is a producer); the token triggers a worker cycle
+    // now instead of waiting for the next sweep tick.
+    let (retry_tx, mut retry_rx) = mpsc::unbounded_channel::<()>();
+
     // Knowledge graph (D4): `Unavailable` models the disabled config —
     // `GraphIndex::from_db` is a no-op for those flags.
     let graph = Arc::new(GraphIndex::from_db(&db, &config.graph)?);
@@ -516,32 +559,6 @@ pub fn serve_with_stop(
         }
     }
 
-    // D6: periodic orphan_cleanup. The job body only hands a token to the
-    // owner loop (the Runner is `!Send` — scheduler module docs). The spare
-    // sender keeps the channel open while the job is inactive.
-    let (cleanup_tx, mut cleanup_rx) = mpsc::unbounded_channel::<()>();
-    let _cleanup_sender_spare = cleanup_tx.clone();
-    let mut scheduler = match runtime.block_on(async {
-        Scheduler::new(&config.scheduler, move || {
-            let _ = cleanup_tx.send(());
-        })
-        .await
-    }) {
-        Ok(scheduler) => {
-            if let Err(err) = runtime.block_on(scheduler.start()) {
-                tracing::warn!(error = %err, "start scheduler");
-            }
-            Some(scheduler)
-        }
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "create scheduler; orphan_cleanup disabled"
-            );
-            None
-        }
-    };
-
     // Bind the listener and start serving (D4/D7). The axum serve task owns
     // a second stop receiver: the signal stops accepting and drains
     // in-flight requests.
@@ -559,7 +576,7 @@ pub fn serve_with_stop(
             .await
     });
 
-    // Owner loop: the watcher callback and the orphan-cleanup job run
+    // Owner loop: the watcher callback and the document worker cycle run
     // inline on the main thread (no runtime context — the Lance facade is
     // safe here); the runtime is entered only for the event select. Fresh
     // futures per iteration keep each select self-contained.
@@ -571,14 +588,16 @@ pub fn serve_with_stop(
                     result = &mut serve_handle => OwnerEvent::ServeDone(result),
                     _ = stop.recv() => OwnerEvent::Stop,
                     batch = watcher.next_batch() => OwnerEvent::Batch(batch),
-                    _ = cleanup_rx.recv() => OwnerEvent::Cleanup,
+                    _ = retry_rx.recv() => OwnerEvent::RetryBatch,
+                    _ = tick_rx.recv() => OwnerEvent::Tick,
                 }
             }),
             _ => runtime.block_on(async {
                 tokio::select! {
                     result = &mut serve_handle => OwnerEvent::ServeDone(result),
                     _ = stop.recv() => OwnerEvent::Stop,
-                    _ = cleanup_rx.recv() => OwnerEvent::Cleanup,
+                    _ = retry_rx.recv() => OwnerEvent::RetryBatch,
+                    _ = tick_rx.recv() => OwnerEvent::Tick,
                 }
             }),
         };
@@ -589,32 +608,33 @@ pub fn serve_with_stop(
             }
             // The stop signal fired (axum is draining in-flight requests)
             // or the watcher debounce task ended: leave the loop; the
-            // bounded shutdown below reaps the serve task.
+            // bounded shutdown below reaps the serve task. The worker runs
+            // inline on this thread, so leaving the loop stops it — no
+            // separate abort.
             OwnerEvent::Stop | OwnerEvent::Batch(None) => break 'owner,
             OwnerEvent::Batch(Some(paths)) => {
                 // A batch can only arrive from the watcher arm, so the
                 // handler exists there.
                 if let Some(handler) = handler.as_ref() {
                     handler.handle_changes(&paths);
+                    // The handler enqueued jobs: run a worker cycle now
+                    // instead of waiting for the next sweep tick.
+                    let _ = retry_tx.send(());
                 }
             }
-            OwnerEvent::Cleanup => run_orphan_cleanup(&runner),
+            // The periodic sweep tick or an on-demand retry: one worker
+            // cycle (claim due jobs + GC) inline on the owner thread.
+            OwnerEvent::RetryBatch | OwnerEvent::Tick => run_worker_cycle(&worker),
         }
     }
 
     // D7: graceful shutdown under one 10 s bound — the axum drain first
-    // (in-flight requests), then the scheduler (waits for a running job),
-    // then the watcher debounce task; the polling backend stops when the
-    // watcher drops.
+    // (in-flight requests), then the watcher debounce task; the polling
+    // backend stops when the watcher drops. The worker and its sweep-tick
+    // task stop with the loop / the runtime — no separate abort.
     let shutdown_done = async {
         if serve_result.is_none() {
             serve_result = Some(reap_serve(serve_handle.await));
-        }
-        if let Some(scheduler) = scheduler.as_mut() {
-            match scheduler.shutdown().await {
-                Ok(()) => tracing::info!("scheduler stopped gracefully"),
-                Err(err) => tracing::warn!(error = %err, "scheduler shutdown"),
-            }
         }
         if let Some(watcher) = watcher.as_mut() {
             watcher.stop().await;
@@ -652,8 +672,10 @@ enum OwnerEvent {
     Stop,
     /// A settled watcher batch; `None` once the debounce task ended.
     Batch(Option<Vec<PathBuf>>),
-    /// The periodic orphan-cleanup token from the scheduler.
-    Cleanup,
+    /// The periodic retry-sweep tick from the spawned timer task.
+    Tick,
+    /// An on-demand worker cycle (a watcher batch enqueued new jobs).
+    RetryBatch,
 }
 
 /// Folds the serve task's `JoinHandle` outcome into an I/O result: an axum
@@ -666,12 +688,21 @@ fn reap_serve(raw: std::result::Result<io::Result<()>, tokio::task::JoinError>) 
     }
 }
 
-/// Runs the periodic orphan cleanup inline on the owner loop (the job body
-/// can only hand off — the ingestion Runner is `!Send`).
-fn run_orphan_cleanup(runner: &Runner<'_>) {
-    if let Err(err) = ingest::cleanup_orphaned_data(runner) {
-        tracing::warn!(error = %err, "orphan cleanup run failed");
+/// Runs one document-worker cycle inline on the owner thread (the
+/// ingestion Runner is `!Send` — the worker module docs): claim due
+/// `document_jobs`, process each one, sweep orphaned data.
+fn run_worker_cycle(worker: &DocumentWorker<'_>) {
+    if let Err(err) = worker.run_once(now_unix_seconds()) {
+        tracing::warn!(error = %err, "document worker cycle failed");
     }
+}
+
+/// Current Unix time in seconds (the worker's claim/backoff clock).
+fn now_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Drops the stored ANN table and recreates the engine with the configured
@@ -1048,15 +1079,19 @@ mod tests {
         }
     }
 
-    // --- serve_with_stop: startup reconcile (producer, no direct ingest) -------
+    // --- serve_with_stop: startup reconcile → worker processing (task 1.6) -----
 
-    /// The task 1.5 acceptance shape: with an active dataset and one enabled
+    /// The task 1.6 acceptance shape: with an active dataset and one enabled
     /// markdown source, the startup reconcile enqueues the disk diff (new,
-    /// changed, removed) into `document_jobs` — the documents table stays
-    /// untouched until the worker (task 1.6) processes the queue.
+    /// changed, removed) into `document_jobs`, and the worker — driven on the
+    /// owner thread — processes the pending rows during serve startup: the
+    /// new/changed documents land in `documents`, the removed one is deleted,
+    /// the job rows flip to `done` (the delete job row is removed), and the
+    /// GC sweep (now inside the worker) drops the chunk-less ghost row.
+    /// `/health` still answers 200 and the stop is graceful.
     #[test]
-    fn serve_startup_reconcile_enqueues_jobs_without_ingesting() {
-        let dir = TempDir::new("startup-reconcile");
+    fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
+        let dir = TempDir::new("startup-worker");
         let port = free_port();
         // One markdown source: a new file, a changed file and an unchanged
         // file on disk; the prior ingestion state below adds a document row
@@ -1072,7 +1107,9 @@ mod tests {
         let mut boot = test_bootstrap(&dir);
         boot.global = Some(one_markdown_source(&src));
         // Prior ingestion state: `changed.md` with a stale hash, `same.md`
-        // with its current hash, and `gone.md` (no file on disk anymore).
+        // with its current hash and a live chunk (so the worker's GC keeps
+        // it), `gone.md` (no file on disk anymore), and a chunk-less ghost
+        // document (a GC candidate).
         let changed_path = src.join("changed.md").to_string_lossy().into_owned();
         let same_path = src.join("same.md").to_string_lossy().into_owned();
         let gone_path = src.join("gone.md").to_string_lossy().into_owned();
@@ -1080,13 +1117,24 @@ mod tests {
             .with_conn(|conn| -> Result<(), db::DbError> {
                 let dao = DocumentDao::new(ConnectionOrTx::Connection(conn));
                 dao.create("markdown", &changed_path, None, Some("stale-hash"))?;
-                dao.create(
+                let same_doc = dao.create(
                     "markdown",
                     &same_path,
                     None,
                     Some(&ingestion::ingester::compute_content_hash(same_content)),
                 )?;
                 dao.create("markdown", &gone_path, None, Some("old-hash"))?;
+                // A live chunk keeps `same.md` out of the orphan sweep.
+                ChunkDao::new(ConnectionOrTx::Connection(conn)).create(
+                    same_doc,
+                    "same body",
+                    0,
+                    None,
+                    None,
+                )?;
+                // An orphan document (no chunks, no provenance): the worker's
+                // GC sweep must remove it.
+                dao.create("markdown", "/ghost/ghost.md", None, None)?;
                 Ok(())
             })
             .expect("with_conn seed")
@@ -1104,6 +1152,7 @@ mod tests {
         let killer = runtime.spawn(async move {
             let client = reqwest::Client::new();
             let url = format!("http://127.0.0.1:{port}/health");
+            let mut healthy = false;
             for _ in 0..200 {
                 if client
                     .get(&url)
@@ -1111,26 +1160,28 @@ mod tests {
                     .await
                     .is_ok_and(|res| res.status().as_u16() == 200)
                 {
+                    healthy = true;
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             let _ = stop_tx.send(());
+            healthy
         });
 
         let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx);
-        runtime.block_on(killer).expect("killer task");
+        let healthy = runtime.block_on(killer).expect("killer task");
 
         assert!(
             result.is_ok(),
             "serve_with_stop must succeed: {:?}",
             result.err()
         );
+        assert!(healthy, "/health must answer 200 before the stop signal");
 
-        // Startup is a producer: the disk diff is enqueued as pending jobs
-        // (fresh content hashes recorded at enqueue time), and the documents
-        // table is still untouched (the worker processes the queue later,
-        // task 1.6).
+        // The worker processed the queued diff during serve startup: new.md
+        // and changed.md are (re)indexed and their job rows flip to `done`;
+        // gone.md is deleted and its job row removed; same.md stays unqueued.
         let jobs = boot
             .db
             .with_conn(|conn| {
@@ -1138,59 +1189,79 @@ mod tests {
             })
             .expect("with_conn jobs")
             .expect("list jobs");
-        let by_path: BTreeMap<&str, &db::DocumentJob> =
+        let jobs_by_path: BTreeMap<&str, &db::DocumentJob> =
             jobs.iter().map(|job| (job.path.as_str(), job)).collect();
         assert_eq!(
-            by_path.len(),
-            3,
-            "new + changed indexed, gone deleted, same untouched: {jobs:?}"
+            jobs_by_path.len(),
+            2,
+            "new + changed processed (done), gone's row removed, same untouched: {jobs:?}"
         );
-
-        // new.md: on disk, no document row → pending index, fresh hash.
-        let new_job = by_path
+        let new_job = jobs_by_path
             .get(src.join("new.md").to_string_lossy().as_ref())
-            .expect("new.md must be queued");
+            .expect("new.md must be processed");
         assert_eq!(new_job.op, "index");
-        assert_eq!(new_job.status, "pending");
-        assert_eq!(
-            new_job.content_hash.as_deref(),
-            Some(ingestion::ingester::compute_content_hash(new_content).as_str())
-        );
-
-        // changed.md: document row with a stale hash → pending index with the
-        // fresh hash (the worker re-ingests).
-        let changed_job = by_path
+        assert_eq!(new_job.status, "done", "{new_job:?}");
+        let changed_job = jobs_by_path
             .get(src.join("changed.md").to_string_lossy().as_ref())
-            .expect("changed.md must be queued");
+            .expect("changed.md must be processed");
         assert_eq!(changed_job.op, "index");
-        assert_eq!(changed_job.status, "pending");
-        assert_eq!(
-            changed_job.content_hash.as_deref(),
-            Some(ingestion::ingester::compute_content_hash(changed_content).as_str())
-        );
-
-        // gone.md: document row, file absent on disk → pending delete.
-        let gone_job = by_path
-            .get(src.join("gone.md").to_string_lossy().as_ref())
-            .expect("gone.md must be queued");
-        assert_eq!(gone_job.op, "delete");
-        assert_eq!(gone_job.status, "pending");
-
-        // same.md: unchanged content hash → no job at all.
+        assert_eq!(changed_job.status, "done", "{changed_job:?}");
         assert!(
-            !by_path.contains_key(src.join("same.md").to_string_lossy().as_ref()),
+            !jobs_by_path.contains_key(src.join("gone.md").to_string_lossy().as_ref()),
+            "the gone.md delete job row must be gone: {jobs:?}"
+        );
+        assert!(
+            !jobs_by_path.contains_key(src.join("same.md").to_string_lossy().as_ref()),
             "same.md must stay unqueued: {jobs:?}"
         );
 
-        // The documents table is untouched until the worker runs.
-        let doc_count: i64 = boot
+        // The documents table reflects the processed diff: new.md created
+        // and changed.md re-indexed with the fresh content hash, same.md
+        // untouched, gone.md deleted — and the worker's GC sweep dropped the
+        // chunk-less ghost row.
+        let docs = boot
             .db
-            .with_conn(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
-            })
+            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
             .expect("with_conn documents")
-            .expect("count documents");
-        assert_eq!(doc_count, 3, "documents unchanged until the worker runs");
+            .expect("list documents");
+        let docs_by_path: BTreeMap<&str, &db::Document> = docs
+            .iter()
+            .map(|doc| (doc.original_path.as_str(), doc))
+            .collect();
+        assert_eq!(
+            docs_by_path.len(),
+            3,
+            "new + changed + same survive; gone and the ghost are swept: {docs:?}"
+        );
+        let new_doc = docs_by_path
+            .get(src.join("new.md").to_string_lossy().as_ref())
+            .expect("new.md must be indexed");
+        assert_eq!(
+            new_doc.content_hash.as_deref(),
+            Some(ingestion::ingester::compute_content_hash(new_content).as_str())
+        );
+        let changed_doc = docs_by_path
+            .get(src.join("changed.md").to_string_lossy().as_ref())
+            .expect("changed.md must be re-indexed");
+        assert_eq!(
+            changed_doc.content_hash.as_deref(),
+            Some(ingestion::ingester::compute_content_hash(changed_content).as_str())
+        );
+        let same_doc = docs_by_path
+            .get(src.join("same.md").to_string_lossy().as_ref())
+            .expect("same.md must survive");
+        assert_eq!(
+            same_doc.content_hash.as_deref(),
+            Some(ingestion::ingester::compute_content_hash(same_content).as_str())
+        );
+        assert!(
+            !docs_by_path.contains_key(src.join("gone.md").to_string_lossy().as_ref()),
+            "gone.md must be deleted: {docs:?}"
+        );
+        assert!(
+            !docs_by_path.contains_key("/ghost/ghost.md"),
+            "the ghost must be swept by the worker GC: {docs:?}"
+        );
     }
 
     // --- serve_with_stop: dimension-mismatch auto-rebuild ----------------------
