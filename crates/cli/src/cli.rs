@@ -55,6 +55,11 @@ pub enum Subcommand {
         /// Automatically rebuild vectors on dimension mismatch.
         auto_rebuild_vectors: bool,
     },
+    /// `queue`: inspect and repair the document job queue.
+    Queue {
+        /// The queue sub-action.
+        action: QueueAction,
+    },
     /// `model`: manage embedding models.
     Model {
         /// The model sub-action.
@@ -94,6 +99,25 @@ pub enum ModelAction {
     Info,
     /// Benchmark a model.
     Benchmark,
+}
+
+/// `queue` sub-actions (new operational command, document-jobs-queue task
+/// 1.7; the Go oracle has no equivalent).
+pub enum QueueAction {
+    /// `status`: print the document job queue table.
+    Status {
+        /// `--source`: filter by source path prefix.
+        source: Option<String>,
+        /// `--status`: filter by exact status.
+        status: Option<String>,
+    },
+    /// `reset-retries`: re-queue failed jobs (error -> pending, attempts -> 0).
+    ResetRetries {
+        /// `--source`: filter by source path prefix.
+        source: Option<String>,
+        /// `--path`: re-queue a single job (wins over `--source`).
+        path: Option<String>,
+    },
 }
 
 /// `onnx-runtime` sub-actions (oracle: `cmd/app/onnx_runtime.go`).
@@ -168,6 +192,7 @@ fn build_command() -> ClapCommand {
                 )
                 .arg(auto_rebuild_vectors_flag()),
         )
+        .subcommand(build_queue_command())
         .subcommand(build_model_command())
         .subcommand(build_onnx_runtime_command())
         .subcommand(
@@ -221,6 +246,47 @@ fn auto_rebuild_vectors_flag() -> Arg {
         .long("auto-rebuild-vectors")
         .action(ArgAction::SetTrue)
         .help("automatically rebuild vectors on dimension mismatch")
+}
+
+/// Builds the `queue` subcommand: `status|reset-retries` (document-jobs-queue
+/// task 1.7; new operational command, no oracle equivalent).
+fn build_queue_command() -> ClapCommand {
+    let source_arg = || {
+        Arg::new("source")
+            .long("source")
+            .value_name("PATH")
+            .action(ArgAction::Set)
+            .help("filter by source path prefix")
+    };
+
+    ClapCommand::new("queue")
+        .about("inspect and repair the document job queue (document_jobs)")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            ClapCommand::new("status")
+                .about("print the document job queue table")
+                .arg(source_arg())
+                .arg(
+                    Arg::new("status")
+                        .long("status")
+                        .value_name("NAME")
+                        .action(ArgAction::Set)
+                        .help("filter by exact status (pending, processing, done, error)"),
+                ),
+        )
+        .subcommand(
+            ClapCommand::new("reset-retries")
+                .about("re-queue failed jobs: status -> pending, attempts -> 0")
+                .arg(source_arg())
+                .arg(
+                    Arg::new("path")
+                        .long("path")
+                        .value_name("PATH")
+                        .action(ArgAction::Set)
+                        .help("re-queue a single job (wins over --source)"),
+                ),
+        )
 }
 
 /// Builds the `model` subcommand: `list|download|delete|info|benchmark`.
@@ -308,6 +374,24 @@ impl Cli {
                 port: sub.get_one::<u16>("port").copied().unwrap_or(0),
                 auto_rebuild_vectors: sub.get_flag("auto_rebuild_vectors"),
             },
+            "queue" => {
+                let (action_name, action_matches) = match sub.subcommand() {
+                    Some(pair) => pair,
+                    None => unreachable!("clap rejected the command: queue sub-action required"),
+                };
+                let action = match action_name {
+                    "status" => QueueAction::Status {
+                        source: action_matches.get_one::<String>("source").cloned(),
+                        status: action_matches.get_one::<String>("status").cloned(),
+                    },
+                    "reset-retries" => QueueAction::ResetRetries {
+                        source: action_matches.get_one::<String>("source").cloned(),
+                        path: action_matches.get_one::<String>("path").cloned(),
+                    },
+                    other => unreachable!("clap only accepts the declared sub-actions: {other}"),
+                };
+                Subcommand::Queue { action }
+            }
             "model" => {
                 let (action_name, action_matches) = match sub.subcommand() {
                     Some(pair) => pair,

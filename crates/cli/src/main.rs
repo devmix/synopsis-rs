@@ -15,6 +15,7 @@ use cli::config_resolver::resolve_config_path;
 use cli::loadtest::LoadTestRequest;
 use cli::model::{ModelRequest, run_model};
 use cli::onnx_runtime::{OnnxRuntimeRequest, run_onnx_runtime};
+use cli::queue::{QueueRequest, run_queue};
 use cli::serve::server::{ServeRequest, run_serve};
 use cli::sync::{SyncRequest, run_sync};
 
@@ -74,6 +75,11 @@ fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
             no_initial_sync,
             port,
             auto_rebuild_vectors,
+        }),
+        Subcommand::Queue { action } => run_queue(&QueueRequest {
+            cfg_path,
+            dataset,
+            action,
         }),
         Subcommand::Model { action, name } => run_model(&ModelRequest {
             cfg_path,
