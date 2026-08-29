@@ -598,34 +598,6 @@ fn modified_file_is_updated_and_stale_data_replaced() {
     assert_vectors_match_live_chunks(&h);
 }
 
-/// Deleted file: `prune_deleted` removes the document and its data; the
-/// next cleanup sweep reconciles the orphaned vectors and provenance-less
-/// entities.
-#[test]
-fn deleted_file_is_pruned_and_reconciled() {
-    let h = Harness::new();
-    h.seed();
-    let runner = h.runner();
-    runner.ingest_all(false);
-
-    fs::remove_file(h.json_src.join("widgets.json")).unwrap();
-    let removed = runner.prune_deleted().unwrap();
-    assert_eq!(removed, 1);
-
-    // The json document and its chunks are gone; the md document survives.
-    let docs = h.docs();
-    assert_eq!(docs.len(), 1, "{docs:?}");
-    assert!(docs[0].original_path.ends_with("team.md"));
-    assert_eq!(h.all_chunks().len(), 2);
-
-    // The pruned chunk vectors are orphans until the reconciliation sweep;
-    // carol's only provenance was the pruned document.
-    let cleanup = runner.cleanup_orphaned_data().unwrap();
-    assert_eq!(cleanup.vectors_deleted, 2, "{cleanup:?}");
-    assert_entity_names(&h, &["alice", "bob"]);
-    assert_vectors_match_live_chunks(&h);
-}
-
 /// Leftovers: one orphan of every kind is swept, live pipeline data
 /// (provenance-backed entities, the ingested documents and their vectors)
 /// survives.

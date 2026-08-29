@@ -13,16 +13,24 @@
 //!   [`SummaryStats::errors`] and the run continues. The post-run orphan
 //!   cleanup + entity-linking tail (`runner/cleanup.rs`) runs under the same
 //!   lock; its failures are collected into [`SummaryStats::errors`] too.
-//! - [`Runner::ingest_source`] — single-source entry point (explicit type or
-//!   detected), with per-source NER provider assembly and domain enrichment.
-//! - [`Runner::sync_source`] / [`Runner::ingest_source_by_path`] —
-//!   incremental (rebuild = false) entry points for the file watcher and the
-//!   CLI.
-//! - [`Runner::belongs_to_source`] — containment predicate used by the prune
-//!   stage (`runner/cleanup.rs`).
+//! - [`Runner::process_document_by_path`] — the worker's `index` op: the
+//!   per-document pipeline for a single file (no source-tree walk), with
+//!   per-source NER provider assembly and domain enrichment.
+//! - [`Runner::delete_document_at`] — the worker's `delete` op (full
+//!   per-document cleanup in one transaction).
+//! - [`Runner::find_source_for_path`] / [`Runner::belongs_to_source`] —
+//!   source containment used by the queue producer, the worker and the
+//!   cleanup stage.
+//!
+//! The `document_jobs` queue is the only processing path:
+//! [`DocumentJobQueue`](crate::job_queue::DocumentJobQueue) (producer)
+//! enqueues per-file jobs and
+//! [`DocumentWorker`](crate::worker::DocumentWorker) (consumer) claims them
+//! and drives [`Runner::process_document_by_path`] /
+//! [`Runner::delete_document_at`].
 //!
 //! All mutating entry points are serialized by an internal mutex (oracle
-//! `r.mu`): a future file watcher and a CLI sync must never write SQLite
+//! `r.mu`): the worker and a CLI operation must never write SQLite
 //! concurrently (design D4).
 //!
 //! Deliberate deviations from the oracle (behavior is ported, not
@@ -149,7 +157,8 @@ pub struct Runner<'a> {
     /// Configured sources keyed by absolute (lexically normalized) path;
     /// includes disabled sources (path lookup does not filter, oracle parity).
     source_index: BTreeMap<String, usize>,
-    /// Absolute paths of the non-disabled sources (prune containment).
+    /// Absolute paths of the non-disabled sources (enabled-root containment
+    /// for [`Self::belongs_to_source`]).
     enabled_roots: Vec<PathBuf>,
 
     /// Serializes all mutating entry points (oracle `r.mu`).
@@ -274,67 +283,6 @@ impl<'a> Runner<'a> {
         stats
     }
 
-    /// Runs the full pipeline over one configured source (oracle
-    /// `IngestSource`).
-    ///
-    /// Resolves the source type (explicit, or detected from the path when the
-    /// `type` attribute is absent), looks up the registry implementation,
-    /// wraps it with the domain enrichment, assembles the per-source NER
-    /// provider and runs the [`Ingester`] over `src.path`.
-    ///
-    /// # Errors
-    ///
-    /// [`IngestionError::UnknownSourceType`] for an unregistered type word,
-    /// or any source-level [`IngestionError`] from the ingest run.
-    pub fn ingest_source(
-        &self,
-        src: &SourceConfig,
-        rebuild: bool,
-    ) -> Result<ProgressStats, IngestionError> {
-        let _guard = self.lock();
-        self.ingest_source_locked(src, rebuild)
-    }
-
-    /// Re-indexes the configured source containing `changed_path`
-    /// incrementally (oracle `SyncSource`, the file-watcher entry point).
-    ///
-    /// # Errors
-    ///
-    /// [`IngestionError::NoSourceForPath`] when no configured source root
-    /// contains the path (oracle `no configured source contains %s`), or any
-    /// source-level [`IngestionError`] from the ingest run.
-    pub fn sync_source(&self, changed_path: &str) -> Result<ProgressStats, IngestionError> {
-        let _guard = self.lock();
-        self.sync_source_locked(changed_path)
-    }
-
-    /// Runs an incremental sync for the source whose configured directory
-    /// matches `path` exactly (absolute, normalized); any other path falls
-    /// back to [`Self::sync_source`] (oracle `IngestSourceByPath`).
-    ///
-    /// # Errors
-    ///
-    /// [`IngestionError::Io`] when `path` cannot be resolved,
-    /// [`IngestionError::NoSourceForPath`] when no source matches (fallback),
-    /// or any source-level [`IngestionError`] from the ingest run.
-    pub fn ingest_source_by_path(&self, path: &str) -> Result<ProgressStats, IngestionError> {
-        let _guard = self.lock();
-        let key = to_abs_path(path)
-            .map(|abs| abs.to_string_lossy().into_owned())
-            .map_err(|source| IngestionError::Io {
-                path: PathBuf::from(path),
-                source,
-            })?;
-        if let Some(src) = self
-            .source_index
-            .get(&key)
-            .and_then(|&index| self.source_by_index(index))
-        {
-            return self.ingest_source_locked(src, false);
-        }
-        self.sync_source_locked(path)
-    }
-
     /// Finds the configured source containing `path` (oracle
     /// `findSourceForPath` / `SourceForPath`).
     ///
@@ -364,7 +312,7 @@ impl<'a> Runner<'a> {
     }
 
     /// True when `path` lies under any enabled configured source root
-    /// (oracle `belongsToSource`; the prune stage, task 3.8, uses this).
+    /// (oracle `belongsToSource`).
     pub fn belongs_to_source(&self, path: &str) -> bool {
         let Ok(path_abs) = to_abs_path(path) else {
             return false;
@@ -493,8 +441,8 @@ impl<'a> Runner<'a> {
 
     /// Removes a document row and all its dependent data (chunks, entity
     /// links, facts, provenance, scoped orphans) in one transaction
-    /// (shared by [`Self::delete_document_at`], [`Self::prune_deleted`] and
-    /// the worker's converge-on-deleted-file path).
+    /// (shared by [`Self::delete_document_at`] and the worker's
+    /// converge-on-deleted-file path).
     fn clear_and_delete_doc(&self, doc_id: i64) -> Result<(), IngestionError> {
         self.db.exec_tx(|tx| -> Result<(), IngestionError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
@@ -504,7 +452,8 @@ impl<'a> Runner<'a> {
         })
     }
 
-    /// The unlocked core of [`Self::ingest_source`] (callers hold the lock).
+    /// The unlocked core of [`Self::ingest_all`]'s per-source run (callers
+    /// hold the lock).
     fn ingest_source_locked(
         &self,
         src: &SourceConfig,
@@ -533,16 +482,6 @@ impl<'a> Runner<'a> {
             &sink,
         );
         ingester.ingest(Path::new(&src.path), rebuild)
-    }
-
-    /// The unlocked core of [`Self::sync_source`] (callers hold the lock).
-    fn sync_source_locked(&self, changed_path: &str) -> Result<ProgressStats, IngestionError> {
-        let Some(src) = self.find_source_for_path(changed_path) else {
-            return Err(IngestionError::NoSourceForPath {
-                path: changed_path.to_owned(),
-            });
-        };
-        self.ingest_source_locked(src, false)
     }
 
     /// The source at a `global.sources` index, or `None` (no global config).
@@ -776,7 +715,7 @@ mod tests {
     use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
     use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, DocumentDao};
+    use db::{ChunkDao, ConnectionOrTx, DocumentDao, EntityDao};
     use embedding::EmbeddingError;
     use vectors::{VectorIndex, VectorsError};
 
@@ -1286,10 +1225,9 @@ mod tests {
         )];
         let runner = harness.runner();
 
-        let progress = runner
-            .ingest_source(&harness.global.sources[0], false)
+        runner
+            .process_document_by_path(src.join("doc.txt").to_string_lossy().as_ref())
             .unwrap();
-        assert_eq!(progress.documents_created, 1, "{progress:?}");
 
         let docs = harness
             .db
@@ -1324,11 +1262,21 @@ mod tests {
 
         // LlmNer::new fails (no domain configs) → the run degrades to
         // no-NER and still succeeds.
-        let progress = runner
-            .ingest_source(&harness.global.sources[0], false)
+        runner
+            .process_document_by_path(src.join("doc.txt").to_string_lossy().as_ref())
             .unwrap();
-        assert_eq!(progress.documents_created, 1, "{progress:?}");
-        assert_eq!(progress.entities_extracted, 0, "{progress:?}");
+        let docs = harness
+            .db
+            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
+            .unwrap();
+        assert_eq!(docs.len(), 1, "{docs:?}");
+        let entities = harness
+            .db
+            .with_conn(|conn| EntityDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
+            .unwrap();
+        assert!(entities.is_empty(), "{entities:?}");
     }
 
     #[test]
@@ -1350,11 +1298,21 @@ mod tests {
 
         // The `prose` stage is deferred (task 2.6): construction fails → the
         // run degrades to no-NER and still succeeds.
-        let progress = runner
-            .ingest_source(&harness.global.sources[0], false)
+        runner
+            .process_document_by_path(src.join("doc.txt").to_string_lossy().as_ref())
             .unwrap();
-        assert_eq!(progress.documents_created, 1, "{progress:?}");
-        assert_eq!(progress.entities_extracted, 0, "{progress:?}");
+        let docs = harness
+            .db
+            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
+            .unwrap();
+        assert_eq!(docs.len(), 1, "{docs:?}");
+        let entities = harness
+            .db
+            .with_conn(|conn| EntityDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
+            .unwrap();
+        assert!(entities.is_empty(), "{entities:?}");
     }
 
     #[test]
@@ -1379,102 +1337,21 @@ mod tests {
         // The ghost domain is warned and skipped; the known domain config
         // still reaches NER (no rules → no entities, but no construction
         // failure).
-        let progress = runner
-            .ingest_source(&harness.global.sources[0], false)
+        runner
+            .process_document_by_path(src.join("doc.txt").to_string_lossy().as_ref())
             .unwrap();
-        assert_eq!(progress.documents_created, 1, "{progress:?}");
-        assert_eq!(progress.entities_extracted, 0, "{progress:?}");
-    }
-
-    #[test]
-    fn ingest_source_fails_on_unknown_type() {
-        let root = TempDir::new("unknown-type");
-        let src = root.sub("src");
-        fs::create_dir_all(&src).unwrap();
-
-        let harness = Harness::new();
-        let src_cfg = source_config(
-            src.to_string_lossy().as_ref(),
-            SourceType::Unknown("confluence".to_owned()),
-            false,
-            &[],
-        );
-        let runner = harness.runner();
-
-        let err = runner.ingest_source(&src_cfg, false).unwrap_err();
-        assert!(
-            matches!(err, IngestionError::UnknownSourceType(ref word) if word == "confluence"),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn sync_source_resolves_and_ingests_incrementally() {
-        let root = TempDir::new("sync");
-        let src = root.sub("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("doc.txt"), "hello\n").unwrap();
-
-        let mut harness = Harness::new();
-        harness.global.sources = vec![source_config(
-            src.to_string_lossy().as_ref(),
-            SourceType::Unstructured,
-            false,
-            &[],
-        )];
-        let runner = harness.runner();
-
-        let progress = runner
-            .sync_source(src.join("doc.txt").to_string_lossy().as_ref())
+        let docs = harness
+            .db
+            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
             .unwrap();
-        assert_eq!(progress.documents_created, 1, "{progress:?}");
-
-        // A path outside every configured source fails explicitly.
-        let err = runner.sync_source("/elsewhere/file.txt").unwrap_err();
-        assert!(
-            matches!(err, IngestionError::NoSourceForPath { ref path } if path == "/elsewhere/file.txt"),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn ingest_source_by_path_exact_match_and_fallback() {
-        let root = TempDir::new("by-path");
-        let src = root.sub("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("doc.txt"), "hello\n").unwrap();
-
-        let mut harness = Harness::new();
-        harness.global.sources = vec![source_config(
-            src.to_string_lossy().as_ref(),
-            SourceType::Unstructured,
-            false,
-            &[],
-        )];
-        let runner = harness.runner();
-
-        // Exact match on the configured root.
-        let progress = runner
-            .ingest_source_by_path(src.to_string_lossy().as_ref())
+        assert_eq!(docs.len(), 1, "{docs:?}");
+        let entities = harness
+            .db
+            .with_conn(|conn| EntityDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
             .unwrap();
-        assert_eq!(progress.documents_created, 1, "{progress:?}");
-
-        // A file path is not an exact root match: the fallback (sync) finds
-        // the containing source and re-runs it (unchanged → skipped).
-        let progress = runner
-            .ingest_source_by_path(src.join("doc.txt").to_string_lossy().as_ref())
-            .unwrap();
-        assert_eq!(progress.documents_created, 0, "{progress:?}");
-        assert_eq!(progress.documents_skipped, 1, "{progress:?}");
-
-        // No source matches at all.
-        let err = runner
-            .ingest_source_by_path("/elsewhere/file.txt")
-            .unwrap_err();
-        assert!(
-            matches!(err, IngestionError::NoSourceForPath { .. }),
-            "{err:?}"
-        );
+        assert!(entities.is_empty(), "{entities:?}");
     }
 
     #[test]
@@ -1582,18 +1459,28 @@ mod tests {
         )];
         let runner = harness.runner();
 
-        let first = runner
-            .ingest_source(&harness.global.sources[0], false)
+        let doc = src.join("doc.txt").to_string_lossy().into_owned();
+        runner.process_document_by_path(&doc).unwrap();
+        let chunks = harness
+            .db
+            .with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).list_all())
+            .unwrap()
             .unwrap();
-        assert_eq!(first.documents_created, 1, "{first:?}");
+        assert_eq!(chunks.len(), 1, "{chunks:?}");
+        let first_chunk_id = chunks[0].id;
 
-        // A second run through the same mutex: all documents skipped
-        // (content-hash dedup) — proves the lock is released between runs.
-        let second = runner
-            .ingest_source(&harness.global.sources[0], false)
+        // A second run through the same mutex: the content hash is
+        // unchanged, so the document is skipped and its chunk row keeps its
+        // id (a re-run would full-clear and re-chunk it) — proves the lock
+        // is released between runs.
+        runner.process_document_by_path(&doc).unwrap();
+        let chunks = harness
+            .db
+            .with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).list_all())
+            .unwrap()
             .unwrap();
-        assert_eq!(second.documents_created, 0, "{second:?}");
-        assert_eq!(second.documents_skipped, 1, "{second:?}");
+        assert_eq!(chunks.len(), 1, "{chunks:?}");
+        assert_eq!(chunks[0].id, first_chunk_id, "{chunks:?}");
     }
 
     #[test]

@@ -1,9 +1,9 @@
-//! Post-pipeline maintenance: orphan cleanup, source pruning and cross-domain
-//! entity linking (pipeline task 3.8).
+//! Post-pipeline maintenance: orphan cleanup and cross-domain entity linking
+//! (pipeline task 3.8).
 //!
 //! Oracle mapping: `internal/ingestion/runner/runner.go` —
-//! `cleanupOrphanedDataLocked`, `PruneDeleted`, `BuildEntityLinks` (and the
-//! `IngestAll` tail that calls the first two).
+//! `cleanupOrphanedDataLocked`, `BuildEntityLinks` (and the `IngestAll` tail
+//! that calls the first two).
 //!
 //! **Conscious deviations from the oracle** (behavior ported, not
 //! transcribed):
@@ -15,12 +15,6 @@
 //!   (design D5): vectors live in the vectors engine, not in SQLite, so
 //!   cross-store atomicity is impossible — eventual consistency with the
 //!   chunk row as the source of truth.
-//! - [`Runner::prune_deleted`] removes a document only when its file is
-//!   genuinely gone (`NotFound`); any other stat error (transient I/O)
-//!   keeps the document. The oracle deleted on ANY `os.Stat` error.
-//! - [`Runner::prune_deleted`] does not touch the pruned document's
-//!   vectors (the `db::GcDao` deviation, design D5): they become orphans
-//!   and the next [`Runner::cleanup_orphaned_data`] reconciles them.
 //! - [`Runner::build_entity_links`] reads the `last_linking_run` app_kv
 //!   value (the oracle's `relations.KVKeyLastLinkingRun` string, reused
 //!   verbatim) from the CACHE database but does not use it as a filter: the
@@ -30,14 +24,12 @@
 //!   The LLM decision cache and this marker both live on the cache database
 //!   (task 1.10); without it the linker runs uncached and records no marker
 //!   (the oracle's nil-store no-op, non-fatal).
-//! - The runner mutex serializes these mutating entry points (design D4);
-//!   the oracle's `PruneDeleted` did not take `r.mu`, which allowed
-//!   concurrent SQLite writes from the file watcher.
+//! - The runner mutex serializes these mutating entry points (design D4).
 
 use std::collections::HashSet;
 use std::time::SystemTime;
 
-use db::{AppKv, ChunkDao, ConnectionOrTx, Db, DocumentDao, GcDao};
+use db::{AppKv, ChunkDao, ConnectionOrTx, Db, GcDao};
 use graph::LinkResult;
 use vectors::VectorIndex;
 
@@ -79,16 +71,6 @@ impl<'a> Runner<'a> {
         self.cleanup_orphaned_data_locked()
     }
 
-    /// Removes indexed documents whose source file no longer exists on disk
-    /// (oracle `PruneDeleted`): for each document under an enabled source
-    /// root whose file is gone, one transaction performs the full
-    /// per-document cleanup (chunks, provenance, scoped orphans) and the
-    /// document-row deletion. Returns the number of removed documents.
-    pub fn prune_deleted(&self) -> Result<usize, IngestionError> {
-        let _guard = self.lock();
-        self.prune_deleted_locked()
-    }
-
     /// Runs cross-domain entity linking (oracle `BuildEntityLinks`).
     ///
     /// Skips cleanly (empty [`LinkResult`]) when the ontology carries no
@@ -119,26 +101,6 @@ impl<'a> Runner<'a> {
         })?;
         stats.vectors_deleted = reconcile_vectors(self.db, self.vectors)?;
         Ok(stats)
-    }
-
-    /// The unlocked core of [`Self::prune_deleted`] (callers hold the
-    /// runner mutex).
-    pub(super) fn prune_deleted_locked(&self) -> Result<usize, IngestionError> {
-        let docs = self
-            .db
-            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())??;
-        let mut removed = 0usize;
-        for doc in &docs {
-            if !self.belongs_to_source(&doc.original_path) {
-                continue; // not under an enabled source root: not ours
-            }
-            if !file_is_gone(&doc.original_path) {
-                continue;
-            }
-            self.clear_and_delete_doc(doc.id)?;
-            removed += 1;
-        }
-        Ok(removed)
     }
 
     /// The unlocked core of [`Self::build_entity_links`] (callers hold the
@@ -201,16 +163,6 @@ fn reconcile_vectors(db: &Db, vectors: &dyn VectorIndex) -> Result<usize, Ingest
         vectors.delete_by_chunk_ids(&orphaned)?;
     }
     Ok(orphaned.len())
-}
-
-/// True when `path` no longer exists on disk: `NotFound` is "gone"; any
-/// other I/O error (transient) is treated as "still there" so a stat
-/// failure never destroys a document (see the module docs).
-fn file_is_gone(path: &str) -> bool {
-    matches!(
-        std::fs::metadata(path),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound
-    )
 }
 
 /// Records the current run timestamp under [`LAST_LINKING_RUN_KEY`] on the
@@ -293,7 +245,7 @@ mod tests {
         let harness = harness_with_source(&src);
         let runner = harness.runner();
         runner
-            .ingest_source(&harness.global.sources[0], false)
+            .process_document_by_path(src.join("doc.txt").to_string_lossy().as_ref())
             .unwrap();
 
         // Live data: an entity referenced by a fact (both are protected —
@@ -430,7 +382,7 @@ mod tests {
         let harness = harness_with_source(&src);
         let runner = harness.runner();
         runner
-            .ingest_source(&harness.global.sources[0], false)
+            .process_document_by_path(src.join("doc.txt").to_string_lossy().as_ref())
             .unwrap();
 
         let chunks = harness
@@ -458,94 +410,6 @@ mod tests {
             .unwrap();
         assert_eq!(docs.len(), 1, "{docs:?}");
         assert_eq!(harness.sink.chunk_ids().unwrap(), vec![live as u32]);
-    }
-
-    #[test]
-    fn prune_deleted_removes_vanished_documents_and_keeps_live_ones() {
-        let root = TempDir::new("prune");
-        let src = root.sub("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("a.txt"), "alpha\n").unwrap();
-        fs::write(src.join("b.txt"), "beta\n").unwrap();
-
-        let harness = harness_with_source(&src);
-        let runner = harness.runner();
-        runner
-            .ingest_source(&harness.global.sources[0], false)
-            .unwrap();
-
-        fs::remove_file(src.join("a.txt")).unwrap();
-        let removed = runner.prune_deleted().unwrap();
-        assert_eq!(removed, 1);
-
-        let docs = harness
-            .db
-            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
-            .unwrap()
-            .unwrap();
-        assert_eq!(docs.len(), 1, "{docs:?}");
-        assert!(docs[0].original_path.ends_with("b.txt"), "{docs:?}");
-        // The pruned document's chunk rows were full-cleared...
-        let chunks = harness
-            .db
-            .with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).list_all())
-            .unwrap()
-            .unwrap();
-        assert_eq!(chunks.len(), 1, "{chunks:?}");
-        // ...and the next cleanup reconciles the pruned chunk's vector
-        // (design D5: the chunk row is the source of truth).
-        let cleanup = runner.cleanup_orphaned_data().unwrap();
-        assert_eq!(cleanup.vectors_deleted, 1, "{cleanup:?}");
-        assert_eq!(harness.sink.chunk_ids().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn prune_deleted_ignores_documents_outside_enabled_sources() {
-        let root = TempDir::new("prune-foreign");
-        let src = root.sub("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("doc.txt"), "hello\n").unwrap();
-
-        let harness = harness_with_source(&src);
-        let runner = harness.runner();
-        runner
-            .ingest_source(&harness.global.sources[0], false)
-            .unwrap();
-
-        // A foreign document row whose file does not exist: not under any
-        // enabled source root, so prune must leave it alone.
-        let external = harness
-            .db
-            .with_conn(|conn| {
-                DocumentDao::new(ConnectionOrTx::Connection(conn)).create(
-                    "test",
-                    "/elsewhere/gone.txt",
-                    None,
-                    None,
-                )
-            })
-            .unwrap()
-            .unwrap();
-
-        let removed = runner.prune_deleted().unwrap();
-        assert_eq!(removed, 0);
-        let docs = harness
-            .db
-            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
-            .unwrap()
-            .unwrap();
-        assert_eq!(docs.len(), 2, "{docs:?}");
-        assert!(
-            harness
-                .db
-                .with_conn(
-                    |conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).get_by_id(external)
-                )
-                .unwrap()
-                .unwrap()
-                .is_some(),
-            "the foreign document must survive"
-        );
     }
 
     #[test]
