@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use cli::cli::{Cli, Subcommand};
 use cli::config_resolver::resolve_config_path;
+use cli::db::{DbRequest, run_db};
 use cli::loadtest::LoadTestRequest;
 use cli::model::{ModelRequest, run_model};
 use cli::onnx_runtime::{OnnxRuntimeRequest, run_onnx_runtime};
@@ -77,6 +78,11 @@ fn dispatch(cli: Cli, cfg_path: PathBuf) -> ExitCode {
             auto_rebuild_vectors,
         }),
         Subcommand::Queue { action } => run_queue(&QueueRequest {
+            cfg_path,
+            dataset,
+            action,
+        }),
+        Subcommand::Db { action } => run_db(&DbRequest {
             cfg_path,
             dataset,
             action,

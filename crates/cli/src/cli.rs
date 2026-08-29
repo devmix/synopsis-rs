@@ -60,6 +60,11 @@ pub enum Subcommand {
         /// The queue sub-action.
         action: QueueAction,
     },
+    /// `db`: inspect and clear the dataset knowledge database.
+    Db {
+        /// The db sub-action.
+        action: DbAction,
+    },
     /// `model`: manage embedding models.
     Model {
         /// The model sub-action.
@@ -118,6 +123,16 @@ pub enum QueueAction {
         /// `--path`: re-queue a single job (wins over `--source`).
         path: Option<String>,
     },
+}
+
+/// `db` sub-actions (remove-direct-ingest task 1.1; new operational
+/// command, the Go oracle has no equivalent).
+pub enum DbAction {
+    /// `stats`: print the dataset statistics (read-only).
+    Stats,
+    /// `clear`: confirm and delete the entire dataset state directory
+    /// (`knowledge.db` + `vectors/`) after confirmation.
+    Clear,
 }
 
 /// `onnx-runtime` sub-actions (oracle: `cmd/app/onnx_runtime.go`).
@@ -193,6 +208,7 @@ fn build_command() -> ClapCommand {
                 .arg(auto_rebuild_vectors_flag()),
         )
         .subcommand(build_queue_command())
+        .subcommand(build_db_command())
         .subcommand(build_model_command())
         .subcommand(build_onnx_runtime_command())
         .subcommand(
@@ -286,6 +302,25 @@ fn build_queue_command() -> ClapCommand {
                         .action(ArgAction::Set)
                         .help("re-queue a single job (wins over --source)"),
                 ),
+        )
+}
+
+/// Builds the `db` subcommand: `stats|clear` (remove-direct-ingest task
+/// 1.1; new operational command, no oracle equivalent).
+fn build_db_command() -> ClapCommand {
+    ClapCommand::new("db")
+        .about("inspect and clear the dataset knowledge database")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            ClapCommand::new("stats")
+                .about("print the dataset statistics (read-only: documents, chunks, entities, entity links, facts, queue jobs)"),
+        )
+        .subcommand(
+            ClapCommand::new("clear").about(
+                "delete all rows from the dataset knowledge database (asks for confirmation; \
+                 restart serve afterwards so the startup reconcile re-enqueues the sources)",
+            ),
         )
 }
 
@@ -391,6 +426,18 @@ impl Cli {
                     other => unreachable!("clap only accepts the declared sub-actions: {other}"),
                 };
                 Subcommand::Queue { action }
+            }
+            "db" => {
+                let (action_name, _) = match sub.subcommand() {
+                    Some(pair) => pair,
+                    None => unreachable!("clap rejected the command: db sub-action required"),
+                };
+                let action = match action_name {
+                    "stats" => DbAction::Stats,
+                    "clear" => DbAction::Clear,
+                    other => unreachable!("clap only accepts the declared sub-actions: {other}"),
+                };
+                Subcommand::Db { action }
             }
             "model" => {
                 let (action_name, action_matches) = match sub.subcommand() {
