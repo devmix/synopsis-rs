@@ -6,18 +6,17 @@
 //! holds no globals — every dependency (db, configs, registry, providers) is
 //! a reference passed to [`Runner::new`] via [`RunnerParams`].
 //!
-//! Responsibilities (oracle parity):
+//! Responsibilities (queue-only model, remove-direct-ingest task 1.4):
 //!
-//! - [`Runner::ingest_all`] — processes the enabled configured sources
-//!   sequentially; a failing source is collected into
-//!   [`SummaryStats::errors`] and the run continues. The post-run orphan
-//!   cleanup + entity-linking tail (`runner/cleanup.rs`) runs under the same
-//!   lock; its failures are collected into [`SummaryStats::errors`] too.
 //! - [`Runner::process_document_by_path`] — the worker's `index` op: the
 //!   per-document pipeline for a single file (no source-tree walk), with
 //!   per-source NER provider assembly and domain enrichment.
 //! - [`Runner::delete_document_at`] — the worker's `delete` op (full
 //!   per-document cleanup in one transaction).
+//! - [`Runner::cleanup_orphaned_data`] / [`Runner::build_entity_links`] —
+//!   post-batch maintenance (orphan sweep + cross-domain entity linking,
+//!   `runner/cleanup.rs`); the worker's GC phase drives the sweep and the
+//!   linking entry point is called directly.
 //! - [`Runner::find_source_for_path`] / [`Runner::belongs_to_source`] —
 //!   source containment used by the queue producer, the worker and the
 //!   cleanup stage.
@@ -70,7 +69,7 @@ use crate::entities::Resolver;
 use crate::error::IngestionError;
 use crate::ingester::{Ingester, VectorSink};
 use crate::ner::{CompositeNer, NerPrompts, NerProvider};
-use crate::progress::{ProgressStats, ProgressTracker};
+use crate::progress::ProgressTracker;
 use crate::sources::Registry;
 use crate::types::{
     Chunker, Document, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source,
@@ -82,9 +81,9 @@ pub const DOMAIN_METADATA_KEY: &str = "domain";
 
 /// Aggregated outcome of a multi-source run (oracle `SummaryStats`).
 ///
-/// Per-source progress is the usual [`ProgressStats`]; this struct adds the
-/// cross-source bookkeeping: how many sources completed and the per-source
-/// error list (a failing source never aborts the run).
+/// Per-source progress is the usual [`crate::ProgressStats`]; this struct
+/// adds the cross-source bookkeeping: how many sources completed and the
+/// per-source error list (a failing source never aborts the run).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SummaryStats {
     /// Sources whose ingestion completed without a source-level error.
@@ -216,71 +215,6 @@ impl<'a> Runner<'a> {
             enabled_roots,
             lock: Mutex::new(()),
         }
-    }
-
-    /// Processes every enabled configured source sequentially (oracle
-    /// `IngestAll`).
-    ///
-    /// A source-level failure is collected into [`SummaryStats::errors`] and
-    /// the run continues with the next source (oracle parity). `rebuild` is
-    /// forwarded to every source (design D6 rebuild-clear).
-    ///
-    /// The post-run tail (oracle `IngestAll`): [`cleanup_orphaned_data`](Self::cleanup_orphaned_data)
-    /// followed by [`build_entity_links`](Self::build_entity_links). Both
-    /// failures are collected into [`SummaryStats::errors`] and never fatal
-    /// (design D8).
-    pub fn ingest_all(&self, rebuild: bool) -> SummaryStats {
-        let _guard = self.lock();
-        let mut stats = SummaryStats::default();
-        let sources = self
-            .global
-            .map(|g| g.sources.as_slice())
-            .unwrap_or_default();
-        for src in sources {
-            if src.disabled {
-                eprintln!("skipping disabled source: {}", src.path);
-                continue;
-            }
-            match self.ingest_source_locked(src, rebuild) {
-                Ok(progress) => {
-                    stats.sources_processed += 1;
-                    stats.documents_created += progress.documents_created;
-                    stats.documents_updated += progress.documents_updated;
-                    stats.documents_skipped += progress.documents_skipped;
-                }
-                Err(err) => {
-                    eprintln!("ingest source {}: {err}", src.path);
-                    stats.errors.push(format!("{}: {err}", src.path));
-                }
-            }
-        }
-
-        // Post-run tail (oracle `IngestAll`): orphan cleanup, then cross-
-        // domain entity linking. Already holding the run mutex — the locked
-        // cores are called directly.
-        match self.cleanup_orphaned_data_locked() {
-            Ok(cleanup) => eprintln!(
-                "orphan cleanup completed: entities={}, facts={}, documents={}, vectors={}",
-                cleanup.entities_deleted,
-                cleanup.facts_deleted,
-                cleanup.documents_deleted,
-                cleanup.vectors_deleted,
-            ),
-            Err(err) => {
-                eprintln!("cleanup orphaned data: {err}");
-                stats.errors.push(format!("cleanup orphaned data: {err}"));
-            }
-        }
-        match self.build_entity_links_locked() {
-            // Non-fatal per-link failures propagate into the summary
-            // (oracle parity: `stats.Errors = append(..., linkResult.Errors...)`).
-            Ok(link) => stats.errors.extend(link.errors),
-            Err(err) => {
-                eprintln!("build entity links: {err}");
-                stats.errors.push(format!("build entity links: {err}"));
-            }
-        }
-        stats
     }
 
     /// Finds the configured source containing `path` (oracle
@@ -450,38 +384,6 @@ impl<'a> Runner<'a> {
             DocumentDao::new(exec).delete(doc_id)?;
             Ok(())
         })
-    }
-
-    /// The unlocked core of [`Self::ingest_all`]'s per-source run (callers
-    /// hold the lock).
-    fn ingest_source_locked(
-        &self,
-        src: &SourceConfig,
-        rebuild: bool,
-    ) -> Result<ProgressStats, IngestionError> {
-        let source_type = resolve_source_type(src);
-        let source = self.registry.get(&source_type)?;
-        let enriched = DomainEnrichedSource {
-            inner: source,
-            domains: &src.domains,
-        };
-        let ner = self.build_ner_provider(src);
-        // Per-run resolver: cheap to build, stateful only for the run
-        // (oracle `NewIngester` built it inside from the same threshold).
-        let resolver = Resolver::new(self.ingest_cfg.resolver.similarity_threshold);
-        let sink = SinkAdapter {
-            index: self.vectors,
-        };
-        let ingester = Ingester::new(
-            self.db,
-            self.ingest_cfg,
-            &enriched,
-            self.embed,
-            ner.as_deref(),
-            &resolver,
-            &sink,
-        );
-        ingester.ingest(Path::new(&src.path), rebuild)
     }
 
     /// The source at a `global.sources` index, or `None` (no global config).
@@ -715,15 +617,17 @@ mod tests {
     use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
     use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
-    use db::{ChunkDao, ConnectionOrTx, DocumentDao, EntityDao};
+    use db::{ChunkDao, ConnectionOrTx, DocumentDao, DocumentJobDao, EntityDao};
     use embedding::EmbeddingError;
     use vectors::{VectorIndex, VectorsError};
 
     use super::*;
+    use crate::job_queue::DocumentJobQueue;
     use crate::ner::load_ner_prompts;
     use crate::parsers::walk_matched_files;
     use crate::sources::Registry;
     use crate::types::{Document, DocumentChunk, DocumentMetadata, ParseResult};
+    use crate::worker::DocumentWorker;
 
     /// A minimal source that walks `.txt` files and emits one document per
     /// file (same contract as the ingester task 3.4 test source).
@@ -1028,13 +932,13 @@ mod tests {
     }
 
     #[test]
-    fn ingest_all_collects_source_errors_and_continues() {
+    fn failing_source_does_not_stop_the_run() {
         let root = TempDir::new("all");
         let good = root.sub("good");
         let bad = root.sub("bad");
         fs::create_dir_all(&good).unwrap();
         fs::write(good.join("a.txt"), "alpha\nbeta\n").unwrap();
-        // `bad` stays missing: the ingest run fails with an Io error.
+        // `bad` stays missing: the reconcile run fails with an Io error.
 
         let mut harness = Harness::new();
         harness.global.sources = vec![
@@ -1052,25 +956,40 @@ mod tests {
             ),
         ];
         let runner = harness.runner();
+        let queue = DocumentJobQueue::new(&harness.db);
 
-        let stats = runner.ingest_all(false);
+        // The bad source (missing root) fails explicitly...
+        let err = queue
+            .reconcile_source(&runner, bad.to_string_lossy().as_ref())
+            .unwrap_err();
+        assert!(matches!(err, IngestionError::Io { .. }), "{err:?}");
 
-        assert_eq!(stats.sources_processed, 1, "{stats:?}");
-        assert_eq!(stats.documents_created, 1, "{stats:?}");
-        assert_eq!(stats.errors.len(), 1, "{stats:?}");
-        assert!(
-            stats.errors[0].starts_with(bad.to_string_lossy().as_ref()),
-            "{}",
-            stats.errors[0]
-        );
+        // ...and the run continues with the next source: its file is queued
+        // and the worker indexes it (a failing source never aborts the run).
+        let stats = queue
+            .reconcile_source(&runner, good.to_string_lossy().as_ref())
+            .unwrap();
+        assert_eq!(stats.indexed, 1, "{stats:?}");
 
-        // The good source was processed after the failure: vectors were
-        // written (the run did not stop at the first error).
+        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+        worker.run_once(1_000).unwrap();
+
+        // The good source was processed after the failure: the job is done
+        // and vectors were written (the run did not stop at the first error).
+        let jobs = harness
+            .db
+            .with_conn(|conn| {
+                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(jobs.len(), 1, "{jobs:?}");
+        assert_eq!(jobs[0].status, "done", "{jobs:?}");
         assert!(!harness.sink.chunk_ids().unwrap().is_empty());
     }
 
     #[test]
-    fn ingest_all_skips_disabled_sources() {
+    fn disabled_sources_produce_no_jobs() {
         let root = TempDir::new("disabled");
         let off = root.sub("off");
         let on = root.sub("on");
@@ -1095,12 +1014,32 @@ mod tests {
             ),
         ];
         let runner = harness.runner();
+        let queue = DocumentJobQueue::new(&harness.db);
 
-        let stats = runner.ingest_all(false);
+        // The startup reconcile loop skips disabled sources (the CLI's
+        // `reconcile_enabled_sources` filters them out).
+        for src in harness.global.sources.iter().filter(|src| !src.disabled) {
+            let stats = queue.reconcile_source(&runner, &src.path).unwrap();
+            assert_eq!(stats.indexed, 1, "{stats:?}");
+        }
 
-        assert_eq!(stats.sources_processed, 1, "{stats:?}");
-        assert_eq!(stats.documents_created, 1, "{stats:?}");
-        assert!(stats.errors.is_empty(), "{stats:?}");
+        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+        worker.run_once(1_000).unwrap();
+
+        // Zero jobs for the disabled source; the enabled one is done.
+        let jobs = harness
+            .db
+            .with_conn(|conn| {
+                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(jobs.len(), 1, "{jobs:?}");
+        assert_eq!(
+            jobs[0].path,
+            on.join("on.txt").to_string_lossy().into_owned()
+        );
+        assert_eq!(jobs[0].status, "done", "{jobs:?}");
 
         // Only the enabled source's document is in the database.
         let docs = harness

@@ -9,9 +9,10 @@
 //! an in-memory vector index. Every DB assertion goes through the db-crate
 //! DAOs.
 //!
-//! The file deliberately uses only crate-root re-exports
-//! (`ingestion::Runner`, `ingestion::Ingester`, …): the pipeline's public
-//! API surface is part of what this test pins.
+//! The file deliberately uses crate-root re-exports (`ingestion::Runner`,
+//! `ingestion::Ingester`, …) plus the queue modules (`ingestion::DocumentJobQueue`,
+//! `ingestion::worker::DocumentWorker`): the pipeline's public API surface
+//! is part of what this test pins.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -26,14 +27,15 @@ use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, S
 use config::preset::{IngestionConfig, LinkerConfig};
 use db::test_util::in_memory_db;
 use db::{
-    Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, Document, DocumentDao, Entity, EntityDao,
-    FactDao, FactSourceDao,
+    Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, Document, DocumentDao, DocumentJobDao,
+    Entity, EntityDao, FactDao, FactSourceDao,
 };
 use embedding::{EmbeddingError, EmbeddingProvider};
+use ingestion::worker::DocumentWorker;
 use ingestion::{
-    Ingester, IngestionError, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource, NerEntity,
-    NerFact, NerPrompts, NerProvider, NerResult, Registry, Resolver, Runner, RunnerParams,
-    VectorSink, load_ner_prompts,
+    DocumentJobQueue, Ingester, IngestionError, JsonChunker, JsonSource, MarkdownChunker,
+    MarkdownSource, NerEntity, NerFact, NerPrompts, NerProvider, NerResult, Registry, Resolver,
+    Runner, RunnerParams, VectorSink, load_ner_prompts,
 };
 use serde_json::{Map, Value};
 use vectors::{VectorIndex, VectorsError};
@@ -429,6 +431,31 @@ impl Harness {
             .unwrap()
             .unwrap()
     }
+
+    fn jobs(&self) -> Vec<db::DocumentJob> {
+        self.db
+            .with_conn(|conn| {
+                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None)
+            })
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The queue/worker path that replaced the direct whole-tree run:
+    /// reconcile every configured source (new/changed files → index jobs)
+    /// and let one worker cycle process them.
+    fn reconcile_and_process(&self, runner: &Runner<'_>, now: i64) {
+        let queue = DocumentJobQueue::new(&self.db);
+        for src in self.global.sources.iter().filter(|src| !src.disabled) {
+            queue
+                .reconcile_source(runner, &src.path)
+                .unwrap_or_else(|err| panic!("reconcile {} failed: {err}", src.path));
+        }
+        let worker = DocumentWorker::new(&self.db, runner, self.cfg.max_retries);
+        worker
+            .run_once(now)
+            .unwrap_or_else(|err| panic!("worker cycle failed: {err}"));
+    }
 }
 
 /// Asserts the sorted entity-name set equals `expected` (sorted).
@@ -451,22 +478,21 @@ fn assert_vectors_match_live_chunks(h: &Harness) {
 
 // ── Scenarios ──────────────────────────────────────────────────────────────
 
-/// First run: both sources ingest; documents, chunks, entities, chunk
-/// provenance and vectors all land in the database (facts stay empty: the
-/// regex stage produces no facts).
+/// First run: both sources ingest through the queue/worker; documents,
+/// chunks, entities, chunk provenance and vectors all land in the database
+/// (facts stay empty: the regex stage produces no facts).
 #[test]
-fn ingest_all_populates_documents_chunks_entities_and_vectors() {
+fn first_run_populates_documents_chunks_entities_and_vectors() {
     let h = Harness::new();
     h.seed();
     let runner = h.runner();
 
-    let stats = runner.ingest_all(false);
+    h.reconcile_and_process(&runner, 1_000);
 
-    assert_eq!(stats.sources_processed, 2, "{stats:?}");
-    assert_eq!(stats.documents_created, 2, "{stats:?}");
-    assert_eq!(stats.documents_updated, 0, "{stats:?}");
-    assert_eq!(stats.documents_skipped, 0, "{stats:?}");
-    assert!(stats.errors.is_empty(), "{stats:?}");
+    // Both sources' jobs were processed (two new files → two index jobs).
+    let jobs = h.jobs();
+    assert_eq!(jobs.len(), 2, "{jobs:?}");
+    assert!(jobs.iter().all(|job| job.status == "done"), "{jobs:?}");
 
     // Documents: one per file, correct source types, the domain stamp in
     // the stored metadata.
@@ -533,25 +559,43 @@ fn ingest_all_populates_documents_chunks_entities_and_vectors() {
     assert_vectors_match_live_chunks(&h);
 }
 
-/// Second run over the unchanged tree: every document is skipped by
-/// content-hash dedup; nothing is re-embedded, re-chunked or re-written.
+/// Second run over the unchanged tree: the content hashes match the
+/// `documents` rows, so the reconcile produces no jobs and nothing is
+/// re-embedded, re-chunked or re-written.
 #[test]
 fn second_run_skips_every_unchanged_document() {
     let h = Harness::new();
     h.seed();
     let runner = h.runner();
+    let queue = DocumentJobQueue::new(&h.db);
+    let worker = DocumentWorker::new(&h.db, &runner, h.cfg.max_retries);
 
-    let first = runner.ingest_all(false);
-    assert_eq!(first.documents_created, 2, "{first:?}");
+    // First run: both files are new → two index jobs, both processed.
+    let first_md = queue
+        .reconcile_source(&runner, h.md_src.to_string_lossy().as_ref())
+        .unwrap();
+    let first_json = queue
+        .reconcile_source(&runner, h.json_src.to_string_lossy().as_ref())
+        .unwrap();
+    assert_eq!(first_md.indexed, 1, "{first_md:?}");
+    assert_eq!(first_json.indexed, 1, "{first_json:?}");
+    worker.run_once(1_000).unwrap();
+    assert_eq!(h.docs().len(), 2);
     let rows_after_first = h.sink.ids().len();
 
-    let second = runner.ingest_all(false);
-
-    assert_eq!(second.sources_processed, 2, "{second:?}");
-    assert_eq!(second.documents_skipped, 2, "{second:?}");
-    assert_eq!(second.documents_created, 0, "{second:?}");
-    assert_eq!(second.documents_updated, 0, "{second:?}");
-    assert!(second.errors.is_empty(), "{second:?}");
+    // Second run over the unchanged tree: the content hashes match the
+    // documents rows → no new jobs.
+    let second_md = queue
+        .reconcile_source(&runner, h.md_src.to_string_lossy().as_ref())
+        .unwrap();
+    let second_json = queue
+        .reconcile_source(&runner, h.json_src.to_string_lossy().as_ref())
+        .unwrap();
+    assert_eq!(second_md.unchanged, 1, "{second_md:?}");
+    assert_eq!(second_md.indexed, 0, "{second_md:?}");
+    assert_eq!(second_json.unchanged, 1, "{second_json:?}");
+    assert_eq!(second_json.indexed, 0, "{second_json:?}");
+    worker.run_once(2_000).unwrap();
 
     // No re-embedding, no new chunk rows, no new vector rows.
     assert_eq!(h.sink.ids().len(), rows_after_first);
@@ -566,19 +610,25 @@ fn modified_file_is_updated_and_stale_data_replaced() {
     let h = Harness::new();
     h.seed();
     let runner = h.runner();
-    runner.ingest_all(false);
+    let queue = DocumentJobQueue::new(&h.db);
+    let worker = DocumentWorker::new(&h.db, &runner, h.cfg.max_retries);
+
+    h.reconcile_and_process(&runner, 1_000);
 
     let md = h.doc_by_suffix("team.md");
     let old_chunk_ids: Vec<i64> = h.chunks_of(md.id).into_iter().map(|c| c.id).collect();
     assert_eq!(old_chunk_ids.len(), 2);
 
     fs::write(h.md_src.join("team.md"), MD_CONTENT_V2).unwrap();
-    let stats = runner.ingest_all(false);
-
-    assert_eq!(stats.documents_updated, 1, "{stats:?}");
-    assert_eq!(stats.documents_skipped, 1, "{stats:?}");
-    assert_eq!(stats.documents_created, 0, "{stats:?}");
-    assert!(stats.errors.is_empty(), "{stats:?}");
+    let md_stats = queue
+        .reconcile_source(&runner, h.md_src.to_string_lossy().as_ref())
+        .unwrap();
+    let json_stats = queue
+        .reconcile_source(&runner, h.json_src.to_string_lossy().as_ref())
+        .unwrap();
+    assert_eq!(md_stats.indexed, 1, "{md_stats:?}"); // changed hash → re-index
+    assert_eq!(json_stats.unchanged, 1, "{json_stats:?}");
+    worker.run_once(2_000).unwrap();
 
     // The md document now has exactly one chunk with the new content; the
     // old chunk rows are gone (full-clear on update).
@@ -591,7 +641,7 @@ fn modified_file_is_updated_and_stale_data_replaced() {
     assert!(!old_chunk_ids.contains(&new_chunks[0].id));
 
     // The stale entities (alice/bob: their only provenance was full-cleared)
-    // were swept by the run's cleanup tail; dave + carol survive.
+    // were swept by the worker's post-batch cleanup; dave + carol survive.
     assert_entity_names(&h, &["carol", "dave"]);
 
     // The stale md vectors were reconciled away (design D5).
@@ -606,7 +656,7 @@ fn cleanup_orphaned_data_sweeps_leftovers_and_keeps_live_data() {
     let h = Harness::new();
     h.seed();
     let runner = h.runner();
-    runner.ingest_all(false);
+    h.reconcile_and_process(&runner, 1_000);
 
     // One orphan of every kind.
     let ghost =

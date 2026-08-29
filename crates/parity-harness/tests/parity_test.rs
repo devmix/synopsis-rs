@@ -71,8 +71,10 @@ use db::test_util;
 use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, DocumentFilter};
 use embedding::{EmbeddingProvider, new_onnx_provider};
 use graph::GraphIndex;
+use ingestion::worker::DocumentWorker;
 use ingestion::{
-    MarkdownChunker, MarkdownSource, Registry, Runner, RunnerParams, load_ner_prompts,
+    DocumentJobQueue, MarkdownChunker, MarkdownSource, Registry, Runner, RunnerParams,
+    load_ner_prompts,
 };
 use mcp::Server;
 use parity_harness::mcp_client::{McpClient, TimingStats};
@@ -527,16 +529,27 @@ fn ingest_corpus(
         llm_cache: None,
     });
 
-    let summary = runner.ingest_all(false);
-    assert!(
-        summary.errors.is_empty(),
-        "ingestion errors: {:?}",
-        summary.errors
-    );
-    assert_eq!(
-        summary.documents_created, 2,
-        "two corpus documents ingested"
-    );
+    // The queue is the only processing path: reconcile the corpus source
+    // (two new files → two index jobs) and let one worker cycle process
+    // them.
+    let queue = DocumentJobQueue::new(db);
+    let reconcile = queue
+        .reconcile_source(&runner, &global.sources[0].path)
+        .expect("reconcile the corpus source");
+    assert_eq!(reconcile.indexed, 2, "two corpus files queued");
+    let worker = DocumentWorker::new(db, &runner, ingest_cfg.max_retries);
+    worker.run_once(1_000).expect("worker cycle");
+    let done_jobs: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM document_jobs WHERE status = 'done'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("db connection")
+        .expect("job count");
+    assert_eq!(done_jobs, 2, "two corpus documents ingested");
 
     let (docs, chunks) = db
         .with_conn(|conn| {

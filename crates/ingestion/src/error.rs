@@ -259,9 +259,9 @@ pub enum IngestionError {
     },
 
     /// A cross-domain entity-linking failure (pipeline task 3.8): the graph
-    /// crate is the source of truth for CEL/linker failures. At the
-    /// `ingest_all` tail the failure is recorded in `SummaryStats::errors`,
-    /// never fatal (design D8).
+    /// crate is the source of truth for CEL/linker failures. The linker's
+    /// per-link failures are recorded in its result and never fatal (design
+    /// D8).
     #[error("entity linking: {0}")]
     Graph(#[from] graph::GraphError),
 }

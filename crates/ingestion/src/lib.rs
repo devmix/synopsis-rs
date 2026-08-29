@@ -27,9 +27,10 @@
 //! chunked documents into the knowledge base: the [`Ingester`] runs the
 //! per-document pipeline (content-hash dedup → chunk → batched embeddings →
 //! NER → one SQLite transaction → post-commit vector writes) and the
-//! [`Runner`] orchestrates the configured sources — multi-source
-//! `ingest_all`, incremental sync, deleted-file pruning, orphan cleanup and
-//! cross-domain entity linking. Run statistics are reported as
+//! [`Runner`] executes the queue worker's per-document operations —
+//! single-file indexing, per-document deletion, orphan cleanup and
+//! cross-domain entity linking (the `document_jobs` queue, producer plus
+//! worker, is the only processing path). Run statistics are reported as
 //! [`ProgressStats`] per source and [`SummaryStats`] per run; an orphan
 //! sweep reports [`OrphanCleanupStats`]. Vector writes go through the narrow
 //! [`VectorSink`] seam (blanket-implemented over every vectors engine) so

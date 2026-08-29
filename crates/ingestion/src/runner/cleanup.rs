@@ -2,8 +2,9 @@
 //! (pipeline task 3.8).
 //!
 //! Oracle mapping: `internal/ingestion/runner/runner.go` —
-//! `cleanupOrphanedDataLocked`, `BuildEntityLinks` (and the `IngestAll` tail
-//! that calls the first two).
+//! `cleanupOrphanedDataLocked`, `BuildEntityLinks` (the oracle ran both at
+//! the end of its whole-tree run; in the queue-only model the worker's GC
+//! phase drives the sweep and the linking entry point is called directly).
 //!
 //! **Conscious deviations from the oracle** (behavior ported, not
 //! transcribed):
@@ -86,7 +87,8 @@ impl<'a> Runner<'a> {
     }
 
     /// The unlocked core of [`Self::cleanup_orphaned_data`] (callers hold
-    /// the runner mutex — the `ingest_all` tail calls this directly).
+    /// the runner mutex — the worker's post-batch GC phase calls it
+    /// directly).
     pub(super) fn cleanup_orphaned_data_locked(
         &self,
     ) -> Result<OrphanCleanupStats, IngestionError> {
@@ -104,7 +106,8 @@ impl<'a> Runner<'a> {
     }
 
     /// The unlocked core of [`Self::build_entity_links`] (callers hold the
-    /// runner mutex — the `ingest_all` tail calls this directly).
+    /// runner mutex — the public entry point acquires it and delegates
+    /// here).
     pub(super) fn build_entity_links_locked(&self) -> Result<LinkResult, IngestionError> {
         let Some(links_config) = self.global.and_then(|g| g.cross_domain_links.as_ref()) else {
             eprintln!("build entity links: no cross-domain-links config, skipping");
@@ -201,6 +204,7 @@ mod tests {
     use vectors::VectorIndex;
 
     use super::{LAST_LINKING_RUN_KEY, OrphanCleanupStats};
+    use crate::error::IngestionError;
     use crate::runner::tests::{Harness, TempDir, source_config};
 
     /// A `cross-domain-links` config with the `equals` method (the fixtures
@@ -446,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_all_tail_records_cleanup_failure_in_errors() {
+    fn cleanup_orphaned_data_propagates_vector_engine_failure() {
         let root = TempDir::new("tail-cleanup");
         let src = root.sub("src");
         fs::create_dir_all(&src).unwrap();
@@ -455,28 +459,22 @@ mod tests {
         let harness = harness_with_source(&src);
         let runner = harness.runner();
 
-        // First run: ingest + a clean tail.
-        let first = runner.ingest_all(false);
-        assert_eq!(first.sources_processed, 1, "{first:?}");
-        assert!(first.errors.is_empty(), "{first:?}");
+        // A live document: the vector reconciliation has real chunk data to
+        // check against the index.
+        runner
+            .process_document_by_path(src.join("doc.txt").to_string_lossy().as_ref())
+            .unwrap();
 
-        // Second run: the source is skipped (dedup), but the cleanup tail
-        // now fails in the vector engine → the error lands in the summary
-        // and never aborts the run.
+        // The vector engine fails on read: the cleanup propagates the error
+        // (the caller records it — the worker's GC phase logs it, never
+        // fatal).
         harness.sink.set_fail_reads(true);
-        let second = runner.ingest_all(false);
-        assert_eq!(second.sources_processed, 1, "{second:?}");
-        assert_eq!(second.documents_skipped, 1, "{second:?}");
-        assert_eq!(second.errors.len(), 1, "{second:?}");
-        assert!(
-            second.errors[0].starts_with("cleanup orphaned data"),
-            "{}",
-            second.errors[0]
-        );
+        let err = runner.cleanup_orphaned_data().unwrap_err();
+        assert!(matches!(err, IngestionError::Vectors(_)), "{err:?}");
     }
 
     #[test]
-    fn ingest_all_tail_records_link_errors_in_errors() {
+    fn build_entity_links_records_link_errors_in_result() {
         let mut harness = Harness::new();
         harness.global.cross_domain_links = Some(CrossDomainLinksConfig {
             methods: vec![LinkMethod::Expression],
@@ -492,8 +490,7 @@ mod tests {
             }],
         });
         // A candidate pair (same type + name, different domains) kept alive
-        // by a fact, so the cleanup tail of `ingest_all` does not sweep it
-        // before the linking tail runs.
+        // by a fact (orphan cleanup would sweep both entities without it).
         let a = harness
             .db
             .with_conn(|conn| {
@@ -540,8 +537,8 @@ mod tests {
 
         let runner = harness.runner();
 
-        // Direct call: the run succeeds, the per-link failure is in the
-        // result (non-fatal).
+        // The run succeeds, the per-link failure is in the result
+        // (non-fatal).
         let result = runner.build_entity_links().unwrap();
         assert_eq!(result.links_created, 0, "{result:?}");
         assert_eq!(result.errors.len(), 1, "{result:?}");
@@ -549,16 +546,6 @@ mod tests {
             result.errors[0].starts_with("init expression linker"),
             "{}",
             result.errors[0]
-        );
-
-        // Via the ingest_all tail: the same error lands in the summary.
-        let stats = runner.ingest_all(false);
-        assert!(
-            stats
-                .errors
-                .iter()
-                .any(|err| err.starts_with("init expression linker")),
-            "{stats:?}"
         );
     }
 }
