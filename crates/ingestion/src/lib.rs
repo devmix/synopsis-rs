@@ -60,6 +60,7 @@ pub mod chunkers;
 pub mod entities;
 pub mod error;
 pub mod ingester;
+pub mod job_queue;
 pub mod ner;
 pub mod parsers;
 pub mod progress;
@@ -76,6 +77,7 @@ pub use entities::{
 };
 pub use error::IngestionError;
 pub use ingester::{Ingester, VectorSink};
+pub use job_queue::{DocumentJobQueue, ReconcileStats};
 pub use ner::{
     CompositeNer, LlmNer, LlmNerCache, NerEntity, NerFact, NerPrompts, NerProvider, NerResult,
     RegexNer, TemplateHashes, build_cache_key, generate_json_schema, load_ner_prompts,

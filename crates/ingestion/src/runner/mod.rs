@@ -372,6 +372,20 @@ impl<'a> Runner<'a> {
             .any(|root| is_within(&path_abs, root))
     }
 
+    /// The registry [`Source`] implementation for the configured source
+    /// `src` (the lookup behind every ingest entry point).
+    ///
+    /// The queue producer (document-jobs-queue task 1.3) walks the source
+    /// tree with it without running the pipeline; the worker (task 1.4)
+    /// resolves per-job sources the same way.
+    ///
+    /// Returns `None` when the source's type word has no registered
+    /// implementation (the registry is the source of truth, design D5) —
+    /// callers surface it as an explicit error.
+    pub fn source_for_config(&self, src: &SourceConfig) -> Option<&dyn Source> {
+        self.registry.get(&resolve_source_type(src)).ok()
+    }
+
     /// The unlocked core of [`Self::ingest_source`] (callers hold the lock).
     fn ingest_source_locked(
         &self,
@@ -604,7 +618,10 @@ fn to_abs_path(path: &str) -> Result<PathBuf, std::io::Error> {
 ///
 /// Component-aware (deliberate fix over the oracle's raw string prefix:
 /// `/data/docs2` must not be treated as inside `/data/docs`).
-fn is_within(path: &Path, root: &Path) -> bool {
+///
+/// `pub(crate)`: the queue producer's reconcile (document-jobs-queue
+/// task 1.3) filters `documents` rows by the same containment.
+pub(crate) fn is_within(path: &Path, root: &Path) -> bool {
     let root_len = root.components().count();
     let path_len = path.components().count();
     path_len >= root_len
