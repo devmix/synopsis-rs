@@ -3,12 +3,10 @@
 ## Purpose
 
 Форматы конфигурационных файлов Synopsis: YAML-пресеты (`config.{preset}.yaml`), реестр моделей `onnx.yaml`, онтологии XML в `data/ontology/`. Фиксирует совместимость с существующими файлами из `../synopsis/configs/` и `../synopsis/data/ontology/`: пользователь не должен менять конфиги при переходе на Rust-бинарь.
-
 ## Requirements
-
 ### Requirement: Полный YAML-пресет
 
-Rust-бинарь читает те же `config.{preset}.yaml`, что и Go оригинал. Пресет включает секции: `database` (path, pragma), `embeddings` (mode local|api), `ingestion` (chunking.markdown/json, ner.prose/llm, batch_size, resolver), `linker` (disabled, llm), `search` (rrf_k, top-k, boosts, authority_boost), `graph`, `auto_update` (enabled, debounce_seconds, watch_sources, initial_sync), `scheduler.jobs` (поимённые job'ы с enabled/interval_seconds), `logging` (level/format/output), `paths` (data_dir, documents_dir, migrations_dir, global_config_path, prompts_path, onnx_config), `server` (name/version/host/port). Неизвестные ключи не ломают старт. Неизвестные значения строковых полей, не валидируемых оракулом (`logging.level/format/output`, `chunking.strategy`, `response_format`, `archive_format`, `source.type`, `attribute.type`), не ломают старт.
+Rust-бинарь читает те же `config.{preset}.yaml`, что и Go оригинал. Пресет включает секции: `database` (path, pragma), `embeddings` (mode local|api), `ingestion` (chunking.markdown/json, ner.llm, batch_size, resolver), `linker` (disabled, llm), `search` (rrf_k, top-k, boosts, authority_boost), `graph`, `auto_update` (enabled, debounce_seconds, watch_sources, initial_sync), `scheduler.jobs` (поимённые job'ы с enabled/interval_seconds), `logging` (level/format/output), `paths` (data_dir, documents_dir, migrations_dir, global_config_path, prompts_path, onnx_config), `server` (name/version/host/port). Неизвестные ключи не ломают старт. Неизвестные значения строковых полей, не валидируемых оракулом (`logging.level/format/output`, `chunking.strategy`, `response_format`, `archive_format`, `source.type`, `attribute.type`), не ломают старт.
 
 #### Scenario: Существующий пресет
 - **WHEN** Rust-бинарь стартует с `../synopsis/configs/config.default.yaml` без изменений
@@ -85,3 +83,4 @@ Rust-бинарь читает те же `config.{preset}.yaml`, что и Go о
 #### Scenario: Полный домен
 - **WHEN** Rust-бинарь читает `../synopsis/data/ontology/domains/domain_hr.xml`
 - **THEN** entity/relation/extraction/confidence распознаны идентично оракулу (machine-diff)
+
