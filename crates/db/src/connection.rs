@@ -102,8 +102,18 @@ impl Db {
     }
 
     /// Shared open path: create the file and its parent directories if
-    /// absent, build the pool with the D8 PRAGMAs applied to every
-    /// connection, and run `migrations` once.
+    /// absent, run `migrations` on a SINGLE dedicated raw connection, and
+    /// only then build the pool with the D8 PRAGMAs applied to every
+    /// connection.
+    ///
+    /// Migrations must NOT run on a pooled connection (task 1.11): while the
+    /// pool initializes its connections, the migration's write lock can race
+    /// a pooled connection's startup and surface as
+    /// `r2d2: database is locked`. The raw connection is dropped before the
+    /// pool is built, and the migration state persists in the file
+    /// (`PRAGMA user_version` + schema, D3), so the pooled connections open
+    /// against an already-migrated database — the application never starts
+    /// serving until migrations are applied.
     fn open_with<P: AsRef<Path>>(
         path: P,
         migrations: &'static Dir<'static>,
@@ -120,15 +130,25 @@ impl Db {
             })?;
         }
 
+        // Migrations run on a dedicated raw connection: while it is open no
+        // other connection exists, so the migration's exclusive write lock
+        // cannot race anything. `conn` is dropped at the end of this block,
+        // releasing the lock BEFORE the pool opens its own connections; the
+        // migrated schema + `PRAGMA user_version` persist in the file, so a
+        // re-open is a no-op (D3).
+        {
+            let mut conn = Connection::open(path).map_err(DbError::from)?;
+            // D8 PRAGMAs first: `busy_timeout` must be in place for the
+            // migration's write transactions.
+            apply_pragmas(&conn)?;
+            apply_migrations(&mut conn, migrations)?;
+        }
+
         // The D8 PRAGMAs are applied to EVERY connection via the manager
         // init callback (D1 re-decided 2026-08-20): `journal_mode=WAL`
         // persists in the database header, the rest are per-connection.
         let manager = SqliteConnectionManager::file(path).with_init(|conn| apply_pragmas(conn));
-        let db = Self::new(manager, POOL_MAX_SIZE)?;
-        // Migrations run once, on the first pooled connection (D3): state
-        // lives in the file's `PRAGMA user_version`, so a re-open is a no-op.
-        db.run_migrations(migrations)?;
-        Ok(db)
+        Self::new(manager, POOL_MAX_SIZE)
     }
 
     /// Build a handle over a ready-made connection manager (test support:
