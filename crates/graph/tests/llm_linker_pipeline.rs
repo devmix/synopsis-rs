@@ -1,14 +1,17 @@
-//! End-to-end LLM linking pipeline (llm change, task 2.3 acceptance): the
+//! End-to-end LLM linking pipeline (llm change, task 2.3 + task 1.10): the
 //! ontology is loaded from a real `global.xml` (config crate, methods
-//! `equals` + `expression` + `llm`), the pipeline runs over a two-domain
-//! database against a content-aware mock LLM server, and the mock's request
-//! counter proves the decision cache (no re-calls on the identical re-run)
-//! and the template-hash cache invalidation (a changed `user.tmpl` override
-//! re-consults the model for the same pairs).
+//! `equals` + `expression` + `llm`), the pipeline runs against a content-aware
+//! mock LLM server, and the mock's request counter proves the decision cache
+//! lives in a SEPARATE cache database (`llm_linker_cache`, keyed by the LLM
+//! request signature) and survives a rebuilt knowledge database.
 //!
-//! The three scenarios are one sequential test: scenario 2 asserts on the
-//! cache state written by scenario 1, and scenario 3 asserts on the cache
-//! state written by scenario 2.
+//! The three scenarios are one sequential test sharing ONE cache database:
+//! - scenario 1 runs on knowledge DB #1 and writes the decisions to the cache;
+//! - scenario 2 runs on a FRESH knowledge DB #2 (same entities, the cache is
+//!   shared) and must NOT re-consult the model (cache hit);
+//! - scenario 3 changes the `user.tmpl` override, which changes the rendered
+//!   user prompt and therefore the request-signature key, so the same pairs
+//!   are re-consulted.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -22,7 +25,7 @@ use std::time::Duration;
 use config::ontology::{LinkMethod, load_global_config};
 use config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
 use db::test_util::in_memory_db;
-use db::{ConnectionOrTx, EntityDao, EntityLinkDao, FactDao};
+use db::{ConnectionOrTx, Db, EntityDao, EntityLinkDao, FactDao};
 use graph::build_entity_links;
 
 /// A nonexistent prompts path: the `llm` method falls back to the embedded
@@ -30,10 +33,10 @@ use graph::build_entity_links;
 const EMBEDDED_PROMPTS_PATH: &str = "/nonexistent/prompts";
 
 /// The `user.tmpl` override written by the template-invalidation scenario: a
-/// different source changes the template hash and therefore the decision
-/// cache key (design D4).
+/// different source changes the rendered user prompt and therefore the
+/// request-signature cache key (task 1.10).
 const OVERRIDE_USER_TEMPLATE: &str = "Override: compare {{ entity_a.name }} ({{ entity_a.domain }}) \
-     with {{ entity_b.name }} ({{ entity_b.domain }}).\n";
+      with {{ entity_b.name }} ({{ entity_b.domain }}).\n";
 
 fn ontology_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/llm-linker-ontology")
@@ -49,14 +52,14 @@ fn links_config() -> config::ontology::CrossDomainLinksConfig {
         .expect("fixture must carry a cross-domain-links block")
 }
 
-/// The two-domain fixture database:
+/// The two-domain fixture database (a FRESH knowledge database per call):
 /// - "Acme" (ORGANIZATION) in `hr` and `it` — one word: too short for
 ///   `equals` (min-words 2), so only the `llm` method can link it;
 /// - "John Doe" (PERSON) in `hr` and `it` — the equals pair AND the
 ///   expression pair (John in `hr` works at Acme).
 ///
 /// Returns the entity ids in insertion order.
-fn fixture_db() -> (db::Db, Vec<i64>) {
+fn fixture_db() -> (Db, Vec<i64>) {
     let db = in_memory_db();
     let ids = db
         .with_conn(|conn| -> Result<Vec<i64>, db::DbError> {
@@ -87,23 +90,58 @@ fn fixture_db() -> (db::Db, Vec<i64>) {
     (db, ids)
 }
 
-fn all_links(db: &db::Db) -> Vec<db::EntityLink> {
+fn all_links(db: &Db) -> Vec<db::EntityLink> {
     db.with_conn(|conn| EntityLinkDao::new(ConnectionOrTx::Connection(conn)).list_all())
         .unwrap()
         .unwrap()
 }
 
-/// The `llm_link_*` decision-cache entries (key, value) in `app_kv`.
-fn cached_decisions(db: &db::Db) -> Vec<(String, String)> {
-    db.with_conn(|conn| {
-        let mut stmt = conn
-            .prepare("SELECT key, value FROM app_kv WHERE key LIKE 'llm_link%'")
-            .unwrap();
-        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
+/// The decision-cache entries (key, value) in `llm_linker_cache` on the cache
+/// database (task 1.10). The key is a bare sha256 hex digest (the request
+/// signature); the value is the serialized decision.
+fn cached_decisions(cache: &Db) -> Vec<(String, String)> {
+    cache
+        .with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT cache_key, decision FROM llm_linker_cache")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        })
+        .unwrap()
+}
+
+/// The `llm_link*` keys that must NOT exist in `app_kv` on the knowledge DB
+/// (task 1.10: decisions moved to `llm_linker_cache`; only `last_linking_run`
+/// may remain in `app_kv`, and that is written by the ingestion runner, not
+/// the graph crate).
+///
+/// The prefix filter is applied in Rust (not a SQL `LIKE`) so this assertion
+/// does not reintroduce the legacy "decisions in app_kv" query shape.
+fn app_kv_llm_rows(db: &Db) -> Vec<String> {
+    db.with_conn(|conn| -> Result<Vec<String>, db::DbError> {
+        // The knowledge DB does not even carry an `app_kv` table (task 1.9);
+        // a query against it must yield nothing, not an error.
+        let has_table: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_kv'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_table == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = conn.prepare("SELECT key FROM app_kv")?;
+        let keys: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(keys
+            .into_iter()
+            .filter(|key| key.starts_with("llm_link"))
+            .collect())
     })
+    .unwrap()
     .unwrap()
 }
 
@@ -289,7 +327,7 @@ fn temp_dir() -> PathBuf {
     dir
 }
 
-// ── The three scenarios (sequential: each builds on the previous state) ────
+// ── The three scenarios (sequential: all share ONE cache database) ─────────
 
 #[test]
 fn end_to_end_llm_linking_caching_and_template_invalidation() {
@@ -304,15 +342,18 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         "the loader must apply the oracle default threshold"
     );
 
-    let (db, ids) = fixture_db();
+    // The SHARED cache database (task 1.10): it outlives both knowledge
+    // databases, so a rebuilt knowledge DB still hits the decisions.
+    let cache = in_memory_db();
     let server = MockLlm::start();
     let linker = llm_linker_config(&server.url);
 
-    // ── Scenario 1: full run with llm enabled ─────────────────────────────
+    // ── Scenario 1: full run on knowledge DB #1 ────────────────────────────
     // equals skips Acme (one word < min-words 2) and links John; expression
     // links John (works_at Acme); llm consults the model for BOTH pairs.
-    let first =
-        build_entity_links(&db, &config, &linker, EMBEDDED_PROMPTS_PATH).expect("first run");
+    let (db1, ids1) = fixture_db();
+    let first = build_entity_links(&db1, Some(&cache), &config, &linker, EMBEDDED_PROMPTS_PATH)
+        .expect("first run");
     assert!(
         first.errors.is_empty(),
         "first run must not error: {:?}",
@@ -327,7 +368,7 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         "llm: John decided not the same (cached, no link)"
     );
 
-    let links = all_links(&db);
+    let links = all_links(&db1);
     assert_eq!(
         links.len(),
         6,
@@ -343,8 +384,8 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         assert_eq!(link.relation_type, "same_entity");
         assert!((link.confidence - 0.9).abs() < f64::EPSILON);
         assert!(
-            (link.subject_entity_id, link.target_entity_id) == (ids[2], ids[3])
-                || (link.subject_entity_id, link.target_entity_id) == (ids[3], ids[2])
+            (link.subject_entity_id, link.target_entity_id) == (ids1[2], ids1[3])
+                || (link.subject_entity_id, link.target_entity_id) == (ids1[3], ids1[2])
         );
     }
 
@@ -368,8 +409,8 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         assert!((link.confidence - 0.95).abs() < f64::EPSILON);
         assert_eq!(link.evidence.as_deref(), Some("acme match"));
         assert!(
-            (link.subject_entity_id, link.target_entity_id) == (ids[0], ids[1])
-                || (link.subject_entity_id, link.target_entity_id) == (ids[1], ids[0])
+            (link.subject_entity_id, link.target_entity_id) == (ids1[0], ids1[1])
+                || (link.subject_entity_id, link.target_entity_id) == (ids1[1], ids1[0])
         );
     }
 
@@ -381,13 +422,17 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         "the first call must carry the Acme pair's embedded-template prompt"
     );
 
-    // Both decisions are cached in app_kv — including the negative one.
-    let entries = cached_decisions(&db);
+    // Both decisions are cached in `llm_linker_cache` on the cache DB —
+    // including the negative one. The key is a bare sha256 hex digest.
+    let entries = cached_decisions(&cache);
     assert_eq!(
         entries.len(),
         2,
         "both decisions cached (including the negative one)"
     );
+    for (key, _) in &entries {
+        assert_eq!(key.len(), 64, "the key is a bare sha256 hex digest: {key}");
+    }
     let decisions: Vec<serde_json::Value> = entries
         .iter()
         .map(|(_, value)| serde_json::from_str(value).unwrap())
@@ -402,29 +447,46 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
     assert_eq!(rejected["confidence"], 0.9);
     assert_eq!(rejected["reasoning"], "different people");
 
-    // ── Scenario 2: identical re-run — idempotent, no new LLM calls ───────
-    let second =
-        build_entity_links(&db, &config, &linker, EMBEDDED_PROMPTS_PATH).expect("second run");
+    // No decision leaked into `app_kv` on the knowledge DB (task 1.10).
+    assert!(
+        app_kv_llm_rows(&db1).is_empty(),
+        "decisions must live in llm_linker_cache, not app_kv"
+    );
+
+    // ── Scenario 2: FRESH knowledge DB #2, SAME cache DB ───────────────────
+    // The knowledge database is rebuilt from scratch (the production shape
+    // after a full re-ingest): the decisions are NOT in it, but they are in
+    // the shared cache DB. The request-signature key carries no entity IDs or
+    // dataset, so the identical rendered prompts still hit the cache — no new
+    // LLM calls. equals/expression re-create the John rows on the fresh DB.
+    let (db2, _ids2) = fixture_db();
+    let second = build_entity_links(&db2, Some(&cache), &config, &linker, EMBEDDED_PROMPTS_PATH)
+        .expect("second run");
     assert!(
         second.errors.is_empty(),
         "second run must not error: {:?}",
         second.errors
     );
-    assert_eq!(second.links_created, 0, "no duplicates on the re-run");
     assert_eq!(
-        second.links_skipped, 4,
-        "equals John + expression John + both llm pairs served from cache"
+        second.links_created, 3,
+        "the fresh DB re-creates equals + expression + the cached llm link"
     );
-    assert_eq!(all_links(&db).len(), 6, "the row count is unchanged");
+    assert_eq!(second.links_skipped, 1, "the cached negative llm decision");
+    assert_eq!(
+        all_links(&db2).len(),
+        6,
+        "the fresh DB has the same six rows"
+    );
     assert_eq!(
         server.request_count(),
         2,
-        "cache hit: no second LLM call for either pair"
+        "cache hit across a rebuilt knowledge DB: no second LLM call for either pair"
     );
 
-    // ── Scenario 3: template override invalidates the decision cache ──────
-    // A changed `user.tmpl` source changes the template hash and therefore
-    // the cache key (design D4): the same pairs must be re-consulted.
+    // ── Scenario 3: template override invalidates the decision cache ───────
+    // A changed `user.tmpl` source changes the rendered user prompt and
+    // therefore the request-signature key (task 1.10): the same pairs must be
+    // re-consulted.
     let prompts_dir = temp_dir();
     std::fs::create_dir_all(prompts_dir.join("entity-linker")).unwrap();
     std::fs::write(
@@ -433,8 +495,14 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
     )
     .unwrap();
 
-    let third = build_entity_links(&db, &config, &linker, &prompts_dir.to_string_lossy())
-        .expect("third run");
+    let third = build_entity_links(
+        &db2,
+        Some(&cache),
+        &config,
+        &linker,
+        &prompts_dir.to_string_lossy(),
+    )
+    .expect("third run");
     assert!(
         third.errors.is_empty(),
         "third run must not error: {:?}",
@@ -448,17 +516,17 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         third.links_skipped, 4,
         "equals John + expression John + both llm pairs (re-cached decisions)"
     );
-    assert_eq!(all_links(&db).len(), 6, "the row count is unchanged");
+    assert_eq!(all_links(&db2).len(), 6, "the row count is unchanged");
     assert_eq!(
         server.request_count(),
         4,
-        "changed template hash: both pairs re-consult the model"
+        "changed prompt: both pairs re-consult the model"
     );
-    // The re-cached decisions live under the new (template-hash) keys.
+    // The re-cached decisions live under the new (rendered-prompt) keys.
     assert_eq!(
-        cached_decisions(&db).len(),
+        cached_decisions(&cache).len(),
         4,
-        "two new cache entries under the changed template hashes"
+        "two new cache entries under the changed rendered prompts"
     );
     // The override was loaded and rendered for the re-calls.
     assert!(

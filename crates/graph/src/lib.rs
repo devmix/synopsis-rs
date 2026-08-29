@@ -35,7 +35,7 @@ pub use cel::{
 };
 pub use error::GraphError;
 pub use graph::{EdgeKind, EntityNode, Graph, GraphEdge, GraphIndex};
-pub use linker::{LinkResult, build_entity_links};
+pub use linker::{LinkDecision, LinkResult, LlmLinkerCache, build_entity_links};
 pub use metrics::GraphStats;
 pub use prompts::{
     EntityData, EntityLinkerPrompts, LinkerInput, TemplateHashes, load_entity_linker_prompts,

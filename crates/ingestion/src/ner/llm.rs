@@ -212,7 +212,8 @@ impl NerProvider for LlmNer {
     ) -> Result<Option<NerResult>, IngestionError> {
         // Design D2: nothing to extract, no I/O (the oracle would still
         // call the model — recorded deviation).
-        if content.trim().is_empty() {
+        let normalized_content = content.trim();
+        if normalized_content.is_empty() {
             return Ok(None);
         }
 
@@ -221,7 +222,7 @@ impl NerProvider for LlmNer {
             let system = self.prompts.render_system(&domain.config, true)?;
             let user = self
                 .prompts
-                .render_user(&domain.config, content, metadata)?;
+                .render_user(&domain.config, normalized_content, metadata)?;
             let key = build_cache_key(
                 &self.server,
                 &self.model,
@@ -229,7 +230,6 @@ impl NerProvider for LlmNer {
                 self.max_tokens,
                 &system,
                 &user,
-                content,
             );
 
             // Cache check BEFORE the call (design D6): a hit skips HTTP.
@@ -650,15 +650,7 @@ mod tests {
         let p = prompts();
         let system = p.render_system(&d, true).unwrap();
         let user = p.render_user(&d, content, &Map::new()).unwrap();
-        let key = build_cache_key(
-            &server.url,
-            "test-model",
-            0.0,
-            1024,
-            &system,
-            &user,
-            content,
-        );
+        let key = build_cache_key(&server.url, "test-model", 0.0, 1024, &system, &user);
         let seeded = NerResult {
             entities: vec![NerEntity {
                 name: "Bob".to_owned(),

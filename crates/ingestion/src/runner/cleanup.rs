@@ -23,10 +23,13 @@
 //!   and the next [`Runner::cleanup_orphaned_data`] reconciles them.
 //! - [`Runner::build_entity_links`] reads the `last_linking_run` app_kv
 //!   value (the oracle's `relations.KVKeyLastLinkingRun` string, reused
-//!   verbatim) but does not use it as a filter: the Rust linker is always a
-//!   full rebuild (recorded graph-crate deviation, YAGNI). The run
-//!   timestamp is still recorded after every successful run, preserving the
-//!   oracle's observable contract.
+//!   verbatim) from the CACHE database but does not use it as a filter: the
+//!   Rust linker is always a full rebuild (recorded graph-crate deviation,
+//!   YAGNI). The run timestamp is still recorded after every successful run
+//!   (on the cache database), preserving the oracle's observable contract.
+//!   The LLM decision cache and this marker both live on the cache database
+//!   (task 1.10); without it the linker runs uncached and records no marker
+//!   (the oracle's nil-store no-op, non-fatal).
 //! - The runner mutex serializes these mutating entry points (design D4);
 //!   the oracle's `PruneDeleted` did not take `r.mu`, which allowed
 //!   concurrent SQLite writes from the file watcher.
@@ -151,15 +154,28 @@ impl<'a> Runner<'a> {
             eprintln!("build entity links: no cross-domain-links config, skipping");
             return Ok(LinkResult::default());
         };
-        let last_run = self.db.with_conn(|conn| {
-            AppKv::new(ConnectionOrTx::Connection(conn)).get(LAST_LINKING_RUN_KEY)
-        })??;
+        // The cache database holds BOTH the linker decision cache
+        // (`llm_linker_cache`) and the `last_linking_run` marker (task 1.10).
+        // Without it the linker runs uncached and records no marker (the
+        // oracle's nil-store no-op, non-fatal).
+        let cache = self.llm_cache.as_ref();
+        let last_run = match cache {
+            Some(cache) => cache.with_conn(|conn| {
+                AppKv::new(ConnectionOrTx::Connection(conn)).get(LAST_LINKING_RUN_KEY)
+            })??,
+            None => None,
+        };
         match &last_run {
             Some(since) => eprintln!("entity linking: full rebuild (last run {since})"),
             None => eprintln!("entity linking: full rebuild (no previous run)"),
         }
-        let result =
-            graph::build_entity_links(self.db, links_config, self.linker_cfg, self.prompts_path)?;
+        let result = graph::build_entity_links(
+            self.db,
+            cache,
+            links_config,
+            self.linker_cfg,
+            self.prompts_path,
+        )?;
         if result.errors.is_empty() {
             eprintln!(
                 "entity links built: created={}, skipped={}",
@@ -172,7 +188,7 @@ impl<'a> Runner<'a> {
                 result.errors
             );
         }
-        record_linking_run(self.db);
+        record_linking_run(cache);
         Ok(result)
     }
 }
@@ -203,16 +219,20 @@ fn file_is_gone(path: &str) -> bool {
     )
 }
 
-/// Records the current run timestamp under [`LAST_LINKING_RUN_KEY`] (oracle
-/// `kv.Set(relations.KVKeyLastLinkingRun, now)`). A failure warns and does
-/// not propagate (oracle parity: bookkeeping only — the next run is a full
-/// rebuild either way).
-fn record_linking_run(db: &Db) {
+/// Records the current run timestamp under [`LAST_LINKING_RUN_KEY`] on the
+/// cache database (oracle `kv.Set(relations.KVKeyLastLinkingRun, now)`).
+/// `None` (caching disabled) records no marker — the oracle's nil-store
+/// no-op. A failure warns and does not propagate (oracle parity: bookkeeping
+/// only — the next run is a full rebuild either way).
+fn record_linking_run(cache: Option<&Db>) {
+    let Some(cache) = cache else {
+        return;
+    };
     let Some(now) = format_rfc3339_utc(SystemTime::now()) else {
         eprintln!("entity linking: cannot format run timestamp, skipping the record");
         return;
     };
-    let recorded = db
+    let recorded = cache
         .with_conn(|conn| {
             AppKv::new(ConnectionOrTx::Connection(conn)).set(LAST_LINKING_RUN_KEY, &now)
         })
@@ -542,8 +562,8 @@ mod tests {
         let result = runner.build_entity_links().unwrap();
         assert_eq!(result, LinkResult::default());
 
-        // The skip path never records a run.
-        assert!(linking_run_ts(&harness.db).is_none());
+        // The skip path never records a run (marker lives on the cache Db).
+        assert!(linking_run_ts(&harness.cache).is_none());
     }
 
     #[test]
@@ -556,7 +576,7 @@ mod tests {
         assert_eq!(result.links_created, 0, "{result:?}");
         assert!(result.errors.is_empty(), "{result:?}");
 
-        let first = linking_run_ts(&harness.db);
+        let first = linking_run_ts(&harness.cache);
         assert!(
             first.as_deref().is_some_and(|ts| ts.ends_with('Z')),
             "{first:?}"
@@ -564,7 +584,7 @@ mod tests {
 
         // A second run upserts the key (full rebuild, idempotent).
         runner.build_entity_links().unwrap();
-        assert_eq!(linking_run_ts(&harness.db), first);
+        assert_eq!(linking_run_ts(&harness.cache), first);
     }
 
     #[test]

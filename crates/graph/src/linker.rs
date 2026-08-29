@@ -37,11 +37,14 @@
 //!   link (method `llm`, evidence = the reasoning) is created only when the
 //!   decision is `same_entity` with confidence ≥
 //!   `CrossDomainLinksConfig::llm_confidence_threshold`. Decisions are
-//!   cached in `app_kv` under `llm_link_{sha256(canonical pair ids +
-//!   template hashes + model)}` (design D4): the cache is checked BEFORE the
-//!   call and written AFTER the decision, including below-threshold ones. A
-//!   pair whose context load, call, or parse fails is a non-fatal
-//!   [`LinkResult::errors`] entry; the run itself succeeds.
+//!   cached in `llm_linker_cache` (the CACHE database, task 1.10) under the
+//!   LLM request signature — `sha256(model:temperature:max_tokens:
+//!   rendered_system_prompt:rendered_user_prompt)` — no entity IDs, no
+//!   dataset: the cache is checked BEFORE the call and written AFTER the
+//!   decision, including below-threshold ones. Without a cache database the
+//!   method runs uncached (the oracle's nil-store no-op). A pair whose
+//!   context load, call, or parse fails is a non-fatal [`LinkResult::errors`]
+//!   entry; the run itself succeeds.
 //!   `LinkerConfig::disabled` excludes the method entirely (the oracle's
 //!   `Linker.Disabled` check in the ingestion runner).
 //!
@@ -50,11 +53,13 @@
 //! - No incremental mode (`since`): the Rust rebuild is always a full
 //!   rebuild (YAGNI, design D3 — the in-memory index is rebuilt from
 //!   scratch at startup anyway).
-//! - The LLM decision cache is keyed by the pair's entity **ids** in
-//!   canonical (ascending) order (design D4): the oracle keyed it by
-//!   (type, normalized name, normalized domain) so entries survive database
-//!   rebuilds that renumber entities. The ids keep the key construction
-//!   trivial; a renumbered rebuild simply re-consults the model.
+//! - The LLM decision cache is keyed by the LLM **request signature**
+//!   (`model:temperature:max_tokens:rendered_system_prompt:
+//!   rendered_user_prompt`, task 1.10): global-safe — no entity IDs, no
+//!   dataset — so a rebuilt (renumbered) knowledge database still hits the
+//!   shared cache database. The oracle keyed it by (type, normalized name,
+//!   normalized domain) + template hashes; the rendered prompts subsume both
+//!   the entity data and the template content.
 //! - Non-boolean rule results are detected at evaluation time: the oracle
 //!   type-checks rules against `cel.BoolType` at compile time, but the
 //!   `cel` crate's `Program::compile` is parse-only.
@@ -70,15 +75,16 @@ use cel::objects::{Key as CelKey, Map as CelMap};
 use config::ontology::{CrossDomainLinksConfig, LinkExpression, LinkMethod};
 use config::preset::{LinkerConfig, LlmConfig};
 use db::utils::normalize;
-use db::{AppKv, ChunkEntityDao, ConnectionOrTx, Db, Entity, EntityDao, EntityLink, EntityLinkDao};
+use db::{
+    ChunkEntityDao, ConnectionOrTx, Db, DbExecutor, Entity, EntityDao, EntityLink, EntityLinkDao,
+};
 use llm::LlmClient;
 use serde::{Deserialize, Serialize};
 
 use crate::cel::{CelEngine, register_data_functions, register_graph_functions};
 use crate::error::GraphError;
 use crate::prompts::{
-    EntityData, EntityLinkerPrompts, LinkerInput, TemplateHashes, load_entity_linker_prompts,
-    sha256_hex, truncate,
+    EntityData, EntityLinkerPrompts, LinkerInput, load_entity_linker_prompts, sha256_hex, truncate,
 };
 
 /// The oracle's `config.DefaultEqualsMinWords`: names shorter than this many
@@ -450,17 +456,17 @@ fn run_expression(
 
 /// The structured LLM decision (the oracle's `LinkDecision`, design D6).
 ///
-/// Also the wire format of the `app_kv` cache value (design D4).
+/// Also the wire format of the `llm_linker_cache` value (task 1.10).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct LinkDecision {
+pub struct LinkDecision {
     /// Whether the entities refer to the same real-world entity.
-    same_entity: bool,
+    pub same_entity: bool,
     /// Confidence in [0, 1] (clamped at parse time).
-    confidence: f64,
+    pub confidence: f64,
     /// The model's explanation; the link's `evidence`. Optional on the wire
     /// (the schema requires only `same_entity`/`confidence`); absent → empty.
     #[serde(default)]
-    reasoning: String,
+    pub reasoning: String,
 }
 
 /// Strictly parse the model's JSON decision and clamp the confidence to
@@ -473,53 +479,127 @@ fn parse_link_decision(raw: &str) -> Result<LinkDecision, String> {
     Ok(decision)
 }
 
-/// The decision-cache key (design D4): `llm_link_` + the SHA-256 hex of the
-/// pair's entity ids in canonical (ascending) order, the two template source
-/// hashes, and the model name. A changed prompt or model invalidates every
-/// entry.
-fn llm_cache_key(a_id: i64, b_id: i64, hashes: &TemplateHashes, model: &str) -> String {
-    let (lo, hi) = (a_id.min(b_id), a_id.max(b_id));
-    let payload = format!("{lo}:{hi}|{}|{}|{model}", hashes.system, hashes.user);
-    format!("llm_link_{}", sha256_hex(payload.as_bytes()))
+/// The `llm_linker_cache` table (task 1.10): the canonical home is the cache
+/// database schema (`migrations/cache/1-init/up.sql`, created by
+/// `Db::open_cache`); the `IF NOT EXISTS` guard keeps the DAO usable on
+/// databases created before the table was added to the migration.
+const LINKER_CACHE_TABLE: &str = "llm_linker_cache";
+
+/// Persistent LLM-linker decision cache over the `llm_linker_cache` table
+/// (task 1.10, storage-layout-restructure).
+///
+/// One instance per unit of work, bound to either a pooled connection or an
+/// in-flight transaction via [`ConnectionOrTx`] — the same shape as the db
+/// crate's DAOs (cf. `db::AppKv`) and
+/// `ingestion::ner::llm_cache::LlmNerCache`. Entries map the LLM request
+/// signature key (see [`llm_cache_key`]) to a serialized [`LinkDecision`].
+pub struct LlmLinkerCache<'conn> {
+    exec: ConnectionOrTx<'conn>,
 }
 
-/// Read the cached decision for `key`; `None` on a miss. A stored value that
-/// no longer parses is a miss too (the oracle logs and re-calls) — a note
-/// records it.
-fn read_cached_decision(
-    db: &Db,
-    key: &str,
-    notes: &mut Vec<String>,
-) -> Result<Option<LinkDecision>, String> {
-    let raw = db
-        .with_conn(|conn| {
-            let kv = AppKv::new(ConnectionOrTx::Connection(conn));
-            kv.get(key).map_err(|err| format!("cache read: {err}"))
-        })
-        .map_err(|err| err.to_string())??;
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    match serde_json::from_str::<LinkDecision>(&raw) {
-        Ok(decision) => Ok(Some(decision)),
-        Err(err) => {
-            notes.push(format!(
-                "llm cache: stored decision under {key} is corrupt ({err}); re-calling the model"
-            ));
-            Ok(None)
+impl<'conn> LlmLinkerCache<'conn> {
+    /// Bind the cache to a shared connection or an in-flight transaction.
+    #[must_use]
+    pub fn new(exec: ConnectionOrTx<'conn>) -> Self {
+        Self { exec }
+    }
+
+    /// Return the cached decision for `key`, or `None` on a miss.
+    ///
+    /// A miss is: no row, or a row whose JSON payload does not deserialize
+    /// into [`LinkDecision`] (corrupted entry — oracle behavior: the next
+    /// [`set`](Self::set) overwrites it). Database failures are NOT misses:
+    /// they propagate as [`GraphError::Db`].
+    pub fn get(&self, key: &str) -> Result<Option<LinkDecision>, GraphError> {
+        self.ensure_table()?;
+        let rows: Vec<String> = self.exec.query(
+            &format!("SELECT decision FROM {LINKER_CACHE_TABLE} WHERE cache_key = ?"),
+            [key],
+            |row| row.get(0),
+        )?;
+        // The primary key guarantees at most one row: an empty result set is
+        // a plain miss.
+        let Some(json) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        match serde_json::from_str(&json) {
+            Ok(decision) => Ok(Some(decision)),
+            Err(_) => Ok(None),
         }
+    }
+
+    /// Store `decision` under `key`, replacing any existing entry (oracle
+    /// `INSERT OR REPLACE` semantics).
+    pub fn set(&self, key: &str, decision: &LinkDecision) -> Result<(), GraphError> {
+        let json = serde_json::to_string(decision)
+            .map_err(|source| GraphError::DecisionJson { source })?;
+        self.ensure_table()?;
+        self.exec.execute(
+            &format!(
+                "INSERT OR REPLACE INTO {LINKER_CACHE_TABLE} (cache_key, decision) VALUES (?, ?)"
+            ),
+            (key, json),
+        )?;
+        Ok(())
+    }
+
+    /// Create the decision-cache table if it does not exist yet (safety net:
+    /// `Db::open_cache` already creates it from the cache migration).
+    fn ensure_table(&self) -> Result<(), GraphError> {
+        self.exec.execute(
+            &format!(
+                "CREATE TABLE IF NOT EXISTS {LINKER_CACHE_TABLE} \
+                 (cache_key TEXT PRIMARY KEY, decision TEXT NOT NULL)"
+            ),
+            [],
+        )?;
+        Ok(())
     }
 }
 
-/// Store the decision under `key` (the upsert refreshes `updated_at`).
-fn write_cached_decision(db: &Db, key: &str, decision: &LinkDecision) -> Result<(), String> {
-    let value = serde_json::to_string(decision).map_err(|err| err.to_string())?;
-    db.with_conn(|conn| {
-        let kv = AppKv::new(ConnectionOrTx::Connection(conn));
-        kv.set(key, &value)
-            .map_err(|err| format!("cache write: {err}"))
-    })
-    .map_err(|err| err.to_string())?
+/// The decision-cache key (task 1.10): the SHA-256 hex of the LLM request
+/// signature — `model:temperature:max_tokens:rendered_system_prompt:
+/// rendered_user_prompt` — NO entity IDs, NO dataset (global-safe, mirrors
+/// the NER cache key). Any change to the model, its parameters, or the
+/// rendered prompts invalidates every entry.
+fn llm_cache_key(
+    model: &str,
+    temperature: f64,
+    max_tokens: i32,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> String {
+    let payload = format!("{model}:{temperature}:{max_tokens}:{system_prompt}:{user_prompt}");
+    sha256_hex(payload.as_bytes())
+}
+
+/// Read the cached decision for `key` from `cache` (the cache database), or
+/// `None` on a miss — including when `cache` is `None` (caching disabled,
+/// the oracle's nil-store no-op).
+fn read_cached_decision(cache: Option<&Db>, key: &str) -> Result<Option<LinkDecision>, String> {
+    let Some(cache) = cache else {
+        return Ok(None);
+    };
+    cache
+        .with_conn(|conn| LlmLinkerCache::new(ConnectionOrTx::Connection(conn)).get(key))
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())
+}
+
+/// Store the decision under `key` in `cache` (a no-op when `cache` is `None`
+/// — caching disabled).
+fn write_cached_decision(
+    cache: Option<&Db>,
+    key: &str,
+    decision: &LinkDecision,
+) -> Result<(), String> {
+    let Some(cache) = cache else {
+        return Ok(());
+    };
+    cache
+        .with_conn(|conn| LlmLinkerCache::new(ConnectionOrTx::Connection(conn)).set(key, decision))
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())
 }
 
 /// One entity's prompt data (name/type/domain + truncated description + up to
@@ -551,13 +631,15 @@ fn load_entity_data(db: &Db, entity: &Entity) -> Result<EntityData, String> {
 
 /// The per-run `llm` context (the oracle's linker setup): the initialized
 /// client, the loaded prompt templates, the pre-rendered system prompt (it
-/// carries no data, so one render serves the whole run), and the template
-/// hashes (the cache-key input).
+/// carries no data, so one render serves the whole run), and the sampling
+/// parameters (together with the rendered prompts, the request-signature
+/// cache-key inputs, task 1.10).
 struct LlmRun {
     client: LlmClient,
     prompts: EntityLinkerPrompts,
     system_prompt: String,
-    hashes: TemplateHashes,
+    temperature: f64,
+    max_tokens: i32,
 }
 
 impl LlmRun {
@@ -569,30 +651,35 @@ impl LlmRun {
         let system_prompt = prompts
             .render_system()
             .map_err(|err| format!("render system prompt: {err}"))?;
-        let hashes = prompts.template_hashes();
         Ok(Self {
             client,
             prompts,
             system_prompt,
-            hashes,
+            temperature: config.temperature,
+            max_tokens: config.max_tokens,
         })
     }
 }
 
-/// The miss path: load both contexts, render the user prompt, call the model,
-/// and strictly parse the decision.
-fn decide_via_llm(db: &Db, pair: &CandidatePair, run: &LlmRun) -> Result<LinkDecision, String> {
+/// Load both entities' prompt data and render the user prompt (task 1.10:
+/// the rendered prompt is part of the request-signature cache key, so
+/// rendering happens BEFORE the cache check).
+fn render_pair_prompts(db: &Db, pair: &CandidatePair, run: &LlmRun) -> Result<String, String> {
     let entity_a = load_entity_data(db, &pair.a)?;
     let entity_b = load_entity_data(db, &pair.b)?;
-    let user_prompt = run
-        .prompts
+    run.prompts
         .render_user(&LinkerInput { entity_a, entity_b })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| err.to_string())
+}
+
+/// The miss path: call the model with the pre-rendered prompts and strictly
+/// parse the decision.
+fn call_llm(run: &LlmRun, user_prompt: &str) -> Result<LinkDecision, String> {
     let raw = run
         .client
         .call(
             &run.system_prompt,
-            &user_prompt,
+            user_prompt,
             Some(LINK_DECISION_SCHEMA),
             Some("entity_linker"),
         )
@@ -613,27 +700,37 @@ enum PairOutcome {
 /// threshold gate): cache check BEFORE the call, decision, cache write AFTER
 /// the decision (including below-threshold ones), then the threshold gate.
 ///
-/// `Err` carries a pair-level failure message (non-fatal for the run);
-/// non-fatal side effects (a corrupt cache entry, a failed cache write) are
-/// recorded in `result` and do not fail the pair.
+/// `Err` carries a pair-level failure message (non-fatal for the run); a
+/// failed cache write is recorded in `result` and does not fail the pair.
 fn process_llm_pair(
     db: &Db,
+    cache: Option<&Db>,
     pair: &CandidatePair,
     run: &LlmRun,
     threshold: f64,
     result: &mut LinkResult,
 ) -> Result<PairOutcome, String> {
-    let key = llm_cache_key(pair.a.id, pair.b.id, &run.hashes, run.client.model());
+    // Render the pair's user prompt FIRST: the cache key is the LLM request
+    // signature (task 1.10), so the rendered prompt must exist before the
+    // cache check.
+    let user_prompt = render_pair_prompts(db, pair, run)?;
+    let key = llm_cache_key(
+        run.client.model(),
+        run.temperature,
+        run.max_tokens,
+        &run.system_prompt,
+        &user_prompt,
+    );
 
-    // Cache check BEFORE the call (design D4): a hit skips the HTTP round-trip.
-    let decision = match read_cached_decision(db, &key, &mut result.notes)? {
+    // Cache check BEFORE the call (task 1.10): a hit skips the HTTP round-trip.
+    let decision = match read_cached_decision(cache, &key)? {
         Some(decision) => decision,
         None => {
-            let decision = decide_via_llm(db, pair, run)?;
+            let decision = call_llm(run, &user_prompt)?;
             // Cache AFTER the decision — including below-threshold ones: a
             // "not the same" verdict is as reusable as a match (no TTL, oracle
             // parity). A failed write is non-fatal (the oracle logs only).
-            if let Err(err) = write_cached_decision(db, &key, &decision) {
+            if let Err(err) = write_cached_decision(cache, &key, &decision) {
                 result.errors.push(format!("cache write: {err}"));
             }
             decision
@@ -662,13 +759,16 @@ fn process_llm_pair(
 }
 
 /// The `llm` method (the oracle's `LLMCrossDomainLinker`): one chat
-/// completion per pair, decisions cached in `app_kv` (design D4).
+/// completion per pair, decisions cached in `llm_linker_cache` on the cache
+/// database (task 1.10).
 ///
 /// A broken LLM configuration or prompt load fails the whole method
 /// (recorded in [`LinkResult::errors`], the `expression` init pattern); a
-/// per-pair failure never aborts the run.
+/// per-pair failure never aborts the run. `cache` is the cache database
+/// (`None` runs the method uncached — the oracle's nil-store no-op).
 fn run_llm(
     db: &Db,
+    cache: Option<&Db>,
     links_config: &CrossDomainLinksConfig,
     linker_config: &LinkerConfig,
     prompts_path: &str,
@@ -691,7 +791,7 @@ fn run_llm(
 
     let threshold = links_config.llm_confidence_threshold;
     for pair in pairs {
-        match process_llm_pair(db, pair, &run, threshold, result) {
+        match process_llm_pair(db, cache, pair, &run, threshold, result) {
             Ok(PairOutcome::Linked) => result.links_created += 1,
             Ok(PairOutcome::NotLinked) => result.links_skipped += 1,
             Err(msg) => {
@@ -712,9 +812,13 @@ fn run_llm(
 /// method. `prompts_path` is the preset's `paths.prompts_path` (design D3):
 /// the `llm` method loads its prompt templates from
 /// `{prompts_path}/entity-linker/` (embedded defaults when the files are
-/// absent); it is ignored by every other method.
+/// absent); it is ignored by every other method. `cache` is the cache
+/// database (task 1.10): the `llm` method stores its decisions in its
+/// `llm_linker_cache` table; `None` runs the method uncached (the oracle's
+/// nil-store no-op).
 pub fn build_entity_links(
     db: &Db,
+    cache: Option<&Db>,
     links_config: &CrossDomainLinksConfig,
     linker_config: &LinkerConfig,
     prompts_path: &str,
@@ -736,6 +840,7 @@ pub fn build_entity_links(
                 } else {
                     run_llm(
                         db,
+                        cache,
                         links_config,
                         linker_config,
                         prompts_path,
@@ -870,6 +975,7 @@ mod tests {
 
         let result = build_entity_links(
             &db,
+            None,
             &links_config(vec![LinkMethod::Equals], Vec::new()),
             &LinkerConfig::default(),
             TEST_PROMPTS_PATH,
@@ -901,8 +1007,14 @@ mod tests {
             equals: Some(EqualsConfig { min_words: 1 }),
             ..links_config(vec![LinkMethod::Equals], Vec::new())
         };
-        let result =
-            build_entity_links(&db, &config, &LinkerConfig::default(), TEST_PROMPTS_PATH).unwrap();
+        let result = build_entity_links(
+            &db,
+            None,
+            &config,
+            &LinkerConfig::default(),
+            TEST_PROMPTS_PATH,
+        )
+        .unwrap();
         assert_eq!(result.links_created, 1);
         assert_eq!(all_links(&db).len(), 2);
     }
@@ -945,6 +1057,7 @@ mod tests {
         };
         let result = build_entity_links(
             &db,
+            None,
             &links_config(vec![LinkMethod::Expression], vec![rule]),
             &LinkerConfig::default(),
             TEST_PROMPTS_PATH,
@@ -994,6 +1107,7 @@ mod tests {
         insert_entities(&db1, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
         let r1 = build_entity_links(
             &db1,
+            None,
             &links_config(vec![LinkMethod::Expression], rules.clone()),
             &LinkerConfig::default(),
             TEST_PROMPTS_PATH,
@@ -1012,6 +1126,7 @@ mod tests {
         insert_entities(&db2, &[("PERSON", "U V", "it"), ("PERSON", "U V", "zz")]);
         let r2 = build_entity_links(
             &db2,
+            None,
             &links_config(vec![LinkMethod::Expression], rules),
             &LinkerConfig::default(),
             TEST_PROMPTS_PATH,
@@ -1039,6 +1154,7 @@ mod tests {
         };
         let r1 = build_entity_links(
             &db1,
+            None,
             &links_config(vec![LinkMethod::Expression], vec![bad]),
             &LinkerConfig::default(),
             TEST_PROMPTS_PATH,
@@ -1065,6 +1181,7 @@ mod tests {
         };
         let r2 = build_entity_links(
             &db2,
+            None,
             &links_config(vec![LinkMethod::Expression], vec![non_bool]),
             &LinkerConfig::default(),
             TEST_PROMPTS_PATH,
@@ -1116,18 +1233,47 @@ mod tests {
         .into_bytes()
     }
 
-    /// The `llm_link_*` cache entries (key, value) in `app_kv`.
-    fn cached_decisions(db: &db::Db) -> Vec<(String, String)> {
-        db.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT key, value FROM app_kv WHERE key LIKE 'llm_link%'")
-                .unwrap();
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        })
-        .unwrap()
+    /// A file-backed cache database (the production shape: `Db::open_cache`
+    /// on a real file), removed with its sidecars on drop.
+    struct TempCacheDb {
+        db: db::Db,
+        path: std::path::PathBuf,
+    }
+
+    impl TempCacheDb {
+        fn new(name: &str) -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "graph-linker-cache-{name}-{}-{id}",
+                std::process::id()
+            ));
+            let db = db::Db::open_cache(&path).unwrap();
+            Self { db, path }
+        }
+    }
+
+    impl Drop for TempCacheDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+            let _ = std::fs::remove_file(format!("{}-wal", self.path.display()));
+            let _ = std::fs::remove_file(format!("{}-shm", self.path.display()));
+        }
+    }
+
+    /// The decision-cache entries (key, value) in `llm_linker_cache`.
+    fn cached_decisions(cache: &db::Db) -> Vec<(String, String)> {
+        cache
+            .with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT cache_key, decision FROM llm_linker_cache")
+                    .unwrap();
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .unwrap()
     }
 
     /// A minimal HTTP/1.1 mock LLM server on 127.0.0.1 (the `crates/llm`
@@ -1286,6 +1432,7 @@ mod tests {
 
         let result = build_entity_links(
             &db,
+            None,
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &linker,
             TEST_PROMPTS_PATH,
@@ -1320,9 +1467,11 @@ mod tests {
         // 0.3 < the links config threshold (0.7).
         let server = MockLlm::start(200, decision_body(true, 0.3, "probably not"));
         let linker = llm_linker_config(&server.url);
+        let cache = TempCacheDb::new("below-threshold");
 
         let result = build_entity_links(
             &db,
+            Some(&cache.db),
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &linker,
             TEST_PROMPTS_PATH,
@@ -1334,11 +1483,11 @@ mod tests {
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         assert!(all_links(&db).is_empty());
 
-        // The below-threshold decision is still cached (design D4).
-        let entries = cached_decisions(&db);
+        // The below-threshold decision is still cached (task 1.10).
+        let entries = cached_decisions(&cache.db);
         assert_eq!(entries.len(), 1);
         let (key, value) = &entries[0];
-        assert!(key.starts_with("llm_link_"), "cache key: {key}");
+        assert_eq!(key.len(), 64, "the key is a bare sha256 hex digest: {key}");
         let decision: LinkDecision = serde_json::from_str(value).unwrap();
         assert_eq!(
             decision,
@@ -1363,9 +1512,11 @@ mod tests {
         // High confidence, but same_entity = false: the gate needs both.
         let server = MockLlm::start(200, decision_body(false, 0.99, "different people"));
         let linker = llm_linker_config(&server.url);
+        let cache = TempCacheDb::new("same-entity-false");
 
         let result = build_entity_links(
             &db,
+            Some(&cache.db),
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &linker,
             TEST_PROMPTS_PATH,
@@ -1375,7 +1526,7 @@ mod tests {
         assert_eq!(result.links_created, 0);
         assert_eq!(result.links_skipped, 1);
         assert!(all_links(&db).is_empty());
-        let entries = cached_decisions(&db);
+        let entries = cached_decisions(&cache.db);
         assert_eq!(entries.len(), 1);
         let decision: LinkDecision = serde_json::from_str(&entries[0].1).unwrap();
         assert!(!decision.same_entity);
@@ -1394,14 +1545,17 @@ mod tests {
         let server = MockLlm::start(200, decision_body(true, 0.95, "same name"));
         let linker = llm_linker_config(&server.url);
         let config = links_config(vec![LinkMethod::Llm], Vec::new());
+        let cache = TempCacheDb::new("cache-hit");
 
-        let first = build_entity_links(&db, &config, &linker, TEST_PROMPTS_PATH).unwrap();
+        let first =
+            build_entity_links(&db, Some(&cache.db), &config, &linker, TEST_PROMPTS_PATH).unwrap();
         assert_eq!(first.links_created, 1);
         assert_eq!(server.request_count(), 1);
 
         // Re-run: the cached decision applies, the row already exists, and
         // the server must not see a second request.
-        let second = build_entity_links(&db, &config, &linker, TEST_PROMPTS_PATH).unwrap();
+        let second =
+            build_entity_links(&db, Some(&cache.db), &config, &linker, TEST_PROMPTS_PATH).unwrap();
         assert_eq!(second.links_created, 0);
         assert_eq!(
             second.links_skipped, 1,
@@ -1432,8 +1586,10 @@ mod tests {
         let linker = llm_linker_config(&server.url);
         // equals runs first and must still create its link (pipeline alive).
         let config = links_config(vec![LinkMethod::Equals, LinkMethod::Llm], Vec::new());
+        let cache = TempCacheDb::new("call-failure");
 
-        let result = build_entity_links(&db, &config, &linker, TEST_PROMPTS_PATH).unwrap();
+        let result =
+            build_entity_links(&db, Some(&cache.db), &config, &linker, TEST_PROMPTS_PATH).unwrap();
 
         assert_eq!(result.links_created, 1, "equals still links the pair");
         assert!(
@@ -1450,7 +1606,7 @@ mod tests {
             "no llm links after a failed pair"
         );
         // A failed pair is not cached.
-        assert!(cached_decisions(&db).is_empty());
+        assert!(cached_decisions(&cache.db).is_empty());
     }
 
     #[test]
@@ -1471,6 +1627,7 @@ mod tests {
 
         let result = build_entity_links(
             &db,
+            None,
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &disabled,
             TEST_PROMPTS_PATH,
@@ -1529,6 +1686,7 @@ mod tests {
         let linker = llm_linker_config(&server.url);
         let result = build_entity_links(
             &db,
+            None,
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &linker,
             TEST_PROMPTS_PATH,
@@ -1566,6 +1724,7 @@ mod tests {
         insert_entities(&db1, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
         let first = build_entity_links(
             &db1,
+            None,
             &links_config(
                 vec![LinkMethod::Equals, LinkMethod::Expression],
                 vec![rule.clone()],
@@ -1582,6 +1741,7 @@ mod tests {
         insert_entities(&db2, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
         let second = build_entity_links(
             &db2,
+            None,
             &links_config(vec![LinkMethod::Expression, LinkMethod::Equals], vec![rule]),
             &LinkerConfig::default(),
             TEST_PROMPTS_PATH,
@@ -1611,6 +1771,7 @@ mod tests {
         );
         let result = build_entity_links(
             &db,
+            None,
             &links_config(vec![LinkMethod::Equals], Vec::new()),
             &LinkerConfig::default(),
             TEST_PROMPTS_PATH,

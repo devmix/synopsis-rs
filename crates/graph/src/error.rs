@@ -57,6 +57,15 @@ pub enum GraphError {
         /// The rule's name.
         name: String,
     },
+    /// A cached LLM-linker decision could not be serialized to JSON (task
+    /// 1.10): the `LlmLinkerCache::set` write path. Deserialization failures
+    /// are treated as cache misses inside `LlmLinkerCache::get` instead.
+    #[error("linker decision JSON: {source}")]
+    DecisionJson {
+        /// The underlying serde error.
+        #[source]
+        source: serde_json::Error,
+    },
     /// A prompt-template override file exists but could not be read (llm change
     /// 2.1, design D3). A *missing* file is not an error — it falls back to the
     /// embedded default.

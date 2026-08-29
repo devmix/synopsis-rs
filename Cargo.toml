@@ -6,7 +6,7 @@ panic = "abort"      # Strips unwinding code, panic messages, and dependency lan
 strip = true         # Automatically strips all debug symbols and local path information
 
 [profile.dev]
-debug = 1            # Line-tables only: gives you filenames and line numbers for panic backtraces, but strips heavy variable debugging data. Drops build size drastically.
+debug = "full"
 split-debuginfo = "unpacked" # Keeps debug symbols in separate files instead of bundling them into the binary
 
 [profile.dev.package."*"]

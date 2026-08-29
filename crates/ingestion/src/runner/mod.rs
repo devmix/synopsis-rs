@@ -814,6 +814,10 @@ mod tests {
     /// over them. Shared with the `runner/cleanup.rs` tests (task 3.8).
     pub(super) struct Harness {
         pub(super) db: Db,
+        /// The cache database (task 1.10): holds the linker decision cache
+        /// and the `last_linking_run` marker, mirroring production where the
+        /// runner owns a separate cache handle.
+        pub(super) cache: Db,
         pub(super) cfg: IngestionConfig,
         pub(super) global: GlobalConfig,
         pub(super) domains: HashMap<String, DomainConfig>,
@@ -832,6 +836,7 @@ mod tests {
                 .unwrap();
             Self {
                 db: in_memory_db(),
+                cache: in_memory_db(),
                 cfg: IngestionConfig::default(),
                 global: GlobalConfig {
                     sources: Vec::new(),
@@ -864,7 +869,7 @@ mod tests {
                 prompts: &self.prompts,
                 linker_cfg: &self.linker_cfg,
                 prompts_path: "/nonexistent-prompts",
-                llm_cache: None,
+                llm_cache: Some(self.cache.clone()),
             })
         }
     }

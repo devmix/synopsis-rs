@@ -4,15 +4,17 @@
 //! semantics), re-architected per the 2026-08-19 migration principles.
 //!
 //! The table holds small pieces of application state (e.g.
-//! `last_linking_run`). `set` is an upsert that refreshes `updated_at` on
-//! every write; `get` returns `None` for a missing key.
+//! `last_linking_run`, the ingestion runner's linking bookkeeping marker).
+//! `set` is an upsert that refreshes `updated_at` on every write; `get`
+//! returns `None` for a missing key.
 //!
 //! The table belongs to the CACHE database schema
 //! (`migrations/cache/1-init/up.sql`, task 1.9, storage-layout-restructure);
-//! on a database that does not have it yet (e.g. a knowledge database still
-//! used for the pre-1.10 linker decision cache) it is created lazily at
-//! runtime on first use — the same pattern as
-//! `ingestion::ner::llm_cache::LlmNerCache`.
+//! on a database that does not have it yet (e.g. a knowledge database) it is
+//! created lazily at runtime on first use — the same pattern as
+//! `ingestion::ner::llm_cache::LlmNerCache`. The LLM linker DECISIONS do not
+//! live here: since task 1.10 they are stored in the dedicated
+//! `llm_linker_cache` table (see `graph::linker::LlmLinkerCache`).
 //!
 //! **Conscious deviation from the oracle:** the Go `Get` swallows driver
 //! errors and reports "missing key" (best-effort semantics); the Rust `get`
@@ -88,7 +90,9 @@ impl<'conn> AppKv<'conn> {
     /// Create the key-value table if it does not exist yet (task 1.9):
     /// `app_kv` belongs to the cache-database schema, so a database without
     /// it (e.g. a knowledge database) gets the table lazily at runtime on
-    /// first use — the same pattern as `LlmNerCache::ensure_table`.
+    /// first use — the same pattern as `LlmNerCache::ensure_table`. (The
+    /// linker decision cache does not use this table; it has its own
+    /// `llm_linker_cache` table, task 1.10.)
     fn ensure_table(&self) -> Result<(), DbError> {
         self.exec.execute(
             "CREATE TABLE IF NOT EXISTS app_kv \

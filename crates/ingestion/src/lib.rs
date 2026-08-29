@@ -165,7 +165,7 @@ mod root_api {
         let _load_prompts = load_ner_prompts;
 
         // The pure NER helpers, exercised end to end from the root namespace.
-        let key = build_cache_key("srv", "model", 0.5, 1024, "sys", "usr", "content");
+        let key = build_cache_key("srv", "model", 0.5, 1024, "sys", "usr");
         assert_eq!(key.len(), 64);
         let parsed = parse_llm_response("{}").expect("an empty response parses");
         assert!(parsed.entities.is_empty() && parsed.facts.is_empty());

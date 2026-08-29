@@ -31,9 +31,13 @@
 //!
 //! # Cache key
 //!
-//! The SHA-256 hex of each template **source** (not the rendered data) is
-//! exposed via [`EntityLinkerPrompts::template_hashes`] (design D4): changing a
-//! prompt changes the hash and invalidates the decision cache automatically.
+//! The decision-cache key is the LLM **request signature** (task 1.10):
+//! `sha256(model:temperature:max_tokens:rendered_system_prompt:
+//! rendered_user_prompt)`, computed in `crate::linker`. The rendered prompts
+//! subsume the template content, so a changed template (or a changed model /
+//! sampling parameters / entity data) invalidates the cache automatically.
+//! [`EntityLinkerPrompts::template_hashes`] (the SHA-256 of each template
+//! **source**) is retained for template-change detection and tests.
 
 use std::path::Path;
 
@@ -77,7 +81,8 @@ pub struct LinkerInput {
     pub entity_b: EntityData,
 }
 
-/// The SHA-256 hex digests of the two template sources (design D4 cache key).
+/// The SHA-256 hex digests of the two template sources (template-change
+/// detection; the decision-cache key is the request signature, task 1.10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateHashes {
     /// Hex sha256 of the system template source.
@@ -95,8 +100,9 @@ pub struct TemplateHashes {
 /// trimming) is created at load and the compiled templates are cached on it,
 /// so rendering in the per-pair loop does not re-parse. The system prompt
 /// (no data) is rendered once per run; the user prompt is rendered per pair
-/// from a [`LinkerInput`]. [`EntityLinkerPrompts::template_hashes`] feeds the
-/// decision-cache key (design D4).
+/// from a [`LinkerInput`]. The rendered prompts are the decision-cache key
+/// inputs (task 1.10); [`EntityLinkerPrompts::template_hashes`] is retained
+/// for template-change detection.
 #[derive(Debug)]
 pub struct EntityLinkerPrompts {
     /// The environment holding the compiled templates and the helpers.
@@ -152,7 +158,8 @@ impl EntityLinkerPrompts {
             })
     }
 
-    /// The template source hashes for the D4 cache key.
+    /// The template source hashes (template-change detection; the decision
+    /// cache key is the request signature, task 1.10).
     #[must_use]
     pub fn template_hashes(&self) -> TemplateHashes {
         TemplateHashes {

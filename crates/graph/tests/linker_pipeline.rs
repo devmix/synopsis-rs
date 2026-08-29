@@ -90,7 +90,7 @@ fn end_to_end_linking_and_idempotent_rerun() {
     // ── First run ─────────────────────────────────────────────────────────
     // The fixture methods are equals/expression only: the prompts path is
     // unused (a nonexistent path would fall back to the embedded templates).
-    let first = build_entity_links(&db, &config, &linker, "/nonexistent/prompts")
+    let first = build_entity_links(&db, None, &config, &linker, "/nonexistent/prompts")
         .expect("first run must succeed");
     assert!(
         first.errors.is_empty(),
@@ -145,7 +145,7 @@ fn end_to_end_linking_and_idempotent_rerun() {
     }
 
     // ── Second run: idempotent ────────────────────────────────────────────
-    let second = build_entity_links(&db, &config, &linker, "/nonexistent/prompts")
+    let second = build_entity_links(&db, None, &config, &linker, "/nonexistent/prompts")
         .expect("second run must succeed");
     assert!(
         second.errors.is_empty(),

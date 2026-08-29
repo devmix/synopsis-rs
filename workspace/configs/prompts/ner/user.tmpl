@@ -4,26 +4,23 @@ Extract entities and relations from the provided content.
 ---
 Entity types to extract: {{ entity_types | join(", ") }}
 {% endif %}
-
 {% if relation_types %}
 ---
 Relation types to extract: {{ relation_types | join(", ") }}
 {% endif %}
-
+---
 {% if section_path %}
----
-Document context:
-  Section path: {{ section_path }}
+CONTENT SECTION
+```
+{{ section_path }}
+```
 {% endif %}
-
----
-
 CONTENT:
-
+```
 {{ content }}
-
+```
+---
 IMPORTANT
-
 - Only extract entities and relations that are explicitly mentioned or clearly implied
 - Use the exact entity type IDs and relation type IDs from the schema
 - Return valid JSON even if nothing is found (use empty arrays)

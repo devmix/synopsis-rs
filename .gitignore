@@ -1,3 +1,4 @@
+/.idea
 /target
 # Standalone build artifacts of the archived spikes crate (task 5.1).
 .archive/spikes/target/

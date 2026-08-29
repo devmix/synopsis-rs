@@ -123,11 +123,14 @@ impl<'conn> LlmNerCache<'conn> {
     }
 }
 
-/// Builds the SHA-256 cache key from the LLM call parameters and content.
+/// Builds the SHA-256 cache key from the LLM call parameters and prompts.
 ///
 /// Key format: `sha256(server:model:temperature:max_tokens:system_prompt:
-/// user_prompt:chunk_content)` — the `:`-joined parts, matching the oracle's
-/// `BuildCacheKey` (`llm_cache.go`) for all realistic parameter values.
+/// user_prompt)` — the `:`-joined parts. The chunk content is NOT a separate
+/// key part: it is already rendered into `user_prompt` (the provider renders
+/// the normalized chunk into the user template before the call), so a
+/// distinct chunk always yields a distinct `user_prompt` and thus a distinct
+/// key.
 ///
 /// **The key format is internal-only** (design D6): keys are never compared
 /// across implementations, so no cross-language byte parity is a contract.
@@ -142,11 +145,8 @@ pub fn build_cache_key(
     max_tokens: i32,
     system_prompt: &str,
     user_prompt: &str,
-    chunk_content: &str,
 ) -> String {
-    let raw = format!(
-        "{server}:{model}:{temperature}:{max_tokens}:{system_prompt}:{user_prompt}:{chunk_content}"
-    );
+    let raw = format!("{server}:{model}:{temperature}:{max_tokens}:{system_prompt}:{user_prompt}");
     let digest = Sha256::digest(raw.as_bytes());
     to_hex(&digest)
 }
@@ -214,15 +214,7 @@ mod tests {
     #[test]
     fn set_then_get_round_trip() {
         let db = in_memory_db();
-        let key = build_cache_key(
-            "http://llm.local",
-            "bge",
-            0.5,
-            2048,
-            "sys",
-            "usr",
-            "content",
-        );
+        let key = build_cache_key("http://llm.local", "bge", 0.5, 2048, "sys", "usr");
         let result = sample_result();
         with_cache(&db, |cache| {
             assert_eq!(cache.get(&key).unwrap(), None, "fresh table misses");
@@ -299,88 +291,38 @@ mod tests {
     // the key is deterministic and every part participates in it.
     #[test]
     fn cache_key_is_deterministic_and_input_sensitive() {
-        let base = build_cache_key(
-            "http://llm.local",
-            "bge",
-            0.7,
-            2048,
-            "sys",
-            "usr",
-            "content",
-        );
+        let base = build_cache_key("http://llm.local", "bge", 0.7, 2048, "sys", "usr");
         assert_eq!(base.len(), 64, "hex sha256 is 64 chars");
         assert_eq!(
             base,
-            build_cache_key(
-                "http://llm.local",
-                "bge",
-                0.7,
-                2048,
-                "sys",
-                "usr",
-                "content"
-            ),
+            build_cache_key("http://llm.local", "bge", 0.7, 2048, "sys", "usr"),
             "same inputs must give the same key"
         );
         assert_ne!(
             base,
-            build_cache_key(
-                "http://other.local",
-                "bge",
-                0.7,
-                2048,
-                "sys",
-                "usr",
-                "content"
-            )
+            build_cache_key("http://other.local", "bge", 0.7, 2048, "sys", "usr")
         );
         assert_ne!(
             base,
-            build_cache_key(
-                "http://llm.local",
-                "other-model",
-                0.7,
-                2048,
-                "sys",
-                "usr",
-                "content"
-            )
+            build_cache_key("http://llm.local", "other-model", 0.7, 2048, "sys", "usr")
         );
         assert_ne!(
             base,
-            build_cache_key(
-                "http://llm.local",
-                "bge",
-                0.8,
-                2048,
-                "sys",
-                "usr",
-                "content"
-            )
+            build_cache_key("http://llm.local", "bge", 0.8, 2048, "sys", "usr")
         );
         assert_ne!(
             base,
-            build_cache_key(
-                "http://llm.local",
-                "bge",
-                0.7,
-                4096,
-                "sys",
-                "usr",
-                "content"
-            )
+            build_cache_key("http://llm.local", "bge", 0.7, 4096, "sys", "usr")
         );
         assert_ne!(
             base,
-            build_cache_key(
-                "http://llm.local",
-                "bge",
-                0.7,
-                2048,
-                "sys2",
-                "usr",
-                "content"
-            )
+            build_cache_key("http://llm.local", "bge", 0.7, 2048, "sys2", "usr")
+        );
+        // The chunk content is embedded in `user_prompt` (rendered upstream),
+        // so a different chunk surfaces as a different `user_prompt`.
+        assert_ne!(
+            base,
+            build_cache_key("http://llm.local", "bge", 0.7, 2048, "sys", "usr2")
         );
         assert_ne!(
             base,
@@ -390,20 +332,7 @@ mod tests {
                 0.7,
                 2048,
                 "sys",
-                "usr2",
-                "content"
-            )
-        );
-        assert_ne!(
-            base,
-            build_cache_key(
-                "http://llm.local",
-                "bge",
-                0.7,
-                2048,
-                "sys",
-                "usr",
-                "other content"
+                "usr with a different chunk rendered in"
             )
         );
     }
@@ -412,26 +341,26 @@ mod tests {
     // trailing zeros (0.5 → "0.5", 0.0 → "0", 1.0 → "1").
     #[test]
     fn key_uses_g_like_temperature_formatting() {
-        let args = ("server", "model", 2048, "sys", "user", "content");
+        let args = ("server", "model", 2048, "sys", "user");
         let key = |raw: &str| sha256_hex(raw);
 
         assert_eq!(
-            build_cache_key(args.0, args.1, 0.5, args.2, args.3, args.4, args.5),
-            key("server:model:0.5:2048:sys:user:content")
+            build_cache_key(args.0, args.1, 0.5, args.2, args.3, args.4),
+            key("server:model:0.5:2048:sys:user")
         );
         assert_eq!(
-            build_cache_key(args.0, args.1, 0.0, args.2, args.3, args.4, args.5),
-            key("server:model:0:2048:sys:user:content"),
+            build_cache_key(args.0, args.1, 0.0, args.2, args.3, args.4),
+            key("server:model:0:2048:sys:user"),
             "0.0 must format as \"0\""
         );
         assert_eq!(
-            build_cache_key(args.0, args.1, 1.0, args.2, args.3, args.4, args.5),
-            key("server:model:1:2048:sys:user:content"),
+            build_cache_key(args.0, args.1, 1.0, args.2, args.3, args.4),
+            key("server:model:1:2048:sys:user"),
             "1.0 must format as \"1\""
         );
         assert_eq!(
-            build_cache_key(args.0, args.1, 0.7, args.2, args.3, args.4, args.5),
-            key("server:model:0.7:2048:sys:user:content")
+            build_cache_key(args.0, args.1, 0.7, args.2, args.3, args.4),
+            key("server:model:0.7:2048:sys:user")
         );
     }
 
