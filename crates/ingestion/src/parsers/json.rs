@@ -63,7 +63,10 @@ pub struct JsonParser;
 impl JsonParser {
     /// True if `path` ends with a supported JSON extension, case
     /// insensitively (oracle: `strings.ToLower(name)` + `HasSuffix(".json")`).
-    fn is_json(path: &Path) -> bool {
+    ///
+    /// `pub(crate)`: the unstructured parser (task 1.9) reuses this check to
+    /// dispatch its single-file reads.
+    pub(crate) fn is_json(path: &Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
@@ -144,6 +147,10 @@ impl Parser for JsonParser {
             &mut errors,
         );
         ParseResult { documents, errors }
+    }
+
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        Self::read_file(path, root)
     }
 
     fn supported_extensions(&self) -> &[&str] {
@@ -375,6 +382,35 @@ mod tests {
         let result = JsonParser.parse(&tree.0);
         assert!(result.documents.is_empty());
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_file_reads_one_json_file() {
+        let tree = TempTree::new();
+        let content = r#"{"title": "Test"}"#;
+        let path = tree.write("data.json", content);
+        // Siblings must NOT be read: `parse_file` addresses exactly one file.
+        tree.write("other.json", "[]");
+
+        let doc = JsonParser.parse_file(&path, &tree.0).unwrap();
+
+        assert_eq!(doc.source_path, path);
+        assert_eq!(doc.content, content);
+        assert_eq!(doc.metadata.source_type, "json");
+        assert_eq!(doc.metadata.source_file, "data.json");
+        assert_eq!(structure_of(&doc), "object");
+    }
+
+    #[test]
+    fn parse_file_broken_json_is_a_json_error() {
+        let tree = TempTree::new();
+        let bad = tree.write("broken.json", "not json");
+
+        let err = JsonParser.parse_file(&bad, &tree.0).unwrap_err();
+        assert!(
+            matches!(err, IngestionError::Json { ref path, .. } if path == &bad),
+            "got: {err:?}"
+        );
     }
 
     #[test]

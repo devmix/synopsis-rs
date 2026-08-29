@@ -325,7 +325,9 @@ mod tests {
     use crate::parsers::tests::TempTree;
     use crate::runner::RunnerParams;
     use crate::sources::Registry;
-    use crate::types::{Chunker, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source};
+    use crate::types::{
+        Chunker, Document, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source,
+    };
 
     /// A minimal `.txt` source for the producer tests. The producer never
     /// calls `parse` (the corrected task 1.3 walks and hashes directly), so
@@ -338,6 +340,11 @@ mod tests {
             // Unused by the producer: reconcile_source walks and hashes
             // without building documents (module docs).
             ParseResult::default()
+        }
+
+        fn parse_file(&self, _path: &Path, _root: &Path) -> Result<Document, IngestionError> {
+            // Unused by the producer (module docs): the stub parses nothing.
+            Err(IngestionError::UnsupportedExtension(".txt".to_owned()))
         }
 
         fn supported_extensions(&self) -> &[&str] {

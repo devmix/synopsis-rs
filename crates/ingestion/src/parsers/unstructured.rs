@@ -182,6 +182,22 @@ impl Parser for UnstructuredParser {
         ParseResult { documents, errors }
     }
 
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        // No tree walk: dispatch the one file to the matching reader
+        // (`.md` markdown reader, `.json` JSON parser reader).
+        if Self::is_markdown(path) {
+            Self::read_markdown_file(path, root)
+        } else if JsonParser::is_json(path) {
+            JsonParser::read_file(path, root)
+        } else {
+            let ext = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or_default();
+            Err(IngestionError::UnsupportedExtension(format!(".{ext}")))
+        }
+    }
+
     fn supported_extensions(&self) -> &[&str] {
         UNSTRUCTURED_EXTENSIONS
     }
@@ -475,5 +491,52 @@ mod tests {
         let result = UnstructuredParser.parse(&tree.0);
         assert!(result.documents.is_empty());
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_file_dispatches_md_and_json() {
+        let tree = TempTree::new();
+        tree.write("docs/article.md", "# Article");
+        tree.write("docs/banner.png", "image data");
+        let md = tree.write("docs/readme.md", "# Hello\nSome text.");
+        let json = tree.write("data/items.json", r#"[{"id": 1}]"#);
+
+        let md_doc = UnstructuredParser.parse_file(&md, &tree.0).unwrap();
+        assert_eq!(md_doc.source_path, md);
+        assert_eq!(md_doc.metadata.source_type, "unstructured");
+        assert_eq!(
+            md_doc
+                .metadata
+                .extra
+                .get(IMAGE_PATHS_KEY)
+                .and_then(Value::as_array)
+                .map(|images| images.len()),
+            Some(1),
+            "the same-directory image must be associated"
+        );
+
+        let json_doc = UnstructuredParser.parse_file(&json, &tree.0).unwrap();
+        assert_eq!(json_doc.source_path, json);
+        assert_eq!(json_doc.metadata.source_type, "json");
+        assert_eq!(
+            json_doc
+                .metadata
+                .extra
+                .get("structure")
+                .and_then(Value::as_str),
+            Some("array")
+        );
+    }
+
+    #[test]
+    fn parse_file_rejects_unsupported_extensions() {
+        let tree = TempTree::new();
+        let bad = tree.write("notes.txt", "plain");
+
+        let err = UnstructuredParser.parse_file(&bad, &tree.0).unwrap_err();
+        assert!(
+            matches!(err, IngestionError::UnsupportedExtension(ref ext) if ext == ".txt"),
+            "got: {err:?}"
+        );
     }
 }

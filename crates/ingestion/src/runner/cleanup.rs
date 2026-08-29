@@ -135,13 +135,7 @@ impl<'a> Runner<'a> {
             if !file_is_gone(&doc.original_path) {
                 continue;
             }
-            let doc_id = doc.id;
-            self.db.exec_tx(|tx| -> Result<(), IngestionError> {
-                let exec = ConnectionOrTx::Transaction(&*tx);
-                GcDao::new(exec).full_clear_doc_by_id(doc_id)?;
-                DocumentDao::new(exec).delete(doc_id)?;
-                Ok(())
-            })?;
+            self.clear_and_delete_doc(doc.id)?;
             removed += 1;
         }
         Ok(removed)

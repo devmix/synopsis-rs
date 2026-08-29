@@ -128,6 +128,16 @@ pub trait Parser {
     /// error.
     fn parse(&self, source_path: &Path) -> ParseResult;
 
+    /// Reads and parses the single file at `path` (oracle `parseFile`);
+    /// never walks the source tree. `root` is the source root used to
+    /// compute the relative `source_file` metadata.
+    ///
+    /// # Errors
+    ///
+    /// An [`IngestionError`] for I/O failures, format errors, or a `path`
+    /// extension this parser does not handle.
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError>;
+
     /// File extensions this parser handles, including the leading dot
     /// (e.g. `".md"`, `".json"`).
     fn supported_extensions(&self) -> &[&str];
@@ -170,6 +180,11 @@ mod tests {
     impl Parser for StubSource {
         fn parse(&self, _source_path: &Path) -> ParseResult {
             ParseResult::default()
+        }
+
+        fn parse_file(&self, _path: &Path, _root: &Path) -> Result<Document, IngestionError> {
+            // The stub parses nothing: every single-file read is unsupported.
+            Err(IngestionError::UnsupportedExtension(".stub".to_owned()))
         }
 
         fn supported_extensions(&self) -> &[&str] {

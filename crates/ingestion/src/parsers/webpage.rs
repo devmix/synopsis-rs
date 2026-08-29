@@ -235,6 +235,28 @@ impl Parser for WebpageParser {
         ParseResult { documents, errors }
     }
 
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        // No tree walk: exactly one candidate file, chosen by extension
+        // (`.md` read as-is, `.html` converted to Markdown).
+        let mut page = PageFiles::default();
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default();
+        if ext.eq_ignore_ascii_case("md") {
+            page.md = Some(path.to_path_buf());
+        } else if ext.eq_ignore_ascii_case("html") {
+            page.html = Some(path.to_path_buf());
+        } else {
+            return Err(IngestionError::UnsupportedExtension(format!(".{ext}")));
+        }
+        // One candidate is set, so a read is always produced.
+        let Some((file_path, content)) = Self::page_content(&page)? else {
+            unreachable!("a single-candidate page always yields a read");
+        };
+        Ok(Self::document(file_path, content, root))
+    }
+
     fn supported_extensions(&self) -> &[&str] {
         WEBPAGE_EXTENSIONS
     }
@@ -579,6 +601,44 @@ mod tests {
         let result = WebpageParser.parse(&tree.0);
         assert!(result.documents.is_empty());
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_file_reads_one_md_page() {
+        let tree = TempTree::new();
+        let path = tree.write("pages/index.md", "# Home\nWelcome.");
+
+        let doc = WebpageParser.parse_file(&path, &tree.0).unwrap();
+
+        assert_eq!(doc.source_path, path);
+        assert_eq!(doc.content, "# Home\nWelcome.");
+        assert_eq!(doc.metadata.source_type, "webpages");
+        assert_eq!(doc.metadata.source_file, "pages/index.md");
+    }
+
+    #[test]
+    fn parse_file_converts_one_html_page() {
+        let tree = TempTree::new();
+        let path = tree.write("pages/page-1.html", "<h1>Title</h1><p>Body.</p>");
+
+        let doc = WebpageParser.parse_file(&path, &tree.0).unwrap();
+
+        assert_eq!(doc.source_path, path);
+        assert_eq!(doc.metadata.source_file, "pages/page-1.html");
+        assert!(doc.content.contains("# Title"), "got: {:?}", doc.content);
+        assert!(doc.content.contains("Body."), "got: {:?}", doc.content);
+    }
+
+    #[test]
+    fn parse_file_rejects_unsupported_extensions() {
+        let tree = TempTree::new();
+        let bad = tree.write("pages/notes.txt", "plain");
+
+        let err = WebpageParser.parse_file(&bad, &tree.0).unwrap_err();
+        assert!(
+            matches!(err, IngestionError::UnsupportedExtension(ref ext) if ext == ".txt"),
+            "got: {err:?}"
+        );
     }
 
     #[test]

@@ -67,6 +67,7 @@ pub mod progress;
 pub mod runner;
 pub mod sources;
 pub mod types;
+pub mod worker;
 
 pub use chunkers::json::JsonChunker;
 pub use chunkers::markdown::MarkdownChunker;

@@ -69,3 +69,7 @@ vectors = { workspace = true }
 # design D1: ingestion → graph edge): the runner delegates to
 # `graph::build_entity_links` instead of re-implementing the linker.
 graph = { workspace = true }
+# Async runtime for the document worker's poll loop (document-jobs-queue
+# task 1.4): `tokio::select!` between the poll tick and the stop signal,
+# plus `tokio::time::sleep` for the backoff between claim cycles.
+tokio = { workspace = true }

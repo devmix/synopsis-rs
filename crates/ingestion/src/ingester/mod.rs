@@ -206,11 +206,15 @@ impl<'a> Ingester<'a> {
     /// (document + chunks + entities + facts) → post-commit vector writes
     /// (design D5).
     ///
+    /// `pub(crate)`: the ingest loop (above) and the queue worker
+    /// (document-jobs-queue task 1.4, `runner::Runner::process_document_by_path`)
+    /// both run this unchanged pipeline for a single document.
+    ///
     /// # Errors
     ///
     /// Chunker, embedding, NER, storage and vector-index errors. The caller
     /// counts the failure and continues with the next document.
-    fn process_document(
+    pub(crate) fn process_document(
         &self,
         doc: &Document,
         tracker: &mut ProgressTracker,
@@ -468,6 +472,34 @@ mod tests {
     /// line, byte offsets into the content).
     struct TestSource;
 
+    impl TestSource {
+        /// Reads one `.txt` file; `BROKEN`-prefixed content simulates a
+        /// parse failure (same contract as the walk).
+        fn read_file(path: &Path) -> Result<Document, IngestionError> {
+            let content = fs::read_to_string(path).map_err(|source| IngestionError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            if content.starts_with("BROKEN") {
+                return Err(IngestionError::Io {
+                    path: path.to_path_buf(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "simulated parse failure",
+                    ),
+                });
+            }
+            Ok(Document {
+                source_path: path.to_path_buf(),
+                content,
+                metadata: DocumentMetadata {
+                    source_type: "test".to_owned(),
+                    ..Default::default()
+                },
+            })
+        }
+    }
+
     impl Parser for TestSource {
         fn parse(&self, source_path: &Path) -> ParseResult {
             let mut documents = Vec::new();
@@ -480,37 +512,20 @@ mod tests {
                 source_path,
                 |path| path.extension().is_some_and(|ext| ext == "txt"),
                 |path| {
-                    let content =
-                        fs::read_to_string(path).map_err(|source| IngestionError::Io {
-                            path: path.to_path_buf(),
-                            source,
-                        })?;
-                    if content.starts_with("BROKEN") {
-                        broken.push(path.to_path_buf());
-                        return Ok(());
+                    match Self::read_file(path) {
+                        Ok(doc) => documents.push(doc),
+                        Err(err) => broken.push(err),
                     }
-                    documents.push(Document {
-                        source_path: path.to_path_buf(),
-                        content,
-                        metadata: DocumentMetadata {
-                            source_type: "test".to_owned(),
-                            ..Default::default()
-                        },
-                    });
                     Ok(())
                 },
                 &mut errors,
             );
-            for path in broken {
-                errors.push(IngestionError::Io {
-                    path,
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "simulated parse failure",
-                    ),
-                });
-            }
+            errors.extend(broken);
             ParseResult { documents, errors }
+        }
+
+        fn parse_file(&self, path: &Path, _root: &Path) -> Result<Document, IngestionError> {
+            Self::read_file(path)
         }
 
         fn supported_extensions(&self) -> &[&str] {

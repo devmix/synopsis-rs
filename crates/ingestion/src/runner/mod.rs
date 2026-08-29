@@ -51,7 +51,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use config::DomainConfig;
 use config::ontology::{GlobalConfig, SourceConfig, SourceType};
 use config::preset::{IngestionConfig, LinkerConfig};
-use db::Db;
+use db::{ConnectionOrTx, Db, DocumentDao, GcDao};
 use embedding::EmbeddingProvider;
 use serde_json::Value;
 use vectors::VectorIndex;
@@ -62,9 +62,11 @@ use crate::entities::Resolver;
 use crate::error::IngestionError;
 use crate::ingester::{Ingester, VectorSink};
 use crate::ner::{CompositeNer, NerPrompts, NerProvider};
-use crate::progress::ProgressStats;
+use crate::progress::{ProgressStats, ProgressTracker};
 use crate::sources::Registry;
-use crate::types::{Chunker, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source};
+use crate::types::{
+    Chunker, Document, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source,
+};
 
 /// The `metadata.extra` key carrying the source's domain list (port of the
 /// oracle's `domainEnrichedParser`, which set `metadata["domain"] = src.Domain`).
@@ -386,6 +388,122 @@ impl<'a> Runner<'a> {
         self.registry.get(&resolve_source_type(src)).ok()
     }
 
+    /// Runs the full per-document pipeline for the single file at `path`
+    /// (document-jobs-queue task 1.4, the worker's `index` op).
+    ///
+    /// Resolves the configured source containing `path`, reads the ONE file
+    /// with [`Parser::parse_file`] (no source-tree walk), and runs
+    /// [`Ingester::process_document`] on the result. If the file is
+    /// genuinely gone (`NotFound`) the document row is removed (converge)
+    /// and `Ok(())` is returned.
+    ///
+    /// # Errors
+    ///
+    /// [`IngestionError::NoSourceForPath`] when no configured source
+    /// contains `path`, [`IngestionError::UnknownSourceType`] when the
+    /// source's type word has no registered implementation, or any
+    /// source-level [`IngestionError`] from the single-file read or the
+    /// pipeline.
+    pub fn process_document_by_path(&self, path: &str) -> Result<(), IngestionError> {
+        let _guard = self.lock();
+        self.process_document_by_path_locked(path)
+    }
+
+    /// Executes the `delete` op for the document at `path` (document-jobs-
+    /// queue task 1.4): removes the document row and all its dependent data
+    /// (chunks, provenance, scoped orphans) in one transaction.
+    ///
+    /// Returns `true` when a document was found and removed, `false` when
+    /// no document row exists for `path` (idempotent no-op).
+    ///
+    /// # Errors
+    ///
+    /// Any [`IngestionError::Db`] failure from the cleanup transaction.
+    pub fn delete_document_at(&self, path: &str) -> Result<bool, IngestionError> {
+        let _guard = self.lock();
+        self.delete_document_at_locked(path)
+    }
+
+    /// The unlocked core of [`Self::process_document_by_path`] (callers
+    /// hold the runner mutex).
+    fn process_document_by_path_locked(&self, path: &str) -> Result<(), IngestionError> {
+        // The file may have been deleted since the job was enqueued.
+        if matches!(
+            std::fs::symlink_metadata(path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound
+        ) {
+            // Converge: remove the document row if it exists.
+            let doc = self.db.with_conn(|conn| {
+                DocumentDao::new(ConnectionOrTx::Connection(conn)).get_by_path(path)
+            })??;
+            if let Some(doc) = doc {
+                self.clear_and_delete_doc(doc.id)?;
+            }
+            return Ok(());
+        }
+
+        let src =
+            self.find_source_for_path(path)
+                .ok_or_else(|| IngestionError::NoSourceForPath {
+                    path: path.to_owned(),
+                })?;
+        let source = self
+            .source_for_config(src)
+            .ok_or_else(|| IngestionError::UnknownSourceType(src.path.clone()))?;
+        let enriched = DomainEnrichedSource {
+            inner: source,
+            domains: &src.domains,
+        };
+        // One file, by path — the worker never walks a source directory
+        // (document-jobs-queue design Correction).
+        let doc = enriched.parse_file(Path::new(path), Path::new(&src.path))?;
+        let ner = self.build_ner_provider(src);
+        let resolver = Resolver::new(self.ingest_cfg.resolver.similarity_threshold);
+        let sink = SinkAdapter {
+            index: self.vectors,
+        };
+        let ingester = Ingester::new(
+            self.db,
+            self.ingest_cfg,
+            &enriched,
+            self.embed,
+            ner.as_deref(),
+            &resolver,
+            &sink,
+        );
+        let mut tracker = ProgressTracker::new(1, &format!("Processing {}", path));
+        ingester.process_document(&doc, &mut tracker)?;
+        Ok(())
+    }
+
+    /// The unlocked core of [`Self::delete_document_at`] (callers hold the
+    /// runner mutex).
+    fn delete_document_at_locked(&self, path: &str) -> Result<bool, IngestionError> {
+        let doc = self.db.with_conn(|conn| {
+            DocumentDao::new(ConnectionOrTx::Connection(conn)).get_by_path(path)
+        })??;
+        match doc {
+            Some(doc) => {
+                self.clear_and_delete_doc(doc.id)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Removes a document row and all its dependent data (chunks, entity
+    /// links, facts, provenance, scoped orphans) in one transaction
+    /// (shared by [`Self::delete_document_at`], [`Self::prune_deleted`] and
+    /// the worker's converge-on-deleted-file path).
+    fn clear_and_delete_doc(&self, doc_id: i64) -> Result<(), IngestionError> {
+        self.db.exec_tx(|tx| -> Result<(), IngestionError> {
+            let exec = ConnectionOrTx::Transaction(&*tx);
+            GcDao::new(exec).full_clear_doc_by_id(doc_id)?;
+            DocumentDao::new(exec).delete(doc_id)?;
+            Ok(())
+        })
+    }
+
     /// The unlocked core of [`Self::ingest_source`] (callers hold the lock).
     fn ingest_source_locked(
         &self,
@@ -530,6 +648,20 @@ impl Parser for DomainEnrichedSource<'_> {
         result
     }
 
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        let mut doc = self.inner.parse_file(path, root)?;
+        let domains = Value::Array(
+            self.domains
+                .iter()
+                .map(|d| Value::String(d.clone()))
+                .collect(),
+        );
+        doc.metadata
+            .extra
+            .insert(DOMAIN_METADATA_KEY.to_owned(), domains);
+        Ok(doc)
+    }
+
     fn supported_extensions(&self) -> &[&str] {
         self.inner.supported_extensions()
     }
@@ -658,6 +790,24 @@ mod tests {
     /// file (same contract as the ingester task 3.4 test source).
     struct TestSource;
 
+    impl TestSource {
+        /// Reads one `.txt` file into a test document.
+        fn read_file(path: &Path) -> Result<Document, IngestionError> {
+            let content = fs::read_to_string(path).map_err(|source| IngestionError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            Ok(Document {
+                source_path: path.to_path_buf(),
+                content,
+                metadata: DocumentMetadata {
+                    source_type: "test".to_owned(),
+                    ..Default::default()
+                },
+            })
+        }
+    }
+
     impl Parser for TestSource {
         fn parse(&self, source_path: &Path) -> ParseResult {
             let mut documents = Vec::new();
@@ -666,24 +816,16 @@ mod tests {
                 source_path,
                 |path| path.extension().is_some_and(|ext| ext == "txt"),
                 |path| {
-                    let content =
-                        fs::read_to_string(path).map_err(|source| IngestionError::Io {
-                            path: path.to_path_buf(),
-                            source,
-                        })?;
-                    documents.push(Document {
-                        source_path: path.to_path_buf(),
-                        content,
-                        metadata: DocumentMetadata {
-                            source_type: "test".to_owned(),
-                            ..Default::default()
-                        },
-                    });
+                    documents.push(Self::read_file(path)?);
                     Ok(())
                 },
                 &mut errors,
             );
             ParseResult { documents, errors }
+        }
+
+        fn parse_file(&self, path: &Path, _root: &Path) -> Result<Document, IngestionError> {
+            Self::read_file(path)
         }
 
         fn supported_extensions(&self) -> &[&str] {
@@ -1333,6 +1475,95 @@ mod tests {
             matches!(err, IngestionError::NoSourceForPath { .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn process_document_by_path_indexes_exactly_one_file() {
+        let root = TempDir::new("by-path-process");
+        let src = root.sub("src");
+        fs::create_dir_all(&src).unwrap();
+        let a = src.join("a.txt");
+        let b = src.join("b.txt");
+        fs::write(&a, "alpha\n").unwrap();
+        fs::write(&b, "beta\n").unwrap();
+
+        let mut harness = Harness::new();
+        harness.global.sources = vec![source_config(
+            src.to_string_lossy().as_ref(),
+            SourceType::Unstructured,
+            false,
+            &[],
+        )];
+        let runner = harness.runner();
+
+        runner
+            .process_document_by_path(a.to_string_lossy().as_ref())
+            .unwrap();
+
+        // Only the addressed file is indexed — the source directory is never
+        // walked, so the sibling stays out of the database.
+        let docs = harness
+            .db
+            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
+            .unwrap();
+        assert_eq!(docs.len(), 1, "{docs:?}");
+        assert_eq!(docs[0].original_path, a.to_string_lossy().into_owned());
+        assert!(!harness.sink.chunk_ids().unwrap().is_empty());
+
+        // An existing file outside every configured source fails
+        // explicitly (a *missing* file converges as a no-op instead).
+        let elsewhere = TempDir::new("elsewhere-by-path");
+        let outside = elsewhere.sub("file.txt");
+        fs::write(&outside, "x\n").unwrap();
+        let err = runner
+            .process_document_by_path(outside.to_string_lossy().as_ref())
+            .unwrap_err();
+        assert!(
+            matches!(err, IngestionError::NoSourceForPath { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn process_document_by_path_converges_on_deleted_file() {
+        let root = TempDir::new("by-path-gone");
+        let src = root.sub("src");
+        fs::create_dir_all(&src).unwrap();
+        let a = src.join("a.txt");
+        fs::write(&a, "alpha\n").unwrap();
+
+        let mut harness = Harness::new();
+        harness.global.sources = vec![source_config(
+            src.to_string_lossy().as_ref(),
+            SourceType::Unstructured,
+            false,
+            &[],
+        )];
+        let runner = harness.runner();
+
+        runner
+            .process_document_by_path(a.to_string_lossy().as_ref())
+            .unwrap();
+        let docs = harness
+            .db
+            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
+            .unwrap();
+        assert_eq!(docs.len(), 1, "{docs:?}");
+
+        // The file is deleted after the run: the next call converges (the
+        // document row is removed) and reports success.
+        fs::remove_file(&a).unwrap();
+        runner
+            .process_document_by_path(a.to_string_lossy().as_ref())
+            .unwrap();
+        let docs = harness
+            .db
+            .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
+            .unwrap()
+            .unwrap();
+        assert!(docs.is_empty(), "converged: {docs:?}");
     }
 
     #[test]

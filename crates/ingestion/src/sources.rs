@@ -30,7 +30,9 @@ use crate::parsers::markdown::MarkdownParser;
 use crate::parsers::mediawiki::MediawikiParser;
 use crate::parsers::unstructured::UnstructuredParser;
 use crate::parsers::webpage::WebpageParser;
-use crate::types::{Chunker, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source};
+use crate::types::{
+    Chunker, Document, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source,
+};
 
 /// Markdown source: [`MarkdownParser`] plus an injected Markdown chunker
 /// (oracle `sources.MarkdownSource`).
@@ -58,6 +60,10 @@ impl MarkdownSource {
 impl Parser for MarkdownSource {
     fn parse(&self, source_path: &Path) -> ParseResult {
         MarkdownParser.parse(source_path)
+    }
+
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        MarkdownParser.parse_file(path, root)
     }
 
     fn supported_extensions(&self) -> &[&str] {
@@ -99,6 +105,10 @@ impl JsonSource {
 impl Parser for JsonSource {
     fn parse(&self, source_path: &Path) -> ParseResult {
         JsonParser.parse(source_path)
+    }
+
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        JsonParser.parse_file(path, root)
     }
 
     fn supported_extensions(&self) -> &[&str] {
@@ -147,6 +157,10 @@ impl Parser for MediawikiSource {
         MediawikiParser.parse(source_path)
     }
 
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        MediawikiParser.parse_file(path, root)
+    }
+
     fn supported_extensions(&self) -> &[&str] {
         MediawikiParser.supported_extensions()
     }
@@ -190,6 +204,10 @@ impl WebpageSource {
 impl Parser for WebpageSource {
     fn parse(&self, source_path: &Path) -> ParseResult {
         WebpageParser.parse(source_path)
+    }
+
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        WebpageParser.parse_file(path, root)
     }
 
     fn supported_extensions(&self) -> &[&str] {
@@ -242,6 +260,10 @@ impl UnstructuredSource {
 impl Parser for UnstructuredSource {
     fn parse(&self, source_path: &Path) -> ParseResult {
         UnstructuredParser.parse(source_path)
+    }
+
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        UnstructuredParser.parse_file(path, root)
     }
 
     fn supported_extensions(&self) -> &[&str] {

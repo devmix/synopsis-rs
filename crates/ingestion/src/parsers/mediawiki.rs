@@ -230,6 +230,12 @@ impl Parser for MediawikiParser {
         ParseResult { documents, errors }
     }
 
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        // A single-file read never walks the tree, so no `graph.json`
+        // relations are loaded: the page is parsed without graph enrichment.
+        Self::read_page(path, root, &BTreeMap::new())
+    }
+
     fn supported_extensions(&self) -> &[&str] {
         MEDIAWIKI_EXTENSIONS
     }
@@ -847,5 +853,35 @@ mod tests {
         let result = MediawikiParser.parse(&tree.0);
         assert!(result.documents.is_empty());
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_file_reads_one_page_without_graph_enrichment() {
+        let tree = TempTree::new();
+        tree.write(
+            "space/wiki-type/graph.json",
+            r#"{"API Gateway": ["Service Catalog"]}"#,
+        );
+        let path = tree.write(
+            "space/wiki-type/by-type/services/api_gateway.json",
+            PAGE_JSON,
+        );
+
+        let doc = MediawikiParser.parse_file(&path, &tree.0).unwrap();
+
+        assert_eq!(doc.source_path, path);
+        assert_eq!(doc.content, "== API Gateway ==\nA service mesh component.");
+        assert_eq!(doc.metadata.source_type, "mediawiki");
+        assert_eq!(
+            doc.metadata.source_file,
+            "space/wiki-type/by-type/services/api_gateway.json"
+        );
+        assert_eq!(extra_str(&doc, "space"), Some("space".into()));
+        assert_eq!(extra_str(&doc, "entity_type"), Some("services".into()));
+        // No tree walk: the graph.json relations are NOT enriched.
+        assert!(
+            doc.metadata.extra.get("graph_relations").is_none(),
+            "single-file read must not load graph relations"
+        );
     }
 }

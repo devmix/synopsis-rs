@@ -93,6 +93,10 @@ impl Parser for MarkdownParser {
         ParseResult { documents, errors }
     }
 
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError> {
+        Self::read_file(path, root)
+    }
+
     fn supported_extensions(&self) -> &[&str] {
         MARKDOWN_EXTENSIONS
     }
@@ -260,5 +264,36 @@ mod tests {
         let result = MarkdownParser.parse(&tree.0);
         assert!(result.documents.is_empty());
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_file_reads_one_file_without_walking() {
+        let tree = TempTree::new();
+        let content = "# Heading\n\nBody text";
+        let path = tree.write("doc.md", content);
+        // Siblings must NOT be read: `parse_file` addresses exactly one file.
+        tree.write("other.md", "# Other");
+        tree.write("sub/deep.md", "# Deep");
+
+        let doc = MarkdownParser.parse_file(&path, &tree.0).unwrap();
+
+        assert_eq!(doc.source_path, path);
+        assert_eq!(doc.content, content);
+        assert_eq!(doc.metadata.source_type, "markdown");
+        assert_eq!(doc.metadata.source_file, "doc.md");
+        assert_eq!(doc.metadata.file_size, Some(content.len() as u64));
+        assert!(doc.metadata.modified_at.is_some());
+    }
+
+    #[test]
+    fn parse_file_missing_file_is_an_io_error() {
+        let tree = TempTree::new();
+        let missing = tree.0.join("nope.md");
+
+        let err = MarkdownParser.parse_file(&missing, &tree.0).unwrap_err();
+        assert!(
+            matches!(err, IngestionError::Io { ref path, .. } if path == &missing),
+            "got: {err:?}"
+        );
     }
 }
