@@ -643,6 +643,92 @@ mod tests {
         assert_eq!(job.status, "error", "error jobs are not re-claimed");
     }
 
+    // End-to-end (task 1.8): a failing document job is retried to the cap
+    // (`error`), `reset_retries` re-queues it, and once the failure is
+    // cleared the worker processes the document to `done`. The failure is
+    // injected at the embedding stage (the `MockEmbedding` fail marker) and
+    // cleared by setting it back to `None` — the same interior-mutable flip
+    // the retry test above uses.
+    #[test]
+    fn run_once_e2e_failing_doc_retries_reset_reprocesses_to_done() {
+        let tree = TempTree::new();
+        let file = tree.write("a.txt", "FAIL content\n");
+        let root = tree.0.to_string_lossy().into_owned();
+        let path = file.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.cfg.max_retries = 3;
+        harness.with_source(&root);
+        // The pipeline fails on the "FAIL" marker until it is cleared below.
+        *harness.embed.fail_marker.lock().unwrap() = Some("FAIL".to_owned());
+        let runner = harness.runner();
+        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+
+        // Enqueue the failing index job.
+        harness
+            .db
+            .with_conn(|conn| {
+                DocumentJobDao::new(ConnectionOrTx::Connection(conn))
+                    .enqueue_index(&path, &root, None)
+            })
+            .unwrap()
+            .unwrap();
+
+        // Retry up to the cap: three failures drive the job to `error`.
+        worker.run_once(1_000).unwrap();
+        worker.run_once(1_100).unwrap();
+        worker.run_once(1_200).unwrap();
+
+        let job = harness.list_jobs()[0].clone();
+        assert_eq!(job.status, "error", "at cap: error status, got {job:?}");
+        assert_eq!(job.attempts, 3, "all three attempts recorded, got {job:?}");
+        assert_eq!(
+            job.max_attempts, 3,
+            "the cap is the configured max, got {job:?}"
+        );
+        assert!(
+            job.last_error.is_some(),
+            "last_error must be set, got {job:?}"
+        );
+
+        // `reset_retries` (the CLI `queue reset-retries` wraps this) re-queues
+        // the error job as pending with attempts 0.
+        let reset = harness
+            .db
+            .with_conn(|conn| {
+                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).reset_retries(&path)
+            })
+            .unwrap()
+            .unwrap();
+        assert!(reset, "the error job must be reset");
+
+        let job = harness.list_jobs()[0].clone();
+        assert_eq!(job.status, "pending", "reset: back to pending, got {job:?}");
+        assert_eq!(job.attempts, 0, "reset: attempts cleared, got {job:?}");
+
+        // Clear the failure and run one more cycle: the document is indexed
+        // and the job is marked done. `reset_retries` set `next_attempt_at`
+        // to the real wall clock, so claim at a time safely past it.
+        *harness.embed.fail_marker.lock().unwrap() = None;
+        let due: i64 = harness
+            .db
+            .with_conn(|conn| {
+                conn.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)", [], |row| {
+                    row.get(0)
+                })
+            })
+            .unwrap()
+            .unwrap();
+        worker.run_once(due + 1).unwrap();
+
+        let job = harness.list_jobs()[0].clone();
+        assert_eq!(job.status, "done", "re-processed to done, got {job:?}");
+
+        let docs = harness.list_documents();
+        assert_eq!(docs.len(), 1, "the document must exist, got {docs:?}");
+        assert_eq!(docs[0].original_path, path, "{docs:?}");
+    }
+
     // The converge path: a file that was deleted since enqueue → document
     // row removed, job marked done.
     #[test]

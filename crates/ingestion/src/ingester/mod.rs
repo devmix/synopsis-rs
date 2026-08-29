@@ -19,8 +19,9 @@
 //!   leaves vector-less chunks; orphan reconciliation (task 3.8) repairs the
 //!   divergence — the chunk row is the source of truth.
 //! - **No logger collaborator:** the oracle's structured logger is replaced
-//!   by terse `eprintln!` warnings (stderr is reserved for non-MCP traffic,
-//!   like the progress bar); a logging crate is not in the frozen stack.
+//!   by `tracing` calls (the serve layer's subscriber owns them; the ingester
+//!   itself still takes no logger — design D3). These replace the crate's
+//!   former `eprintln!` warnings (document-jobs-queue task 1.8).
 //! - **Redundant second document update dropped:** the oracle re-updated the
 //!   document row at the end of the transaction with values it had already
 //!   written in `storeDocument`; one write is enough.
@@ -166,9 +167,10 @@ impl<'a> Ingester<'a> {
             // root BEFORE parsing, in one transaction.
             let cleared = backup::clear_source_data(self.db, source_path)?;
             if cleared > 0 {
-                eprintln!(
-                    "rebuild: cleared {cleared} documents under {}",
-                    source_path.display()
+                tracing::info!(
+                    cleared,
+                    source = %source_path.display(),
+                    "rebuild: cleared documents under source root"
                 );
             }
         }
@@ -186,11 +188,12 @@ impl<'a> Ingester<'a> {
         for (index, doc) in parse_result.documents.iter().enumerate() {
             if let Err(err) = self.process_document(doc, &mut tracker) {
                 tracker.increment_errors();
-                eprintln!(
-                    "warning: document {}/{} {} failed: {err}",
-                    index + 1,
-                    parse_result.documents.len(),
-                    doc.source_path.display()
+                tracing::error!(
+                    doc = %doc.source_path.display(),
+                    index = index + 1,
+                    total = parse_result.documents.len(),
+                    error = %err,
+                    "document failed"
                 );
             } else {
                 tracker.increment_files();
@@ -237,9 +240,9 @@ impl<'a> Ingester<'a> {
         let chunks = self.source.chunk(&doc.content, &doc.metadata)?;
         if chunks.is_empty() {
             // Empty document (oracle: warn + skip): nothing to index.
-            eprintln!(
-                "warning: empty document, skip {}",
-                doc.source_path.display()
+            tracing::warn!(
+                doc = %doc.source_path.display(),
+                "empty document, skipping"
             );
             tracker.increment_documents_skipped();
             return Ok(());
