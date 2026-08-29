@@ -87,14 +87,6 @@ fn fixture_parses_all_sections_with_expected_values() {
     assert_eq!(llm.timeout_ms, 120_000);
     assert_eq!(llm.max_retries, 3);
 
-    // ingestion.ner.prose ---------------------------------------------------
-    let prose = &cfg.ingestion.ner.prose;
-    assert!(prose.enable_pos && prose.enable_ner);
-    assert!(prose.custom_patterns.is_empty());
-    assert!(prose.entity_types.is_empty());
-    approx(prose.min_confidence, 0.5);
-    approx(prose.location_min_confidence, 0.75);
-
     // ingestion.batch_size / resolver ---------------------------------------
     assert_eq!(cfg.ingestion.batch_size, 100);
     approx(cfg.ingestion.resolver.similarity_threshold, 0.85);

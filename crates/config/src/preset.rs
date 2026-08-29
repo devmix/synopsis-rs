@@ -604,34 +604,14 @@ pub struct JsonChunkerConfig {
     pub max_objects: i32,
 }
 
-/// NER configuration (prose and/or LLM providers).
+/// NER configuration (LLM provider).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NerConfig {
     /// When true no NER runs at all.
     pub disabled: bool,
-    /// Rule / POS-based prose NER settings.
-    pub prose: ProseNerConfig,
     /// LLM-based NER provider settings.
     pub llm: LlmConfig,
-}
-
-/// Settings for the prose (POS + regex) NER provider.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ProseNerConfig {
-    /// Enable part-of-speech tagging.
-    pub enable_pos: bool,
-    /// Enable named-entity recognition.
-    pub enable_ner: bool,
-    /// User-supplied regex patterns for custom entities.
-    pub custom_patterns: Vec<String>,
-    /// Entity types to keep (filter); empty = all.
-    pub entity_types: Vec<String>,
-    /// Minimum confidence for any entity.
-    pub min_confidence: f64,
-    /// Higher threshold applied to LOCATION entities.
-    pub location_min_confidence: f64,
 }
 
 /// LLM provider settings (shared by NER and the linker).

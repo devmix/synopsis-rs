@@ -60,16 +60,6 @@ ingestion:
       timeout_ms: 120000
       # Max retry attempts after initial failure for transient errors (429, 5xx); default 3
       max_retries: 3
-    prose:
-      enable_pos: true
-      enable_ner: true
-      custom_patterns: [ ]
-      entity_types: [ ]
-      # Confidence thresholds for entity filtering
-      min_confidence: 0.5           # minimum confidence for any entity
-      location_min_confidence: 0.75 # balance: filters obvious noise, keeps real locations
-      # Note: prose NER is trained on news text and misclassifies HR terms as LOCATION.
-      # For better results, consider using LLM provider or rule-based extraction.
   batch_size: 100
   resolver:
     similarity_threshold: 0.85  # Jaro-Winkler similarity threshold for entity deduplication
