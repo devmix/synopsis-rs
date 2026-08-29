@@ -126,7 +126,6 @@ minijinja = { version = "2", default-features = false, features = ["serde", "std
 # record of the former pin (remove once the palette is tidied).
 cel-interpreter = "0.10"
 notify = "8"
-tokio-cron-scheduler = "0.15"
 indicatif = "0.18"
 
 # CLI parsing (cli change, design D1; user-approved stack extension 2026-08-27,

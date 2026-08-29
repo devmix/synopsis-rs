@@ -7,18 +7,15 @@
 //!
 //! The worker runs on the serve owner thread (the [`Runner`] is `!Send +
 //! !Sync` — it holds `&dyn` references and a `Mutex<()>` that cannot cross
-//! thread boundaries). The async [`DocumentWorker::run_loop`] only uses
-//! `tokio::select!` to interleave the poll tick with the stop signal; the
-//! blocking [`DocumentWorker::run_once`] runs directly on the owner thread.
+//! thread boundaries). The owner-thread serve loop (document-jobs-queue
+//! task 1.6) drives one blocking [`DocumentWorker::run_once`] call per poll
+//! tick, interleaved with the shutdown signal via `tokio::select!`.
 //!
 //! Backoff schedule (design): `30 * 2^(attempts-1)` seconds, i.e. 30s /
 //! 60s / 120s for attempts 1→2→3, after which the job flips to `error`
 //! status (no further retries).
 
-use std::time::Duration;
-
 use db::{ConnectionOrTx, Db, DocumentJobDao};
-use tokio::sync::watch;
 
 use crate::error::IngestionError;
 use crate::runner::Runner;
@@ -81,31 +78,6 @@ impl<'a> DocumentWorker<'a> {
         }
 
         Ok(())
-    }
-
-    /// The async poll loop: claims due jobs every `poll_interval`, stopping
-    /// when the `stop` channel fires.
-    ///
-    /// Runs on the serve owner thread (the [`Runner`] is `!Send`). The loop
-    /// is `async` only for the `tokio::select!` between the sleep and the
-    /// stop signal. `stop` is a `watch::Receiver<bool>`; the loop exits when
-    /// the sender sets `true`.
-    pub async fn run_loop(&self, mut stop: watch::Receiver<bool>, poll_interval: Duration) {
-        loop {
-            if *stop.borrow() {
-                break;
-            }
-
-            let now = now_unix_seconds();
-            if let Err(err) = self.run_once(now) {
-                eprintln!("worker: poll cycle failed: {err}");
-            }
-
-            tokio::select! {
-                _ = tokio::time::sleep(poll_interval) => {}
-                _ = stop.changed() => {}
-            }
-        }
     }
 
     /// Processes one claimed job: runs the pipeline (index) or removal
@@ -203,14 +175,6 @@ impl<'a> DocumentWorker<'a> {
 fn backoff_seconds(attempts: i32) -> i64 {
     let exponent = (attempts as u32).min(20);
     BASE_BACKOFF_SECS * (1i64 << exponent)
-}
-
-/// Current Unix time in seconds (the worker's clock for claim and backoff).
-fn now_unix_seconds() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
