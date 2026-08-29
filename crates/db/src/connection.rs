@@ -340,8 +340,9 @@ mod tests {
         assert_eq!(read("mmap_size"), 268_435_456);
     }
 
-    // (a, 1.1) open a nonexistent file → fresh v5 schema, user_version = 1,
-    //     no _schema_migrations table.
+    // (a, 1.1) open a nonexistent file → fresh v5 schema + document_jobs
+    //     (migration 2-document-jobs), user_version = 2, no
+    //     _schema_migrations table.
     #[test]
     fn open_creates_fresh_v5_schema() {
         let (db, _temp) = open_temp_db();
@@ -350,7 +351,10 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 1, "PRAGMA user_version must be 1 after init");
+        assert_eq!(
+            user_version, 2,
+            "PRAGMA user_version must be 2 after init + 2-document-jobs"
+        );
 
         let tracking_rows: i64 = db
             .with_conn(|conn| {
@@ -389,6 +393,7 @@ mod tests {
             "chunks_fts_data",
             "chunks_fts_docsize",
             "chunks_fts_idx",
+            "document_jobs",
             "documents",
             "entity_links",
             "entity_sources",
@@ -593,7 +598,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 1);
+        assert_eq!(user_version, 2);
         let hash: String = db
             .with_conn(|conn| {
                 conn.query_row(
@@ -796,7 +801,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 1);
+        assert_eq!(user_version, 2);
 
         db.exec_tx(|tx| {
             tx.execute(

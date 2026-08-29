@@ -188,7 +188,10 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 1, "temp db must be migrated");
+        assert_eq!(
+            user_version, 2,
+            "temp db must be migrated (init + 2-document-jobs)"
+        );
 
         // A clone (a plain Db, no cleanup) writes through the same file.
         db_clone
