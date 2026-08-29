@@ -294,6 +294,11 @@ impl Config {
         if self.ingestion.batch_size <= 0 {
             self.ingestion.batch_size = 100;
         }
+        // `max_retries` is normalized at deserialization time (serde default); this
+        // fills the zero value left by an absent `ingestion:` section (numeric rule).
+        if self.ingestion.max_retries <= 0 {
+            self.ingestion.max_retries = 3;
+        }
         let md = &mut self.ingestion.chunking.markdown;
         if md.max_chunk_size <= 0 {
             md.max_chunk_size = 1000;
@@ -354,6 +359,13 @@ impl Config {
             .get_or_insert_with(AutoUpdateConfig::default);
         if auto.debounce_seconds <= 0 {
             auto.debounce_seconds = 30;
+        }
+        // `retry_failed` is normalized at deserialization time: an absent key yields
+        // `RetryFailedConfig::default()` (enabled, 60 s), and a key absent inside a
+        // present `retry_failed:` map gets its per-field serde default. Only a
+        // non-positive explicit interval needs the numeric fallback.
+        if auto.retry_failed.poll_interval_seconds <= 0 {
+            auto.retry_failed.poll_interval_seconds = 60;
         }
         // `watch_sources` is normalized at deserialization time (design D13).
         // Absent section defaults to fully enabled; a present one is respected as
@@ -543,6 +555,14 @@ pub struct ApiEmbedding {
 
 // ── Ingestion ─────────────────────────────────────────────────────────────
 
+/// Default for [`IngestionConfig::max_retries`] (document-jobs-queue 1.2): the
+/// maximum number of automatic re-index attempts for a problematic document
+/// before the background worker flips it to `error` in the `document_jobs`
+/// queue.
+fn default_max_retries() -> i32 {
+    3
+}
+
 /// Document ingestion pipeline settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -555,6 +575,13 @@ pub struct IngestionConfig {
     pub batch_size: i32,
     /// Entity-resolver settings.
     pub resolver: ResolverConfig,
+    /// Max automatic re-index attempts for a problematic document before the
+    /// background worker flips it to `error` (document-jobs-queue 1.2). Absent
+    /// → 3 at parse time; a non-positive value is replaced by 3 in
+    /// [`Config::apply_defaults`](crate::preset::Config::apply_defaults)
+    /// (numeric rule, same as `batch_size`).
+    #[serde(default = "default_max_retries")]
+    pub max_retries: i32,
 }
 
 /// Per-format chunker settings.
@@ -810,6 +837,43 @@ impl Default for GraphConfig {
     }
 }
 
+/// Default poll interval for the failed-document retry sweep
+/// (document-jobs-queue 1.2): seconds between `document_jobs` queue polls.
+fn default_retry_poll_interval() -> i32 {
+    60
+}
+
+/// Background re-processing of failed documents (document-jobs-queue 1.2):
+/// enables the worker's retry sweep of the `document_jobs` queue and sets its
+/// poll interval. An absent key resolves to [`RetryFailedConfig::default`]:
+/// enabled with a 60 s poll interval — backward compatible with presets that
+/// predate the key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetryFailedConfig {
+    /// Enable background re-processing of failed documents. Presence semantics
+    /// (design D13): absent → true; an explicit `false` is respected.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Poll interval for the `document_jobs` queue in seconds. Absent → 60 at
+    /// parse time; a non-positive value is replaced by 60 in
+    /// [`Config::apply_defaults`](crate::preset::Config::apply_defaults)
+    /// (numeric rule, same as `debounce_seconds`).
+    #[serde(default = "default_retry_poll_interval")]
+    pub poll_interval_seconds: i32,
+}
+
+impl Default for RetryFailedConfig {
+    fn default() -> Self {
+        // The retry sweep is on by default with a 60 s poll interval
+        // (document-jobs-queue 1.2, backward compatible).
+        Self {
+            enabled: default_true(),
+            poll_interval_seconds: default_retry_poll_interval(),
+        }
+    }
+}
+
 /// Automatic file-watching / re-indexing settings (serve mode).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -828,6 +892,10 @@ pub struct AutoUpdateConfig {
     pub watch_sources: bool,
     /// Run a full source scan on startup. Same presence rule as [`Self::enabled`].
     pub initial_sync: bool,
+    /// Background re-processing of failed documents (document-jobs-queue 1.2). Absent key
+    /// → [`RetryFailedConfig::default`] (enabled, 60 s poll interval).
+    #[serde(default)]
+    pub retry_failed: RetryFailedConfig,
 }
 
 impl Default for AutoUpdateConfig {
@@ -835,12 +903,14 @@ impl Default for AutoUpdateConfig {
         // `watch_sources` follows presence semantics (absent → true, design D13).
         // `enabled` / `initial_sync` stay zero here on purpose: a materialized absent
         // section is force-enabled by `apply_defaults` (design D8), and a present
-        // section must keep its parsed values.
+        // section must keep its parsed values. `retry_failed` carries its documented
+        // defaults (enabled, 60 s) — there is no force-off counterpart.
         Self {
             enabled: false,
             debounce_seconds: 0,
             watch_sources: true,
             initial_sync: false,
+            retry_failed: RetryFailedConfig::default(),
         }
     }
 }
@@ -1245,6 +1315,7 @@ mod tests {
 
         // Ingestion.
         assert_eq!(cfg.ingestion.batch_size, 100);
+        assert_eq!(cfg.ingestion.max_retries, 3); // document-jobs-queue 1.2
         let md = &cfg.ingestion.chunking.markdown;
         assert_eq!(md.strategy, ChunkingStrategy::Headers);
         assert_eq!(md.max_chunk_size, 1000);
@@ -1288,6 +1359,9 @@ mod tests {
         assert!(au.enabled && au.initial_sync);
         assert_eq!(au.debounce_seconds, 30);
         assert!(au.watch_sources);
+        // Retry sweep defaults (document-jobs-queue 1.2).
+        assert!(au.retry_failed.enabled);
+        assert_eq!(au.retry_failed.poll_interval_seconds, 60);
 
         // Scheduler gains exactly one default job: orphan_cleanup, disabled / 3600s.
         assert_eq!(cfg.scheduler.jobs.len(), 1);
@@ -1444,6 +1518,90 @@ server:
         assert!(!au.initial_sync); // not force-enabled either (the section was present)
         assert_eq!(au.debounce_seconds, 30); // field defaults still apply inside it
         assert!(au.watch_sources);
+    }
+
+    // ── retry config (document-jobs-queue task 1.2) ─────────────────────────
+
+    #[test]
+    fn retry_fields_default_when_keys_absent() {
+        // Backward compatibility: a preset that predates the retry keys parses and
+        // gets the documented defaults — max_retries=3, retry sweep enabled with a
+        // 60 s poll interval — both when the whole sections are missing and when
+        // the section is present but the keys are not.
+        let mut cfg = parse("server:\n  name: x\n");
+        // Absent `ingestion:` section -> zero value; apply_defaults fills it.
+        cfg.apply_defaults();
+        assert_eq!(cfg.ingestion.max_retries, 3);
+        let au = cfg.auto_update.expect("absent auto_update becomes Some");
+        assert!(au.retry_failed.enabled);
+        assert_eq!(au.retry_failed.poll_interval_seconds, 60);
+
+        // Keys absent inside present sections: serde defaults at parse time.
+        let partial = parse(
+            r#"
+ingestion:
+  batch_size: 100
+auto_update:
+  enabled: true
+"#,
+        );
+        assert_eq!(partial.ingestion.max_retries, 3);
+        let au = partial.auto_update.expect("present section");
+        assert!(au.retry_failed.enabled);
+        assert_eq!(au.retry_failed.poll_interval_seconds, 60);
+    }
+
+    #[test]
+    fn retry_failed_partial_map_fills_missing_field() {
+        // A present `retry_failed:` map with only one key: the missing key gets its
+        // per-field serde default (no zero poll interval from a partial map).
+        let cfg = parse("auto_update:\n  retry_failed:\n    enabled: false\n");
+        let rf = &cfg.auto_update.expect("present section").retry_failed;
+        assert!(!rf.enabled); // explicit false respected (design D13)
+        assert_eq!(rf.poll_interval_seconds, 60); // absent field -> default
+    }
+
+    #[test]
+    fn retry_fields_explicit_values_respected() {
+        let mut cfg = parse(
+            r#"
+ingestion:
+  max_retries: 5
+auto_update:
+  retry_failed:
+    enabled: false
+    poll_interval_seconds: 120
+"#,
+        );
+        cfg.apply_defaults();
+        assert_eq!(cfg.ingestion.max_retries, 5); // not reset to 3
+        let rf = &cfg.auto_update.expect("present section").retry_failed;
+        assert!(!rf.enabled);
+        assert_eq!(rf.poll_interval_seconds, 120); // not reset to 60
+    }
+
+    #[test]
+    fn retry_fields_non_positive_values_get_numeric_fallback() {
+        // A configured 0/negative on the numeric fields is treated as unset
+        // (same rule as `batch_size` / `debounce_seconds`).
+        let mut cfg = parse(
+            r#"
+ingestion:
+  max_retries: 0
+auto_update:
+  retry_failed:
+    poll_interval_seconds: -5
+"#,
+        );
+        cfg.apply_defaults();
+        assert_eq!(cfg.ingestion.max_retries, 3);
+        assert_eq!(
+            cfg.auto_update
+                .expect("present section")
+                .retry_failed
+                .poll_interval_seconds,
+            60
+        );
     }
 
     #[test]

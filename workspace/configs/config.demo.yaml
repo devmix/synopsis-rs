@@ -67,6 +67,9 @@ ingestion:
       # Max retry attempts after initial failure for transient errors (429, 5xx); default 3
       max_retries: 3
   batch_size: 100
+  # Max automatic re-index attempts for a problematic document before the
+  # background worker marks it `error` in the document_jobs queue (default 3).
+  max_retries: 3
   resolver:
     similarity_threshold: 0.85  # Jaro-Winkler similarity threshold for entity deduplication
 
@@ -117,6 +120,9 @@ auto_update:
   debounce_seconds: 1
   watch_sources: true
   initial_sync: true    # full source scan on startup; false to skip
+  retry_failed:         # background re-processing of failed documents (default enabled)
+    enabled: true
+    poll_interval_seconds: 60   # document_jobs queue poll interval in seconds
 
 # Universal job scheduler (gocron) — periodic background tasks during serve mode.
 # Jobs are registered by name; each job can be enabled/disabled and given its

@@ -87,8 +87,9 @@ fn fixture_parses_all_sections_with_expected_values() {
     assert_eq!(llm.timeout_ms, 120_000);
     assert_eq!(llm.max_retries, 3);
 
-    // ingestion.batch_size / resolver ---------------------------------------
+    // ingestion.batch_size / max_retries / resolver --------------------------
     assert_eq!(cfg.ingestion.batch_size, 100);
+    assert_eq!(cfg.ingestion.max_retries, 3); // document-jobs-queue 1.2
     approx(cfg.ingestion.resolver.similarity_threshold, 0.85);
 
     // linker ----------------------------------------------------------------
@@ -131,6 +132,9 @@ fn fixture_parses_all_sections_with_expected_values() {
         .expect("auto_update section present");
     assert!(au.enabled && au.watch_sources && au.initial_sync);
     assert_eq!(au.debounce_seconds, 1);
+    // retry_failed (document-jobs-queue 1.2, explicit in the fixture).
+    assert!(au.retry_failed.enabled);
+    assert_eq!(au.retry_failed.poll_interval_seconds, 60);
 
     // scheduler -------------------------------------------------------------
     let job = cfg
