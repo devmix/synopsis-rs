@@ -592,6 +592,8 @@ mod tests {
     use config::preset::{Config, EmbeddingsMode, LocalEmbedding};
     use embedding::EmbeddingError;
 
+    use vectors::ENGINE_USEARCH;
+
     use super::*;
 
     /// A unique temporary directory that removes itself (and its contents)
@@ -1047,7 +1049,7 @@ models:
         // different dimension.
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
         create_vector_engine(
-            "lance",
+            ENGINE_USEARCH,
             &config.dataset.vectors_path(&config.paths.workspace_dir),
             &stored,
         )

@@ -203,7 +203,7 @@ mod tests {
     use embedding::EmbeddingProvider;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use vectors::{LanceEngine, VectorIndexConfig};
+    use vectors::{UsearchEngine, VectorIndexConfig};
 
     use crate::serve::bootstrap::open_db;
 
@@ -267,7 +267,7 @@ mod tests {
 
     /// Pre-creates a stored ANN index with the given dimension at the
     /// fixture's dataset vectors path (dataset `edtech`, default engine:
-    /// the `vectors/lance` subdirectory, task 1.5 layout).
+    /// the `vectors/usearch` subdirectory, task 1.5 layout).
     fn stored_index(workspace_dir: &Path, dim: usize) {
         let stored = VectorIndexConfig::new(dim, 16, 100, 256, 32, 200).expect("index config");
         let vectors_path = workspace_dir
@@ -275,8 +275,8 @@ mod tests {
             .join("edtech")
             .join("state")
             .join("vectors")
-            .join("lance");
-        LanceEngine::create(&vectors_path, stored).expect("create stored index");
+            .join("usearch");
+        UsearchEngine::create(&vectors_path, stored).expect("create stored index");
     }
 
     /// A no-op embedding provider for tests.
@@ -333,7 +333,7 @@ mod tests {
         let dim = 4;
         let embed = Arc::new(FakeEmbed::new(dim));
         let vectors = Arc::new(
-            vectors::LanceEngine::create(
+            vectors::UsearchEngine::create(
                 std::env::temp_dir().join(format!("lt-test-{}", std::process::id())),
                 VectorIndexConfig::new(dim, 16, 100, 1, 1, 10).unwrap(),
             )

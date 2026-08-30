@@ -94,7 +94,7 @@ use search::{
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, mpsc};
-use vectors::{VectorIndex, VectorsError, create_vector_engine};
+use vectors::{ENGINE_USEARCH, VectorIndex, VectorsError, create_vector_engine};
 
 use crate::db::clear_dataset_tables;
 use crate::error::CliError;
@@ -734,7 +734,7 @@ pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliErr
     // Only the ACTIVE engine's subdirectory is dropped — a stored index of
     // the other engine (if any) is left untouched.
     let engine_name = boot.config.vectors_config().engine;
-    let name = engine_name.as_deref().unwrap_or("lance");
+    let name = engine_name.as_deref().unwrap_or(ENGINE_USEARCH);
     let base = boot
         .config
         .dataset
@@ -1298,7 +1298,7 @@ mod tests {
         // Pre-create the stored index (at the fixture's dataset vectors
         // path, default engine) with a different dimension.
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        create_vector_engine("lance", &dataset_vectors_path(&dir), &stored)
+        create_vector_engine(ENGINE_USEARCH, &dataset_vectors_path(&dir), &stored)
             .expect("create stored index");
 
         let port = free_port();
@@ -1352,24 +1352,24 @@ mod tests {
     fn recreate_leaves_the_other_engine_subdirectory_untouched() {
         let dir = TempDir::new("recreate-other-engine");
         let vectors_base = dataset_vectors_path(&dir);
-        // The other engine's subdirectory (usearch layout: one index file).
-        // The cli test build has no usearch feature, so the foreign index
-        // is faked with plain files — recreate must not touch it.
-        let other = vectors_base.join("usearch");
+        // The other engine's subdirectory (lance layout: one index file).
+        // The foreign index is faked with plain files — recreate must not
+        // touch it.
+        let other = vectors_base.join("lance");
         std::fs::create_dir_all(&other).expect("create other-engine dir");
-        std::fs::write(other.join("index.usearch"), b"other").expect("seed other index");
+        std::fs::write(other.join("vectors.lance"), b"other").expect("seed other index");
 
         let mut boot = test_bootstrap(&dir);
         recreate_vectors_engine(&mut boot).expect("recreate must succeed");
 
-        // The active (default: lance) engine is recreated at its
+        // The active (default: usearch) engine is recreated at its
         // engine-tagged subdirectory.
         assert!(
-            vectors_base.join("lance").join("vectors.lance").exists(),
+            vectors_base.join("usearch").join("index.usearch").exists(),
             "the active engine subdirectory must be recreated"
         );
         assert!(
-            other.join("index.usearch").exists(),
+            other.join("vectors.lance").exists(),
             "the other engine subdirectory must be untouched"
         );
         let vectors = boot.vectors.as_deref().expect("engine recreated");
@@ -1383,7 +1383,7 @@ mod tests {
     fn serve_mismatch_without_auto_rebuild_is_fatal() {
         let dir = TempDir::new("dim-fatal");
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        create_vector_engine("lance", &dataset_vectors_path(&dir), &stored)
+        create_vector_engine(ENGINE_USEARCH, &dataset_vectors_path(&dir), &stored)
             .expect("create stored index");
 
         let mut boot = test_bootstrap(&dir);
