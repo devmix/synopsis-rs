@@ -7011,6 +7011,7 @@ dependencies = [
  "cxx-build",
  "futures",
  "lancedb",
+ "rayon",
  "thiserror",
  "tokio",
  "usearch",

@@ -1,12 +1,17 @@
-//! ANN index contract (trait) and LanceDB engine; replaces Go vec0 brute-force search.
-//! No Go counterpart - new crate per design.md D1 (tier 0: no internal dependencies;
-//! engine chosen by native-seam-spikes, ADR 0003).
+//! ANN index contract (trait) and the LanceDB / USearch engines; replaces Go vec0
+//! brute-force search. No Go counterpart - new crate per design.md D1 (tier 0: no
+//! internal dependencies; engine chosen by native-seam-spikes, ADR 0003).
 //!
 //! The public seam is [`VectorIndex`] (object-safe; consumers hold
 //! `Arc<dyn VectorIndex>`), [`VectorIndexConfig`] (index/query parameters, defaults per
-//! ADR 0003) and [`VectorsError`]. The LanceDB-backed engine ([`engine::LanceEngine`])
-//! runs the async LanceDB API on a dedicated tokio runtime (design D2) behind sync
-//! methods: call it only from sync contexts or `spawn_blocking` workers.
+//! ADR 0003) and [`VectorsError`]. Two engines implement the trait:
+//!
+//! - [`engine::LanceEngine`] (feature `engine-lance`) runs the async LanceDB API on a
+//!   dedicated tokio runtime (design D2) behind sync methods: call it only from sync
+//!   contexts or `spawn_blocking` workers.
+//! - [`usearch_engine::UsearchEngine`] (feature `engine-usearch`) wraps the USearch 2.26
+//!   C++11 HNSW core (cxx FFI, `L2sq` metric with `U8` quantization) with sync,
+//!   thread-safe methods; `open` loads the index file for read-write.
 //!
 //! Inputs are ready-made `(chunk_id, Vec<f32>)` pairs; `chunk_id` is the application-level
 //! primary key (the SQLite chunk row id). The dimensionality is a configuration parameter -
@@ -46,6 +51,8 @@ pub mod usearch_engine;
 #[cfg(feature = "engine-lance")]
 pub use engine::LanceEngine;
 pub use error::VectorsError;
+#[cfg(feature = "engine-usearch")]
+pub use usearch_engine::UsearchEngine;
 
 /// Index and query parameters for the ANN engine.
 ///

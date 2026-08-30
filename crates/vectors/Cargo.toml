@@ -13,7 +13,7 @@ workspace = true
 [features]
 default = ["engine-lance"]
 engine-lance = ["dep:lancedb"]
-engine-usearch = ["dep:usearch", "dep:cxx"]
+engine-usearch = ["dep:usearch", "dep:cxx", "dep:rayon"]
 
 # D1 tier 0: no internal dependencies. The ANN engine (usearch vs lance) is a
 # new crate dependency chosen by native-seam-spikes; consumers know only the trait (D5).
@@ -34,6 +34,13 @@ thiserror = { workspace = true }
 usearch = { workspace = true, optional = true }
 # cxx FFI error type (`cxx::Exception`) returned by the usearch API.
 cxx = { version = "1", optional = true }
+# Concurrent batch-insert pool for the usearch engine (add-usearch-ann-engine
+# task 1.2, design.md: "chunked single add via rayon pool — the index is
+# concurrent"). rayon 1.12.0 (2026-04-14, MIT OR Apache-2.0): pure Rust with
+# zero native dependencies, MSRV 1.63 < pinned Rust 1.96.0 — cross-compiles
+# on all 5 CI targets like the rest of the stack. Gated behind `engine-usearch`
+# so the default (lance) build graph is unchanged.
+rayon = { version = "1", optional = true }
 
 # cxx-build compiles the usearch C++ core at build time (task 1.1).
 [build-dependencies]
