@@ -93,3 +93,31 @@
 #### Scenario: Переопределение runtime-параметров
 - **WHEN** секция `vectors` задаёт efSearch/nprobes
 - **THEN** поиск использует переопределённые значения без перестроения индекса
+
+### Requirement: Выбор ANN-движка (lance | usearch)
+
+Крейт `vectors` поддерживает два ANN-движка за одним трейтом `VectorIndex` с идентичной семантикой:
+`LanceEngine` (IvfHnswSq, ADR 0003) и `UsearchEngine` (usearch v2.26.1, C++/cxx FFI, bf16-квантование,
+disk-backed). Выбор — гибридный: compile-time через Cargo-фичи `engine-lance` (default) и
+`engine-usearch`, и runtime через поле `vectors.engine` (`"lance"` | `"usearch"`) в конфиге.
+`open_vectors_engine()` диспетчеризует через `enum VectorEngine` и возвращает `Arc<dyn VectorIndex>`
+без изменения сигнатуры, поэтому `search`/`ingestion`/`mcp` не зависят от конкретного движка.
+Если обе фичи включены, а `vectors.engine` не задан — используется `lance` (обратная совместимость);
+невалидное значение — явная ошибка. В период сравнения default-фичи включают оба движка; после
+решения default сужается до выбранного.
+
+#### Scenario: Дефолт без поля engine
+- **WHEN** пресет не задаёт `vectors.engine`, а включены обе фичи
+- **THEN** инстанцируется `LanceEngine`
+
+#### Scenario: Явный выбор usearch
+- **WHEN** `vectors.engine = "usearch"` и включена фича `engine-usearch`
+- **THEN** инстанцируется `UsearchEngine` с bf16-квантованием и L2sq-метрикой
+
+#### Scenario: Невалидное значение
+- **WHEN** `vectors.engine = "foo"`
+- **THEN** `open_vectors_engine` возвращает явную ошибку конфигурации
+
+#### Scenario: Фича не включена
+- **WHEN** `vectors.engine = "usearch"`, но фича `engine-usearch` выключена
+- **THEN** `open_vectors_engine` возвращает ошибку «движок недоступен в данной сборке»

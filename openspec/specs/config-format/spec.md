@@ -46,6 +46,26 @@ Rust-бинарь читает те же `config.{preset}.yaml`, что и Go о
 - **WHEN** в YAML задано `ingestion.max_retries: 5` и `auto_update.retry_failed.poll_interval_seconds: 120`
 - **THEN** значения уважаются (фоновый worker повторяет до 5 раз с опросом очереди каждые 120 с)
 
+### Requirement: Поле vectors.engine
+
+Секция `vectors:` (аддитивное расширение config-format, решение 2026-08-21) дополняется опциональным
+полем `engine` (`"lance"` | `"usearch"`), выбирающим ANN-движок в `crates/vectors` (change
+`add-usearch-ann-engine`, 2026-08-29). Поле необязательно: при отсутствии используется `lance`
+(обратная совместимость). Невалидное значение вызывает ошибку разбора/валидации конфигурации.
+Поле не влияет на другие секции конфига и не меняет формат пресета.
+
+#### Scenario: Отсутствие поля
+- **WHEN** пресет содержит секцию `vectors` без поля `engine`
+- **THEN** используется движок `lance` по умолчанию
+
+#### Scenario: Явное значение
+- **WHEN** пресет задаёт `vectors.engine: "usearch"`
+- **THEN** `vectors` инстанцирует `UsearchEngine` (при включённой фиче `engine-usearch`)
+
+#### Scenario: Невалидное значение
+- **WHEN** пресет задаёт `vectors.engine: "foo"`
+- **THEN** конфигурация отклоняется с явной ошибкой
+
 ### Requirement: Реестр моделей onnx.yaml
 
 Формат `onnx.yaml` сохраняется: секция `runtime` (version, platforms[] — key/os/arch/archive_url/archive_format/library_name/library_path) и `models` (default, entries[] — name/display_name/description/version/vector_dim/files[name,url,size_bytes]). Поведение загрузки моделей (скачивание по url, проверка размера, хранение в data/) совпадает с оракулом.
