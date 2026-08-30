@@ -105,10 +105,6 @@ const WAL_ADD: u8 = 1;
 const WAL_DEL: u8 = 2;
 /// WAL flag: a vector was updated (reserved for a future update operation;
 /// a stored vector with this bit set is stale until compaction).
-///
-/// `allow`: consumed by [`UsearchEngine::load_stale_ids`] (itself dead in
-/// the lib target until task 2.3's search / task 2.4's compaction use it).
-#[allow(dead_code)]
 const WAL_UPD: u8 = 4;
 
 /// USearch-backed ANN index (add-usearch-ann-engine task 1.2).
@@ -268,17 +264,39 @@ impl UsearchEngine {
     /// sorted by distance ascending (L2sq on the quantized storage — see the
     /// module docs). An empty index yields an empty vec (not an error).
     /// Requires `k > 0` and `query.len() == config.dim`.
+    ///
+    /// WAL filtering (usearch-wal-persistence task 2.3): chunk ids whose
+    /// `usearch_vectors_log` record carries the DEL or UPD bit are excluded
+    /// during HNSW traversal via usearch's `filtered_search` (the filter
+    /// closure is evaluated per-candidate inside the C++ core, not as a
+    /// post-filter), so deleted/updated vectors never appear in the results.
+    ///
+    /// The search runs across the engine's segments in parallel (rayon
+    /// `par_iter`); per-segment results are merged by [`merge_results`]
+    /// (dedup by chunk_id keeping the minimum distance, sort ascending,
+    /// truncate to `k`).
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, VectorsError> {
         self.config.validate_search(query, k)?;
-        let matches = self.index.search(query, k).map_err(map_usearch)?;
-        let mut results: Vec<(u32, f32)> = Vec::with_capacity(matches.keys.len());
-        for (key, distance) in matches.keys.iter().zip(matches.distances.iter()) {
-            results.push((key_to_chunk_id(*key)?, *distance));
-        }
-        // The core returns matches sorted, but the contract sorts
-        // explicitly (distance asc, id tiebreak) — same as LanceEngine.
-        results.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
-        Ok(results)
+        let stale = self.load_stale_ids()?;
+
+        // Parallel search across segments using usearch's filtered_search
+        // (filters stale keys during HNSW traversal).
+        let segments: &[&Index] = &[&self.index];
+        let results: Vec<Vec<(u32, f32)>> = segments
+            .par_iter()
+            .map(|seg| {
+                let matches = seg
+                    .filtered_search(query, k, |key: u64| !stale.contains(&(key as u32)))
+                    .map_err(map_usearch)?;
+                let mut results = Vec::with_capacity(matches.keys.len());
+                for i in 0..matches.keys.len() {
+                    results.push((key_to_chunk_id(matches.keys[i])?, matches.distances[i]));
+                }
+                Ok(results)
+            })
+            .collect::<Result<Vec<_>, VectorsError>>()?;
+
+        Ok(merge_results(results, k))
     }
 
     /// Removes the vectors whose chunk id is in `chunk_ids`.
@@ -463,10 +481,6 @@ impl UsearchEngine {
     /// compaction rewrites the segments).
     ///
     /// A no-op returning an empty set when no WAL connection is attached.
-    ///
-    /// `allow`: dead in the lib target until task 2.3's search and task
-    /// 2.4's compaction consume it (exercised by the unit tests meanwhile).
-    #[allow(dead_code)]
     fn load_stale_ids(&self) -> Result<HashSet<u32>, VectorsError> {
         let Some(wal) = &self.wal else {
             return Ok(HashSet::new());
@@ -554,6 +568,29 @@ fn add_rows(index: &Index, rows: &[(u32, &[f32])]) -> Result<(), VectorsError> {
             Ok(())
         })
         .map(|_| ())
+}
+
+/// Merges per-segment search results (usearch-wal-persistence task 2.3):
+/// deduplicates by `chunk_id` (keeping the minimum distance, since each
+/// chunk should live in exactly one segment — a duplicate indicates a
+/// transition state), sorts by distance ascending (id tiebreak), and
+/// truncates to `k`.
+fn merge_results(results: Vec<Vec<(u32, f32)>>, k: usize) -> Vec<(u32, f32)> {
+    use std::collections::HashMap;
+
+    let mut merged: HashMap<u32, f32> = HashMap::new();
+    for segment_results in results {
+        for (id, distance) in segment_results {
+            merged
+                .entry(id)
+                .and_modify(|existing| *existing = existing.min(distance))
+                .or_insert(distance);
+        }
+    }
+    let mut sorted: Vec<_> = merged.into_iter().collect();
+    sorted.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+    sorted.truncate(k);
+    sorted
 }
 
 /// Index options for the configured geometry: `L2sq` metric, the configured
@@ -1449,5 +1486,160 @@ mod tests {
             5,
             "the rebuild replaced the content"
         );
+    }
+
+    // --- Parallel search with WAL filtering (task 2.3) ----------------------
+
+    /// Acceptance: usearch's `filtered_search` excludes stale chunk ids
+    /// during HNSW traversal. A deleted chunk (DEL flag in WAL) must not
+    /// appear in search results even though its vector is still physically
+    /// in the index (the RAM index is mutated, but the test inserts then
+    /// journals a DEL without removing from the index to isolate the filter).
+    #[test]
+    fn test_filtered_search_excludes_stale() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        // Insert 10 vectors (ids 0..10).
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+
+        // Delete chunk 3: this journals a DEL record AND removes from the
+        // index. To isolate the filtered_search path (where the vector is
+        // still physically present but marked stale), we re-insert chunk 3
+        // and then journal only a DEL without removing from the index.
+        engine.delete_by_chunk_ids(&[3]).expect("delete");
+        engine.insert(3, &data[3].1).expect("re-insert 3");
+
+        // Now chunk 3 is back in the index, but its WAL record is still DEL
+        // (the re-insert wrote an ADD, which replaced the DEL). We need to
+        // re-journal a DEL to make it stale again.
+        engine.delete_by_chunk_ids(&[3]).expect("delete 3 again");
+
+        // At this point chunk 3 is removed from the index AND has a DEL
+        // record. Let's verify the search excludes it (it's already gone
+        // from the index, so this is a basic sanity check).
+        let results = engine.search(&data[3].1, 10).expect("search");
+        let ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
+        assert!(
+            !ids.contains(&3),
+            "deleted chunk 3 must not appear in results: {ids:?}"
+        );
+
+        // Now the key test: insert chunk 3 back (ADD record in WAL),
+        // then manually overwrite the WAL record to DEL (simulating a
+        // crash between the WAL write and the index mutation).
+        engine.insert(3, &data[3].1).expect("re-insert 3");
+        // Overwrite the WAL record for chunk 3 to DEL (simulating the
+        // WAL-first crash scenario: WAL says DEL but index still has it).
+        wal.check
+            .execute(
+                "INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, created_at) \
+                 VALUES (3, 2, datetime('now'))",
+                [],
+            )
+            .expect("set chunk 3 to DEL in WAL");
+
+        // Now chunk 3 is in the index but marked stale (DEL) in the WAL.
+        // The filtered_search must exclude it.
+        let results = engine.search(&data[3].1, 10).expect("search with stale");
+        let ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
+        assert!(
+            !ids.contains(&3),
+            "stale chunk 3 (DEL in WAL, present in index) must be excluded by filtered_search: {ids:?}"
+        );
+        // The other vectors are still returned.
+        assert!(!results.is_empty(), "other vectors must still be returned");
+    }
+
+    /// Acceptance: parallel search returns correct results (top-1 is the
+    /// queried vector, results are distance-ascending, correct count).
+    #[test]
+    fn test_parallel_search_correctness() {
+        let dir = TempDir::new();
+        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
+
+        let data = rows(0, 200);
+        engine
+            .insert_batch(&batch_refs(&data))
+            .expect("insert 200 rows");
+
+        // Query = an exact stored row (a cluster center): top-1 must be
+        // that row at ~0 distance.
+        let results = engine.search(&data[5].1, 10).expect("search");
+        assert_eq!(results.len(), 10, "10 results for 200 stored rows");
+        assert_eq!(results[0].0, 5, "top-1 must be the queried row");
+        assert!(
+            results[0].1 < 1e-3,
+            "top-1 distance must be ~0, got {}",
+            results[0].1
+        );
+        // Results are distance-ascending.
+        for pair in results.windows(2) {
+            assert!(
+                pair[0].1 <= pair[1].1,
+                "results must be distance-asc: {results:?}"
+            );
+        }
+
+        // Search with a WAL attached (no stale ids): same results.
+        let wal = WalDb::new();
+        let dir2 = TempDir::new();
+        let engine2 = UsearchEngine::create(&dir2.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+        engine2
+            .insert_batch(&batch_refs(&data))
+            .expect("insert 200 rows");
+        let results2 = engine2.search(&data[5].1, 10).expect("search with WAL");
+        let keys1: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
+        let keys2: Vec<u32> = results2.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            keys1, keys2,
+            "WAL with no stale ids must not change results"
+        );
+    }
+
+    /// Acceptance: `merge_results` deduplicates by chunk_id (keeping the
+    /// minimum distance), sorts ascending, and truncates to k.
+    #[test]
+    fn test_merge_results_deduplication() {
+        // Two segments both return chunk_id 5 with different distances:
+        // the merge must keep the minimum (1.0 < 2.0).
+        let results: Vec<Vec<(u32, f32)>> = vec![
+            vec![(5u32, 2.0f32), (3, 1.5), (1, 0.5)],
+            vec![(5u32, 1.0f32), (7, 3.0), (1, 0.8)],
+        ];
+        let merged = merge_results(results, 10);
+        // Expected sorted by distance asc: 1 (0.5), 5 (min 1.0), 3 (1.5), 7 (3.0).
+        let ids: Vec<u32> = merged.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            vec![1, 5, 3, 7],
+            "dedup keeps all unique ids, sorted by distance"
+        );
+        assert_eq!(merged[0].1, 0.5, "chunk 1 keeps min distance");
+        assert_eq!(merged[1].1, 1.0, "chunk 5 keeps min distance (1.0 < 2.0)");
+
+        // Truncation: k=2 keeps only the top-2 by distance.
+        let merged = merge_results(
+            vec![
+                vec![(10u32, 0.1f32), (20, 0.2), (30, 0.3)],
+                vec![(40u32, 0.4f32), (50, 0.5)],
+            ],
+            2,
+        );
+        assert_eq!(merged.len(), 2, "truncated to k=2");
+        assert_eq!(merged[0].0, 10, "top-1 is the closest");
+        assert_eq!(merged[1].0, 20, "top-2 is the second closest");
+
+        // Empty input: empty output.
+        assert!(merge_results(vec![], 5).is_empty());
+
+        // Single empty segment: empty output.
+        assert!(merge_results(vec![vec![]], 5).is_empty());
     }
 }
