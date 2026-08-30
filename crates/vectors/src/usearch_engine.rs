@@ -80,7 +80,7 @@
 //! carry at least one worker thread from the file header, so `open` needs
 //! no reserve.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -311,6 +311,8 @@ impl UsearchEngine {
     ///
     /// Per-segment WAL filtering: each segment uses cumulative WAL entries
     /// from segment 0..N, ensuring correct filtering across multiple segments.
+    /// The WAL is loaded once into memory, then cumulative stale sets are
+    /// computed without repeated SQL queries.
     ///
     /// The search runs across the engine's segments in parallel (rayon
     /// `par_iter`); per-segment results are merged by [`merge_results`]
@@ -319,14 +321,26 @@ impl UsearchEngine {
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, VectorsError> {
         self.config.validate_search(query, k)?;
 
+        // Load all WAL entries once, group by segment_id
+        let wal_by_segment = self.load_wal_grouped()?;
+
+        // Build cumulative stale sets for each segment
+        let mut cumulative_stale: Vec<HashSet<u32>> = Vec::new();
+        let mut current_stale = HashSet::new();
+        for segment_id in 0..=self.disk_segments.len() {
+            if let Some(ids) = wal_by_segment.get(&(segment_id as u32)) {
+                current_stale.extend(ids);
+            }
+            cumulative_stale.push(current_stale.clone());
+        }
+
         // Search DISK segments with cumulative WAL filtering
         let disk_results: Vec<Vec<(u32, f32)>> = self
             .disk_segments
             .par_iter()
             .enumerate()
             .map(|(i, seg)| {
-                // Cumulative stale IDs: all WAL entries from segment 0..i
-                let stale = self.load_stale_ids_for_segment(i as u32)?;
+                let stale = &cumulative_stale[i];
                 let matches = seg
                     .filtered_search(query, k, |key: u64| !stale.contains(&(key as u32)))
                     .map_err(map_usearch)?;
@@ -339,7 +353,7 @@ impl UsearchEngine {
             .collect::<Result<Vec<_>, VectorsError>>()?;
 
         // Search RAM layer with segment_id=0 WAL
-        let ram_stale = self.load_stale_ids_for_segment(0)?;
+        let ram_stale = &cumulative_stale[0];
         let ram_results = self
             .index
             .filtered_search(query, k, |key: u64| !ram_stale.contains(&(key as u32)))
@@ -556,6 +570,7 @@ impl UsearchEngine {
 
     /// Load stale IDs for a specific segment (cumulative: includes all
     /// WAL entries from segment 0..segment_id).
+    #[cfg(test)]
     fn load_stale_ids_for_segment(&self, segment_id: u32) -> Result<HashSet<u32>, VectorsError> {
         let Some(wal) = &self.wal else {
             return Ok(HashSet::new());
@@ -709,6 +724,40 @@ impl UsearchEngine {
             stale.insert(id);
         }
         Ok(stale)
+    }
+
+    /// Load all WAL entries with DEL|UPD flags, grouped by segment_id.
+    /// Returns a map: segment_id → HashSet<chunk_id>.
+    fn load_wal_grouped(&self) -> Result<HashMap<u32, HashSet<u32>>, VectorsError> {
+        let Some(wal) = &self.wal else {
+            return Ok(HashMap::new());
+        };
+        let conn = wal_guard(wal);
+        let mut stmt = conn
+            .prepare(
+                "SELECT segment_id, chunk_id FROM usearch_vectors_log \
+                 WHERE (flags & ?1) != 0",
+            )
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map(params![(WAL_DEL | WAL_UPD) as i64], |row| {
+                let segment_id = row.get::<_, i64>(0)?;
+                let chunk_id = row.get::<_, i64>(1)?;
+                Ok((segment_id, chunk_id))
+            })
+            .map_err(map_sqlite)?;
+        let mut grouped: HashMap<u32, HashSet<u32>> = HashMap::new();
+        for row in rows {
+            let (segment_id, chunk_id) = row.map_err(map_sqlite)?;
+            let segment_id = u32::try_from(segment_id).map_err(|_| {
+                VectorsError::Engine(format!("WAL segment_id {segment_id} exceeds u32 range"))
+            })?;
+            let chunk_id = u32::try_from(chunk_id).map_err(|_| {
+                VectorsError::Engine(format!("WAL chunk_id {chunk_id} exceeds u32 range"))
+            })?;
+            grouped.entry(segment_id).or_default().insert(chunk_id);
+        }
+        Ok(grouped)
     }
 }
 
