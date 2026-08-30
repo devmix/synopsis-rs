@@ -13,7 +13,7 @@ workspace = true
 [features]
 default = ["engine-usearch"]
 engine-lance = ["dep:lancedb"]
-engine-usearch = ["dep:usearch", "dep:cxx", "dep:rayon"]
+engine-usearch = ["dep:usearch", "dep:cxx", "dep:rayon", "dep:rusqlite", "dep:libsqlite3-sys"]
 
 # D1 tier 0: no internal dependencies. The ANN engine (usearch vs lance) is a
 # new crate dependency chosen by native-seam-spikes; consumers know only the trait (D5).
@@ -41,6 +41,15 @@ cxx = { version = "1", optional = true }
 # on all 5 CI targets like the rest of the stack. Gated behind `engine-usearch`
 # so the default (lance) build graph is unchanged.
 rayon = { version = "1", optional = true }
+# SQLite WAL for the usearch engine (usearch-wal-persistence task 2.2): the
+# engine journals operations to the `usearch_vectors_log` table (migration
+# 3-usearch-vectors-log, db crate). Tier 0 forbids a `db` dependency, so the
+# consumer injects an open connection via `UsearchEngine::with_wal_db`. Same
+# bundled SQLite build as the db crate (workspace palette: the direct
+# libsqlite3-sys dep forces `bundled`; cargo forbids enabling it transitively
+# through rusqlite).
+rusqlite = { workspace = true, optional = true }
+libsqlite3-sys = { workspace = true, optional = true }
 
 # cxx-build compiles the usearch C++ core at build time (task 1.1).
 [build-dependencies]

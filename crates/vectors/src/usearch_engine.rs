@@ -37,6 +37,20 @@
 //! A full-file save per ingested document would be O(N²) writes at corpus
 //! scale, so persistence is batched at the build/rebuild boundary.
 //!
+//! # WAL journal (usearch-wal-persistence task 2.2)
+//!
+//! With a SQLite connection attached via [`UsearchEngine::with_wal_db`],
+//! mutations are journaled to the `usearch_vectors_log` table (migration
+//! `3-usearch-vectors-log`, db crate) BEFORE the RAM index is mutated
+//! (WAL-first): `insert`/`insert_batch` write an ADD record (flag 1),
+//! `delete_by_chunk_ids` writes a DEL record (flag 2), and `rebuild`
+//! clears the table (its result is fully persisted to the index file).
+//! The WAL stores only `chunk_id` + flags — never the vector payload
+//! (design: "WAL without vectors"; the payload comes from the chunks
+//! table). A crash between the journal write and the RAM mutation leaves
+//! a self-healing record. Without an attached connection (the default),
+//! every WAL call is a no-op and the engine behaves exactly as before.
+//!
 //! # Open engines are read-write
 //!
 //! [`UsearchEngine::open`] loads the index file into memory
@@ -66,9 +80,12 @@
 //! carry at least one worker thread from the file header, so `open` needs
 //! no reserve.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use rayon::prelude::*;
+use rusqlite::{Connection, params};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
 use crate::{VectorIndex, VectorIndexConfig, VectorsError};
@@ -82,6 +99,17 @@ const INDEX_TMP_FILE: &str = "index.usearch.tmp";
 /// Rows per rayon task in `insert_batch`/`rebuild` (mirrors the
 /// LanceEngine batch size of 1000; each row is a single concurrent `add`).
 const ADD_CHUNK: usize = 1000;
+/// WAL flag: a vector was added (usearch-wal-persistence design).
+const WAL_ADD: u8 = 1;
+/// WAL flag: a vector was deleted.
+const WAL_DEL: u8 = 2;
+/// WAL flag: a vector was updated (reserved for a future update operation;
+/// a stored vector with this bit set is stale until compaction).
+///
+/// `allow`: consumed by [`UsearchEngine::load_stale_ids`] (itself dead in
+/// the lib target until task 2.3's search / task 2.4's compaction use it).
+#[allow(dead_code)]
+const WAL_UPD: u8 = 4;
 
 /// USearch-backed ANN index (add-usearch-ann-engine task 1.2).
 ///
@@ -97,6 +125,12 @@ pub struct UsearchEngine {
     config: VectorIndexConfig,
     /// The `<dir>/index.usearch` file backing the index.
     path: PathBuf,
+    /// The SQLite connection holding the `usearch_vectors_log` WAL table
+    /// (usearch-wal-persistence task 2.2); `None` (the default) disables
+    /// the WAL — every WAL call is a no-op. `Mutex` because
+    /// `rusqlite::Connection` is `Send` but not `Sync`, while the engine
+    /// is shared across threads (`VectorIndex: Send + Sync`).
+    wal: Option<Mutex<Connection>>,
 }
 
 impl UsearchEngine {
@@ -127,6 +161,7 @@ impl UsearchEngine {
             index,
             config,
             path: file,
+            wal: None,
         };
         engine.save()?;
         Ok(engine)
@@ -158,7 +193,25 @@ impl UsearchEngine {
             index,
             config,
             path: file,
+            wal: None,
         })
+    }
+
+    /// Attaches the SQLite connection that holds the `usearch_vectors_log`
+    /// WAL table (usearch-wal-persistence task 2.2) and takes ownership of
+    /// it.
+    ///
+    /// The table is created by the knowledge database's migration
+    /// `3-usearch-vectors-log` (db crate); this method does not open or
+    /// migrate anything — the consumer (which owns the database) opens the
+    /// connection. With the WAL attached, `insert`/`insert_batch` journal
+    /// an ADD record, `delete_by_chunk_ids` journals a DEL record, and
+    /// `rebuild` clears the table — each before the RAM index is mutated
+    /// (WAL-first, module docs). Without it (the default from
+    /// [`Self::create`]/[`Self::open`]), all WAL calls are no-ops.
+    pub fn with_wal_db(mut self, conn: Connection) -> Self {
+        self.wal = Some(Mutex::new(conn));
+        self
     }
 
     /// Stores `vector` under `chunk_id` (single-row convenience over
@@ -178,6 +231,10 @@ impl UsearchEngine {
     /// before anything is stored). Uniqueness of `chunk_id` is the caller's
     /// responsibility.
     ///
+    /// With a WAL attached ([`Self::with_wal_db`]), an ADD record is
+    /// journaled for every row BEFORE the index is mutated (module docs:
+    /// WAL journal).
+    ///
     /// The mutation lands on the live index only; persist it with
     /// [`Self::build_index`] or [`Self::rebuild`] (module docs: persistence
     /// model).
@@ -193,6 +250,12 @@ impl UsearchEngine {
                     actual: vector.len(),
                 });
             }
+        }
+        // WAL-first: journal every row before the RAM index is mutated, so
+        // a crash mid-batch leaves a self-healing log (the payload comes
+        // from the chunks table on replay).
+        for &(chunk_id, _) in rows {
+            self.write_wal(chunk_id, WAL_ADD)?;
         }
         self.index
             .reserve(self.index.size() + rows.len())
@@ -225,6 +288,10 @@ impl UsearchEngine {
     /// a crash between the vector delete and the SQLite chunk delete
     /// (design D3) — is always safe.
     ///
+    /// With a WAL attached ([`Self::with_wal_db`]), a DEL record is
+    /// journaled for every id BEFORE the index is mutated (module docs:
+    /// WAL journal).
+    ///
     /// The mutation lands on the live index only (module docs: persistence
     /// model): an unsaved delete leaves orphaned vectors after a restart,
     /// which the cascade protocol tolerates and the GC re-detects via
@@ -232,6 +299,11 @@ impl UsearchEngine {
     pub fn delete_by_chunk_ids(&self, chunk_ids: &[u32]) -> Result<(), VectorsError> {
         if chunk_ids.is_empty() {
             return Ok(());
+        }
+        // WAL-first: journal every id before the RAM index is mutated
+        // (crash-safety as in `insert_batch`).
+        for &chunk_id in chunk_ids {
+            self.write_wal(chunk_id, WAL_DEL)?;
         }
         for &chunk_id in chunk_ids {
             self.index.remove(chunk_id as u64).map_err(map_usearch)?;
@@ -305,6 +377,11 @@ impl UsearchEngine {
     /// protocol (design D3): rebuild from chunk text after the embedding
     /// layer re-encodes the chunks.
     ///
+    /// With a WAL attached ([`Self::with_wal_db`]), the WAL table is
+    /// cleared before the rebuild: the rebuilt content is fully persisted
+    /// to the index file, so every pre-rebuild record is stale (module
+    /// docs: WAL journal).
+    ///
     /// Like `compact` in the C++ core, do not run a search concurrently
     /// with a rebuild on the same engine.
     pub fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError> {
@@ -317,6 +394,10 @@ impl UsearchEngine {
                 });
             }
         }
+        // The rebuild replaces the entire content and persists it to the
+        // index file, so the pre-rebuild WAL is stale: clear it before
+        // touching the index (module docs: WAL journal).
+        self.clear_wal()?;
         // Clear the live index.
         self.index.reset().map_err(map_usearch)?;
         // Reserve the final size up front (1 slot minimum keeps an empty
@@ -356,6 +437,71 @@ impl UsearchEngine {
     /// The on-disk index file backing this engine (`<dir>/index.usearch`).
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Journals one WAL record: `INSERT OR REPLACE` into
+    /// `usearch_vectors_log` — one row per `chunk_id`, the latest
+    /// operation wins, `created_at` is `datetime('now')` (UTC).
+    ///
+    /// A no-op when no WAL connection is attached ([`Self::with_wal_db`]).
+    fn write_wal(&self, chunk_id: u32, flags: u8) -> Result<(), VectorsError> {
+        let Some(wal) = &self.wal else {
+            return Ok(());
+        };
+        let conn = wal_guard(wal);
+        conn.execute(
+            "INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, created_at) \
+             VALUES (?1, ?2, datetime('now'))",
+            params![chunk_id as i64, flags as i64],
+        )
+        .map_err(map_sqlite)?;
+        Ok(())
+    }
+
+    /// The chunk ids whose WAL record marks them stale — `flags` carries
+    /// the DEL or UPD bit (a deleted or updated vector is superseded until
+    /// compaction rewrites the segments).
+    ///
+    /// A no-op returning an empty set when no WAL connection is attached.
+    ///
+    /// `allow`: dead in the lib target until task 2.3's search and task
+    /// 2.4's compaction consume it (exercised by the unit tests meanwhile).
+    #[allow(dead_code)]
+    fn load_stale_ids(&self) -> Result<HashSet<u32>, VectorsError> {
+        let Some(wal) = &self.wal else {
+            return Ok(HashSet::new());
+        };
+        let conn = wal_guard(wal);
+        let mut stmt = conn
+            .prepare("SELECT chunk_id FROM usearch_vectors_log WHERE (flags & ?1) != 0")
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map(params![(WAL_DEL | WAL_UPD) as i64], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(map_sqlite)?;
+        let mut stale = HashSet::new();
+        for row in rows {
+            let id = row.map_err(map_sqlite)?;
+            let id = u32::try_from(id).map_err(|_| {
+                VectorsError::Engine(format!("WAL chunk_id {id} exceeds the u32 range"))
+            })?;
+            stale.insert(id);
+        }
+        Ok(stale)
+    }
+
+    /// Removes every row from `usearch_vectors_log`.
+    ///
+    /// A no-op when no WAL connection is attached.
+    fn clear_wal(&self) -> Result<(), VectorsError> {
+        let Some(wal) = &self.wal else {
+            return Ok(());
+        };
+        let conn = wal_guard(wal);
+        conn.execute("DELETE FROM usearch_vectors_log", [])
+            .map_err(map_sqlite)?;
+        Ok(())
     }
 }
 
@@ -456,6 +602,22 @@ fn key_to_chunk_id(key: u64) -> Result<u32, VectorsError> {
 /// Maps a usearch cxx FFI exception to [`VectorsError::Engine`].
 fn map_usearch(err: cxx::Exception) -> VectorsError {
     VectorsError::Engine(format!("usearch: {err}"))
+}
+
+/// Locks the WAL connection, recovering the guard from a poisoned mutex:
+/// a panic in an earlier WAL operation does not make the connection
+/// unusable (SQLite rolls a panicked statement back itself, so the
+/// database state stays consistent).
+fn wal_guard(wal: &Mutex<Connection>) -> MutexGuard<'_, Connection> {
+    match wal.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Maps a rusqlite failure (WAL table access) to [`VectorsError::Engine`].
+fn map_sqlite(err: rusqlite::Error) -> VectorsError {
+    VectorsError::Engine(format!("usearch WAL: {err}"))
 }
 
 /// usearch FFI paths are C strings: the path must be valid UTF-8.
@@ -1076,5 +1238,216 @@ mod tests {
         let replacement = rows(0, 10);
         index.rebuild(&replacement).expect("rebuild via trait");
         assert_eq!(index.count().expect("count"), 10);
+    }
+
+    // --- WAL write path (usearch-wal-persistence task 2.2) -----------------
+
+    /// The `usearch_vectors_log` schema (mirrors migration
+    /// `3-usearch-vectors-log`, db crate): inlined here because this crate
+    /// is tier 0 and cannot depend on `db`.
+    const WAL_SCHEMA: &str = "
+        CREATE TABLE usearch_vectors_log (
+            chunk_id    INTEGER PRIMARY KEY,
+            flags       INTEGER NOT NULL,
+            created_at  TEXT NOT NULL
+        );
+        CREATE INDEX idx_usearch_vectors_log_flags ON usearch_vectors_log(flags);
+    ";
+
+    /// A temp-file WAL database: the engine takes ownership of one
+    /// connection, and a second connection is kept for the assertions (the
+    /// engine does not expose its connection). Removes the file and its
+    /// sidecars on drop.
+    struct WalDb {
+        path: PathBuf,
+        check: Connection,
+    }
+
+    impl WalDb {
+        fn new() -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "synopsis-vectors-usearch-wal-test-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let conn = Connection::open(&path).expect("open wal db");
+            conn.execute_batch(WAL_SCHEMA).expect("create wal schema");
+            drop(conn);
+            let check = Connection::open(&path).expect("open check connection");
+            Self { path, check }
+        }
+
+        /// A fresh connection for the engine to own (the schema already
+        /// exists in the file).
+        fn engine_conn(&self) -> Connection {
+            Connection::open(&self.path).expect("open engine wal connection")
+        }
+
+        /// All WAL rows as `(chunk_id, flags)`, ordered by chunk_id.
+        fn rows(&self) -> Vec<(i64, i64)> {
+            let mut stmt = self
+                .check
+                .prepare("SELECT chunk_id, flags FROM usearch_vectors_log ORDER BY chunk_id")
+                .expect("prepare wal read");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("query wal")
+                .map(|row| row.expect("wal row"))
+                .collect()
+        }
+    }
+
+    impl Drop for WalDb {
+        fn drop(&mut self) {
+            let path = &self.path;
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+            let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+        }
+    }
+
+    /// Acceptance: an insert journals an ADD record per chunk_id into the
+    /// WAL table (and updates the RAM index).
+    #[test]
+    fn test_write_wal_add() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+
+        let expected: Vec<(i64, i64)> = (0..10).map(|id| (id, WAL_ADD as i64)).collect();
+        assert_eq!(
+            wal.rows(),
+            expected,
+            "every inserted chunk gets an ADD record"
+        );
+        assert_eq!(
+            engine.count().expect("count"),
+            10,
+            "the RAM index is updated too"
+        );
+    }
+
+    /// Acceptance: a delete journals a DEL record that replaces the
+    /// earlier ADD record (INSERT OR REPLACE: one row per chunk_id, the
+    /// latest operation wins).
+    #[test]
+    fn test_write_wal_delete() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+        engine.delete_by_chunk_ids(&[3, 7]).expect("delete");
+
+        let expected: Vec<(i64, i64)> = (0..10)
+            .map(|id| {
+                (
+                    id,
+                    if id == 3 || id == 7 { WAL_DEL } else { WAL_ADD } as i64,
+                )
+            })
+            .collect();
+        assert_eq!(
+            wal.rows(),
+            expected,
+            "deleted chunks carry the DEL flag, the rest keep ADD"
+        );
+        assert_eq!(
+            engine.count().expect("count"),
+            8,
+            "the RAM index is updated too"
+        );
+    }
+
+    /// Acceptance: `clear_wal` empties the table.
+    #[test]
+    fn test_clear_wal() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+        engine.delete_by_chunk_ids(&[1]).expect("delete");
+        assert_eq!(wal.rows().len(), 10, "the WAL has records before the clear");
+
+        engine.clear_wal().expect("clear");
+        assert!(wal.rows().is_empty(), "clear_wal must empty the table");
+    }
+
+    /// Acceptance: `load_stale_ids` returns exactly the chunk ids whose
+    /// flags carry the DEL or UPD bit (ADD rows are not stale).
+    #[test]
+    fn test_load_stale_ids() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+        assert!(
+            engine.load_stale_ids().expect("stale ids").is_empty(),
+            "ADD-only rows are not stale"
+        );
+
+        engine.delete_by_chunk_ids(&[2]).expect("delete");
+        // Seed a UPD record directly: the engine has no update operation in
+        // task 2.2, but the stale set must honor the UPD bit (design flags).
+        wal.check
+            .execute(
+                "INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, created_at) \
+                 VALUES (5, 4, datetime('now'))",
+                [],
+            )
+            .expect("seed UPD record");
+
+        let stale = engine.load_stale_ids().expect("stale ids");
+        assert_eq!(
+            stale,
+            HashSet::from([2u32, 5]),
+            "DEL and UPD rows are stale, ADD rows are not"
+        );
+    }
+
+    /// Acceptance: `rebuild` clears the WAL table (the rebuilt content is
+    /// fully persisted to the index file, so the old records are stale).
+    #[test]
+    fn test_rebuild_clears_wal() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        let first = rows(0, 10);
+        engine.insert_batch(&batch_refs(&first)).expect("insert");
+        engine.delete_by_chunk_ids(&[1]).expect("delete");
+        assert_eq!(
+            wal.rows().len(),
+            10,
+            "the WAL has records before the rebuild"
+        );
+
+        let second = rows(100, 5);
+        engine.rebuild(&second).expect("rebuild");
+
+        assert!(wal.rows().is_empty(), "the rebuild must clear the WAL");
+        assert_eq!(
+            engine.count().expect("count"),
+            5,
+            "the rebuild replaced the content"
+        );
     }
 }
