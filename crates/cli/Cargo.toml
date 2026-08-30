@@ -37,8 +37,12 @@ tracing-subscriber = { workspace = true }
 utils = { workspace = true }
 vectors = { workspace = true }
 
+[features]
+default = ["engine-usearch"]
+engine-lance = ["vectors/engine-lance"]
+engine-usearch = ["vectors/engine-usearch"]
+
 [dev-dependencies]
-# Plain-HTTP GET /health assertion for the serve integration test (task 1.6):
-# the same workspace palette entry the mcp crate's integration test uses.
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
+vectors = { workspace = true, features = ["engine-lance"] }

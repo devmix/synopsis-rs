@@ -758,7 +758,7 @@ vectors_adr_default!(default_vectors_ef_search, 200);
 /// (add-usearch-ann-engine, design.md "Runtime"): a present value must be
 /// exactly `"lance"` or `"usearch"`, otherwise the parse fails. An absent key
 /// stays `None` — the wiring (`vectors::create_vector_engine`) resolves the
-/// default engine (`"lance"`), keeping pre-field presets backward compatible.
+/// default engine (`"usearch"`), keeping pre-field presets backward compatible.
 fn de_vectors_engine<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -834,7 +834,7 @@ pub struct VectorsConfig {
     pub ef_search: usize,
     /// ANN engine selection (add-usearch-ann-engine, design.md): `"lance"`
     /// (the default) or `"usearch"`. `None` when the key is absent: the
-    /// wiring resolves it to the default engine (`"lance"`), so presets
+    /// wiring resolves it to the default engine (`"usearch"`), so presets
     /// written before the field stay backward compatible.
     #[serde(
         default,
@@ -2071,7 +2071,7 @@ vectors:
     #[test]
     fn vectors_engine_field_absent_stays_none() {
         // Absent key → None; the wiring (vectors::create_vector_engine)
-        // resolves the default engine ("lance") — backward compatible with
+        // resolves the default engine ("usearch") — backward compatible with
         // presets written before the field.
         let cfg = parse("vectors:\n  dim: 512\n");
         assert_eq!(cfg.vectors_config().engine, None);

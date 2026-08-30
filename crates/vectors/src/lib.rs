@@ -255,7 +255,7 @@ pub trait VectorIndex: Send + Sync {
     fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError>;
 }
 
-/// The LanceDB engine name (feature `engine-lance`; the ADR 0003 default).
+/// The LanceDB engine name (feature `engine-lance`).
 ///
 /// Engine names are accepted by the `vectors.engine` config field and by
 /// [`create_vector_engine`] (add-usearch-ann-engine, design.md "Runtime").
@@ -263,7 +263,7 @@ pub trait VectorIndex: Send + Sync {
 /// depend on this crate — dependency direction D1), so these constants are
 /// the factory's reference spelling.
 pub const ENGINE_LANCE: &str = "lance";
-/// The USearch engine name (feature `engine-usearch`).
+/// The USearch engine name (feature `engine-usearch`; **default**).
 pub const ENGINE_USEARCH: &str = "usearch";
 
 /// The concrete ANN engine behind the [`VectorIndex`] seam, selected at
@@ -363,7 +363,7 @@ pub fn create_vector_engine(
     config: &VectorIndexConfig,
 ) -> Result<Arc<dyn VectorIndex>, VectorsError> {
     let name = if engine_name.is_empty() {
-        ENGINE_LANCE
+        ENGINE_USEARCH
     } else {
         engine_name
     };
@@ -608,17 +608,17 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "engine-lance")]
+    #[cfg(feature = "engine-usearch")]
     #[test]
-    fn create_vector_engine_empty_name_defaults_to_lance() {
+    fn create_vector_engine_empty_name_defaults_to_usearch() {
         let dir = TempDir::new("factory-default");
         let config = VectorIndexConfig::default();
         let engine = create_vector_engine("", &dir.0, &config).expect("default engine");
-        // The LanceDB table directory under the lance subdirectory is the
-        // fingerprint that the default engine (lance) was selected.
+        // The usearch index file under the usearch subdirectory is the
+        // fingerprint that the default engine (usearch) was selected.
         assert!(
-            dir.0.join("lance").join("vectors.lance").exists(),
-            "an absent engine name must resolve to the lance default"
+            dir.0.join("usearch").join("index.usearch").exists(),
+            "an absent engine name must resolve to the usearch default"
         );
         assert_eq!(
             engine.count().expect("count"),

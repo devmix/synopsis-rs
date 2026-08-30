@@ -25,7 +25,7 @@ serde_json = { workspace = true }
 # SYNX fixture format (vectors change, native-seam-spikes D4): the harness is the
 # consumer of `vectors::synx` (vectors design D6). parity-harness sits outside the
 # product dependency graph (D1), so depending on `vectors` is fine.
-vectors = { workspace = true }
+vectors = { workspace = true, default-features = false }
 
 # Round-trip integration test (task 3.1 acceptance b): in-process rmcp
 # Streamable HTTP server from the same crates.io release as the client.
@@ -45,3 +45,4 @@ search = { workspace = true }
 ingestion = { workspace = true }
 embedding = { workspace = true }
 mcp = { workspace = true }
+vectors = { workspace = true, default-features = false, features = ["engine-lance"] }

@@ -11,7 +11,7 @@ workspace = true
 # 0003); `engine-usearch` adds the USearch candidate. Both may be enabled at
 # once during the comparison period (design.md).
 [features]
-default = ["engine-lance"]
+default = ["engine-usearch"]
 engine-lance = ["dep:lancedb"]
 engine-usearch = ["dep:usearch", "dep:cxx", "dep:rayon"]
 
