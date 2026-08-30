@@ -1,6 +1,6 @@
 # Tasks: usearch-wal-persistence
 
-- [ ] 2.1 WAL table in SQLite + config struct (usearch_vectors_log table, UsearchConfig)
+- [x] 2.1 WAL table in SQLite + config struct (usearch_vectors_log table, UsearchConfig)
 - [ ] 2.2 WAL write path (insert/delete/update → SQLite WAL + RAM index)
 - [ ] 2.3 Parallel search via rayon with filtered_search
 - [ ] 2.4 Global compaction (merge all segments, remove stale, slice by 1M)
