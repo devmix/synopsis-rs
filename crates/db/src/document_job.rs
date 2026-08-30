@@ -319,8 +319,8 @@ mod tests {
         }
     }
 
-    // Migration 2-document-jobs: user_version advanced to 2, the table and
-    // the due index exist.
+    // Migration 2-document-jobs: user_version is 3 (init + 2-document-jobs
+    // + 3-usearch-vectors-log), the table and the due index exist.
     #[test]
     fn fresh_db_is_migrated_to_v2_with_document_jobs() {
         let db = in_memory_db();
@@ -329,8 +329,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 2,
-            "migration 2-document-jobs must advance user_version"
+            user_version, 3,
+            "migrations must advance user_version past 2-document-jobs"
         );
 
         let (table, index): (i64, i64) = db

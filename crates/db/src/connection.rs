@@ -341,7 +341,8 @@ mod tests {
     }
 
     // (a, 1.1) open a nonexistent file → fresh v5 schema + document_jobs
-    //     (migration 2-document-jobs), user_version = 2, no
+    //     (migration 2-document-jobs) + usearch_vectors_log (migration
+    //     3-usearch-vectors-log), user_version = 3, no
     //     _schema_migrations table.
     #[test]
     fn open_creates_fresh_v5_schema() {
@@ -352,8 +353,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 2,
-            "PRAGMA user_version must be 2 after init + 2-document-jobs"
+            user_version, 3,
+            "PRAGMA user_version must be 3 after init + 2-document-jobs + 3-usearch-vectors-log"
         );
 
         let tracking_rows: i64 = db
@@ -400,6 +401,7 @@ mod tests {
             "entities",
             "fact_sources",
             "facts",
+            "usearch_vectors_log",
         ]
         .into_iter()
         .map(String::from)
@@ -426,6 +428,65 @@ mod tests {
         assert_eq!(
             triggers,
             vec!["chunks_fts_ad", "chunks_fts_ai", "chunks_fts_au"]
+        );
+    }
+
+    // Migration 3-usearch-vectors-log (usearch-wal-persistence task 2.1):
+    // the WAL table and its flags index exist, and the table is writable
+    // with the documented columns (chunk_id PK, flags, created_at).
+    #[test]
+    fn usearch_vectors_log_table_and_index_exist() {
+        let (db, _temp) = open_temp_db();
+
+        let (table, index): (i64, i64) = db
+            .with_conn(|conn| {
+                let table = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master \
+                         WHERE type = 'table' AND name = 'usearch_vectors_log'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let index = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master \
+                         WHERE type = 'index' AND name = 'idx_usearch_vectors_log_flags'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                (table, index)
+            })
+            .unwrap();
+        assert_eq!(table, 1, "usearch_vectors_log table must exist");
+        assert_eq!(index, 1, "idx_usearch_vectors_log_flags must exist");
+
+        // The table accepts a WAL row (INSERT OR REPLACE semantics are the
+        // write path of task 2.2; here only the schema contract is checked).
+        db.exec_tx(|tx| {
+            tx.execute(
+                "INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, created_at) \
+                 VALUES (1, 1, '2026-08-30T00:00:00Z')",
+                [],
+            )
+            .map_err(DbError::from)
+        })
+        .expect("insert a WAL row");
+        let (chunk_id, flags): (i64, i64) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT chunk_id, flags FROM usearch_vectors_log WHERE chunk_id = 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (chunk_id, flags),
+            (1, 1),
+            "the WAL row must be stored as inserted"
         );
     }
 
@@ -598,7 +659,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 2);
+        assert_eq!(user_version, 3);
         let hash: String = db
             .with_conn(|conn| {
                 conn.query_row(
@@ -801,7 +862,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 2);
+        assert_eq!(user_version, 3);
 
         db.exec_tx(|tx| {
             tx.execute(

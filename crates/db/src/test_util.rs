@@ -189,8 +189,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 2,
-            "temp db must be migrated (init + 2-document-jobs)"
+            user_version, 3,
+            "temp db must be migrated (init + 2-document-jobs + 3-usearch-vectors-log)"
         );
 
         // A clone (a plain Db, no cleanup) writes through the same file.

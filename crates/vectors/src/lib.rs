@@ -58,6 +58,62 @@ pub use usearch_engine::UsearchEngine;
 use std::path::Path;
 use std::sync::Arc;
 
+/// usearch engine tuning (usearch-wal-persistence task 2.1): segment size
+/// after compaction, the stale-vector percentage that triggers compaction,
+/// and the number of parallel search threads (rayon).
+///
+/// Mirrors `config::preset::UsearchConfig` (dependency direction D1: this
+/// crate cannot depend on `config`), so the wiring maps it field by field.
+/// Only the usearch engine consumes it; the Lance engine ignores it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsearchConfig {
+    /// Maximum vectors per segment after compaction.
+    pub max_segment_vectors: usize,
+    /// Stale-vector percentage (1-100) that triggers compaction.
+    pub compaction_stale_threshold: u8,
+    /// Number of parallel search threads (rayon).
+    pub search_threads: usize,
+}
+
+impl Default for UsearchConfig {
+    /// Engine defaults: 1M vectors per segment, 30% stale threshold, 4
+    /// search threads (usearch-wal-persistence design).
+    fn default() -> Self {
+        Self {
+            max_segment_vectors: 1_000_000,
+            compaction_stale_threshold: 30,
+            search_threads: 4,
+        }
+    }
+}
+
+impl UsearchConfig {
+    /// Validates field invariants:
+    ///
+    /// - `max_segment_vectors > 0`
+    /// - `compaction_stale_threshold` in 1..=100
+    /// - `search_threads > 0`
+    pub fn validate(&self) -> Result<(), VectorsError> {
+        if self.max_segment_vectors == 0 {
+            return Err(VectorsError::InvalidArgument(
+                "usearch.max_segment_vectors must be > 0".to_string(),
+            ));
+        }
+        if !(1..=100).contains(&self.compaction_stale_threshold) {
+            return Err(VectorsError::InvalidArgument(format!(
+                "usearch.compaction_stale_threshold must be in 1..=100, got {}",
+                self.compaction_stale_threshold
+            )));
+        }
+        if self.search_threads == 0 {
+            return Err(VectorsError::InvalidArgument(
+                "usearch.search_threads must be > 0".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Index and query parameters for the ANN engine.
 ///
 /// Defaults are the ADR 0003 configuration (IvfHnswSq, u8 scalar quantization, L2):
@@ -87,6 +143,10 @@ pub struct VectorIndexConfig {
     /// `"i8"`, `"f16"`, `"bf16"`, `"f32"`. `None` means the engine default
     /// (`bf16`); the Lance engine ignores this field.
     pub quantization: Option<String>,
+    /// usearch engine tuning (WAL segments + compaction, usearch-wal-
+    /// persistence task 2.1): `None` means the engine defaults
+    /// ([`UsearchConfig::default`]); the Lance engine ignores this field.
+    pub usearch: Option<UsearchConfig>,
 }
 
 impl VectorIndexConfig {
@@ -107,6 +167,7 @@ impl VectorIndexConfig {
             nprobes,
             ef_search,
             quantization: None,
+            usearch: None,
         };
         config.validate()?;
         Ok(config)
@@ -168,6 +229,11 @@ impl VectorIndexConfig {
                 }
             }
         }
+        // The usearch tuning section is engine-specific; validate it if set
+        // (usearch-wal-persistence task 2.1).
+        if let Some(usearch) = &self.usearch {
+            usearch.validate()?;
+        }
         Ok(())
     }
 
@@ -192,7 +258,8 @@ impl VectorIndexConfig {
 
 impl Default for VectorIndexConfig {
     /// ADR 0003 configuration: 1024-dim, M=16, efConstruction=100, 256 partitions,
-    /// nprobes=32, efSearch=200.
+    /// nprobes=32, efSearch=200. `usearch` stays `None` (the engine defaults,
+    /// usearch-wal-persistence task 2.1).
     fn default() -> Self {
         Self {
             dim: 1024,
@@ -202,6 +269,7 @@ impl Default for VectorIndexConfig {
             nprobes: 32,
             ef_search: 200,
             quantization: None,
+            usearch: None,
         }
     }
 }
@@ -474,6 +542,75 @@ mod tests {
                 .validate()
                 .is_ok()
         );
+    }
+
+    // --- UsearchConfig (usearch-wal-persistence task 2.1) ------------------
+
+    #[test]
+    fn usearch_config_defaults_match_design() {
+        let config = UsearchConfig::default();
+        assert_eq!(config.max_segment_vectors, 1_000_000);
+        assert_eq!(config.compaction_stale_threshold, 30);
+        assert_eq!(config.search_threads, 4);
+        config.validate().expect("defaults must be valid");
+    }
+
+    #[test]
+    fn usearch_config_validate_rejects_invalid_values() {
+        let zero_segments = UsearchConfig {
+            max_segment_vectors: 0,
+            ..UsearchConfig::default()
+        };
+        assert!(zero_segments.validate().is_err());
+
+        let zero_threshold = UsearchConfig {
+            compaction_stale_threshold: 0,
+            ..UsearchConfig::default()
+        };
+        assert!(zero_threshold.validate().is_err());
+
+        let over_threshold = UsearchConfig {
+            compaction_stale_threshold: 101,
+            ..UsearchConfig::default()
+        };
+        assert!(over_threshold.validate().is_err());
+
+        let zero_threads = UsearchConfig {
+            search_threads: 0,
+            ..UsearchConfig::default()
+        };
+        assert!(zero_threads.validate().is_err());
+    }
+
+    #[test]
+    fn vector_index_config_defaults_have_no_usearch_section() {
+        assert_eq!(VectorIndexConfig::default().usearch, None);
+        assert_eq!(
+            VectorIndexConfig::new(512, 8, 64, 64, 16, 100)
+                .expect("valid")
+                .usearch,
+            None
+        );
+    }
+
+    #[test]
+    fn vector_index_config_validate_covers_usearch_section() {
+        let config = VectorIndexConfig {
+            usearch: Some(UsearchConfig {
+                max_segment_vectors: 0,
+                ..UsearchConfig::default()
+            }),
+            ..VectorIndexConfig::default()
+        };
+        assert!(config.validate().is_err());
+
+        let config = VectorIndexConfig {
+            usearch: Some(UsearchConfig::default()),
+            ..VectorIndexConfig::default()
+        };
+        config
+            .validate()
+            .expect("a valid usearch section must pass");
     }
 
     #[test]

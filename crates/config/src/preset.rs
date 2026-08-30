@@ -798,6 +798,89 @@ where
     }
 }
 
+/// Default for `vectors.usearch.max_segment_vectors` (usearch-wal-persistence
+/// task 2.1): maximum vectors per segment after compaction.
+fn default_usearch_max_segment_vectors() -> usize {
+    1_000_000
+}
+
+/// Default for `vectors.usearch.compaction_stale_threshold` (usearch-wal-
+/// persistence task 2.1): the stale-vector percentage that triggers
+/// compaction.
+fn default_usearch_compaction_stale_threshold() -> u8 {
+    30
+}
+
+/// Default for `vectors.usearch.search_threads` (usearch-wal-persistence
+/// task 2.1): number of parallel search threads (rayon).
+fn default_usearch_search_threads() -> usize {
+    4
+}
+
+/// usearch engine tuning (usearch-wal-persistence task 2.1): segment size
+/// after compaction, the stale-vector percentage that triggers compaction,
+/// and the number of parallel search threads (rayon).
+///
+/// Mirrors `vectors::UsearchConfig` (dependency direction D7: this crate
+/// cannot depend on `vectors`), so the wiring maps it field by field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UsearchConfig {
+    /// Maximum vectors per segment after compaction.
+    #[serde(default = "default_usearch_max_segment_vectors")]
+    pub max_segment_vectors: usize,
+    /// Stale-vector percentage (1-100) that triggers compaction.
+    #[serde(default = "default_usearch_compaction_stale_threshold")]
+    pub compaction_stale_threshold: u8,
+    /// Number of parallel search threads (rayon).
+    #[serde(default = "default_usearch_search_threads")]
+    pub search_threads: usize,
+}
+
+impl Default for UsearchConfig {
+    /// Engine defaults: 1M vectors per segment, 30% stale threshold, 4
+    /// search threads.
+    fn default() -> Self {
+        Self {
+            max_segment_vectors: default_usearch_max_segment_vectors(),
+            compaction_stale_threshold: default_usearch_compaction_stale_threshold(),
+            search_threads: default_usearch_search_threads(),
+        }
+    }
+}
+
+/// Validates the `vectors.usearch` section at parse time (usearch-wal-
+/// persistence task 2.1): `max_segment_vectors > 0`,
+/// `compaction_stale_threshold` in 1..=100 and `search_threads > 0`. An
+/// absent section stays `None` (the engine resolves
+/// [`UsearchConfig::default`]).
+fn de_usearch_config<'de, D>(deserializer: D) -> Result<Option<UsearchConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<UsearchConfig>::deserialize(deserializer)?;
+    let Some(cfg) = value else {
+        return Ok(None);
+    };
+    if cfg.max_segment_vectors == 0 {
+        return Err(SerdeError::custom(
+            "vectors.usearch.max_segment_vectors must be > 0",
+        ));
+    }
+    if !(1..=100).contains(&cfg.compaction_stale_threshold) {
+        return Err(SerdeError::custom(format!(
+            "vectors.usearch.compaction_stale_threshold must be in 1..=100, got {}",
+            cfg.compaction_stale_threshold
+        )));
+    }
+    if cfg.search_threads == 0 {
+        return Err(SerdeError::custom(
+            "vectors.usearch.search_threads must be > 0",
+        ));
+    }
+    Ok(Some(cfg))
+}
+
 /// ANN index and query parameters for the vector search leg (design D7).
 ///
 /// Raw preset fields only: this crate does not depend on `vectors`
@@ -851,13 +934,25 @@ pub struct VectorsConfig {
         deserialize_with = "de_vectors_quantization"
     )]
     pub quantization: String,
+    /// usearch engine tuning (WAL segments + compaction, usearch-wal-
+    /// persistence task 2.1). `None` when the key is absent: the engine
+    /// resolves it to [`UsearchConfig::default`]. Invalid values fail the
+    /// parse (see [`de_usearch_config`]).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_usearch_config"
+    )]
+    pub usearch: Option<UsearchConfig>,
 }
 
 impl Default for VectorsConfig {
     /// ADR 0003 configuration: 1024-dim, M=16, efConstruction=100, 256
     /// partitions, nprobes=32, efSearch=200 — the per-field serde defaults.
     /// `engine` stays `None`: an absent key resolves to the default engine
-    /// at the wiring level (add-usearch-ann-engine).
+    /// at the wiring level (add-usearch-ann-engine). `usearch` stays
+    /// `None`: an absent key resolves to [`UsearchConfig::default`] at the
+    /// engine level (usearch-wal-persistence task 2.1).
     fn default() -> Self {
         Self {
             dim: default_vectors_dim(),
@@ -868,6 +963,7 @@ impl Default for VectorsConfig {
             ef_search: default_vectors_ef_search(),
             engine: None,
             quantization: default_quantization(),
+            usearch: None,
         }
     }
 }
@@ -2022,6 +2118,7 @@ vectors:
                 ef_search: 100,
                 engine: None,
                 quantization: "bf16".to_string(),
+                usearch: None,
             }
         );
     }
@@ -2155,6 +2252,86 @@ vectors:
         let back: Config = noyalib::from_str(&yaml).expect("reparse");
         assert_eq!(back.vectors, cfg.vectors);
         assert_eq!(back.vectors_config().quantization, "f32");
+    }
+
+    // ── vectors.usearch section (usearch-wal-persistence task 2.1) ────────
+
+    #[test]
+    fn vectors_usearch_section_parses_explicit_values() {
+        let cfg = parse("vectors:\n  usearch:\n    max_segment_vectors: 500000\n");
+        assert_eq!(
+            cfg.vectors_config().usearch,
+            Some(UsearchConfig {
+                max_segment_vectors: 500000,
+                compaction_stale_threshold: 30,
+                search_threads: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn vectors_usearch_section_defaults_when_absent() {
+        // Absent `usearch` key (present or absent section) -> None; the
+        // engine resolves UsearchConfig::default (1M / 30% / 4 threads).
+        let cfg = parse("vectors:\n  dim: 512\n");
+        assert!(cfg.vectors_config().usearch.is_none());
+
+        let cfg = parse("server:\n  name: x\n");
+        assert!(cfg.vectors_config().usearch.is_none());
+
+        let defaults = UsearchConfig::default();
+        assert_eq!(defaults.max_segment_vectors, 1_000_000);
+        assert_eq!(defaults.compaction_stale_threshold, 30);
+        assert_eq!(defaults.search_threads, 4);
+    }
+
+    #[test]
+    fn vectors_usearch_section_partial_override_fills_defaults() {
+        let cfg = parse("vectors:\n  usearch:\n    compaction_stale_threshold: 50\n");
+        assert_eq!(
+            cfg.vectors_config().usearch,
+            Some(UsearchConfig {
+                max_segment_vectors: 1_000_000,
+                compaction_stale_threshold: 50,
+                search_threads: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn vectors_usearch_section_invalid_values_are_rejected() {
+        for yaml in [
+            "vectors:\n  usearch:\n    max_segment_vectors: 0\n",
+            "vectors:\n  usearch:\n    compaction_stale_threshold: 0\n",
+            "vectors:\n  usearch:\n    compaction_stale_threshold: 150\n",
+            "vectors:\n  usearch:\n    search_threads: 0\n",
+        ] {
+            let err = load_from_str(yaml)
+                .expect_err(&format!("an invalid value must fail the parse: {yaml}"));
+            match err {
+                ConfigError::Yaml { .. } => {
+                    // The 1..=100 range and the > 0 rules are ours; the
+                    // out-of-u8-range case (150) is rejected by the YAML
+                    // layer itself. Both are parse errors.
+                    assert!(
+                        err.to_string().contains("vectors.usearch")
+                            || err.to_string().contains("u8"),
+                        "the error must name the field or the offending type: {err}"
+                    );
+                }
+                other => panic!("expected a YAML parse error, got: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn vectors_usearch_section_roundtrip() {
+        // A present usearch section survives serialize -> reparse.
+        let cfg =
+            parse("vectors:\n  usearch:\n    max_segment_vectors: 500000\n    search_threads: 8\n");
+        let yaml = noyalib::to_string(&cfg).expect("serialize");
+        let back: Config = noyalib::from_str(&yaml).expect("reparse");
+        assert_eq!(back.vectors, cfg.vectors);
     }
 
     #[test]
