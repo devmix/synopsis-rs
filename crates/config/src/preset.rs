@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::ConfigError;
@@ -456,7 +457,7 @@ impl Config {
     /// happens at the wiring level (a future change); field names and types
     /// already mirror it, so the mapping is a field-by-field copy.
     pub fn vectors_config(&self) -> VectorsConfig {
-        self.vectors.unwrap_or_default()
+        self.vectors.clone().unwrap_or_default()
     }
 
     /// Returns the global cache database path
@@ -753,18 +754,39 @@ vectors_adr_default!(default_vectors_num_partitions, 256);
 vectors_adr_default!(default_vectors_nprobes, 32);
 vectors_adr_default!(default_vectors_ef_search, 200);
 
+/// Validates the `vectors.engine` field at parse time
+/// (add-usearch-ann-engine, design.md "Runtime"): a present value must be
+/// exactly `"lance"` or `"usearch"`, otherwise the parse fails. An absent key
+/// stays `None` — the wiring (`vectors::create_vector_engine`) resolves the
+/// default engine (`"lance"`), keeping pre-field presets backward compatible.
+fn de_vectors_engine<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    match value {
+        Some(engine) if engine == "lance" || engine == "usearch" => Ok(Some(engine)),
+        Some(engine) => Err(SerdeError::custom(format!(
+            "vectors.engine must be \"lance\" or \"usearch\", got {engine:?}"
+        ))),
+        None => Ok(None),
+    }
+}
+
 /// ANN index and query parameters for the vector search leg (design D7).
 ///
 /// Raw preset fields only: this crate does not depend on `vectors`
 /// (dependency direction, design D7), so the mapping to
 /// `vectors::VectorIndexConfig` happens at the wiring level (a future
 /// change). Field names and types mirror `VectorIndexConfig` so the mapping
-/// is a field-by-field copy.
+/// is a field-by-field copy — except `engine`, which selects the ANN engine
+/// at the wiring level (add-usearch-ann-engine) and has no
+/// `VectorIndexConfig` counterpart.
 ///
 /// Defaults are the ADR 0003 configuration; a key missing inside a present
 /// section resolves to the same value as an absent section
 /// ([`Config::vectors_config`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VectorsConfig {
     /// Vector dimensionality (bge-m3: 1024).
@@ -785,11 +807,23 @@ pub struct VectorsConfig {
     /// HNSW efSearch: candidate list size during query; runtime-tunable.
     #[serde(default = "default_vectors_ef_search")]
     pub ef_search: usize,
+    /// ANN engine selection (add-usearch-ann-engine, design.md): `"lance"`
+    /// (the default) or `"usearch"`. `None` when the key is absent: the
+    /// wiring resolves it to the default engine (`"lance"`), so presets
+    /// written before the field stay backward compatible.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_vectors_engine"
+    )]
+    pub engine: Option<String>,
 }
 
 impl Default for VectorsConfig {
     /// ADR 0003 configuration: 1024-dim, M=16, efConstruction=100, 256
     /// partitions, nprobes=32, efSearch=200 — the per-field serde defaults.
+    /// `engine` stays `None`: an absent key resolves to the default engine
+    /// at the wiring level (add-usearch-ann-engine).
     fn default() -> Self {
         Self {
             dim: default_vectors_dim(),
@@ -798,6 +832,7 @@ impl Default for VectorsConfig {
             num_partitions: default_vectors_num_partitions(),
             nprobes: default_vectors_nprobes(),
             ef_search: default_vectors_ef_search(),
+            engine: None,
         }
     }
 }
@@ -1931,6 +1966,7 @@ vectors:
                 num_partitions: 16,
                 nprobes: 4,
                 ef_search: 100,
+                engine: None,
             }
         );
     }
@@ -1966,6 +2002,51 @@ vectors:
         let back: Config = noyalib::from_str(&yaml).expect("reparse");
         assert_eq!(back.vectors, cfg.vectors);
         assert_eq!(noyalib::to_string(&back).expect("serialize"), yaml);
+    }
+
+    #[test]
+    fn vectors_engine_field_parses_valid_values() {
+        let cfg = parse("vectors:\n  engine: usearch\n");
+        assert_eq!(cfg.vectors_config().engine.as_deref(), Some("usearch"));
+
+        let cfg = parse("vectors:\n  engine: lance\n");
+        assert_eq!(cfg.vectors_config().engine.as_deref(), Some("lance"));
+    }
+
+    #[test]
+    fn vectors_engine_field_absent_stays_none() {
+        // Absent key → None; the wiring (vectors::create_vector_engine)
+        // resolves the default engine ("lance") — backward compatible with
+        // presets written before the field.
+        let cfg = parse("vectors:\n  dim: 512\n");
+        assert_eq!(cfg.vectors_config().engine, None);
+
+        let cfg = parse("server:\n  name: x\n");
+        assert_eq!(cfg.vectors_config().engine, None);
+    }
+
+    #[test]
+    fn vectors_engine_field_invalid_is_a_parse_error() {
+        let err = load_from_str("vectors:\n  engine: foo\n")
+            .expect_err("an invalid engine must fail the parse");
+        match err {
+            ConfigError::Yaml { .. } => {
+                assert!(
+                    err.to_string().contains("vectors.engine"),
+                    "the error must name the field: {err}"
+                );
+            }
+            other => panic!("expected a YAML parse error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vectors_engine_field_roundtrip() {
+        // A present engine value survives serialize -> reparse.
+        let cfg = parse("vectors:\n  dim: 512\n  engine: usearch\n");
+        let yaml = noyalib::to_string(&cfg).expect("serialize");
+        let back: Config = noyalib::from_str(&yaml).expect("reparse");
+        assert_eq!(back.vectors, cfg.vectors);
     }
 
     #[test]

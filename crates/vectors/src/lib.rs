@@ -54,6 +54,9 @@ pub use error::VectorsError;
 #[cfg(feature = "engine-usearch")]
 pub use usearch_engine::UsearchEngine;
 
+use std::path::Path;
+use std::sync::Arc;
+
 /// Index and query parameters for the ANN engine.
 ///
 /// Defaults are the ADR 0003 configuration (IvfHnswSq, u8 scalar quantization, L2):
@@ -221,10 +224,155 @@ pub trait VectorIndex: Send + Sync {
     fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError>;
 }
 
+/// The LanceDB engine name (feature `engine-lance`; the ADR 0003 default).
+///
+/// Engine names are accepted by the `vectors.engine` config field and by
+/// [`create_vector_engine`] (add-usearch-ann-engine, design.md "Runtime").
+/// The config crate validates the same two literals at parse time (it cannot
+/// depend on this crate — dependency direction D1), so these constants are
+/// the factory's reference spelling.
+pub const ENGINE_LANCE: &str = "lance";
+/// The USearch engine name (feature `engine-usearch`).
+pub const ENGINE_USEARCH: &str = "usearch";
+
+/// The concrete ANN engine behind the [`VectorIndex`] seam, selected at
+/// runtime by the `vectors.engine` config field (add-usearch-ann-engine,
+/// design.md "Dispatch").
+///
+/// Each variant exists only when its cargo feature is compiled in
+/// (`engine-lance` / `engine-usearch`); a build without either feature has
+/// no variants and [`create_vector_engine`] always fails.
+pub enum VectorEngine {
+    /// LanceDB engine (feature `engine-lance`; the ADR 0003 default).
+    #[cfg(feature = "engine-lance")]
+    Lance(LanceEngine),
+    /// USearch engine (feature `engine-usearch`; U8-quantized disk-backed
+    /// HNSW, `L2sq`).
+    #[cfg(feature = "engine-usearch")]
+    Usearch(UsearchEngine),
+}
+
+// With neither engine feature the enum has no variants and no `VectorIndex`
+// impl: `create_vector_engine` always fails and the type is uninstantiable.
+#[cfg(any(feature = "engine-lance", feature = "engine-usearch"))]
+impl VectorEngine {
+    /// The inner engine's [`VectorIndex`] implementation (pure delegation).
+    fn inner(&self) -> &dyn VectorIndex {
+        match self {
+            #[cfg(feature = "engine-lance")]
+            Self::Lance(engine) => engine,
+            #[cfg(feature = "engine-usearch")]
+            Self::Usearch(engine) => engine,
+        }
+    }
+}
+
+#[cfg(any(feature = "engine-lance", feature = "engine-usearch"))]
+impl VectorIndex for VectorEngine {
+    fn insert(&self, chunk_id: u32, vector: &[f32]) -> Result<(), VectorsError> {
+        self.inner().insert(chunk_id, vector)
+    }
+
+    fn insert_batch(&self, rows: &[(u32, &[f32])]) -> Result<(), VectorsError> {
+        self.inner().insert_batch(rows)
+    }
+
+    fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, VectorsError> {
+        self.inner().search(query, k)
+    }
+
+    fn delete_by_chunk_ids(&self, chunk_ids: &[u32]) -> Result<(), VectorsError> {
+        self.inner().delete_by_chunk_ids(chunk_ids)
+    }
+
+    fn chunk_ids(&self) -> Result<Vec<u32>, VectorsError> {
+        self.inner().chunk_ids()
+    }
+
+    fn count(&self) -> Result<u64, VectorsError> {
+        self.inner().count()
+    }
+
+    fn build_index(&self) -> Result<(), VectorsError> {
+        self.inner().build_index()
+    }
+
+    fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError> {
+        self.inner().rebuild(rows)
+    }
+}
+
+/// Creates the ANN engine selected by `engine_name` at `path`, opening an
+/// existing index or creating an empty one on first run (the
+/// `open` → `NotFound` → `create` cascade both engines share).
+///
+/// `engine_name` is the resolved `vectors.engine` value: [`ENGINE_LANCE`]
+/// or [`ENGINE_USEARCH`]; an empty name (absent config field) resolves to
+/// the default engine [`ENGINE_LANCE`] (backward compatibility).
+///
+/// # Errors
+///
+/// - [`VectorsError::InvalidArgument`] for an unrecognized engine name or a
+///   `config` that fails [`VectorIndexConfig::validate`].
+/// - [`VectorsError::Engine`] when the name is recognized but no engine
+///   feature is compiled into this build.
+/// - Engine errors (including [`VectorsError::DimensionMismatch`] when the
+///   stored index's dimensionality disagrees with `config.dim`) propagate
+///   unchanged.
+pub fn create_vector_engine(
+    engine_name: &str,
+    path: &Path,
+    config: &VectorIndexConfig,
+) -> Result<Arc<dyn VectorIndex>, VectorsError> {
+    let name = if engine_name.is_empty() {
+        ENGINE_LANCE
+    } else {
+        engine_name
+    };
+    // Validated before dispatch: the engines re-validate in create/open, so
+    // the error is identical — this just fails earlier for a bad config.
+    config.validate()?;
+
+    if name != ENGINE_LANCE && name != ENGINE_USEARCH {
+        return Err(VectorsError::InvalidArgument(format!(
+            "unknown vector engine '{name}', want \"{ENGINE_LANCE}\" or \"{ENGINE_USEARCH}\""
+        )));
+    }
+
+    #[cfg(feature = "engine-lance")]
+    if name == ENGINE_LANCE {
+        let engine = match LanceEngine::open(path, *config) {
+            Ok(engine) => engine,
+            Err(VectorsError::NotFound(_)) => LanceEngine::create(path, *config)?,
+            Err(err) => return Err(err),
+        };
+        return Ok(Arc::new(VectorEngine::Lance(engine)));
+    }
+
+    #[cfg(feature = "engine-usearch")]
+    if name == ENGINE_USEARCH {
+        let engine = match UsearchEngine::open(path, *config) {
+            Ok(engine) => engine,
+            Err(VectorsError::NotFound(_)) => UsearchEngine::create(path, *config)?,
+            Err(err) => return Err(err),
+        };
+        return Ok(Arc::new(VectorEngine::Usearch(engine)));
+    }
+
+    // A known engine name, but no engine feature was compiled in.
+    Err(VectorsError::Engine(format!(
+        "engine '{name}' is not available in this build for {} (rebuild with the matching engine feature)",
+        path.display()
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     // Test code: unwrap/expect are intentional (fixtures always parse).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
 
@@ -289,5 +437,167 @@ mod tests {
         config
             .validate_search(&query, 10)
             .expect("valid search params");
+    }
+
+    // --- create_vector_engine (task 1.3) -----------------------------------
+
+    /// A unique temporary directory that removes itself (and its contents)
+    /// when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "synopsis-vectors-test-{}-{tag}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Unwraps a failed [`create_vector_engine`] result (`Arc<dyn VectorIndex>`
+    /// is not `Debug`, so `expect_err` is unavailable).
+    fn err_of(result: Result<Arc<dyn VectorIndex>, VectorsError>) -> VectorsError {
+        match result {
+            Err(err) => err,
+            Ok(_) => panic!("expected an error, got a created engine"),
+        }
+    }
+
+    #[cfg(feature = "engine-lance")]
+    #[test]
+    fn create_vector_engine_lance_selects_lance_engine() {
+        let dir = TempDir::new("factory-lance");
+        let config = VectorIndexConfig::default();
+
+        let engine = create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("lance engine");
+        // The on-disk artifact is the LanceDB table directory inside the
+        // engine path (LanceDB local-storage layout) — the fingerprint that
+        // the LanceEngine was selected.
+        assert!(
+            dir.0.join("vectors.lance").exists(),
+            "the lance table directory must be created"
+        );
+        assert_eq!(
+            engine.count().expect("count"),
+            0,
+            "empty index on first run"
+        );
+
+        // First run created the index; a second factory call must OPEN it
+        // (the cascade), not reset it — both engines' `create` fails on an
+        // existing index, so success proves the open path.
+        let reopened = create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("reopen");
+        assert_eq!(
+            reopened.count().expect("count"),
+            0,
+            "empty index on first run"
+        );
+    }
+
+    #[cfg(feature = "engine-usearch")]
+    #[test]
+    fn create_vector_engine_usearch_selects_usearch_engine() {
+        let dir = TempDir::new("factory-usearch");
+        let config = VectorIndexConfig::default();
+
+        let engine = create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
+        // The on-disk artifact is the single index file inside the engine
+        // directory (add-usearch-ann-engine design.md layout) — the
+        // fingerprint that the UsearchEngine was selected.
+        assert!(
+            dir.0.join("index.usearch").exists(),
+            "the usearch index file must be created"
+        );
+        assert_eq!(
+            engine.count().expect("count"),
+            0,
+            "empty index on first run"
+        );
+
+        let reopened = create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("reopen");
+        assert_eq!(
+            reopened.count().expect("count"),
+            0,
+            "empty index on first run"
+        );
+    }
+
+    #[cfg(feature = "engine-lance")]
+    #[test]
+    fn create_vector_engine_empty_name_defaults_to_lance() {
+        let dir = TempDir::new("factory-default");
+        let config = VectorIndexConfig::default();
+        let engine = create_vector_engine("", &dir.0, &config).expect("default engine");
+        // The LanceDB table directory is the fingerprint that the default
+        // engine (lance) was selected.
+        assert!(
+            dir.0.join("vectors.lance").exists(),
+            "an absent engine name must resolve to the lance default"
+        );
+        assert_eq!(
+            engine.count().expect("count"),
+            0,
+            "empty index on first run"
+        );
+    }
+
+    #[test]
+    fn create_vector_engine_unknown_name_is_invalid_argument() {
+        let dir = TempDir::new("factory-unknown");
+        let config = VectorIndexConfig::default();
+        let err = err_of(create_vector_engine("foo", &dir.0, &config));
+        match err {
+            VectorsError::InvalidArgument(message) => {
+                assert!(
+                    message.contains("foo"),
+                    "the error must name the value: {message}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got: {other:?}"),
+        }
+    }
+
+    #[cfg(all(feature = "engine-lance", not(feature = "engine-usearch")))]
+    #[test]
+    fn create_vector_engine_usearch_unavailable_in_lance_only_build() {
+        let dir = TempDir::new("factory-unavailable");
+        let config = VectorIndexConfig::default();
+        let err = err_of(create_vector_engine(ENGINE_USEARCH, &dir.0, &config));
+        match err {
+            VectorsError::Engine(message) => {
+                assert!(
+                    message.contains("not available in this build"),
+                    "the error must name the missing feature: {message}"
+                );
+            }
+            other => panic!("expected Engine, got: {other:?}"),
+        }
+    }
+
+    #[cfg(all(feature = "engine-usearch", not(feature = "engine-lance")))]
+    #[test]
+    fn create_vector_engine_lance_unavailable_in_usearch_only_build() {
+        let dir = TempDir::new("factory-unavailable");
+        let config = VectorIndexConfig::default();
+        let err = err_of(create_vector_engine(ENGINE_LANCE, &dir.0, &config));
+        match err {
+            VectorsError::Engine(message) => {
+                assert!(
+                    message.contains("not available in this build"),
+                    "the error must name the missing feature: {message}"
+                );
+            }
+            other => panic!("expected Engine, got: {other:?}"),
+        }
     }
 }

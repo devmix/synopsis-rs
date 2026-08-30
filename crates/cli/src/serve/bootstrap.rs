@@ -9,11 +9,11 @@
 //! mismatch surfaces from the vec0 SQLite virtual table at migrate time
 //! (`database.IsDimensionMismatchError`). In this codebase vectors live in
 //! the ANN index, not SQLite — the squashed DDL migrations can never produce
-//! a mismatch, and the check surfaces from `vectors::LanceEngine::open` as
-//! [`VectorsError::DimensionMismatch`]. The [`Bootstrap::dimension_mismatch`]
-//! flag carries the non-fatal signal to the serve wiring (tasks 1.6/1.7);
-//! [`build_runner`] sets it when the stored index disagrees with the
-//! configured dimension.
+//! a mismatch, and the check surfaces from the vector engine's `open` (the
+//! [`create_vector_engine`] factory) as [`VectorsError::DimensionMismatch`].
+//! The [`Bootstrap::dimension_mismatch`] flag carries the non-fatal signal
+//! to the serve wiring (tasks 1.6/1.7); [`build_runner`] sets it when the
+//! stored index disagrees with the configured dimension.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -31,7 +31,7 @@ use ingestion::{
     MediawikiSource, NerPrompts, Registry, Runner, RunnerParams, UnstructuredSource, WebpageSource,
     load_ner_prompts,
 };
-use vectors::{LanceEngine, VectorIndex, VectorIndexConfig, VectorsError};
+use vectors::{VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine};
 
 use crate::error::CliError;
 
@@ -56,7 +56,7 @@ impl DimensionMismatch {
     /// variant.
     ///
     /// The Rust analogue of the oracle's `database.IsDimensionMismatchError`:
-    /// the mismatch surfaces from `vectors::LanceEngine::open` as
+    /// the mismatch surfaces from the vector engine's `open` as
     /// [`VectorsError::DimensionMismatch`], never from the DDL migrations.
     #[must_use]
     pub fn from_vectors_error(err: &VectorsError) -> Option<Self> {
@@ -100,8 +100,8 @@ pub struct Bootstrap {
     /// opens it (created on first run).
     pub vectors: Option<Arc<dyn VectorIndex>>,
     /// Vector dimension mismatch detected when opening the ANN index; `None`
-    /// while consistent. Set by [`build_runner`] from
-    /// `vectors::LanceEngine::open` via [`DimensionMismatch::from_vectors_error`].
+    /// while consistent. Set by [`build_runner`] from the vector engine's
+    /// `open` via [`DimensionMismatch::from_vectors_error`].
     pub dimension_mismatch: Option<DimensionMismatch>,
 }
 
@@ -429,9 +429,10 @@ pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, Vector
 }
 
 /// Opens the vector-index engine (design D5), creating it on first run:
-/// `LanceEngine::open` → `NotFound` → `LanceEngine::create`. The engine is
-/// stored on the bootstrap so the runner and the later search wiring share
-/// one instance.
+/// the [`create_vector_engine`] factory resolves the `vectors.engine`
+/// selection (add-usearch-ann-engine) and performs the
+/// `open` → `NotFound` → `create` cascade. The engine is stored on the
+/// bootstrap so the runner and the later search wiring share one instance.
 ///
 /// A dimension mismatch between the configured embedding dimension and the
 /// stored index is recorded on [`Bootstrap::dimension_mismatch`] (the
@@ -443,8 +444,9 @@ pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, Vector
 ///
 /// # Errors
 ///
-/// [`CliError::Vectors`] when the index cannot be opened/created or its
-/// stored dimension disagrees with the configuration.
+/// [`CliError::Vectors`] when the index cannot be opened/created (including
+/// an unknown or build-unavailable `vectors.engine` value) or its stored
+/// dimension disagrees with the configuration.
 pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = vectors_index_config(&boot.config)?;
     // The ANN index is per-dataset: <workspace_dir>/datasets/<name>/state/vectors.
@@ -452,23 +454,27 @@ pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
         .config
         .dataset
         .vectors_path(&boot.config.paths.workspace_dir);
-    let engine = match LanceEngine::open(&path, index_config) {
-        Ok(engine) => engine,
-        Err(VectorsError::NotFound(_)) => LanceEngine::create(&path, index_config)?,
-        Err(err) => {
-            if let Some(mismatch) = DimensionMismatch::from_vectors_error(&err) {
-                tracing::error!(
-                    expected = mismatch.expected,
-                    actual = mismatch.actual,
-                    "vector dimension mismatch"
-                );
-                boot.dimension_mismatch = Some(mismatch);
+    // Runtime engine selection (add-usearch-ann-engine, design.md): the
+    // `vectors.engine` field ("lance" | "usearch"; absent → the default
+    // engine). The factory performs the open → NotFound → create cascade.
+    let engine_name = boot.config.vectors_config().engine;
+    let engine =
+        match create_vector_engine(engine_name.as_deref().unwrap_or(""), &path, &index_config) {
+            Ok(engine) => engine,
+            Err(err) => {
+                if let Some(mismatch) = DimensionMismatch::from_vectors_error(&err) {
+                    tracing::error!(
+                        expected = mismatch.expected,
+                        actual = mismatch.actual,
+                        "vector dimension mismatch"
+                    );
+                    boot.dimension_mismatch = Some(mismatch);
+                }
+                return Err(CliError::Vectors(err));
             }
-            return Err(CliError::Vectors(err));
-        }
-    };
+        };
     tracing::info!(path = %path.display(), dim = index_config.dim, "vector index ready");
-    boot.vectors = Some(Arc::new(engine));
+    boot.vectors = Some(engine);
     Ok(())
 }
 
@@ -1027,9 +1033,10 @@ models:
         // Pre-create the stored index (at the dataset's vectors path) with a
         // different dimension.
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        LanceEngine::create(
-            config.dataset.vectors_path(&config.paths.workspace_dir),
-            stored,
+        create_vector_engine(
+            "lance",
+            &config.dataset.vectors_path(&config.paths.workspace_dir),
+            &stored,
         )
         .expect("create stored index");
 
