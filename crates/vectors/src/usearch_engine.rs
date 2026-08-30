@@ -118,9 +118,13 @@ const WAL_UPD: u8 = 4;
 /// so `Arc<dyn VectorIndex>` and `UsearchEngine` are interchangeable.
 pub struct UsearchEngine {
     index: Index,
+    /// DISK segments (read-only mmap, segment_id = 1..N)
+    disk_segments: Vec<Index>,
     config: VectorIndexConfig,
     /// The `<dir>/index.usearch` file backing the index.
     path: PathBuf,
+    /// Usearch-specific config (max_segment_vectors, compaction threshold, etc.)
+    usearch_config: crate::UsearchConfig,
     /// The SQLite connection holding the `usearch_vectors_log` WAL table
     /// (usearch-wal-persistence task 2.2); `None` (the default) disables
     /// the WAL — every WAL call is a no-op. `Mutex` because
@@ -155,8 +159,40 @@ impl UsearchEngine {
         index.reserve(1).map_err(map_usearch)?;
         let engine = Self {
             index,
+            disk_segments: Vec::new(),
             config,
             path: file,
+            usearch_config: crate::UsearchConfig::default(),
+            wal: None,
+        };
+        engine.save()?;
+        Ok(engine)
+    }
+
+    /// Creates a new engine with UsearchConfig.
+    pub fn create_with_config(
+        path: impl Into<PathBuf>,
+        config: VectorIndexConfig,
+        usearch_config: crate::UsearchConfig,
+    ) -> Result<Self, VectorsError> {
+        let path = path.into();
+        config.validate()?;
+        let file = path.join(INDEX_FILE);
+        if file.exists() {
+            return Err(VectorsError::Engine(format!(
+                "index already exists at {}",
+                file.display()
+            )));
+        }
+        std::fs::create_dir_all(&path)?;
+        let index = Index::new(&options(&config)).map_err(map_usearch)?;
+        index.reserve(1).map_err(map_usearch)?;
+        let engine = Self {
+            index,
+            disk_segments: Vec::new(),
+            config,
+            path: file,
+            usearch_config,
             wal: None,
         };
         engine.save()?;
@@ -187,8 +223,10 @@ impl UsearchEngine {
         }
         Ok(Self {
             index,
+            disk_segments: Vec::new(),
             config,
             path: file,
+            usearch_config: crate::UsearchConfig::default(),
             wal: None,
         })
     }
@@ -271,32 +309,53 @@ impl UsearchEngine {
     /// closure is evaluated per-candidate inside the C++ core, not as a
     /// post-filter), so deleted/updated vectors never appear in the results.
     ///
+    /// Per-segment WAL filtering: each segment uses cumulative WAL entries
+    /// from segment 0..N, ensuring correct filtering across multiple segments.
+    ///
     /// The search runs across the engine's segments in parallel (rayon
     /// `par_iter`); per-segment results are merged by [`merge_results`]
     /// (dedup by chunk_id keeping the minimum distance, sort ascending,
     /// truncate to `k`).
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, VectorsError> {
         self.config.validate_search(query, k)?;
-        let stale = self.load_stale_ids()?;
 
-        // Parallel search across segments using usearch's filtered_search
-        // (filters stale keys during HNSW traversal).
-        let segments: &[&Index] = &[&self.index];
-        let results: Vec<Vec<(u32, f32)>> = segments
+        // Search DISK segments with cumulative WAL filtering
+        let disk_results: Vec<Vec<(u32, f32)>> = self
+            .disk_segments
             .par_iter()
-            .map(|seg| {
+            .enumerate()
+            .map(|(i, seg)| {
+                // Cumulative stale IDs: all WAL entries from segment 0..i
+                let stale = self.load_stale_ids_for_segment(i as u32)?;
                 let matches = seg
                     .filtered_search(query, k, |key: u64| !stale.contains(&(key as u32)))
                     .map_err(map_usearch)?;
                 let mut results = Vec::with_capacity(matches.keys.len());
-                for i in 0..matches.keys.len() {
-                    results.push((key_to_chunk_id(matches.keys[i])?, matches.distances[i]));
+                for j in 0..matches.keys.len() {
+                    results.push((key_to_chunk_id(matches.keys[j])?, matches.distances[j]));
                 }
                 Ok(results)
             })
             .collect::<Result<Vec<_>, VectorsError>>()?;
 
-        Ok(merge_results(results, k))
+        // Search RAM layer with segment_id=0 WAL
+        let ram_stale = self.load_stale_ids_for_segment(0)?;
+        let ram_results = self
+            .index
+            .filtered_search(query, k, |key: u64| !ram_stale.contains(&(key as u32)))
+            .map_err(map_usearch)?;
+        let mut ram_vec = Vec::with_capacity(ram_results.keys.len());
+        for j in 0..ram_results.keys.len() {
+            ram_vec.push((
+                key_to_chunk_id(ram_results.keys[j])?,
+                ram_results.distances[j],
+            ));
+        }
+
+        // Merge all results
+        let mut all_results = disk_results;
+        all_results.push(ram_vec);
+        Ok(merge_results(all_results, k))
     }
 
     /// Removes the vectors whose chunk id is in `chunk_ids`.
@@ -463,14 +522,23 @@ impl UsearchEngine {
     ///
     /// A no-op when no WAL connection is attached ([`Self::with_wal_db`]).
     fn write_wal(&self, chunk_id: u32, flags: u8) -> Result<(), VectorsError> {
+        self.write_wal_with_segment(chunk_id, flags, 0) // segment_id=0 = current/RAM
+    }
+
+    fn write_wal_with_segment(
+        &self,
+        chunk_id: u32,
+        flags: u8,
+        segment_id: u32,
+    ) -> Result<(), VectorsError> {
         let Some(wal) = &self.wal else {
             return Ok(());
         };
         let conn = wal_guard(wal);
         conn.execute(
-            "INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, created_at) \
-             VALUES (?1, ?2, datetime('now'))",
-            params![chunk_id as i64, flags as i64],
+            "INSERT OR REPLACE INTO usearch_vectors_log (segment_id, chunk_id, flags, created_at) \
+             VALUES (?1, ?2, ?3, datetime('now'))",
+            params![segment_id as i64, chunk_id as i64, flags as i64],
         )
         .map_err(map_sqlite)?;
         Ok(())
@@ -481,18 +549,29 @@ impl UsearchEngine {
     /// compaction rewrites the segments).
     ///
     /// A no-op returning an empty set when no WAL connection is attached.
-    fn load_stale_ids(&self) -> Result<HashSet<u32>, VectorsError> {
+    #[cfg(test)]
+    pub(crate) fn load_stale_ids(&self) -> Result<HashSet<u32>, VectorsError> {
+        self.load_stale_ids_for_segment(0)
+    }
+
+    /// Load stale IDs for a specific segment (cumulative: includes all
+    /// WAL entries from segment 0..segment_id).
+    fn load_stale_ids_for_segment(&self, segment_id: u32) -> Result<HashSet<u32>, VectorsError> {
         let Some(wal) = &self.wal else {
             return Ok(HashSet::new());
         };
         let conn = wal_guard(wal);
         let mut stmt = conn
-            .prepare("SELECT chunk_id FROM usearch_vectors_log WHERE (flags & ?1) != 0")
+            .prepare(
+                "SELECT chunk_id FROM usearch_vectors_log \
+                 WHERE segment_id <= ?1 AND (flags & ?2) != 0",
+            )
             .map_err(map_sqlite)?;
         let rows = stmt
-            .query_map(params![(WAL_DEL | WAL_UPD) as i64], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_map(
+                params![segment_id as i64, (WAL_DEL | WAL_UPD) as i64],
+                |row| row.get::<_, i64>(0),
+            )
             .map_err(map_sqlite)?;
         let mut stale = HashSet::new();
         for row in rows {
@@ -516,6 +595,103 @@ impl UsearchEngine {
         conn.execute("DELETE FROM usearch_vectors_log", [])
             .map_err(map_sqlite)?;
         Ok(())
+    }
+
+    /// Check if compaction is needed and trigger it.
+    pub fn maybe_compact(&mut self) -> Result<(), VectorsError> {
+        let stale_pct = self.stale_vector_percentage()?;
+        if stale_pct > self.usearch_config.compaction_stale_threshold as f64 {
+            self.compact()?;
+        }
+        Ok(())
+    }
+
+    /// Merge all segments, remove stale vectors, create new segments.
+    fn compact(&mut self) -> Result<(), VectorsError> {
+        // 1. Load cumulative stale IDs across all segments
+        let stale = self.load_all_stale_ids()?;
+
+        // 2. Collect live vectors from all segments
+        let mut live_vectors: Vec<(u32, Vec<f32>)> = Vec::new();
+        for seg in &self.disk_segments {
+            // Export all vectors from segment
+            let count = seg.size();
+            if count == 0 {
+                continue;
+            }
+            // Use exact_search to get all vectors
+            let query = vec![1.0; self.config.dim];
+            let matches = seg.exact_search(&query, count).map_err(map_usearch)?;
+            for i in 0..matches.keys.len() {
+                let id = key_to_chunk_id(matches.keys[i])?;
+                if !stale.contains(&id) {
+                    // Export the vector
+                    let mut vector = Vec::new();
+                    seg.export(id as u64, &mut vector).map_err(map_usearch)?;
+                    live_vectors.push((id, vector));
+                }
+            }
+        }
+
+        // 3. Create new segments (sliced by max_segment_vectors)
+        let max = self.usearch_config.max_segment_vectors;
+        let mut new_segments = Vec::new();
+        for chunk in live_vectors.chunks(max) {
+            let new_index = Index::new(&options(&self.config)).map_err(map_usearch)?;
+            new_index.reserve(chunk.len()).map_err(map_usearch)?;
+            for (id, vector) in chunk {
+                new_index.add(*id as u64, vector).map_err(map_usearch)?;
+            }
+            new_segments.push(new_index);
+        }
+
+        // 4. Replace old segments
+        self.disk_segments = new_segments;
+
+        // 5. Clear WAL
+        self.clear_wal()?;
+
+        Ok(())
+    }
+
+    /// Calculate percentage of stale vectors.
+    fn stale_vector_percentage(&self) -> Result<f64, VectorsError> {
+        let total = self.total_vector_count();
+        if total == 0 {
+            return Ok(0.0);
+        }
+        let stale = self.load_all_stale_ids()?.len();
+        Ok(stale as f64 / total as f64 * 100.0)
+    }
+
+    /// Count total vectors across all segments.
+    fn total_vector_count(&self) -> usize {
+        self.disk_segments.iter().map(|s| s.size()).sum()
+    }
+
+    /// Load all stale IDs across all segments.
+    fn load_all_stale_ids(&self) -> Result<HashSet<u32>, VectorsError> {
+        let Some(wal) = &self.wal else {
+            return Ok(HashSet::new());
+        };
+        let conn = wal_guard(wal);
+        let mut stmt = conn
+            .prepare("SELECT chunk_id FROM usearch_vectors_log WHERE (flags & ?1) != 0")
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map(params![(WAL_DEL | WAL_UPD) as i64], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(map_sqlite)?;
+        let mut stale = HashSet::new();
+        for row in rows {
+            let id = row.map_err(map_sqlite)?;
+            let id = u32::try_from(id).map_err(|_| {
+                VectorsError::Engine(format!("WAL chunk_id {id} exceeds the u32 range"))
+            })?;
+            stale.insert(id);
+        }
+        Ok(stale)
     }
 }
 
@@ -1284,11 +1460,14 @@ mod tests {
     /// is tier 0 and cannot depend on `db`.
     const WAL_SCHEMA: &str = "
         CREATE TABLE usearch_vectors_log (
-            chunk_id    INTEGER PRIMARY KEY,
+            segment_id  INTEGER NOT NULL,
+            chunk_id    INTEGER NOT NULL,
             flags       INTEGER NOT NULL,
-            created_at  TEXT NOT NULL
+            created_at  TEXT NOT NULL,
+            PRIMARY KEY (segment_id, chunk_id)
         );
         CREATE INDEX idx_usearch_vectors_log_flags ON usearch_vectors_log(flags);
+        CREATE INDEX idx_usearch_vectors_log_segment ON usearch_vectors_log(segment_id);
     ";
 
     /// A temp-file WAL database: the engine takes ownership of one
@@ -1444,8 +1623,8 @@ mod tests {
         // task 2.2, but the stale set must honor the UPD bit (design flags).
         wal.check
             .execute(
-                "INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, created_at) \
-                 VALUES (5, 4, datetime('now'))",
+                "INSERT OR REPLACE INTO usearch_vectors_log (segment_id, chunk_id, flags, created_at) \
+                 VALUES (0, 5, 4, datetime('now'))",
                 [],
             )
             .expect("seed UPD record");
@@ -1537,8 +1716,8 @@ mod tests {
         // WAL-first crash scenario: WAL says DEL but index still has it).
         wal.check
             .execute(
-                "INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, created_at) \
-                 VALUES (3, 2, datetime('now'))",
+                "INSERT OR REPLACE INTO usearch_vectors_log (segment_id, chunk_id, flags, created_at) \
+                 VALUES (0, 3, 2, datetime('now'))",
                 [],
             )
             .expect("set chunk 3 to DEL in WAL");
