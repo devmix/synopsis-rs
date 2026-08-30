@@ -4,9 +4,10 @@
 
 1. **WAL in SQLite** — `usearch_vectors_log` table for transactional integrity with chunks
 2. **DISK_N segments** — multiple read-only mmap segments (as designed)
-3. **Global compaction** — merges ALL segments, not just last two
-4. **Parallel search** — search across segments in parallel (configurable threads)
+3. **Global compaction** — merges ALL segments, removes stale vectors, slices by 1M
+4. **Parallel search** — search across segments in parallel via rayon
 5. **Compaction heuristics** — background compaction when stale vectors > 30%
+6. **WAL without vectors** — only chunk_id + flags (vector comes from chunks table)
 
 ## Architecture
 
@@ -41,12 +42,13 @@
 CREATE TABLE usearch_vectors_log (
     chunk_id    INTEGER PRIMARY KEY,
     flags       INTEGER NOT NULL,  -- ADD=1, DEL=2, UPD=4
-    vector      BLOB,              -- f32 × dim (NULL for DEL)
     created_at  TEXT NOT NULL       -- ISO 8601 timestamp
 );
 
 CREATE INDEX idx_usearch_vectors_log_flags ON usearch_vectors_log(flags);
 ```
+
+No vector column — vector data lives in chunks table. WAL only tracks operations.
 
 ### WAL Flags
 
@@ -59,27 +61,27 @@ CREATE INDEX idx_usearch_vectors_log_flags ON usearch_vectors_log(flags);
 ### Search Algorithm
 
 ```
-1. Load DISK segments (mmap, parallel)
-2. For each segment in parallel (configurable threads):
-   a. Search segment (HNSW)
-   b. Filter by WAL: exclude chunk_ids with flags & (DEL|UPD)
-   c. Return results with segment_id
+1. Load all WAL chunk_ids with DEL|UPD flags into HashSet<u32>
+2. Use rayon to search DISK segments in parallel:
+   for seg in segments.par_iter() {
+       let results = seg.filtered_search(query, k, &stale_ids);
+       // filtered_search excludes stale_ids from results
+   }
 3. Merge results from all segments
 4. Deduplicate by chunk_id, keep most recent
-5. Apply WAL to RAM results (exclude deleted/updated)
 ```
+
+`filtered_search` is a new method that excludes chunk_ids in the stale set.
 
 ### Compaction Algorithm
 
-Triggered by heuristics (background):
-- Stale vectors > 30% of total (configurable)
-- OR WAL size > threshold
-- OR segment count > threshold
+Triggered by heuristic (background):
+- Stale vectors > `compaction_stale_threshold` % of total
 
 Process:
 1. Read all segments and WAL
-2. Identify stale vectors (chunk_ids with DEL flag or missing from SQLite)
-3. Create new segment with only live vectors (sliced by 1M)
+2. Identify stale vectors (chunk_ids with DEL flag)
+3. Create new segments with only live vectors (sliced by max_segment_vectors)
 4. Replace old segments with new ones
 5. Clear WAL
 
@@ -88,10 +90,10 @@ Process:
 ```yaml
 vectors:
   engine: usearch
-  wal:
+  usearch:
     max_segment_vectors: 1000000      # Vectors per segment after compaction
     compaction_stale_threshold: 30    # % stale vectors to trigger compaction
-    search_threads: 4                 # Parallel search threads
+    search_threads: 4                 # Parallel search threads (rayon)
 ```
 
 ## Files Modified
