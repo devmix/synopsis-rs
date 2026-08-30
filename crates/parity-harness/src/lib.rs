@@ -17,6 +17,7 @@
 //! - [`metrics`]: recall@k against provided ground truth;
 //! - [`diff`]: JSON/text diff utilities for parity reports.
 
+pub mod bench;
 pub mod diff;
 pub mod fixtures;
 pub mod mcp_client;

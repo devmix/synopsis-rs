@@ -10,8 +10,9 @@
 //!   dedicated tokio runtime (design D2) behind sync methods: call it only from sync
 //!   contexts or `spawn_blocking` workers.
 //! - [`usearch_engine::UsearchEngine`] (feature `engine-usearch`) wraps the USearch 2.26
-//!   C++11 HNSW core (cxx FFI, `L2sq` metric with `U8` quantization) with sync,
-//!   thread-safe methods; `open` loads the index file for read-write.
+//!   C++11 HNSW core (cxx FFI, `L2sq` metric with configurable scalar quantization,
+//!   default `BF16`) with sync, thread-safe methods; `open` loads the index file
+//!   for read-write.
 //!
 //! Inputs are ready-made `(chunk_id, Vec<f32>)` pairs; `chunk_id` is the application-level
 //! primary key (the SQLite chunk row id). The dimensionality is a configuration parameter -
@@ -64,7 +65,11 @@ use std::sync::Arc;
 /// `nprobes = 32`, `ef_search = 200`. `nprobes` and `ef_search` are runtime-tunable
 /// (ADR 0003 mitigation #1): raising them trades latency for recall without rebuilding
 /// the index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `quantization` is the usearch engine's scalar quantization (the Lance engine
+/// ignores it — it uses its own IvfHnswSq u8-SQ index). It is `None` by default,
+/// which the usearch engine resolves to its default (`bf16`).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorIndexConfig {
     /// Vector dimensionality (bge-m3: 1024).
     pub dim: usize,
@@ -78,6 +83,10 @@ pub struct VectorIndexConfig {
     pub nprobes: usize,
     /// HNSW efSearch: candidate list size during query.
     pub ef_search: usize,
+    /// Scalar quantization for the ANN index (usearch engine): one of `"u8"`,
+    /// `"i8"`, `"f16"`, `"bf16"`, `"f32"`. `None` means the engine default
+    /// (`bf16`); the Lance engine ignores this field.
+    pub quantization: Option<String>,
 }
 
 impl VectorIndexConfig {
@@ -97,9 +106,18 @@ impl VectorIndexConfig {
             num_partitions,
             nprobes,
             ef_search,
+            quantization: None,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Sets the scalar quantization (builder). `None` (the default from
+    /// [`Self::new`]) means the engine's default quantization (`bf16` for the
+    /// usearch engine). Ignored by the Lance engine.
+    pub fn with_quantization(mut self, quantization: impl Into<String>) -> Self {
+        self.quantization = Some(quantization.into());
+        self
     }
 
     /// Validates field invariants:
@@ -138,6 +156,18 @@ impl VectorIndexConfig {
                 "ef_search must be > 0".to_string(),
             ));
         }
+        // The quantization is engine-specific (usearch); validate the value if
+        // set so a programmatic misuse fails here, not deep in the engine.
+        if let Some(quantization) = &self.quantization {
+            match quantization.to_ascii_lowercase().as_str() {
+                "u8" | "i8" | "f16" | "bf16" | "f32" => {}
+                other => {
+                    return Err(VectorsError::InvalidArgument(format!(
+                        "quantization must be one of \"u8\", \"i8\", \"f16\", \"bf16\", \"f32\", got {other:?}"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -171,6 +201,7 @@ impl Default for VectorIndexConfig {
             num_partitions: 256,
             nprobes: 32,
             ef_search: 200,
+            quantization: None,
         }
     }
 }
@@ -246,8 +277,8 @@ pub enum VectorEngine {
     /// LanceDB engine (feature `engine-lance`; the ADR 0003 default).
     #[cfg(feature = "engine-lance")]
     Lance(LanceEngine),
-    /// USearch engine (feature `engine-usearch`; U8-quantized disk-backed
-    /// HNSW, `L2sq`).
+    /// USearch engine (feature `engine-usearch`; configurable scalar
+    /// quantization, default `BF16`, disk-backed HNSW, `L2sq`).
     #[cfg(feature = "engine-usearch")]
     Usearch(UsearchEngine),
 }
@@ -341,9 +372,9 @@ pub fn create_vector_engine(
 
     #[cfg(feature = "engine-lance")]
     if name == ENGINE_LANCE {
-        let engine = match LanceEngine::open(path, *config) {
+        let engine = match LanceEngine::open(path, config.clone()) {
             Ok(engine) => engine,
-            Err(VectorsError::NotFound(_)) => LanceEngine::create(path, *config)?,
+            Err(VectorsError::NotFound(_)) => LanceEngine::create(path, config.clone())?,
             Err(err) => return Err(err),
         };
         return Ok(Arc::new(VectorEngine::Lance(engine)));
@@ -351,9 +382,9 @@ pub fn create_vector_engine(
 
     #[cfg(feature = "engine-usearch")]
     if name == ENGINE_USEARCH {
-        let engine = match UsearchEngine::open(path, *config) {
+        let engine = match UsearchEngine::open(path, config.clone()) {
             Ok(engine) => engine,
-            Err(VectorsError::NotFound(_)) => UsearchEngine::create(path, *config)?,
+            Err(VectorsError::NotFound(_)) => UsearchEngine::create(path, config.clone())?,
             Err(err) => return Err(err),
         };
         return Ok(Arc::new(VectorEngine::Usearch(engine)));
@@ -391,6 +422,8 @@ mod tests {
         assert_eq!(config.num_partitions, 256);
         assert_eq!(config.nprobes, 32);
         assert_eq!(config.ef_search, 200);
+        // `None` means the engine default (bf16 for usearch).
+        assert_eq!(config.quantization, None);
         config.validate().expect("defaults must be valid");
     }
 
@@ -399,6 +432,38 @@ mod tests {
         let config = VectorIndexConfig::new(512, 8, 64, 64, 16, 100).unwrap();
         assert_eq!(config.dim, 512);
         assert_eq!(config.ef_construction, 64);
+        assert_eq!(config.quantization, None);
+    }
+
+    #[test]
+    fn with_quantization_sets_the_field() {
+        let config = VectorIndexConfig::new(512, 8, 64, 64, 16, 100)
+            .unwrap()
+            .with_quantization("f32");
+        assert_eq!(config.quantization.as_deref(), Some("f32"));
+        config.validate().expect("f32 quantization is valid");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_quantization() {
+        assert!(
+            config_with(|c| c.quantization = Some("fp8".to_string()))
+                .validate()
+                .is_err()
+        );
+        // Every accepted value validates.
+        for value in ["u8", "i8", "f16", "bf16", "f32"] {
+            let config = config_with(|c| c.quantization = Some(value.to_string()));
+            config
+                .validate()
+                .unwrap_or_else(|err| panic!("{value} must validate: {err:?}"));
+        }
+        // Case is tolerated.
+        assert!(
+            config_with(|c| c.quantization = Some("BF16".to_string()))
+                .validate()
+                .is_ok()
+        );
     }
 
     #[test]

@@ -282,7 +282,8 @@ fn recall_gate_with_delete_and_persistence() {
 
     let dir = TempDir::new();
     let config = gate_config();
-    let engine = LanceEngine::create(&dir.0, config).expect("create engine");
+    // `config` is reused for the reopen below, so clone it into `create`.
+    let engine = LanceEngine::create(&dir.0, config.clone()).expect("create engine");
     load_corpus(&engine, &corpus);
     engine.build_index().expect("build IvfHnswSq index");
     assert_eq!(engine.count().expect("count"), N as u64);

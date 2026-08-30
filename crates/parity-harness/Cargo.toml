@@ -9,6 +9,13 @@ edition.workspace = true
 [lints]
 workspace = true
 
+# Engine feature forwarding (add-usearch-ann-engine, task 1.4): the A/B
+# benchmark test builds both engines when both features are enabled.
+# These forward to the `vectors` crate's engine features.
+[features]
+engine-lance = ["vectors/engine-lance"]
+engine-usearch = ["vectors/engine-usearch"]
+
 # MCP protocol: official SDK rmcp over Streamable HTTP (design D8, task 3.1).
 # Client path: `client` + reqwest-backed streamable-HTTP transport; the `reqwest`
 # feature selects the rustls TLS provider for that transport's HTTP stack.

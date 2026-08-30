@@ -4,13 +4,16 @@
 //! the USearch 2.26 C++11 HNSW core (cxx FFI), mirroring the [`crate::engine::LanceEngine`]
 //! semantics:
 //!
-//! - `L2sq` metric with `U8` scalar quantization (design.md): the C++ core
-//!   down-casts every f32 vector itself before storage
-//!   (`u8[i] = clamp(v[i] * 255 / ||v||, 0, 255)`) — each vector is
-//!   normalized to unit length before the 8-bit scale, so L2sq distances on
-//!   the quantized storage behave cosine-like. Only the ranking (not the
-//!   absolute distance value) feeds the RRF fusion, so this is fine; the
-//!   Rust side always passes f32 and never works around the down-cast;
+//! - `L2sq` metric with configurable scalar quantization (default `BF16`;
+//!   [`VectorIndexConfig::quantization`] selects `u8`/`i8`/`f16`/`bf16`/`f32`):
+//!   the C++ core down-casts every f32 vector itself before storage. For the
+//!   integer kinds (`u8`/`i8`) each vector is normalized to unit length before
+//!   the scale (`u8[i] = clamp(v[i] * 255 / ||v||, 0, 255)`), so L2sq distances
+//!   on that storage behave cosine-like; the floating kinds (`bf16`/`f16`/`f32`)
+//!   store near-lossless values. Only the ranking (not the absolute distance
+//!   value) feeds the RRF fusion, so the quantization is a storage/latency
+//!   trade-off; the Rust side always passes f32 and never works around the
+//!   down-cast;
 //! - HNSW parameters from [`VectorIndexConfig`]: `connectivity = m`,
 //!   `expansion_add = ef_construction`, `expansion_search = ef_search`
 //!   (the IVF fields `num_partitions`/`nprobes` do not apply to pure HNSW);
@@ -199,10 +202,9 @@ impl UsearchEngine {
     }
 
     /// Top-k nearest neighbours of `query`: `(chunk_id, distance)` pairs
-    /// sorted by distance ascending (L2sq on the unit-normalized U8
-    /// storage — cosine-like; see the module docs). An empty index yields
-    /// an empty vec (not an error). Requires `k > 0` and
-    /// `query.len() == config.dim`.
+    /// sorted by distance ascending (L2sq on the quantized storage — see the
+    /// module docs). An empty index yields an empty vec (not an error).
+    /// Requires `k > 0` and `query.len() == config.dim`.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, VectorsError> {
         self.config.validate_search(query, k)?;
         let matches = self.index.search(query, k).map_err(map_usearch)?;
@@ -257,7 +259,7 @@ impl UsearchEngine {
         // the file header, and a created one was reserved before its first
         // add — this is a no-op in both cases.
         self.index.reserve(count).map_err(map_usearch)?;
-        // A non-zero query: the U8 down-cast divides by the vector norm.
+        // A non-zero query: the integer down-cast divides by the vector norm.
         let query = vec![1.0f32; self.config.dim];
         let matches = self
             .index
@@ -408,21 +410,37 @@ fn add_rows(index: &Index, rows: &[(u32, &[f32])]) -> Result<(), VectorsError> {
         .map(|_| ())
 }
 
-/// Index options for the configured geometry: `L2sq` metric, `U8`
-/// quantization, HNSW `connectivity = m`, `expansion_add =
-/// ef_construction`, `expansion_search = ef_search` (design.md parity
-/// parameters; the IVF fields of [`VectorIndexConfig`] do not apply to pure
-/// HNSW). `multi` is off: one vector per chunk id, so search results never
-/// contain duplicate keys.
+/// Index options for the configured geometry: `L2sq` metric, the configured
+/// scalar quantization (default `BF16`; see
+/// [`VectorIndexConfig::quantization`]), HNSW `connectivity = m`,
+/// `expansion_add = ef_construction`, `expansion_search = ef_search` (design.md
+/// parity parameters; the IVF fields of [`VectorIndexConfig`] do not apply to
+/// pure HNSW). `multi` is off: one vector per chunk id, so search results
+/// never contain duplicate keys.
 fn options(config: &VectorIndexConfig) -> IndexOptions {
     IndexOptions {
         dimensions: config.dim,
         metric: MetricKind::L2sq,
-        quantization: ScalarKind::U8,
+        quantization: quantization(config.quantization.as_deref()),
         connectivity: config.m,
         expansion_add: config.ef_construction,
         expansion_search: config.ef_search,
         multi: false,
+    }
+}
+
+/// Maps the configured quantization string to a usearch [`ScalarKind`].
+/// `None` (absent) and `"bf16"` resolve to `BF16` (the engine default); an
+/// unrecognized value falls back to `BF16` too — the config crate rejects
+/// unknown values at parse time, so the fallback is a defense-in-depth guard.
+fn quantization(kind: Option<&str>) -> ScalarKind {
+    match kind.map(|k| k.to_ascii_lowercase()).as_deref() {
+        Some("u8") => ScalarKind::U8,
+        Some("i8") => ScalarKind::I8,
+        Some("f16") => ScalarKind::F16,
+        Some("f32") => ScalarKind::F32,
+        // "bf16", absent (None), and unrecognized values → the BF16 default.
+        _ => ScalarKind::BF16,
     }
 }
 
@@ -601,7 +619,8 @@ mod tests {
         assert_eq!(engine.count().expect("count"), 0, "fresh index is empty");
         assert_eq!(engine.index.dimensions(), DIM);
         assert_eq!(engine.index.metric_kind(), MetricKind::L2sq);
-        assert_eq!(engine.index.scalar_kind(), ScalarKind::U8);
+        // The default (absent) quantization resolves to the engine default.
+        assert_eq!(engine.index.scalar_kind(), ScalarKind::BF16);
 
         // 100 deterministic 1024-dim vectors, one per key.
         let vectors: Vec<(u64, Vec<f32>)> =
@@ -614,8 +633,8 @@ mod tests {
         assert_eq!(engine.count().expect("count"), 100);
 
         // Top-10 for a stored vector: that vector is top-1 at ~0 distance
-        // (the query is down-cast to U8 exactly like its stored copy) and
-        // the results are distance-ascending.
+        // (the query is down-cast to the configured kind exactly like its
+        // stored copy) and the results are distance-ascending.
         let results = engine.search(&vectors[42].1, 10).expect("search");
         assert_eq!(results.len(), 10, "10 results for 100 stored vectors");
         assert_eq!(results[0].0, 42, "top-1 must be the queried vector");
@@ -650,6 +669,47 @@ mod tests {
             keys(&restored),
             "restore must return the same keys"
         );
+    }
+
+    /// The quantization string maps to the expected usearch [`ScalarKind`];
+    /// `None` (absent) and `"bf16"` resolve to the engine default, and an
+    /// unrecognized value falls back to the default (defense-in-depth).
+    #[test]
+    fn quantization_maps_configured_kinds() {
+        assert_eq!(quantization(None), ScalarKind::BF16);
+        assert_eq!(quantization(Some("u8")), ScalarKind::U8);
+        assert_eq!(quantization(Some("i8")), ScalarKind::I8);
+        assert_eq!(quantization(Some("f16")), ScalarKind::F16);
+        assert_eq!(quantization(Some("bf16")), ScalarKind::BF16);
+        assert_eq!(quantization(Some("f32")), ScalarKind::F32);
+        // Case-insensitive.
+        assert_eq!(quantization(Some("BF16")), ScalarKind::BF16);
+        // Unrecognized → the BF16 default.
+        assert_eq!(quantization(Some("fp8")), ScalarKind::BF16);
+    }
+
+    /// An explicit quantization on the config is honored by the created
+    /// engine (not just the default).
+    #[test]
+    fn create_with_explicit_quantization() {
+        for (kind, scalar) in [
+            ("u8", ScalarKind::U8),
+            ("i8", ScalarKind::I8),
+            ("f16", ScalarKind::F16),
+            ("bf16", ScalarKind::BF16),
+            ("f32", ScalarKind::F32),
+        ] {
+            let dir = TempDir::new();
+            let config = VectorIndexConfig::new(1024, 16, 100, 8, 8, 100)
+                .expect("valid")
+                .with_quantization(kind);
+            let engine = UsearchEngine::create(&dir.0, config).expect("create");
+            assert_eq!(
+                engine.index.scalar_kind(),
+                scalar,
+                "quantization {kind} must map to {scalar:?}"
+            );
+        }
     }
 
     #[test]

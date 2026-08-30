@@ -773,6 +773,31 @@ where
     }
 }
 
+/// Default for the `vectors.quantization` field: `"bf16"` — the usearch
+/// engine's default scalar quantization (supersedes ADR 0003's u8).
+fn default_quantization() -> String {
+    "bf16".into()
+}
+
+/// Validates the `vectors.quantization` field at parse time: a present value
+/// must be one of `"u8"`, `"i8"`, `"f16"`, `"bf16"`, `"f32"` (case-
+/// insensitive, normalized to lowercase), otherwise the parse fails. An absent
+/// key resolves to the default (`"bf16"`) via serde `default`, so this
+/// deserializer only sees explicitly-present values.
+fn de_vectors_quantization<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    let normalized = value.to_ascii_lowercase();
+    match normalized.as_str() {
+        "u8" | "i8" | "f16" | "bf16" | "f32" => Ok(normalized),
+        other => Err(SerdeError::custom(format!(
+            "vectors.quantization must be one of \"u8\", \"i8\", \"f16\", \"bf16\", \"f32\", got {other:?}"
+        ))),
+    }
+}
+
 /// ANN index and query parameters for the vector search leg (design D7).
 ///
 /// Raw preset fields only: this crate does not depend on `vectors`
@@ -817,6 +842,15 @@ pub struct VectorsConfig {
         deserialize_with = "de_vectors_engine"
     )]
     pub engine: Option<String>,
+    /// Scalar quantization for the ANN index (usearch engine): one of `"u8"`,
+    /// `"i8"`, `"f16"`, `"bf16"`, `"f32"`. Default `"bf16"`. An absent key
+    /// resolves to the default; an unrecognized value fails the parse. The
+    /// Lance engine ignores this field (it uses its own IvfHnswSq u8-SQ index).
+    #[serde(
+        default = "default_quantization",
+        deserialize_with = "de_vectors_quantization"
+    )]
+    pub quantization: String,
 }
 
 impl Default for VectorsConfig {
@@ -833,6 +867,7 @@ impl Default for VectorsConfig {
             nprobes: default_vectors_nprobes(),
             ef_search: default_vectors_ef_search(),
             engine: None,
+            quantization: default_quantization(),
         }
     }
 }
@@ -1967,6 +2002,7 @@ vectors:
                 nprobes: 4,
                 ef_search: 100,
                 engine: None,
+                quantization: "bf16".to_string(),
             }
         );
     }
@@ -2047,6 +2083,59 @@ vectors:
         let yaml = noyalib::to_string(&cfg).expect("serialize");
         let back: Config = noyalib::from_str(&yaml).expect("reparse");
         assert_eq!(back.vectors, cfg.vectors);
+    }
+
+    #[test]
+    fn vectors_quantization_field_parses_valid_values() {
+        for value in ["u8", "i8", "f16", "bf16", "f32"] {
+            let cfg = parse(&format!("vectors:\n  quantization: {value}\n"));
+            assert_eq!(cfg.vectors_config().quantization, value);
+        }
+    }
+
+    #[test]
+    fn vectors_quantization_field_default_is_bf16() {
+        // Absent key inside a present section -> default "bf16".
+        let cfg = parse("vectors:\n  dim: 512\n");
+        assert_eq!(cfg.vectors_config().quantization, "bf16");
+
+        // Absent section -> default "bf16" via vectors_config().
+        let cfg = parse("server:\n  name: x\n");
+        assert_eq!(cfg.vectors_config().quantization, "bf16");
+
+        // The zero-value config resolves the same way.
+        assert_eq!(VectorsConfig::default().quantization, "bf16");
+    }
+
+    #[test]
+    fn vectors_quantization_field_is_case_insensitive() {
+        let cfg = parse("vectors:\n  quantization: BF16\n");
+        assert_eq!(cfg.vectors_config().quantization, "bf16");
+    }
+
+    #[test]
+    fn vectors_quantization_field_invalid_is_a_parse_error() {
+        let err = load_from_str("vectors:\n  quantization: fp8\n")
+            .expect_err("an invalid quantization must fail the parse");
+        match err {
+            ConfigError::Yaml { .. } => {
+                assert!(
+                    err.to_string().contains("vectors.quantization"),
+                    "the error must name the field: {err}"
+                );
+            }
+            other => panic!("expected a YAML parse error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vectors_quantization_field_roundtrip() {
+        // A present quantization value survives serialize -> reparse.
+        let cfg = parse("vectors:\n  dim: 512\n  quantization: f32\n");
+        let yaml = noyalib::to_string(&cfg).expect("serialize");
+        let back: Config = noyalib::from_str(&yaml).expect("reparse");
+        assert_eq!(back.vectors, cfg.vectors);
+        assert_eq!(back.vectors_config().quantization, "f32");
     }
 
     #[test]

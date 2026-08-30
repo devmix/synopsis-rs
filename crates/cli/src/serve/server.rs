@@ -741,7 +741,8 @@ pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliErr
     if table_dir.exists() {
         std::fs::remove_dir_all(&table_dir)?;
     }
-    let engine = LanceEngine::create(&path, index_config)?;
+    // `index_config` is read for the log line below, so clone it into `create`.
+    let engine = LanceEngine::create(&path, index_config.clone())?;
     tracing::info!(
         path = %path.display(),
         dim = index_config.dim,

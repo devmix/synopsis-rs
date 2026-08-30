@@ -175,7 +175,7 @@ impl LanceEngine {
                 });
             }
         }
-        let config = self.config;
+        let config = self.config.clone();
         let batches: Vec<RecordBatch> = rows
             .chunks(BATCH_ROWS)
             .map(|chunk| build_batch(&config, chunk))
@@ -245,7 +245,7 @@ impl LanceEngine {
     /// Call it once the data is in place; rebuilding over new data is
     /// handled with the lifecycle operations (task vectors 1.4).
     pub fn build_index(&self) -> Result<(), VectorsError> {
-        let config = self.config;
+        let config = self.config.clone();
         let index = Index::IvfHnswSq(
             IvfHnswSqIndexBuilder::default()
                 .num_partitions(config.num_partitions as u32)
@@ -357,7 +357,7 @@ impl LanceEngine {
                 });
             }
         }
-        let config = self.config;
+        let config = self.config.clone();
         let refs: Vec<(u32, &[f32])> = rows
             .iter()
             .map(|(id, vector)| (*id, vector.as_slice()))
