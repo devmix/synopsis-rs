@@ -1,164 +1,194 @@
 # Tasks: usearch-wal-persistence
 
-- [ ] 2.1 WAL binary format + config struct (implement WAL record serialization, add vectors.wal config)
-- [ ] 2.2 WAL layer management in UsearchEngine (RAM/DISK layers, flush, search fan-out)
-- [ ] 2.3 Compaction logic (merge last two DISK layers, WAL filtering)
-- [ ] 2.4 Integration tests (persistence across restart, compaction, config validation)
-- [ ] 2.5 Benchmark WAL vs rebuild-only (latency, durability, SSD wear)
+- [ ] 2.1 WAL table in SQLite + config struct (usearch_vectors_log table, WalConfig)
+- [ ] 2.2 WAL write path (insert/delete/update → SQLite WAL + RAM index)
+- [ ] 2.3 Parallel search across DISK segments + WAL filtering
+- [ ] 2.4 Global compaction (merge all segments, remove stale, slice by 1M)
+- [ ] 2.5 Integration tests (persistence, compaction, config validation)
 
 ---
 
-## 2.1 WAL binary format + config struct
+## 2.1 WAL table in SQLite + config struct
 
-**Goal:** Implement WAL record serialization and add WAL config to VectorsConfig.
+**Goal:** Create WAL table in SQLite and add WAL config to VectorsConfig.
 
 **Scope файлов:**
-- `crates/vectors/src/wal.rs` (new module, ~150 LOC):
-  - `pub struct WalRecord { pub chunk_id: u32, pub flags: WalFlags, pub vector: Option<Vec<f32>> }`
-  - `pub struct WalFlags { pub add: bool, pub del: bool, pub upd: bool }`
-  - `impl WalRecord { pub fn encode(&self, dim: usize) -> Vec<u8>; pub fn decode(buf: &[u8], dim: usize) -> Result<Self>; }`
-  - Binary format: [u32 LE chunk_id][u8 flags][f32 LE × dim] (dim only for ADD/UPD)
+- `crates/db/src/migrations.rs` — add migration for `usearch_vectors_log` table:
+  ```sql
+  CREATE TABLE IF NOT EXISTS usearch_vectors_log (
+      chunk_id    INTEGER PRIMARY KEY,
+      flags       INTEGER NOT NULL,
+      vector      BLOB,
+      created_at  TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_usearch_vectors_log_flags ON usearch_vectors_log(flags);
+  ```
 - `crates/config/src/preset.rs` — add `WalConfig` struct:
   ```rust
   pub struct WalConfig {
-      pub ram_threshold_mb: usize,      // default 512
-      pub disk_count_threshold: usize,  // default 5
-      pub wal_size_threshold_pct: u8,   // default 50
+      pub max_segment_vectors: usize,       // default 1_000_000
+      pub compaction_stale_threshold: u8,   // default 30 (%)
+      pub search_threads: usize,            // default 4
   }
   ```
   Add `wal: WalConfig` to `VectorsConfig` with `#[serde(default)]`.
 - `crates/vectors/src/lib.rs` — add `wal` field to `VectorIndexConfig`, pass to `UsearchEngine::create`.
 
-**Dependencies:** none (standalone module).
+**Dependencies:** none.
 
 **Критерии приёмки (машинные):**
-- `WalRecord::encode` + `WalRecord::decode` round-trip test (1000 records, dim=1024).
-- `WalFlags` bit manipulation tests (all 8 combinations).
-- Config parse test: `vectors.wal.ram_threshold_mb: 1024` deserializes correctly.
-- Config default test: absent `wal` section → defaults (512, 5, 50).
-- `cargo test -p vectors -p config` green; `clippy -D warnings`, `fmt --check` clean.
+- Migration creates table and index.
+- Config parse test: `vectors.wal.max_segment_vectors: 500000` deserializes correctly.
+- Config default test: absent `wal` section → defaults (1M, 30%, 4 threads).
+- `cargo test -p db -p config` green; `clippy -D warnings`, `fmt --check` clean.
 
-**Oracle refs:** N/A (new feature; no Go equivalent).
+**Oracle refs:** N/A (new feature).
 
 ---
 
-## 2.2 WAL layer management in UsearchEngine
+## 2.2 WAL write path
 
-**Goal:** Implement RAM/DISK layer management with WAL tracking.
+**Goal:** Insert/delete/update operations write to SQLite WAL + update RAM index.
 
 **Scope файлов:**
-- `crates/vectors/src/usearch_engine.rs` — add to `UsearchEngine`:
+- `crates/vectors/src/usearch_engine.rs` — add WAL methods:
   ```rust
-  struct WalLayer {
-      index_path: PathBuf,
-      wal_path: PathBuf,
-      wal_records: Vec<WalRecord>,
-  }
-  
-  struct UsearchEngine {
-      ram_index: Index,           // mutable, live inserts
-      ram_wal: Vec<WalRecord>,    // WAL for RAM layer
-      disk_layers: Vec<WalLayer>, // read-only mmap layers
-      config: VectorIndexConfig,
-      wal_config: WalConfig,
-      path: PathBuf,
+  impl UsearchEngine {
+      fn write_wal(&self, chunk_id: u32, flags: u8, vector: Option<&[f32]>) -> Result<()> {
+          // INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, vector, created_at)
+          // VALUES (?, ?, ?, datetime('now'))
+      }
+      
+      fn apply_wal_to_index(&mut self) -> Result<()> {
+          // Read WAL from SQLite, replay into RAM index
+          // SELECT chunk_id, flags, vector FROM usearch_vectors_log ORDER BY created_at
+      }
   }
   ```
 - Modify `insert_batch` to:
-  1. Add vectors to `ram_index`
-  2. Append WAL records to `ram_wal`
-  3. Check if `ram_index.size() * dim * 2 > wal_config.ram_threshold_mb * 1024 * 1024`
-  4. If threshold exceeded → call `flush_ram_to_disk()`
-- Implement `flush_ram_to_disk()`:
-  1. Save `ram_index` to `index.usearch.<N>`
-  2. Write `ram_wal` to `WAL_<N>.bin`
-  3. Create new `WalLayer` with mmap view
-  4. Clear `ram_wal`, recreate `ram_index`
-- Modify `search` to:
-  1. Search `ram_index` (unfiltered)
-  2. For each disk layer, search and filter by combined WAL
-  3. Deduplicate by chunk_id, keep most recent
+  1. Write WAL record to SQLite (ADD flag)
+  2. Insert vector into RAM index
+- Modify `delete_by_chunk_ids` to:
+  1. Write WAL record to SQLite (DEL flag)
+  2. Delete from RAM index
+- Modify `rebuild` to:
+  1. Clear WAL table
+  2. Rebuild index from SQLite chunks
 
 **Dependencies:** 2.1.
 
 **Критерии приёмки (машинные):**
-- Insert 10K vectors → RAM flushes to DISK when threshold exceeded.
-- Search after flush returns same results as before flush.
-- WAL records are persisted and replayed on reopen.
+- Insert → WAL record exists in SQLite.
+- Delete → WAL record with DEL flag exists.
+- Rebuild → WAL table cleared.
 - `cargo test -p vectors --features engine-usearch` green; `clippy -D warnings`, `fmt --check` clean.
 
 **Oracle refs:** N/A.
 
 ---
 
-## 2.3 Compaction logic
+## 2.3 Parallel search across DISK segments + WAL filtering
 
-**Goal:** Merge last two DISK layers when thresholds are exceeded.
+**Goal:** Search across multiple DISK segments in parallel with WAL filtering.
 
 **Scope файлов:**
-- `crates/vectors/src/usearch_engine.rs` — add:
-  - `fn maybe_compact(&mut self)` — check thresholds, trigger compaction
-  - `fn compact(&mut self, layer_a: WalLayer, layer_b: WalLayer)` — merge two layers
-  - `fn merge_layers(a: &WalLayer, b: &WalLayer, dim: usize) -> WalLayer` — merge logic
-
-**Compaction strategy:**
-1. Read all chunk_ids from both WALs (merged set)
-2. For each chunk_id, determine final state (add/del/upd)
-3. Load vectors from SQLite (source of truth) for surviving chunk_ids
-4. Create new usearch index with merged vectors
-5. Write merged WAL (only ADD records for surviving vectors)
-6. Delete old layers
+- `crates/vectors/src/usearch_engine.rs` — modify `search`:
+  ```rust
+  fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>> {
+      let threads = self.wal_config.search_threads;
+      let segments = self.disk_segments.clone();
+      
+      // Parallel search across segments
+      let results: Vec<Vec<(u32, f32)>> = std::thread::scope(|s| {
+          let handles: Vec<_> = segments.chunks(segments.len() / threads + 1)
+              .map(|chunk| {
+                  s.spawn(move || {
+                      chunk.iter().map(|seg| {
+                          let mut results = seg.search(query, k)?;
+                          // Filter by WAL: exclude deleted/updated chunk_ids
+                          results.retain(|(id, _)| !self.is_stale(*id, seg.id));
+                          Ok(results)
+                      }).collect::<Result<Vec<_>>>()
+                  })
+              }).collect();
+          handles.into_iter().map(|h| h.join().unwrap()).collect()
+      });
+      
+      // Merge and deduplicate
+      merge_results(results, k)
+  }
+  ```
 
 **Dependencies:** 2.2.
 
 **Критерии приёмки (машинные):**
-- After compaction, search returns same results as before.
-- Old DISK layers are deleted.
-- WAL size is reduced after compaction.
+- Search across 2+ segments returns correct results.
+- WAL filtering excludes deleted/updated vectors.
+- Parallel search performance ≥ sequential (measured).
 - `cargo test -p vectors --features engine-usearch` green; `clippy -D warnings`, `fmt --check` clean.
 
 **Oracle refs:** N/A.
 
 ---
 
-## 2.4 Integration tests
+## 2.4 Global compaction (merge all segments)
 
-**Goal:** Test persistence across restarts and config validation.
+**Goal:** Merge all DISK segments, remove stale vectors, slice by 1M.
+
+**Scope файлов:**
+- `crates/vectors/src/usearch_engine.rs` — add compaction:
+  ```rust
+  impl UsearchEngine {
+      fn maybe_compact(&mut self) -> Result<()> {
+          let stale_pct = self.stale_vector_percentage()?;
+          if stale_pct > self.wal_config.compaction_stale_threshold {
+              self.compact()?;
+          }
+          Ok(())
+      }
+      
+      fn compact(&mut self) -> Result<()> {
+          // 1. Read all segments + WAL
+          // 2. Identify stale vectors (DEL flag or missing from SQLite)
+          // 3. Create new segments with live vectors (slice by max_segment_vectors)
+          // 4. Replace old segments with new ones
+          // 5. Clear WAL
+      }
+      
+      fn stale_vector_percentage(&self) -> Result<f64> {
+          // Count DEL flags in WAL / total vectors
+      }
+  }
+  ```
+
+**Dependencies:** 2.2, 2.3.
+
+**Критерии приёмки (машинные):**
+- Compaction triggers when stale > 30%.
+- After compaction, segment count = ceil(total_vectors / max_segment_vectors).
+- After compaction, WAL is cleared.
+- Search results unchanged after compaction.
+- `cargo test -p vectors --features engine-usearch` green; `clippy -D warnings`, `fmt --check` clean.
+
+**Oracle refs:** N/A.
+
+---
+
+## 2.5 Integration tests
+
+**Goal:** Test persistence, compaction, and config validation.
 
 **Scope файлов:**
 - `crates/vectors/tests/wal_integration.rs` (new test file):
-  - `test_wal_persistence_across_restart` — insert, restart engine, verify data persists
-  - `test_compaction_reduces_layers` — insert enough to trigger compaction, verify layer count
+  - `test_wal_persistence_across_restart` — insert, restart, verify data persists
+  - `test_compaction_reduces_segments` — insert enough to trigger compaction, verify segment count
+  - `test_search_correctness_with_wal` — verify search results with WAL filtering
   - `test_config_validation` — invalid WAL config values rejected
-  - `test_search_fan_out_with_multiple_layers` — verify search works across RAM + N DISK layers
 
-**Dependencies:** 2.2, 2.3.
+**Dependencies:** 2.2, 2.3, 2.4.
 
 **Критерии приёмки (машинные):**
 - All integration tests pass.
 - `cargo test -p vectors --features engine-usearch` green; `clippy -D warnings`, `fmt --check` clean.
-
-**Oracle refs:** N/A.
-
----
-
-## 2.5 Benchmark WAL vs rebuild-only
-
-**Goal:** Measure latency and durability improvements.
-
-**Scope файлов:**
-- `crates/parity-harness/tests/wal_benchmark.rs` (new test):
-  - Compare insert latency: WAL vs rebuild-only
-  - Measure flush overhead
-  - Measure compaction time
-  - Output comparison table
-
-**Dependencies:** 2.2, 2.3.
-
-**Критерии приёмки (машинные):**
-- Insert latency with WAL ≤ 1.5× without WAL (overhead acceptable).
-- Flush overhead ≤ 2 seconds for 512 MB.
-- Compaction completes in ≤ 10 seconds for 1M vectors.
-- `cargo test -p parity-harness --features engine-usearch` green; `clippy -D warnings`, `fmt --check` clean.
 
 **Oracle refs:** N/A.

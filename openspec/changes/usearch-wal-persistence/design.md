@@ -1,88 +1,103 @@
 # Design: usearch-wal-persistence
 
+## Key Decisions (Human 2026-08-31)
+
+1. **WAL in SQLite** — `usearch_vectors_log` table for transactional integrity with chunks
+2. **DISK_N segments** — multiple read-only mmap segments (as designed)
+3. **Global compaction** — merges ALL segments, not just last two
+4. **Parallel search** — search across segments in parallel (configurable threads)
+5. **Compaction heuristics** — background compaction when stale vectors > 30%
+
 ## Architecture
 
-### Two-Layer RAM/DISK with WAL
+### Storage Model
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    UsearchEngine                         │
+│  SQLite (source of truth)                               │
+│  ├── chunks (chunk_id, text, metadata)                  │
+│  └── usearch_vectors_log (WAL)                          │
+│      ├── chunk_id (u32)                                 │
+│      ├── flags (u8: ADD=1, DEL=2, UPD=4)               │
+│      ├── vector (BLOB: f32 × dim)                       │
+│      └── created_at (timestamp)                         │
 ├─────────────────────────────────────────────────────────┤
-│  RAM Layer (mutable)                                    │
-│  ├── usearch Index (live inserts/updates/deletes)      │
-│  └── WAL_0 (binary: chunk_id | flags)                  │
+│  DISK Segment 0 (read-only mmap)                       │
+│  └── index.usearch.0                                    │
 ├─────────────────────────────────────────────────────────┤
-│  DISK Layer 0 (read-only mmap)                         │
-│  ├── index.usearch.0 (persisted snapshot)              │
-│  └── WAL_0.bin (operations since snapshot)             │
+│  DISK Segment 1 (read-only mmap)                       │
+│  └── index.usearch.1                                    │
 ├─────────────────────────────────────────────────────────┤
-│  DISK Layer 1 (read-only mmap)                         │
-│  ├── index.usearch.1 (older snapshot)                  │
-│  └── WAL_1.bin                                        │
+│  ...                                                    │
+├─────────────────────────────────────────────────────────┤
+│  RAM Layer (ephemeral)                                 │
+│  └── usearch Index (rebuilt from SQLite + WAL replay)   │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### WAL Format (Binary)
+### WAL Table Schema
+
+```sql
+CREATE TABLE usearch_vectors_log (
+    chunk_id    INTEGER PRIMARY KEY,
+    flags       INTEGER NOT NULL,  -- ADD=1, DEL=2, UPD=4
+    vector      BLOB,              -- f32 × dim (NULL for DEL)
+    created_at  TEXT NOT NULL       -- ISO 8601 timestamp
+);
+
+CREATE INDEX idx_usearch_vectors_log_flags ON usearch_vectors_log(flags);
+```
+
+### WAL Flags
+
+| Flag | Value | Description |
+|------|-------|-------------|
+| ADD  | 1     | Vector added |
+| DEL  | 2     | Vector deleted |
+| UPD  | 4     | Vector updated |
+
+### Search Algorithm
 
 ```
-Record:
-  [u32 LE chunk_id]   — 4 bytes
-  [u8 flags]          — 1 byte
-    bit 0: ADD (vector added)
-    bit 1: DEL (vector deleted)
-    bit 2: UPD (vector updated)
-  [f32 LE × dim]      — 4 × dim bytes (only for ADD/UPD)
+1. Load DISK segments (mmap, parallel)
+2. For each segment in parallel (configurable threads):
+   a. Search segment (HNSW)
+   b. Filter by WAL: exclude chunk_ids with flags & (DEL|UPD)
+   c. Return results with segment_id
+3. Merge results from all segments
+4. Deduplicate by chunk_id, keep most recent
+5. Apply WAL to RAM results (exclude deleted/updated)
 ```
 
-### Config Parameters
+### Compaction Algorithm
+
+Triggered by heuristics (background):
+- Stale vectors > 30% of total (configurable)
+- OR WAL size > threshold
+- OR segment count > threshold
+
+Process:
+1. Read all segments and WAL
+2. Identify stale vectors (chunk_ids with DEL flag or missing from SQLite)
+3. Create new segment with only live vectors (sliced by 1M)
+4. Replace old segments with new ones
+5. Clear WAL
+
+### Config
 
 ```yaml
 vectors:
   engine: usearch
   wal:
-    ram_threshold_mb: 512        # Flush RAM to DISK when exceeded
-    disk_count_threshold: 5      # Compact when DISK layers > this
-    wal_size_threshold_pct: 50   # Compact when WAL > % of index size
+    max_segment_vectors: 1000000      # Vectors per segment after compaction
+    compaction_stale_threshold: 30    # % stale vectors to trigger compaction
+    search_threads: 4                 # Parallel search threads
 ```
-
-### Search Fan-Out
-
-1. Search RAM layer (unfiltered)
-2. Search DISK_0 (filter by WAL_0: skip deleted/updated IDs)
-3. Search DISK_1 (filter by WAL_0 + WAL_1)
-4. ... (fan-out to all DISK layers)
-5. Deduplicate by chunk_id, keep most recent
-
-### Flush (RAM → DISK)
-
-Triggered when RAM index size > `ram_threshold_mb`:
-1. Call `build_index()` on RAM index (= save to disk)
-2. Create new DISK layer with sequential ID
-3. Clear RAM WAL
-4. Rename saved file to `index.usearch.<N>`
-
-### Compaction
-
-Triggered when:
-- DISK layer count > `disk_count_threshold`, OR
-- WAL total size > `wal_size_threshold_pct` of index size
-
-Process:
-1. Take last two DISK layers (N-1, N)
-2. Merge using SQLite as f32 source (not usearch export, which is lossy)
-3. Write merged index to new DISK layer
-4. Delete old layers and their WALs
-
-## D6: SQLite as Source of Truth
-
-Vectors are rebuilt from chunk text, not exported from usearch. The usearch index is a cache加速器; SQLite is the source of truth. This means:
-- `build_index()` is not called during serving
-- Periodic rebuild from SQLite ensures consistency
-- WAL provides durability between rebuilds
 
 ## Files Modified
 
-- `crates/vectors/src/usearch_engine.rs` — WAL layer management
+- `crates/vectors/src/usearch_engine.rs` — WAL integration, parallel search
+- `crates/db/src/migrations.rs` — WAL table schema
 - `crates/config/src/preset.rs` — WAL config struct
 - `crates/vectors/src/lib.rs` — WAL config passthrough
 
