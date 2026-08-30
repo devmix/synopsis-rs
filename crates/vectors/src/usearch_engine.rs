@@ -611,21 +611,38 @@ impl UsearchEngine {
         // 1. Load cumulative stale IDs across all segments
         let stale = self.load_all_stale_ids()?;
 
-        // 2. Collect live vectors from all segments
+        // 2. Collect live vectors from RAM index (segment_id=0)
         let mut live_vectors: Vec<(u32, Vec<f32>)> = Vec::new();
+        let ram_count = self.index.size();
+        if ram_count > 0 {
+            let query = vec![1.0; self.config.dim];
+            let matches = self
+                .index
+                .exact_search(&query, ram_count)
+                .map_err(map_usearch)?;
+            for i in 0..matches.keys.len() {
+                let id = key_to_chunk_id(matches.keys[i])?;
+                if !stale.contains(&id) {
+                    let mut vector = Vec::new();
+                    self.index
+                        .export(id as u64, &mut vector)
+                        .map_err(map_usearch)?;
+                    live_vectors.push((id, vector));
+                }
+            }
+        }
+
+        // 3. Collect live vectors from all disk segments
         for seg in &self.disk_segments {
-            // Export all vectors from segment
             let count = seg.size();
             if count == 0 {
                 continue;
             }
-            // Use exact_search to get all vectors
             let query = vec![1.0; self.config.dim];
             let matches = seg.exact_search(&query, count).map_err(map_usearch)?;
             for i in 0..matches.keys.len() {
                 let id = key_to_chunk_id(matches.keys[i])?;
                 if !stale.contains(&id) {
-                    // Export the vector
                     let mut vector = Vec::new();
                     seg.export(id as u64, &mut vector).map_err(map_usearch)?;
                     live_vectors.push((id, vector));
@@ -633,7 +650,7 @@ impl UsearchEngine {
             }
         }
 
-        // 3. Create new segments (sliced by max_segment_vectors)
+        // 4. Create new segments (sliced by max_segment_vectors)
         let max = self.usearch_config.max_segment_vectors;
         let mut new_segments = Vec::new();
         for chunk in live_vectors.chunks(max) {
@@ -645,10 +662,10 @@ impl UsearchEngine {
             new_segments.push(new_index);
         }
 
-        // 4. Replace old segments
+        // 5. Replace old segments
         self.disk_segments = new_segments;
 
-        // 5. Clear WAL
+        // 6. Clear WAL
         self.clear_wal()?;
 
         Ok(())
@@ -664,9 +681,9 @@ impl UsearchEngine {
         Ok(stale as f64 / total as f64 * 100.0)
     }
 
-    /// Count total vectors across all segments.
+    /// Count total vectors across RAM + all disk segments.
     fn total_vector_count(&self) -> usize {
-        self.disk_segments.iter().map(|s| s.size()).sum()
+        self.index.size() + self.disk_segments.iter().map(|s| s.size()).sum::<usize>()
     }
 
     /// Load all stale IDs across all segments.
@@ -1820,5 +1837,159 @@ mod tests {
 
         // Single empty segment: empty output.
         assert!(merge_results(vec![vec![]], 5).is_empty());
+    }
+
+    /// Acceptance: `stale_vector_percentage` returns the correct percentage.
+    #[test]
+    fn test_stale_vector_percentage() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        // Insert 10 vectors
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+
+        // No stale vectors yet
+        let pct = engine.stale_vector_percentage().expect("pct");
+        assert_eq!(pct, 0.0, "no stale vectors");
+
+        // Delete 2 vectors → 2 stale / 8 live = 25%
+        // (index has 8 vectors, WAL has 2 DEL records)
+        engine.delete_by_chunk_ids(&[0, 1]).expect("delete");
+        let pct = engine.stale_vector_percentage().expect("pct");
+        assert!((pct - 25.0).abs() < 0.01, "25% stale, got {pct}");
+    }
+
+    /// Acceptance: `maybe_compact` triggers when stale > threshold.
+    #[test]
+    fn test_compaction_triggers_on_threshold() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let mut config = test_config();
+        config.usearch = Some(crate::UsearchConfig {
+            max_segment_vectors: 1_000_000,
+            compaction_stale_threshold: 30,
+            search_threads: 4,
+        });
+        let mut engine = UsearchEngine::create_with_config(
+            &dir.0,
+            config.clone(),
+            config.usearch.clone().unwrap(),
+        )
+        .expect("create")
+        .with_wal_db(wal.engine_conn());
+
+        // Insert 10 vectors
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+
+        // Delete 2 (20%) — below threshold, no compaction
+        engine.delete_by_chunk_ids(&[0, 1]).expect("delete");
+        engine.maybe_compact().expect("maybe_compact");
+        // WAL should still have records (no compaction happened)
+        let stale = engine.load_all_stale_ids().expect("stale");
+        assert_eq!(stale.len(), 2, "no compaction at 20%");
+
+        // Delete 2 more (40%) — above threshold, compaction triggers
+        engine.delete_by_chunk_ids(&[2, 3]).expect("delete");
+        engine.maybe_compact().expect("maybe_compact");
+        // WAL should be cleared after compaction
+        let stale = engine.load_all_stale_ids().expect("stale after compact");
+        assert!(stale.is_empty(), "WAL cleared after compaction");
+    }
+
+    /// Acceptance: `compact` creates correct segment count.
+    #[test]
+    fn test_compaction_creates_correct_segments() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let mut config = test_config();
+        config.usearch = Some(crate::UsearchConfig {
+            max_segment_vectors: 5, // Small for testing
+            compaction_stale_threshold: 30,
+            search_threads: 4,
+        });
+        let mut engine = UsearchEngine::create_with_config(
+            &dir.0,
+            config.clone(),
+            config.usearch.clone().unwrap(),
+        )
+        .expect("create")
+        .with_wal_db(wal.engine_conn());
+
+        // Insert 12 vectors
+        let data = rows(0, 12);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+
+        // Manually trigger compaction
+        engine.compact().expect("compact");
+
+        // 12 vectors / 5 per segment = 3 segments
+        assert_eq!(
+            engine.disk_segments.len(),
+            3,
+            "12 vectors / 5 per segment = 3 segments"
+        );
+    }
+
+    /// Acceptance: `compact` clears the WAL table.
+    #[test]
+    fn test_compaction_clears_wal() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let mut engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        // Insert and delete to create WAL records
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+        engine.delete_by_chunk_ids(&[0, 1, 2]).expect("delete");
+
+        // WAL has records
+        let stale = engine.load_all_stale_ids().expect("stale before");
+        assert_eq!(stale.len(), 3, "3 stale records");
+
+        // Compact
+        engine.compact().expect("compact");
+
+        // WAL cleared
+        let stale = engine.load_all_stale_ids().expect("stale after");
+        assert!(stale.is_empty(), "WAL cleared after compact");
+    }
+
+    /// Acceptance: search returns correct results after compaction.
+    #[test]
+    fn test_search_after_compaction() {
+        let dir = TempDir::new();
+        let wal = WalDb::new();
+        let mut engine = UsearchEngine::create(&dir.0, test_config())
+            .expect("create")
+            .with_wal_db(wal.engine_conn());
+
+        // Insert 10 vectors
+        let data = rows(0, 10);
+        engine.insert_batch(&batch_refs(&data)).expect("insert");
+
+        // Search before compaction
+        let before = engine.search(&data[5].1, 5).expect("search before");
+        let before_ids: Vec<u32> = before.iter().map(|(id, _)| *id).collect();
+        assert!(before_ids.contains(&5), "chunk 5 found before compaction");
+
+        // Compact
+        engine.compact().expect("compact");
+
+        // Search after compaction — same results
+        let after = engine.search(&data[5].1, 5).expect("search after");
+        let after_ids: Vec<u32> = after.iter().map(|(id, _)| *id).collect();
+        assert!(after_ids.contains(&5), "chunk 5 found after compaction");
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "result count unchanged after compaction"
+        );
     }
 }
