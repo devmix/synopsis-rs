@@ -1150,6 +1150,16 @@ impl DatasetConfig {
     pub fn vectors_path(&self, workspace_dir: &str) -> PathBuf {
         self.state_path(workspace_dir).join("vectors")
     }
+
+    /// Dataset-bound ANN index directory for a specific engine
+    /// (add-usearch-ann-engine task 1.5): `<vectors_path>/<engine>`, so the
+    /// lance and usearch indexes coexist under one dataset and switching
+    /// `vectors.engine` never reads the other engine's files. `engine` is the
+    /// resolved engine name (`"lance"` or `"usearch"` — the absent-field
+    /// default is resolved by the wiring, not here).
+    pub fn vectors_engine_path(&self, workspace_dir: &str, engine: &str) -> PathBuf {
+        self.vectors_path(workspace_dir).join(engine)
+    }
 }
 
 /// MCP server identification / bind settings.
@@ -1739,6 +1749,15 @@ auto_update:
         assert_eq!(
             dataset.vectors_path("ws"),
             PathBuf::from("ws").join("datasets/edtech/state/vectors")
+        );
+        // add-usearch-ann-engine task 1.5: the engine-tagged subdirectory.
+        assert_eq!(
+            dataset.vectors_engine_path("ws", "lance"),
+            PathBuf::from("ws").join("datasets/edtech/state/vectors/lance")
+        );
+        assert_eq!(
+            dataset.vectors_engine_path("ws", "usearch"),
+            PathBuf::from("ws").join("datasets/edtech/state/vectors/usearch")
         );
 
         // A different dataset name rewrites every helper.

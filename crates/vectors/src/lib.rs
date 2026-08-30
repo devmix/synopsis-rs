@@ -341,6 +341,13 @@ impl VectorIndex for VectorEngine {
 /// or [`ENGINE_USEARCH`]; an empty name (absent config field) resolves to
 /// the default engine [`ENGINE_LANCE`] (backward compatibility).
 ///
+/// Each engine stores its index in its own subdirectory of `path`
+/// (add-usearch-ann-engine task 1.5): `<path>/lance` or `<path>/usearch`
+/// (the `DatasetConfig::vectors_engine_path` layout). The factory is the
+/// single place that resolves that subdirectory, so the lance and usearch
+/// indexes coexist under one dataset and a `vectors.engine` switch never
+/// reads the other engine's files.
+///
 /// # Errors
 ///
 /// - [`VectorsError::InvalidArgument`] for an unrecognized engine name or a
@@ -370,11 +377,14 @@ pub fn create_vector_engine(
         )));
     }
 
+    // The engine-tagged storage subdirectory (task 1.5 layout).
+    let engine_path = path.join(name);
+
     #[cfg(feature = "engine-lance")]
     if name == ENGINE_LANCE {
-        let engine = match LanceEngine::open(path, config.clone()) {
+        let engine = match LanceEngine::open(&engine_path, config.clone()) {
             Ok(engine) => engine,
-            Err(VectorsError::NotFound(_)) => LanceEngine::create(path, config.clone())?,
+            Err(VectorsError::NotFound(_)) => LanceEngine::create(&engine_path, config.clone())?,
             Err(err) => return Err(err),
         };
         return Ok(Arc::new(VectorEngine::Lance(engine)));
@@ -382,9 +392,9 @@ pub fn create_vector_engine(
 
     #[cfg(feature = "engine-usearch")]
     if name == ENGINE_USEARCH {
-        let engine = match UsearchEngine::open(path, config.clone()) {
+        let engine = match UsearchEngine::open(&engine_path, config.clone()) {
             Ok(engine) => engine,
-            Err(VectorsError::NotFound(_)) => UsearchEngine::create(path, config.clone())?,
+            Err(VectorsError::NotFound(_)) => UsearchEngine::create(&engine_path, config.clone())?,
             Err(err) => return Err(err),
         };
         return Ok(Arc::new(VectorEngine::Usearch(engine)));
@@ -393,7 +403,7 @@ pub fn create_vector_engine(
     // A known engine name, but no engine feature was compiled in.
     Err(VectorsError::Engine(format!(
         "engine '{name}' is not available in this build for {} (rebuild with the matching engine feature)",
-        path.display()
+        engine_path.display()
     )))
 }
 
@@ -546,11 +556,12 @@ mod tests {
 
         let engine = create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("lance engine");
         // The on-disk artifact is the LanceDB table directory inside the
-        // engine path (LanceDB local-storage layout) — the fingerprint that
-        // the LanceEngine was selected.
+        // engine-tagged subdirectory (task 1.5 layout, LanceDB
+        // local-storage layout) — the fingerprint that the LanceEngine was
+        // selected.
         assert!(
-            dir.0.join("vectors.lance").exists(),
-            "the lance table directory must be created"
+            dir.0.join("lance").join("vectors.lance").exists(),
+            "the lance table directory must be created under the lance subdirectory"
         );
         assert_eq!(
             engine.count().expect("count"),
@@ -576,12 +587,12 @@ mod tests {
         let config = VectorIndexConfig::default();
 
         let engine = create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
-        // The on-disk artifact is the single index file inside the engine
-        // directory (add-usearch-ann-engine design.md layout) — the
-        // fingerprint that the UsearchEngine was selected.
+        // The on-disk artifact is the single index file inside the
+        // engine-tagged subdirectory (task 1.5 layout) — the fingerprint
+        // that the UsearchEngine was selected.
         assert!(
-            dir.0.join("index.usearch").exists(),
-            "the usearch index file must be created"
+            dir.0.join("usearch").join("index.usearch").exists(),
+            "the usearch index file must be created under the usearch subdirectory"
         );
         assert_eq!(
             engine.count().expect("count"),
@@ -603,10 +614,10 @@ mod tests {
         let dir = TempDir::new("factory-default");
         let config = VectorIndexConfig::default();
         let engine = create_vector_engine("", &dir.0, &config).expect("default engine");
-        // The LanceDB table directory is the fingerprint that the default
-        // engine (lance) was selected.
+        // The LanceDB table directory under the lance subdirectory is the
+        // fingerprint that the default engine (lance) was selected.
         assert!(
-            dir.0.join("vectors.lance").exists(),
+            dir.0.join("lance").join("vectors.lance").exists(),
             "an absent engine name must resolve to the lance default"
         );
         assert_eq!(
@@ -614,6 +625,103 @@ mod tests {
             0,
             "empty index on first run"
         );
+    }
+
+    #[cfg(all(feature = "engine-lance", feature = "engine-usearch"))]
+    #[test]
+    fn engines_coexist_under_one_base_path() {
+        // Task 1.5: both indexes live under one dataset vectors directory,
+        // each in its own engine-tagged subdirectory, and both stay open
+        // at once.
+        let dir = TempDir::new("factory-coexist");
+        let config = VectorIndexConfig::default();
+
+        let lance = create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("lance engine");
+        let usearch =
+            create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
+
+        assert!(dir.0.join("lance").join("vectors.lance").exists());
+        assert!(dir.0.join("usearch").join("index.usearch").exists());
+
+        // Independent contents: what one engine stores, the other does not
+        // see.
+        let vector = vec![0.5f32; config.dim];
+        lance.insert(1, &vector).expect("lance insert");
+        assert_eq!(lance.count().expect("lance count"), 1);
+        assert_eq!(
+            usearch.count().expect("usearch count"),
+            0,
+            "the usearch index must not see the lance row"
+        );
+    }
+
+    #[cfg(all(feature = "engine-lance", feature = "engine-usearch"))]
+    #[test]
+    fn opening_the_other_engine_subdirectory_is_not_found() {
+        // Task 1.5: an engine pointed at the OTHER engine's subdirectory
+        // finds no index of its own (NotFound — no crash, no misread of
+        // the foreign files).
+        let config = VectorIndexConfig::default();
+
+        let dir = TempDir::new("cross-open");
+        create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
+        match LanceEngine::open(dir.0.join("usearch"), config.clone()) {
+            Err(VectorsError::NotFound(_)) => {}
+            Err(err) => panic!("expected NotFound, got: {err:?}"),
+            Ok(_) => panic!("expected NotFound, got an opened engine"),
+        }
+
+        let dir = TempDir::new("cross-open-lance");
+        create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("lance engine");
+        match UsearchEngine::open(dir.0.join("lance"), config) {
+            Err(VectorsError::NotFound(_)) => {}
+            Err(err) => panic!("expected NotFound, got: {err:?}"),
+            Ok(_) => panic!("expected NotFound, got an opened engine"),
+        }
+    }
+
+    #[cfg(feature = "engine-lance")]
+    #[test]
+    fn lance_dimension_mismatch_at_engine_tagged_path() {
+        // Task 1.5: the stored-index dimension check still fires at the
+        // engine-tagged path (512-dim stored vs 1024-dim configured).
+        let dir = TempDir::new("lance-dim-mismatch");
+        let stored = VectorIndexConfig::new(512, 16, 100, 256, 32, 200).expect("stored config");
+        create_vector_engine(ENGINE_LANCE, &dir.0, &stored).expect("create 512-dim index");
+
+        let err = err_of(create_vector_engine(
+            ENGINE_LANCE,
+            &dir.0,
+            &VectorIndexConfig::default(),
+        ));
+        match err {
+            VectorsError::DimensionMismatch { expected, actual } => {
+                assert_eq!((expected, actual), (1024, 512));
+            }
+            other => panic!("expected DimensionMismatch, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "engine-usearch")]
+    #[test]
+    fn usearch_dimension_mismatch_at_engine_tagged_path() {
+        // Task 1.5: the same check for the usearch engine at its
+        // engine-tagged path (512-dim stored vs 1024-dim configured).
+        let dir = TempDir::new("usearch-dim-mismatch");
+        let stored = VectorIndexConfig::new(512, 16, 100, 256, 32, 200).expect("stored config");
+        create_vector_engine(ENGINE_USEARCH, &dir.0, &stored).expect("create 512-dim index");
+
+        let err = err_of(create_vector_engine(
+            ENGINE_USEARCH,
+            &dir.0,
+            &VectorIndexConfig::default(),
+        ));
+        match err {
+            VectorsError::DimensionMismatch { expected, actual } => {
+                assert_eq!((expected, actual), (1024, 512));
+            }
+            other => panic!("expected DimensionMismatch, got: {other:?}"),
+        }
     }
 
     #[test]

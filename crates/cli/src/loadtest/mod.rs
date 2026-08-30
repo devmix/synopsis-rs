@@ -266,14 +266,16 @@ mod tests {
     }
 
     /// Pre-creates a stored ANN index with the given dimension at the
-    /// fixture's dataset vectors path (dataset `edtech`).
+    /// fixture's dataset vectors path (dataset `edtech`, default engine:
+    /// the `vectors/lance` subdirectory, task 1.5 layout).
     fn stored_index(workspace_dir: &Path, dim: usize) {
         let stored = VectorIndexConfig::new(dim, 16, 100, 256, 32, 200).expect("index config");
         let vectors_path = workspace_dir
             .join("datasets")
             .join("edtech")
             .join("state")
-            .join("vectors");
+            .join("vectors")
+            .join("lance");
         LanceEngine::create(&vectors_path, stored).expect("create stored index");
     }
 

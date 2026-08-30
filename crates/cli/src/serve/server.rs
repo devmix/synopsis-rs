@@ -94,7 +94,7 @@ use search::{
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, mpsc};
-use vectors::{LanceEngine, VectorIndex, VectorsError};
+use vectors::{VectorIndex, VectorsError, create_vector_engine};
 
 use crate::db::clear_dataset_tables;
 use crate::error::CliError;
@@ -729,26 +729,32 @@ fn now_unix_seconds() -> i64 {
 /// `InitVectorTable` inside `ReEmbedChunks`).
 pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = bootstrap::vectors_index_config(&boot.config)?;
-    // The ANN index is per-dataset: <workspace_dir>/datasets/<name>/state/vectors.
-    let path = boot
+    // The ANN index is per-dataset and per-engine:
+    // <workspace_dir>/datasets/<name>/state/vectors/<engine> (task 1.5).
+    // Only the ACTIVE engine's subdirectory is dropped — a stored index of
+    // the other engine (if any) is left untouched.
+    let engine_name = boot.config.vectors_config().engine;
+    let name = engine_name.as_deref().unwrap_or("lance");
+    let base = boot
         .config
         .dataset
         .vectors_path(&boot.config.paths.workspace_dir);
-    // The engine stores its table under `<vectors_path>/vectors.lance` (Lance
-    // layout); it must be dropped before the engine can be recreated with
-    // the new schema.
-    let table_dir = path.join("vectors.lance");
-    if table_dir.exists() {
-        std::fs::remove_dir_all(&table_dir)?;
+    let engine_path = boot
+        .config
+        .dataset
+        .vectors_engine_path(&boot.config.paths.workspace_dir, name);
+    if engine_path.exists() {
+        std::fs::remove_dir_all(&engine_path)?;
     }
-    // `index_config` is read for the log line below, so clone it into `create`.
-    let engine = LanceEngine::create(&path, index_config.clone())?;
+    // The factory performs the (now guaranteed) create at the engine-tagged
+    // path and dispatches to the compiled engine.
+    let engine = create_vector_engine(name, &base, &index_config)?;
     tracing::info!(
-        path = %path.display(),
+        path = %engine_path.display(),
         dim = index_config.dim,
         "vector index recreated"
     );
-    boot.vectors = Some(Arc::new(engine));
+    boot.vectors = Some(engine);
     boot.dimension_mismatch = None;
     Ok(())
 }
@@ -1290,9 +1296,10 @@ mod tests {
     fn serve_rebuilds_vectors_on_dimension_mismatch() {
         let dir = TempDir::new("dim-rebuild");
         // Pre-create the stored index (at the fixture's dataset vectors
-        // path) with a different dimension.
+        // path, default engine) with a different dimension.
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        LanceEngine::create(dataset_vectors_path(&dir), stored).expect("create stored index");
+        create_vector_engine("lance", &dataset_vectors_path(&dir), &stored)
+            .expect("create stored index");
 
         let port = free_port();
         let mut boot = test_bootstrap(&dir); // 4-dim embedding vs 8-dim index
@@ -1339,13 +1346,45 @@ mod tests {
         assert_eq!(vectors.count().expect("count"), 0, "stale vectors dropped");
     }
 
+    /// Task 1.5: `recreate_vectors_engine` drops ONLY the active engine's
+    /// subdirectory; a stored index of the other engine is left untouched.
+    #[test]
+    fn recreate_leaves_the_other_engine_subdirectory_untouched() {
+        let dir = TempDir::new("recreate-other-engine");
+        let vectors_base = dataset_vectors_path(&dir);
+        // The other engine's subdirectory (usearch layout: one index file).
+        // The cli test build has no usearch feature, so the foreign index
+        // is faked with plain files — recreate must not touch it.
+        let other = vectors_base.join("usearch");
+        std::fs::create_dir_all(&other).expect("create other-engine dir");
+        std::fs::write(other.join("index.usearch"), b"other").expect("seed other index");
+
+        let mut boot = test_bootstrap(&dir);
+        recreate_vectors_engine(&mut boot).expect("recreate must succeed");
+
+        // The active (default: lance) engine is recreated at its
+        // engine-tagged subdirectory.
+        assert!(
+            vectors_base.join("lance").join("vectors.lance").exists(),
+            "the active engine subdirectory must be recreated"
+        );
+        assert!(
+            other.join("index.usearch").exists(),
+            "the other engine subdirectory must be untouched"
+        );
+        let vectors = boot.vectors.as_deref().expect("engine recreated");
+        assert_eq!(vectors.count().expect("count"), 0, "fresh empty index");
+        assert!(boot.dimension_mismatch.is_none(), "mismatch flag cleared");
+    }
+
     // --- serve_with_stop: mismatch without auto-rebuild is fatal -----------------
 
     #[test]
     fn serve_mismatch_without_auto_rebuild_is_fatal() {
         let dir = TempDir::new("dim-fatal");
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        LanceEngine::create(dataset_vectors_path(&dir), stored).expect("create stored index");
+        create_vector_engine("lance", &dataset_vectors_path(&dir), &stored)
+            .expect("create stored index");
 
         let mut boot = test_bootstrap(&dir);
         let req = ServeRequest {

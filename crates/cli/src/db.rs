@@ -498,6 +498,34 @@ mod tests {
         assert_seeded(&f.db);
     }
 
+    #[test]
+    fn clear_dataset_removes_both_engine_subdirectories() {
+        // Task 1.5: the state directory holds BOTH engine subdirectories
+        // (vectors/lance + vectors/usearch); the whole-directory clear
+        // removes them in one shot.
+        let dir = TempDir::new("clear-engines");
+        let state = dir.as_ref().join("workspace/datasets/edtech/state");
+        let lance = state.join("vectors/lance");
+        let usearch = state.join("vectors/usearch");
+        std::fs::create_dir_all(lance.join("vectors.lance")).expect("lance fixture");
+        std::fs::create_dir_all(&usearch).expect("usearch fixture");
+        std::fs::write(usearch.join("index.usearch"), b"index").expect("usearch file");
+        std::fs::create_dir_all(state.join("db")).expect("db fixture");
+        std::fs::write(state.join("db/knowledge.db"), b"db").expect("db file");
+
+        clear_dataset(&state).expect("clear must succeed");
+
+        assert!(!state.exists(), "the state directory must be gone");
+        assert!(
+            !lance.exists(),
+            "the lance engine subdirectory must be gone"
+        );
+        assert!(
+            !usearch.exists(),
+            "the usearch engine subdirectory must be gone"
+        );
+    }
+
     // --- clear_dataset_tables (serve forced-rebuild, task 1.2) -------------------
 
     #[test]

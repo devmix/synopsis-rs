@@ -452,7 +452,9 @@ pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, Vector
 /// dimension disagrees with the configuration.
 pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = vectors_index_config(&boot.config)?;
-    // The ANN index is per-dataset: <workspace_dir>/datasets/<name>/state/vectors.
+    // The ANN index is per-dataset and per-engine:
+    // <workspace_dir>/datasets/<name>/state/vectors/<engine> (task 1.5).
+    // The factory resolves the engine subdirectory from the name.
     let path = boot
         .config
         .dataset
@@ -476,7 +478,15 @@ pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
                 return Err(CliError::Vectors(err));
             }
         };
-    tracing::info!(path = %path.display(), dim = index_config.dim, "vector index ready");
+    tracing::info!(
+        path = %boot
+            .config
+            .dataset
+            .vectors_engine_path(&boot.config.paths.workspace_dir, engine_name.as_deref().unwrap_or("lance"))
+            .display(),
+        dim = index_config.dim,
+        "vector index ready"
+    );
     boot.vectors = Some(engine);
     Ok(())
 }
