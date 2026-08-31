@@ -103,9 +103,6 @@ const ADD_CHUNK: usize = 1000;
 const WAL_ADD: u8 = 1;
 /// WAL flag: a vector was deleted.
 const WAL_DEL: u8 = 2;
-/// WAL flag: a vector was updated (reserved for a future update operation;
-/// a stored vector with this bit set is stale until compaction).
-const WAL_UPD: u8 = 4;
 
 /// USearch-backed ANN index (add-usearch-ann-engine task 1.2).
 ///
@@ -321,28 +318,23 @@ impl UsearchEngine {
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, VectorsError> {
         self.config.validate_search(query, k)?;
 
-        // Load all WAL entries once, group by segment_id
+        // Load all WAL stale entries once (DEL/UPD in ANY segment_id)
         let wal_by_segment = self.load_wal_grouped()?;
 
-        // Build cumulative stale sets for each segment
-        let mut cumulative_stale: Vec<HashSet<u32>> = Vec::new();
-        let mut current_stale = HashSet::new();
-        for segment_id in 0..=self.disk_segments.len() {
-            if let Some(ids) = wal_by_segment.get(&(segment_id as u32)) {
-                current_stale.extend(ids);
-            }
-            cumulative_stale.push(current_stale.clone());
+        // A DEL/UPD in ANY segment makes the vector stale everywhere.
+        // Build a single global stale set from all segments.
+        let mut global_stale: HashSet<u32> = HashSet::new();
+        for ids in wal_by_segment.values() {
+            global_stale.extend(ids);
         }
 
-        // Search DISK segments with cumulative WAL filtering
+        // Search DISK segments with global WAL filtering
         let disk_results: Vec<Vec<(u32, f32)>> = self
             .disk_segments
             .par_iter()
-            .enumerate()
-            .map(|(i, seg)| {
-                let stale = &cumulative_stale[i];
+            .map(|seg| {
                 let matches = seg
-                    .filtered_search(query, k, |key: u64| !stale.contains(&(key as u32)))
+                    .filtered_search(query, k, |key: u64| !global_stale.contains(&(key as u32)))
                     .map_err(map_usearch)?;
                 let mut results = Vec::with_capacity(matches.keys.len());
                 for j in 0..matches.keys.len() {
@@ -352,11 +344,10 @@ impl UsearchEngine {
             })
             .collect::<Result<Vec<_>, VectorsError>>()?;
 
-        // Search RAM layer with segment_id=0 WAL
-        let ram_stale = &cumulative_stale[0];
+        // Search RAM layer with global WAL filtering
         let ram_results = self
             .index
-            .filtered_search(query, k, |key: u64| !ram_stale.contains(&(key as u32)))
+            .filtered_search(query, k, |key: u64| !global_stale.contains(&(key as u32)))
             .map_err(map_usearch)?;
         let mut ram_vec = Vec::with_capacity(ram_results.keys.len());
         for j in 0..ram_results.keys.len() {
@@ -558,48 +549,25 @@ impl UsearchEngine {
         Ok(())
     }
 
-    /// The chunk ids whose WAL record marks them stale — `flags` carries
-    /// the DEL or UPD bit (a deleted or updated vector is superseded until
-    /// compaction rewrites the segments).
+    /// Removes WAL records for old DISK segments (segment_id > 0) after
+    /// compaction — those segments no longer exist, so all their records
+    /// (ADD, DEL) are stale.
     ///
-    /// A no-op returning an empty set when no WAL connection is attached.
-    #[cfg(test)]
-    pub(crate) fn load_stale_ids(&self) -> Result<HashSet<u32>, VectorsError> {
-        self.load_stale_ids_for_segment(0)
-    }
-
-    /// Load stale IDs for a specific segment (cumulative: includes all
-    /// WAL entries from segment 0..segment_id).
-    #[cfg(test)]
-    fn load_stale_ids_for_segment(&self, segment_id: u32) -> Result<HashSet<u32>, VectorsError> {
+    /// segment_id = 0 records (current/RAM operations) are preserved.
+    ///
+    /// A no-op when no WAL connection is attached.
+    fn clear_old_segments(&self) -> Result<(), VectorsError> {
         let Some(wal) = &self.wal else {
-            return Ok(HashSet::new());
+            return Ok(());
         };
         let conn = wal_guard(wal);
-        let mut stmt = conn
-            .prepare(
-                "SELECT chunk_id FROM usearch_vectors_log \
-                 WHERE segment_id <= ?1 AND (flags & ?2) != 0",
-            )
+        conn.execute("DELETE FROM usearch_vectors_log WHERE segment_id > 0", [])
             .map_err(map_sqlite)?;
-        let rows = stmt
-            .query_map(
-                params![segment_id as i64, (WAL_DEL | WAL_UPD) as i64],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(map_sqlite)?;
-        let mut stale = HashSet::new();
-        for row in rows {
-            let id = row.map_err(map_sqlite)?;
-            let id = u32::try_from(id).map_err(|_| {
-                VectorsError::Engine(format!("WAL chunk_id {id} exceeds the u32 range"))
-            })?;
-            stale.insert(id);
-        }
-        Ok(stale)
+        Ok(())
     }
 
     /// Removes every row from `usearch_vectors_log`.
+    /// Used after rebuild when the entire index is replaced.
     ///
     /// A no-op when no WAL connection is attached.
     fn clear_wal(&self) -> Result<(), VectorsError> {
@@ -621,51 +589,47 @@ impl UsearchEngine {
         Ok(())
     }
 
-    /// Merge all segments, remove stale vectors, create new segments.
+    /// Merge all DISK segments, remove stale vectors, create new segments.
+    /// RAM index is NOT touched — it's the current working set.
+    /// If there are no DISK segments, this is a no-op.
+    ///
+    /// Uses SQL query to enumerate live keys per segment instead of
+    /// `exact_search` (O(N) brute-force with distance computation).
     fn compact(&mut self) -> Result<(), VectorsError> {
-        // 1. Load cumulative stale IDs across all segments
-        let stale = self.load_all_stale_ids()?;
+        // No DISK segments to compact
+        if self.disk_segments.is_empty() {
+            return Ok(());
+        }
 
-        // 2. Collect live vectors from RAM index (segment_id=0)
+        // 1. Load live keys per DISK segment via SQL (O(log N) indexed query)
+        let live_keys_per_seg = self.load_live_keys_per_segment()?;
+
+        // 2. Collect live vectors from DISK segments using get().
+        //    WAL segment_id = seg_idx + 1 (segment_id=0 is RAM).
+        //    Deduplicate by key: later segments win (higher segment_id =
+        //    more recent snapshot).
+        let dim = self.config.dim;
+        let mut seen: HashSet<u32> = HashSet::new();
         let mut live_vectors: Vec<(u32, Vec<f32>)> = Vec::new();
-        let ram_count = self.index.size();
-        if ram_count > 0 {
-            let query = vec![1.0; self.config.dim];
-            let matches = self
-                .index
-                .exact_search(&query, ram_count)
-                .map_err(map_usearch)?;
-            for i in 0..matches.keys.len() {
-                let id = key_to_chunk_id(matches.keys[i])?;
-                if !stale.contains(&id) {
-                    let mut vector = Vec::new();
-                    self.index
-                        .export(id as u64, &mut vector)
-                        .map_err(map_usearch)?;
-                    live_vectors.push((id, vector));
-                }
-            }
-        }
-
-        // 3. Collect live vectors from all disk segments
-        for seg in &self.disk_segments {
-            let count = seg.size();
-            if count == 0 {
+        for (seg_idx, seg) in self.disk_segments.iter().enumerate() {
+            let wal_segment_id = (seg_idx as u32) + 1;
+            let keys = live_keys_per_seg.get(&wal_segment_id);
+            let Some(keys) = keys else {
                 continue;
-            }
-            let query = vec![1.0; self.config.dim];
-            let matches = seg.exact_search(&query, count).map_err(map_usearch)?;
-            for i in 0..matches.keys.len() {
-                let id = key_to_chunk_id(matches.keys[i])?;
-                if !stale.contains(&id) {
-                    let mut vector = Vec::new();
-                    seg.export(id as u64, &mut vector).map_err(map_usearch)?;
-                    live_vectors.push((id, vector));
+            };
+            for id in keys {
+                // Skip duplicates: later segment version wins
+                if !seen.insert(*id) {
+                    continue;
                 }
+                let mut vector = vec![0.0f32; dim];
+                seg.get::<f32>(*id as u64, &mut vector)
+                    .map_err(map_usearch)?;
+                live_vectors.push((*id, vector));
             }
         }
 
-        // 4. Create new segments (sliced by max_segment_vectors)
+        // 3. Create new segments (sliced by max_segment_vectors)
         let max = self.usearch_config.max_segment_vectors;
         let mut new_segments = Vec::new();
         for chunk in live_vectors.chunks(max) {
@@ -677,57 +641,108 @@ impl UsearchEngine {
             new_segments.push(new_index);
         }
 
-        // 5. Replace old segments
+        // 4. Replace old segments
         self.disk_segments = new_segments;
 
-        // 6. Clear WAL
-        self.clear_wal()?;
+        // 5. Remove old DISK segment records from WAL (RAM records remain)
+        self.clear_old_segments()?;
 
         Ok(())
     }
 
-    /// Calculate percentage of stale vectors.
+    /// Load live keys per DISK segment from WAL.
+    /// Returns a map: segment_id → Vec<chunk_id> (live keys only).
+    ///
+    /// A key is live if it has an ADD record with `segment_id > 0` (DISK)
+    /// and no DEL/UPD record for that chunk_id (in ANY segment_id).
+    /// This handles the cross-segment stale problem: `delete_by_chunk_ids`
+    /// writes DEL with `segment_id=0`, but the ADD records are in the
+    /// DISK segment's `segment_id`.
+    fn load_live_keys_per_segment(&self) -> Result<HashMap<u32, Vec<u32>>, VectorsError> {
+        let Some(wal) = &self.wal else {
+            return Ok(HashMap::new());
+        };
+        let conn = wal_guard(wal);
+
+        // A key is live in a DISK segment if:
+        // 1. It has an ADD record in that segment (flags = ADD, segment_id > 0)
+        // 2. No DEL/UPD record exists for that chunk_id in ANY segment
+        let mut stmt = conn
+            .prepare(
+                "SELECT segment_id, chunk_id FROM usearch_vectors_log \
+                 WHERE flags = ?1 AND segment_id > 0 \
+                 AND chunk_id NOT IN \
+                   (SELECT chunk_id FROM usearch_vectors_log \
+                    WHERE flags = ?2)",
+            )
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map(params![WAL_ADD as i64, WAL_DEL as i64], |row| {
+                let segment_id = row.get::<_, i64>(0)?;
+                let chunk_id = row.get::<_, i64>(1)?;
+                Ok((segment_id, chunk_id))
+            })
+            .map_err(map_sqlite)?;
+
+        let mut result: HashMap<u32, Vec<u32>> = HashMap::new();
+        for row in rows {
+            let (segment_id, chunk_id) = row.map_err(map_sqlite)?;
+            let segment_id = u32::try_from(segment_id).map_err(|_| {
+                VectorsError::Engine(format!("WAL segment_id {segment_id} exceeds u32 range"))
+            })?;
+            let chunk_id = u32::try_from(chunk_id).map_err(|_| {
+                VectorsError::Engine(format!("WAL chunk_id {chunk_id} exceeds u32 range"))
+            })?;
+            result.entry(segment_id).or_default().push(chunk_id);
+        }
+        Ok(result)
+    }
+
+    /// Calculate percentage of stale vectors in DISK segments.
+    /// Returns 0.0 if there are no DISK segments.
+    ///
+    /// Only counts DEL/UPD records where the chunk_id has a corresponding
+    /// ADD record in a DISK segment (segment_id > 0). This avoids counting
+    /// orphaned DEL records from segment_id=0 that don't correspond to
+    /// any DISK vectors.
     fn stale_vector_percentage(&self) -> Result<f64, VectorsError> {
-        let total = self.total_vector_count();
+        let total = self.disk_segments.iter().map(|s| s.size()).sum::<usize>();
         if total == 0 {
             return Ok(0.0);
         }
-        let stale = self.load_all_stale_ids()?.len();
+        let stale = self.count_stale_in_disk()?;
         Ok(stale as f64 / total as f64 * 100.0)
     }
 
-    /// Count total vectors across RAM + all disk segments.
-    fn total_vector_count(&self) -> usize {
-        self.index.size() + self.disk_segments.iter().map(|s| s.size()).sum::<usize>()
-    }
-
-    /// Load all stale IDs across all segments.
-    fn load_all_stale_ids(&self) -> Result<HashSet<u32>, VectorsError> {
+    /// Count stale vectors that exist in DISK segments.
+    /// A vector is stale if it has a DEL record AND an ADD record
+    /// with segment_id > 0 (i.e., it's in a DISK segment).
+    fn count_stale_in_disk(&self) -> Result<usize, VectorsError> {
         let Some(wal) = &self.wal else {
-            return Ok(HashSet::new());
+            return Ok(0);
         };
         let conn = wal_guard(wal);
         let mut stmt = conn
-            .prepare("SELECT chunk_id FROM usearch_vectors_log WHERE (flags & ?1) != 0")
+            .prepare(
+                "SELECT COUNT(DISTINCT chunk_id) FROM usearch_vectors_log \
+                 WHERE flags = ?1 \
+                 AND chunk_id IN \
+                   (SELECT chunk_id FROM usearch_vectors_log \
+                    WHERE flags = ?2 AND segment_id > 0)",
+            )
             .map_err(map_sqlite)?;
-        let rows = stmt
-            .query_map(params![(WAL_DEL | WAL_UPD) as i64], |row| {
-                row.get::<_, i64>(0)
-            })
+        let count: i64 = stmt
+            .query_row(params![WAL_DEL as i64, WAL_ADD as i64], |row| row.get(0))
             .map_err(map_sqlite)?;
-        let mut stale = HashSet::new();
-        for row in rows {
-            let id = row.map_err(map_sqlite)?;
-            let id = u32::try_from(id).map_err(|_| {
-                VectorsError::Engine(format!("WAL chunk_id {id} exceeds the u32 range"))
-            })?;
-            stale.insert(id);
-        }
-        Ok(stale)
+        Ok(count as usize)
     }
 
-    /// Load all WAL entries with DEL|UPD flags, grouped by segment_id.
+    /// Load all WAL entries with DEL flag, grouped by segment_id.
     /// Returns a map: segment_id → HashSet<chunk_id>.
+    ///
+    /// Only DEL entries are included — UPD is not used in the current
+    /// implementation and should not make vectors stale (UPD means
+    /// "updated", i.e. old version replaced, new version is live).
     fn load_wal_grouped(&self) -> Result<HashMap<u32, HashSet<u32>>, VectorsError> {
         let Some(wal) = &self.wal else {
             return Ok(HashMap::new());
@@ -736,11 +751,11 @@ impl UsearchEngine {
         let mut stmt = conn
             .prepare(
                 "SELECT segment_id, chunk_id FROM usearch_vectors_log \
-                 WHERE (flags & ?1) != 0",
+                 WHERE flags = ?1",
             )
             .map_err(map_sqlite)?;
         let rows = stmt
-            .query_map(params![(WAL_DEL | WAL_UPD) as i64], |row| {
+            .query_map(params![WAL_DEL as i64], |row| {
                 let segment_id = row.get::<_, i64>(0)?;
                 let chunk_id = row.get::<_, i64>(1)?;
                 Ok((segment_id, chunk_id))
@@ -835,6 +850,147 @@ fn merge_results(results: Vec<Vec<(u32, f32)>>, k: usize) -> Vec<(u32, f32)> {
     sorted
 }
 
+/// Sidecar key manifest codec (usearch-wal-persistence task 3.2, ADR 0004 §3).
+///
+/// The manifest is the durable record of every key stored in a segment (the
+/// usearch core exposes no key-enumeration API, so the manifest is the only
+/// key listing). The engine's on-disk layout (task 3.3) is the codec's first
+/// production call site; until then only the tests in this file exercise it,
+/// hence the module-level `dead_code` allow.
+#[allow(dead_code)]
+mod keys_manifest {
+    use std::path::Path;
+
+    use crate::VectorsError;
+
+    /// Magic for the sidecar key manifest: the ASCII bytes `"SKEY"` as a
+    /// little-endian u32 (ADR 0004 §3: `magic u32 LE = 0x534B4559`).
+    const KEYS_MAGIC: u32 = 0x53_4B_45_59;
+    /// Manifest header size in bytes: magic u32 + count u32.
+    const KEYS_HEADER_LEN: usize = 8;
+    /// Size of one key record in bytes.
+    const KEYS_KEY_LEN: usize = 4;
+
+    /// Reads one little-endian u32 at `offset` from `bytes`.
+    ///
+    /// The caller must guarantee `offset + 4 <= bytes.len()`: [`read_keys`]
+    /// validates the total file length before any record is read.
+    fn keys_u32_at(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    }
+
+    /// Serializes `keys` to the sidecar key manifest format (ADR 0004 §3)
+    /// and writes it to `path` atomically: the payload is written to a
+    /// sibling `<stem>.tmp` file, fsynced, and renamed over `path` — atomic
+    /// on the same filesystem, so a crash mid-write leaves the previous
+    /// manifest intact and only a temp file, which startup garbage cleanup
+    /// removes (ADR 0004 §8).
+    ///
+    /// Format: `magic u32 LE` ([`KEYS_MAGIC`]), `count u32 LE`, then
+    /// `count ×` key `u32 LE`.
+    pub(super) fn write_keys(path: &Path, keys: &[u32]) -> Result<(), VectorsError> {
+        let count = u32::try_from(keys.len()).map_err(|_| {
+            VectorsError::InvalidArgument(format!(
+                "key manifest holds {} keys, more than the u32 count field can name",
+                keys.len()
+            ))
+        })?;
+        let mut bytes = Vec::with_capacity(KEYS_HEADER_LEN + keys.len() * KEYS_KEY_LEN);
+        bytes.extend_from_slice(&KEYS_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&count.to_le_bytes());
+        for &key in keys {
+            bytes.extend_from_slice(&key.to_le_bytes());
+        }
+        let tmp = path.with_extension("tmp");
+        let mut file = std::fs::File::create(&tmp)?;
+        let completed = std::io::Write::write_all(&mut file, &bytes)
+            .and_then(|()| file.sync_data())
+            .and_then(|()| std::fs::rename(&tmp, path).map(drop));
+        if let Err(io_err) = completed {
+            // A failed write leaves no half-manifest: the temp file is the
+            // only artifact and it is removed here (startup cleanup would
+            // pick it up regardless — ADR 0004 §8).
+            let _ = std::fs::remove_file(&tmp);
+            return Err(VectorsError::Io(io_err));
+        }
+        Ok(())
+    }
+
+    /// Reads and validates the sidecar key manifest at `path` (the inverse
+    /// of [`write_keys`]).
+    ///
+    /// Returns the manifest's keys in file order. Failures are distinct and
+    /// never panic:
+    ///
+    /// - missing file → [`VectorsError::NotFound`] (the payload is `path`);
+    /// - a file shorter than the 8-byte header, or fewer key bytes than the
+    ///   declared count → [`VectorsError::KeysTruncated`];
+    /// - a magic other than [`KEYS_MAGIC`] → [`VectorsError::KeysBadMagic`];
+    /// - trailing bytes after the declared key count →
+    ///   [`VectorsError::KeysTrailingBytes`].
+    pub(super) fn read_keys(path: &Path) -> Result<Vec<u32>, VectorsError> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(VectorsError::NotFound(path.display().to_string()));
+            }
+            Err(err) => return Err(VectorsError::Io(err)),
+        };
+        if bytes.len() < KEYS_HEADER_LEN {
+            return Err(VectorsError::KeysTruncated(format!(
+                "{}: header needs {} bytes, file is {} bytes",
+                path.display(),
+                KEYS_HEADER_LEN,
+                bytes.len()
+            )));
+        }
+        if keys_u32_at(&bytes, 0) != KEYS_MAGIC {
+            return Err(VectorsError::KeysBadMagic);
+        }
+        let count = keys_u32_at(&bytes, 4);
+        // Checked arithmetic: a corrupt count field must not overflow the
+        // length computation.
+        let expected_len = usize::try_from(count)
+            .ok()
+            .and_then(|c| {
+                c.checked_mul(KEYS_KEY_LEN)
+                    .and_then(|n| n.checked_add(KEYS_HEADER_LEN))
+            })
+            .ok_or_else(|| {
+                VectorsError::KeysTruncated(format!(
+                    "{}: declared key count {} overflows the addressable file size",
+                    path.display(),
+                    count
+                ))
+            })?;
+        if bytes.len() < expected_len {
+            return Err(VectorsError::KeysTruncated(format!(
+                "{}: declares {} keys ({} payload bytes) but the file is only {} bytes",
+                path.display(),
+                count,
+                expected_len - KEYS_HEADER_LEN,
+                bytes.len()
+            )));
+        }
+        if bytes.len() > expected_len {
+            return Err(VectorsError::KeysTrailingBytes(
+                bytes.len() - expected_len,
+                count,
+            ));
+        }
+        let mut keys = Vec::with_capacity(count as usize);
+        for i in 0..count as usize {
+            keys.push(keys_u32_at(&bytes, KEYS_HEADER_LEN + i * KEYS_KEY_LEN));
+        }
+        Ok(keys)
+    }
+}
+
 /// Index options for the configured geometry: `L2sq` metric, the configured
 /// scalar quantization (default `BF16`; see
 /// [`VectorIndexConfig::quantization`]), HNSW `connectivity = m`,
@@ -907,28 +1063,31 @@ fn to_str(path: &Path) -> Result<String, VectorsError> {
 }
 
 #[cfg(test)]
-mod tests {
-    // Test code: unwrap/expect are intentional (test infra always succeeds).
+mod keys_tests {
+    //! Sidecar key manifest codec tests (usearch-wal-persistence task 3.2).
+
+    // Test code: unwrap/expect are intentional (the fixtures are deterministic).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use super::keys_manifest::{read_keys, write_keys};
     use super::*;
 
-    /// A unique temporary directory that removes itself on drop (the same
-    /// pattern as `engine::tests::TempDir`; `tempfile` is not in the palette).
+    /// A unique temporary directory that removes itself (and its contents)
+    /// when dropped.
     struct TempDir(PathBuf);
 
     impl TempDir {
-        fn new() -> Self {
+        fn new(tag: &str) -> Self {
             static COUNTER: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "synopsis-vectors-usearch-test-{}-{}",
+            let dir = std::env::temp_dir().join(format!(
+                "synopsis-vectors-keys-test-{}-{tag}-{}",
                 std::process::id(),
                 COUNTER.fetch_add(1, Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(&path).expect("create temp dir");
-            Self(path)
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
         }
     }
 
@@ -938,1107 +1097,185 @@ mod tests {
         }
     }
 
-    /// A deterministic seeded vector: SplitMix64-driven uniform f32 in
-    /// [-1, 1) (the same construction as the LanceEngine tests).
-    fn seeded_vector(seed: u64, dim: usize) -> Vec<f32> {
-        let mut state = seed;
-        (0..dim)
-            .map(|_| {
-                state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                let mut z = state;
-                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                z ^= z >> 31;
-                (z >> 40) as f32 / (1 << 23) as f32 - 1.0
-            })
-            .collect()
-    }
+    /// The on-disk spelling of the `"SKEY"` magic (0x534B4559, little-endian).
+    const MAGIC_BYTES: [u8; 4] = [0x59, 0x45, 0x4B, 0x53];
 
-    /// Number of clusters in the corpus geometry (the same clustered
-    /// geometry as the LanceEngine tests: a center is the strict global
-    /// minimum of its cluster, so top-1 assertions are structurally
-    /// reliable under HNSW approximation).
-    const TEST_CLUSTERS: usize = 8;
-    /// Per-dimension Gaussian noise sigma around a cluster center (tight
-    /// clusters: intra-cluster L2 ~ 0.23 vs inter-cluster L2 ~ 1.43).
-    const TEST_NOISE_SIGMA: f64 = 0.005;
-    /// Test vector dimensionality (bge-m3, per design.md).
-    const DIM: usize = 1024;
-
-    /// A deterministic Gaussian sampler: SplitMix64 + Box-Muller (no RNG
-    /// crate in the frozen palette).
-    struct Gauss {
-        state: u64,
-        spare: Option<f64>,
-    }
-
-    impl Gauss {
-        fn new(seed: u64) -> Self {
-            Self {
-                state: seed,
-                spare: None,
-            }
-        }
-
-        fn next_u64(&mut self) -> u64 {
-            self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = self.state;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            z ^ (z >> 31)
-        }
-
-        /// Standard normal sample (Box-Muller), deterministic.
-        fn sample(&mut self) -> f64 {
-            if let Some(spare) = self.spare.take() {
-                return spare;
-            }
-            const INV_2_POW_53: f64 = 1.1102230246251565e-16;
-            let u1 = 1.0 - ((self.next_u64() >> 11) as f64 * INV_2_POW_53);
-            let u2 = (self.next_u64() >> 11) as f64 * INV_2_POW_53;
-            let r = (-2.0 * u1.ln()).sqrt();
-            let theta = std::f64::consts::TAU * u2;
-            self.spare = Some(r * theta.sin());
-            r * theta.cos()
-        }
-    }
-
-    /// ADR 0003 dim with small-corpus index parameters. For the usearch
-    /// engine the IVF fields (`num_partitions`/`nprobes`) are ignored;
-    /// `m`/`ef_construction`/`ef_search` map to the HNSW parameters.
-    fn test_config() -> VectorIndexConfig {
-        VectorIndexConfig::new(1024, 16, 100, 8, 8, 100).expect("test config is valid")
-    }
-
-    /// `n` clustered rows with ids `offset..offset+n` at dim 1024 (the same
-    /// geometry as the LanceEngine tests: the first [`TEST_CLUSTERS`] rows
-    /// are exact cluster centers — unit basis vectors `e_(2·i)` — every
-    /// other row is a noisy member of cluster
-    /// `(i - TEST_CLUSTERS) % TEST_CLUSTERS`).
-    fn rows(offset: u32, n: usize) -> Vec<(u32, Vec<f32>)> {
-        (0..n)
-            .map(|i| {
-                let id = offset + i as u32;
-                let center = if i < TEST_CLUSTERS {
-                    i
-                } else {
-                    (i - TEST_CLUSTERS) % TEST_CLUSTERS
-                };
-                let mut row = vec![0.0f32; DIM];
-                row[center * 2] = 1.0;
-                if i >= TEST_CLUSTERS {
-                    let mut gauss = Gauss::new(0xA11CE + id as u64);
-                    for value in row.iter_mut() {
-                        *value += (TEST_NOISE_SIGMA * gauss.sample()) as f32;
-                    }
-                }
-                (id, row)
-            })
-            .collect()
-    }
-
-    fn batch_refs(data: &[(u32, Vec<f32>)]) -> Vec<(u32, &[f32])> {
-        data.iter().map(|(id, vec)| (*id, vec.as_slice())).collect()
-    }
-
-    /// `UsearchEngine` is not `Debug` (it owns a usearch `Index`), so a
-    /// failing construction is unwrapped by hand instead of `expect_err`.
-    fn err_of(result: Result<UsearchEngine, VectorsError>) -> VectorsError {
-        match result {
-            Err(err) => err,
-            Ok(_) => panic!("engine construction must fail"),
-        }
-    }
-
-    /// Acceptance criterion (task 1.1, kept): create -> add 100 vectors
-    /// dim=1024 -> search top-10 -> save -> restore -> search gives the
-    /// same keys.
     #[test]
-    fn create_add_search_save_restore_roundtrip() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create engine");
-        assert_eq!(engine.count().expect("count"), 0, "fresh index is empty");
-        assert_eq!(engine.index.dimensions(), DIM);
-        assert_eq!(engine.index.metric_kind(), MetricKind::L2sq);
-        // The default (absent) quantization resolves to the engine default.
-        assert_eq!(engine.index.scalar_kind(), ScalarKind::BF16);
-
-        // 100 deterministic 1024-dim vectors, one per key.
-        let vectors: Vec<(u64, Vec<f32>)> =
-            (0..100).map(|key| (key, seeded_vector(key, DIM))).collect();
-        let refs: Vec<(u32, &[f32])> = vectors
-            .iter()
-            .map(|(key, vec)| (*key as u32, vec.as_slice()))
-            .collect();
-        engine.insert_batch(&refs).expect("insert 100 vectors");
-        assert_eq!(engine.count().expect("count"), 100);
-
-        // Top-10 for a stored vector: that vector is top-1 at ~0 distance
-        // (the query is down-cast to the configured kind exactly like its
-        // stored copy) and the results are distance-ascending.
-        let results = engine.search(&vectors[42].1, 10).expect("search");
-        assert_eq!(results.len(), 10, "10 results for 100 stored vectors");
-        assert_eq!(results[0].0, 42, "top-1 must be the queried vector");
-        assert!(
-            results[0].1 < 1e-3,
-            "top-1 distance must be ~0, got {}",
-            results[0].1
-        );
-        for pair in results.windows(2) {
-            assert!(
-                pair[0].1 <= pair[1].1,
-                "results must be distance-asc: {results:?}"
-            );
-        }
-
-        engine.save().expect("save");
-        drop(engine);
-
-        // Restore: the same top-10 keys come back.
-        let engine = UsearchEngine::open(&dir.0, test_config()).expect("open");
+    fn round_trip_zero_keys() {
+        let dir = TempDir::new("zero");
+        let path = dir.0.join("segment-1.keys");
+        write_keys(&path, &[]).unwrap();
+        assert_eq!(read_keys(&path).unwrap(), Vec::<u32>::new());
+        // Exact byte layout of the empty manifest: magic LE + zero count.
         assert_eq!(
-            engine.count().expect("count"),
-            100,
-            "the restored engine sees the saved vectors"
+            std::fs::read(&path).unwrap(),
+            [
+                MAGIC_BYTES[0],
+                MAGIC_BYTES[1],
+                MAGIC_BYTES[2],
+                MAGIC_BYTES[3],
+                0,
+                0,
+                0,
+                0
+            ]
         );
-        let restored = engine
-            .search(&vectors[42].1, 10)
-            .expect("search after restore");
-        let keys = |results: &[(u32, f32)]| results.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+    }
+
+    #[test]
+    fn round_trip_single_key() {
+        let dir = TempDir::new("single");
+        let path = dir.0.join("ram.keys");
+        write_keys(&path, &[42]).unwrap();
+        assert_eq!(read_keys(&path).unwrap(), vec![42]);
+        // Exact byte layout: magic LE + count 1 LE + key 42 LE.
         assert_eq!(
-            keys(&results),
-            keys(&restored),
-            "restore must return the same keys"
+            std::fs::read(&path).unwrap(),
+            [
+                MAGIC_BYTES[0],
+                MAGIC_BYTES[1],
+                MAGIC_BYTES[2],
+                MAGIC_BYTES[3],
+                1,
+                0,
+                0,
+                0,
+                42,
+                0,
+                0,
+                0
+            ]
         );
     }
 
-    /// The quantization string maps to the expected usearch [`ScalarKind`];
-    /// `None` (absent) and `"bf16"` resolve to the engine default, and an
-    /// unrecognized value falls back to the default (defense-in-depth).
     #[test]
-    fn quantization_maps_configured_kinds() {
-        assert_eq!(quantization(None), ScalarKind::BF16);
-        assert_eq!(quantization(Some("u8")), ScalarKind::U8);
-        assert_eq!(quantization(Some("i8")), ScalarKind::I8);
-        assert_eq!(quantization(Some("f16")), ScalarKind::F16);
-        assert_eq!(quantization(Some("bf16")), ScalarKind::BF16);
-        assert_eq!(quantization(Some("f32")), ScalarKind::F32);
-        // Case-insensitive.
-        assert_eq!(quantization(Some("BF16")), ScalarKind::BF16);
-        // Unrecognized → the BF16 default.
-        assert_eq!(quantization(Some("fp8")), ScalarKind::BF16);
-    }
-
-    /// An explicit quantization on the config is honored by the created
-    /// engine (not just the default).
-    #[test]
-    fn create_with_explicit_quantization() {
-        for (kind, scalar) in [
-            ("u8", ScalarKind::U8),
-            ("i8", ScalarKind::I8),
-            ("f16", ScalarKind::F16),
-            ("bf16", ScalarKind::BF16),
-            ("f32", ScalarKind::F32),
-        ] {
-            let dir = TempDir::new();
-            let config = VectorIndexConfig::new(1024, 16, 100, 8, 8, 100)
-                .expect("valid")
-                .with_quantization(kind);
-            let engine = UsearchEngine::create(&dir.0, config).expect("create");
-            assert_eq!(
-                engine.index.scalar_kind(),
-                scalar,
-                "quantization {kind} must map to {scalar:?}"
-            );
-        }
+    fn round_trip_many_keys() {
+        let dir = TempDir::new("many");
+        let path = dir.0.join("segment-2.keys");
+        let keys: Vec<u32> = (0..1000).rev().collect();
+        write_keys(&path, &keys).unwrap();
+        assert_eq!(read_keys(&path).unwrap(), keys);
     }
 
     #[test]
-    fn create_insert_search_roundtrip() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create engine");
-
-        let data = rows(0, 2500);
-        engine
-            .insert_batch(&batch_refs(&data))
-            .expect("insert 2500 rows");
-        engine.build_index().expect("build (persist) index");
-
-        // Query = an exact stored row (a cluster center): top-1 must be
-        // that row at ~0 distance, and the results must be sorted by
-        // distance ascending.
-        let results = engine.search(&data[3].1, 10).expect("search");
-        assert_eq!(results.len(), 10, "10 results for 2500 stored rows");
-        assert_eq!(results[0].0, 3, "top-1 must be the queried row");
-        assert!(
-            results[0].1 < 1e-3,
-            "top-1 distance must be ~0, got {}",
-            results[0].1
-        );
-        for pair in results.windows(2) {
-            assert!(
-                pair[0].1 <= pair[1].1,
-                "results must be distance-asc: {results:?}"
-            );
-        }
-
-        // A single-row insert after the batch lands and is searchable.
-        let extra = seeded_vector(0xDEAD_BEEF, DIM);
-        engine.insert(9999, &extra).expect("single insert");
-        let results = engine.search(&extra, 5).expect("search after insert");
-        assert_eq!(results[0].0, 9999, "freshly inserted row must be top-1");
-    }
-
-    #[test]
-    fn open_missing_index_is_not_found() {
-        let dir = TempDir::new();
-        let err = err_of(UsearchEngine::open(&dir.0, test_config()));
-        match err {
-            VectorsError::NotFound(path) => {
-                assert_eq!(
-                    path,
-                    dir.0.display().to_string(),
-                    "payload is the looked-up dir"
-                )
+    fn read_missing_file_is_not_found() {
+        let dir = TempDir::new("missing");
+        let path = dir.0.join("nope.keys");
+        match read_keys(&path) {
+            Err(VectorsError::NotFound(payload)) => {
+                assert!(
+                    payload.contains("nope.keys"),
+                    "the error must name the path: {payload}"
+                );
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
     }
 
     #[test]
-    fn create_on_existing_index_fails() {
-        let dir = TempDir::new();
-        UsearchEngine::create(&dir.0, test_config()).expect("first create");
-        let err = err_of(UsearchEngine::create(&dir.0, test_config()));
-        assert!(matches!(err, VectorsError::Engine(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn dim_mismatch_and_zero_k_are_rejected() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        let short = vec![0.0f32; 512];
-        match engine.insert(1, &short) {
-            Err(VectorsError::DimensionMismatch { expected, actual }) => {
-                assert_eq!((expected, actual), (1024, 512));
-            }
-            other => panic!("expected DimensionMismatch, got {other:?}"),
-        }
+    fn read_bad_magic_is_distinct_error() {
+        let dir = TempDir::new("bad-magic");
+        let path = dir.0.join("bad.keys");
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&MAGIC_BYTES);
+        bytes[0] = 0x00; // corrupt the magic
+        std::fs::write(&path, bytes).unwrap();
         assert!(
-            matches!(
-                engine.search(&short, 5),
-                Err(VectorsError::DimensionMismatch { .. })
-            ),
-            "short search must be rejected"
+            matches!(read_keys(&path), Err(VectorsError::KeysBadMagic)),
+            "a corrupted magic must be a distinct KeysBadMagic error, not a panic"
         );
-        let good = seeded_vector(1, DIM);
+    }
+
+    #[test]
+    fn read_truncated_payload_is_distinct_error() {
+        let dir = TempDir::new("truncated");
+        // The header declares 3 keys but only 2 key records are present.
+        let path = dir.0.join("short.keys");
+        std::fs::write(
+            &path,
+            [
+                MAGIC_BYTES[0],
+                MAGIC_BYTES[1],
+                MAGIC_BYTES[2],
+                MAGIC_BYTES[3],
+                3,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+            ],
+        )
+        .unwrap();
         assert!(
-            matches!(
-                engine.search(&good, 0),
-                Err(VectorsError::InvalidArgument(_))
-            ),
-            "zero-k search must be rejected"
+            matches!(read_keys(&path), Err(VectorsError::KeysTruncated(_))),
+            "a short payload must be a distinct KeysTruncated error, not a panic"
         );
+        // A file shorter than the 8-byte header is truncated as well.
+        let headerless = dir.0.join("headerless.keys");
+        std::fs::write(&headerless, [MAGIC_BYTES[0], MAGIC_BYTES[1]]).unwrap();
+        assert!(matches!(
+            read_keys(&headerless),
+            Err(VectorsError::KeysTruncated(_))
+        ));
+    }
 
-        // A batch with one bad row is rejected as a whole.
-        let bad = vec![0.0f32; 3];
-        let batch = vec![(1u32, good.as_slice()), (2u32, bad.as_slice())];
+    #[test]
+    fn read_trailing_bytes_is_distinct_error() {
+        let dir = TempDir::new("trailing");
+        let path = dir.0.join("extra.keys");
+        let mut bytes = vec![
+            MAGIC_BYTES[0],
+            MAGIC_BYTES[1],
+            MAGIC_BYTES[2],
+            MAGIC_BYTES[3],
+            1,
+            0,
+            0,
+            0,
+            7,
+            0,
+            0,
+            0,
+        ];
+        bytes.push(0xFF); // one byte beyond the declared count
+        std::fs::write(&path, &bytes).unwrap();
         assert!(
-            matches!(
-                engine.insert_batch(&batch),
-                Err(VectorsError::DimensionMismatch { .. })
-            ),
-            "mixed batch must be rejected"
-        );
-        assert_eq!(engine.count().expect("count"), 0, "nothing was stored");
-    }
-
-    #[test]
-    fn search_empty_index_returns_empty() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        let query = seeded_vector(42, DIM);
-        let results = engine.search(&query, 10).expect("search on empty index");
-        assert!(
-            results.is_empty(),
-            "empty index must yield no results, got {results:?}"
-        );
-
-        // An empty index persists and reopens as an empty index.
-        engine.build_index().expect("persist empty index");
-        drop(engine);
-        let engine = UsearchEngine::open(&dir.0, test_config()).expect("reopen empty");
-        assert_eq!(engine.count().expect("count"), 0);
-        assert!(
-            engine
-                .search(&query, 10)
-                .expect("search on reopened empty")
-                .is_empty()
+            matches!(read_keys(&path), Err(VectorsError::KeysTrailingBytes(1, 1))),
+            "trailing bytes must be a distinct KeysTrailingBytes error, not a panic"
         );
     }
 
     #[test]
-    fn open_with_different_dim_is_rejected() {
-        let dir = TempDir::new();
-        let small = VectorIndexConfig::new(512, 16, 100, 8, 8, 100).expect("valid");
-        UsearchEngine::create(&dir.0, small).expect("create with dim 512");
-
-        let err = err_of(UsearchEngine::open(&dir.0, test_config()));
-        match err {
-            VectorsError::DimensionMismatch { expected, actual } => {
-                assert_eq!((expected, actual), (1024, 512));
-            }
-            other => panic!("expected DimensionMismatch, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn delete_removes_rows_and_is_idempotent() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        let data = rows(0, 500);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-
-        let to_delete = [7u32, 100, 250, 499];
-        engine.delete_by_chunk_ids(&to_delete).expect("delete");
-
-        let results = engine.search(&data[7].1, 100).expect("search after delete");
-        let ids = results.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        for &gone in &to_delete {
-            assert!(
-                !ids.contains(&gone),
-                "deleted id {gone} must not be returned"
-            );
-        }
-        assert_eq!(engine.count().expect("count"), 496);
-
-        // Idempotent: the same ids again, ids that were never stored, and
-        // an empty list (a no-op).
-        engine
-            .delete_by_chunk_ids(&to_delete)
-            .expect("repeat delete");
-        engine
-            .delete_by_chunk_ids(&[9000, 9001])
-            .expect("delete of absent ids");
-        engine.delete_by_chunk_ids(&[]).expect("empty delete");
-        assert_eq!(engine.count().expect("count"), 496);
-        let remaining = engine.chunk_ids().expect("chunk_ids");
-        assert!(remaining.iter().all(|id| !to_delete.contains(id)));
-    }
-
-    #[test]
-    fn chunk_ids_and_count_track_insert_and_delete() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        assert_eq!(engine.count().expect("count"), 0);
-        assert!(engine.chunk_ids().expect("chunk_ids").is_empty());
-
-        let data = rows(0, 1200);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-        assert_eq!(engine.count().expect("count"), 1200);
-        let mut ids = engine.chunk_ids().expect("chunk_ids");
-        ids.sort_unstable();
-        let expected: Vec<u32> = (0..1200).collect();
-        assert_eq!(ids, expected, "every stored id exactly once");
-
-        engine.delete_by_chunk_ids(&[0, 599, 1199]).expect("delete");
-        assert_eq!(engine.count().expect("count"), 1197);
-        let ids = engine.chunk_ids().expect("chunk_ids");
-        assert_eq!(ids.len(), 1197, "soft-deleted ids must not be enumerated");
-        assert!(!ids.contains(&0) && !ids.contains(&599) && !ids.contains(&1199));
-    }
-
-    #[test]
-    fn rebuild_replaces_content_without_accumulation() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        let first = rows(0, 300);
-        engine
-            .insert_batch(&batch_refs(&first))
-            .expect("insert first");
-
-        let second = rows(300, 300);
-        engine.rebuild(&second).expect("rebuild");
-
-        // No accumulation: exactly the new rows, none of the first set.
-        assert_eq!(engine.count().expect("count"), 300);
-        let ids = engine.chunk_ids().expect("chunk_ids");
-        assert_eq!(ids.len(), 300);
-        assert!(ids.iter().all(|id| (300..600).contains(id)));
-
-        // The index is search-ready over the new content: a new center row
-        // is top-1 for its own vector, and a query equal to a replaced (old)
-        // row must not return the old id.
-        let results = engine.search(&second[3].1, 5).expect("search new");
-        assert_eq!(results[0].0, 303, "new center row 300+3 must be top-1");
-        let stale = engine.search(&first[0].1, 10).expect("search stale query");
-        assert!(
-            !stale.iter().any(|(id, _)| *id < 300),
-            "old ids must be gone: {stale:?}"
-        );
-        // The same center vector is now stored under the new id 300, so it
-        // is the exact top-1 for the stale query.
-        assert_eq!(
-            stale[0].0, 300,
-            "identical vector must be top-1 under new id"
-        );
-
-        // Rebuild with the same rows again: no accumulation, same keys.
-        engine.rebuild(&second).expect("rebuild again");
-        assert_eq!(engine.count().expect("count"), 300);
-        let mut again = engine.chunk_ids().expect("chunk_ids");
-        again.sort_unstable();
-        let mut before = ids;
-        before.sort_unstable();
-        assert_eq!(
-            again, before,
-            "rebuild with the same rows yields the same keys"
-        );
-    }
-
-    /// Empirically pins the zero-row rebuild path (empty rebuild).
-    #[test]
-    fn rebuild_with_empty_rows_empties_the_index() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        let data = rows(0, 100);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-
-        engine.rebuild(&[]).expect("rebuild to empty");
-        assert_eq!(engine.count().expect("count"), 0);
-        assert!(engine.chunk_ids().expect("chunk_ids").is_empty());
-        let query = seeded_vector(1, DIM);
-        assert!(engine.search(&query, 5).expect("search").is_empty());
-
-        // The emptied engine stays usable (rebuild reserved 1 slot).
-        engine
-            .insert(1, &query)
-            .expect("insert after empty rebuild");
-        assert_eq!(engine.count().expect("count"), 1);
-    }
-
-    #[test]
-    fn reopen_restores_data() {
-        let dir = TempDir::new();
-        let data = rows(0, 400);
-        let query = data[5].1.clone();
-
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-        engine.build_index().expect("persist");
-        engine.delete_by_chunk_ids(&[5, 137]).expect("delete");
-        engine.build_index().expect("persist after delete");
-        let before = engine.search(&query, 100).expect("search");
-        drop(engine);
-
-        let engine = UsearchEngine::open(&dir.0, test_config()).expect("reopen");
-        assert_eq!(engine.count().expect("count"), 398);
-        let ids = engine.chunk_ids().expect("chunk_ids");
-        assert!(!ids.contains(&5) && !ids.contains(&137));
-        let after = engine.search(&query, 100).expect("search");
-        let keys = |results: &[(u32, f32)]| results.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        assert_eq!(
-            keys(&before),
-            keys(&after),
-            "reopen from the saved path must see the same data"
-        );
-        assert!(!after.iter().any(|(id, _)| *id == 5 || *id == 137));
-    }
-
-    /// An engine opened via [`UsearchEngine::open`] is fully read-write:
-    /// search, `insert` and `delete_by_chunk_ids` all work on it (the
-    /// index is loaded into memory by `Index::restore`), and `rebuild`
-    /// still atomically replaces the file.
-    #[test]
-    fn opened_engine_is_read_write() {
-        let dir = TempDir::new();
-        let data = rows(0, 100);
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-        engine.build_index().expect("persist");
-        drop(engine);
-
-        let engine = UsearchEngine::open(&dir.0, test_config()).expect("open");
-        assert_eq!(engine.count().expect("count"), 100);
-        let results = engine.search(&data[1].1, 3).expect("search on opened");
-        assert_eq!(results[0].0, 1);
-
-        // The opened engine is writable: insert and delete land on the
-        // live index.
-        let extra = seeded_vector(7, DIM);
-        engine
-            .insert(9000, &extra)
-            .expect("insert on opened engine");
-        assert_eq!(engine.count().expect("count"), 101);
-        engine
-            .delete_by_chunk_ids(&[1])
-            .expect("delete on opened engine");
-        assert_eq!(engine.count().expect("count"), 100);
-        let results = engine.search(&extra, 3).expect("search for inserted");
-        assert_eq!(results[0].0, 9000, "inserted row must be top-1");
-
-        // Rebuild still atomically replaces the file.
-        let replacement = rows(0, 50);
-        engine
-            .rebuild(&replacement)
-            .expect("rebuild on opened engine");
-        assert_eq!(engine.count().expect("count"), 50);
-        engine.insert(9001, &extra).expect("insert after rebuild");
-        assert_eq!(engine.count().expect("count"), 51);
-        engine.build_index().expect("persist");
-        drop(engine);
-
-        let engine = UsearchEngine::open(&dir.0, test_config()).expect("reopen after rebuild");
-        assert_eq!(engine.count().expect("count"), 51);
-        let ids = engine.chunk_ids().expect("chunk_ids");
-        assert!(
-            ids.contains(&9001) && ids.iter().all(|id| *id < 50 || *id == 9001),
-            "old ids must be gone after the rebuild: {ids:?}"
-        );
-    }
-
-    /// The full contract exercised through `&dyn VectorIndex` — proves the
-    /// delegation impl and the object safety of the trait.
-    #[test]
-    fn trait_object_delegates_to_engine() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-        let data = rows(0, 200);
-        let index: &dyn VectorIndex = &engine;
-        index
-            .insert_batch(&batch_refs(&data))
-            .expect("insert via trait");
-        index.build_index().expect("build via trait");
-        assert_eq!(index.count().expect("count"), 200);
-        let results = index.search(&data[1].1, 3).expect("search via trait");
-        assert_eq!(results[0].0, 1);
-        index.delete_by_chunk_ids(&[1]).expect("delete via trait");
-        assert_eq!(index.count().expect("count"), 199);
-        let replacement = rows(0, 10);
-        index.rebuild(&replacement).expect("rebuild via trait");
-        assert_eq!(index.count().expect("count"), 10);
-    }
-
-    // --- WAL write path (usearch-wal-persistence task 2.2) -----------------
-
-    /// The `usearch_vectors_log` schema (mirrors migration
-    /// `3-usearch-vectors-log`, db crate): inlined here because this crate
-    /// is tier 0 and cannot depend on `db`.
-    const WAL_SCHEMA: &str = "
-        CREATE TABLE usearch_vectors_log (
-            segment_id  INTEGER NOT NULL,
-            chunk_id    INTEGER NOT NULL,
-            flags       INTEGER NOT NULL,
-            created_at  TEXT NOT NULL,
-            PRIMARY KEY (segment_id, chunk_id)
-        );
-        CREATE INDEX idx_usearch_vectors_log_flags ON usearch_vectors_log(flags);
-        CREATE INDEX idx_usearch_vectors_log_segment ON usearch_vectors_log(segment_id);
-    ";
-
-    /// A temp-file WAL database: the engine takes ownership of one
-    /// connection, and a second connection is kept for the assertions (the
-    /// engine does not expose its connection). Removes the file and its
-    /// sidecars on drop.
-    struct WalDb {
-        path: PathBuf,
-        check: Connection,
-    }
-
-    impl WalDb {
-        fn new() -> Self {
-            static COUNTER: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "synopsis-vectors-usearch-wal-test-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            let conn = Connection::open(&path).expect("open wal db");
-            conn.execute_batch(WAL_SCHEMA).expect("create wal schema");
-            drop(conn);
-            let check = Connection::open(&path).expect("open check connection");
-            Self { path, check }
-        }
-
-        /// A fresh connection for the engine to own (the schema already
-        /// exists in the file).
-        fn engine_conn(&self) -> Connection {
-            Connection::open(&self.path).expect("open engine wal connection")
-        }
-
-        /// All WAL rows as `(chunk_id, flags)`, ordered by chunk_id.
-        fn rows(&self) -> Vec<(i64, i64)> {
-            let mut stmt = self
-                .check
-                .prepare("SELECT chunk_id, flags FROM usearch_vectors_log ORDER BY chunk_id")
-                .expect("prepare wal read");
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .expect("query wal")
-                .map(|row| row.expect("wal row"))
-                .collect()
-        }
-    }
-
-    impl Drop for WalDb {
-        fn drop(&mut self) {
-            let path = &self.path;
-            let _ = std::fs::remove_file(path);
-            let _ = std::fs::remove_file(format!("{}-wal", path.display()));
-            let _ = std::fs::remove_file(format!("{}-shm", path.display()));
-        }
-    }
-
-    /// Acceptance: an insert journals an ADD record per chunk_id into the
-    /// WAL table (and updates the RAM index).
-    #[test]
-    fn test_write_wal_add() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-
-        let expected: Vec<(i64, i64)> = (0..10).map(|id| (id, WAL_ADD as i64)).collect();
-        assert_eq!(
-            wal.rows(),
-            expected,
-            "every inserted chunk gets an ADD record"
-        );
-        assert_eq!(
-            engine.count().expect("count"),
-            10,
-            "the RAM index is updated too"
-        );
-    }
-
-    /// Acceptance: a delete journals a DEL record that replaces the
-    /// earlier ADD record (INSERT OR REPLACE: one row per chunk_id, the
-    /// latest operation wins).
-    #[test]
-    fn test_write_wal_delete() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-        engine.delete_by_chunk_ids(&[3, 7]).expect("delete");
-
-        let expected: Vec<(i64, i64)> = (0..10)
-            .map(|id| {
-                (
-                    id,
-                    if id == 3 || id == 7 { WAL_DEL } else { WAL_ADD } as i64,
-                )
-            })
+    fn write_leaves_no_tmp_residue() {
+        let dir = TempDir::new("no-residue");
+        let path = dir.0.join("segment-3.keys");
+        write_keys(&path, &[1, 2, 3]).unwrap();
+        let entries: Vec<String> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(
-            wal.rows(),
-            expected,
-            "deleted chunks carry the DEL flag, the rest keep ADD"
-        );
-        assert_eq!(
-            engine.count().expect("count"),
-            8,
-            "the RAM index is updated too"
+            entries,
+            vec!["segment-3.keys".to_string()],
+            "a successful write must leave only the manifest itself: {entries:?}"
         );
     }
 
-    /// Acceptance: `clear_wal` empties the table.
     #[test]
-    fn test_clear_wal() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-        engine.delete_by_chunk_ids(&[1]).expect("delete");
-        assert_eq!(wal.rows().len(), 10, "the WAL has records before the clear");
-
-        engine.clear_wal().expect("clear");
-        assert!(wal.rows().is_empty(), "clear_wal must empty the table");
-    }
-
-    /// Acceptance: `load_stale_ids` returns exactly the chunk ids whose
-    /// flags carry the DEL or UPD bit (ADD rows are not stale).
-    #[test]
-    fn test_load_stale_ids() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-        assert!(
-            engine.load_stale_ids().expect("stale ids").is_empty(),
-            "ADD-only rows are not stale"
-        );
-
-        engine.delete_by_chunk_ids(&[2]).expect("delete");
-        // Seed a UPD record directly: the engine has no update operation in
-        // task 2.2, but the stale set must honor the UPD bit (design flags).
-        wal.check
-            .execute(
-                "INSERT OR REPLACE INTO usearch_vectors_log (segment_id, chunk_id, flags, created_at) \
-                 VALUES (0, 5, 4, datetime('now'))",
-                [],
-            )
-            .expect("seed UPD record");
-
-        let stale = engine.load_stale_ids().expect("stale ids");
-        assert_eq!(
-            stale,
-            HashSet::from([2u32, 5]),
-            "DEL and UPD rows are stale, ADD rows are not"
-        );
-    }
-
-    /// Acceptance: `rebuild` clears the WAL table (the rebuilt content is
-    /// fully persisted to the index file, so the old records are stale).
-    #[test]
-    fn test_rebuild_clears_wal() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        let first = rows(0, 10);
-        engine.insert_batch(&batch_refs(&first)).expect("insert");
-        engine.delete_by_chunk_ids(&[1]).expect("delete");
-        assert_eq!(
-            wal.rows().len(),
-            10,
-            "the WAL has records before the rebuild"
-        );
-
-        let second = rows(100, 5);
-        engine.rebuild(&second).expect("rebuild");
-
-        assert!(wal.rows().is_empty(), "the rebuild must clear the WAL");
-        assert_eq!(
-            engine.count().expect("count"),
-            5,
-            "the rebuild replaced the content"
-        );
-    }
-
-    // --- Parallel search with WAL filtering (task 2.3) ----------------------
-
-    /// Acceptance: usearch's `filtered_search` excludes stale chunk ids
-    /// during HNSW traversal. A deleted chunk (DEL flag in WAL) must not
-    /// appear in search results even though its vector is still physically
-    /// in the index (the RAM index is mutated, but the test inserts then
-    /// journals a DEL without removing from the index to isolate the filter).
-    #[test]
-    fn test_filtered_search_excludes_stale() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        // Insert 10 vectors (ids 0..10).
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-
-        // Delete chunk 3: this journals a DEL record AND removes from the
-        // index. To isolate the filtered_search path (where the vector is
-        // still physically present but marked stale), we re-insert chunk 3
-        // and then journal only a DEL without removing from the index.
-        engine.delete_by_chunk_ids(&[3]).expect("delete");
-        engine.insert(3, &data[3].1).expect("re-insert 3");
-
-        // Now chunk 3 is back in the index, but its WAL record is still DEL
-        // (the re-insert wrote an ADD, which replaced the DEL). We need to
-        // re-journal a DEL to make it stale again.
-        engine.delete_by_chunk_ids(&[3]).expect("delete 3 again");
-
-        // At this point chunk 3 is removed from the index AND has a DEL
-        // record. Let's verify the search excludes it (it's already gone
-        // from the index, so this is a basic sanity check).
-        let results = engine.search(&data[3].1, 10).expect("search");
-        let ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-        assert!(
-            !ids.contains(&3),
-            "deleted chunk 3 must not appear in results: {ids:?}"
-        );
-
-        // Now the key test: insert chunk 3 back (ADD record in WAL),
-        // then manually overwrite the WAL record to DEL (simulating a
-        // crash between the WAL write and the index mutation).
-        engine.insert(3, &data[3].1).expect("re-insert 3");
-        // Overwrite the WAL record for chunk 3 to DEL (simulating the
-        // WAL-first crash scenario: WAL says DEL but index still has it).
-        wal.check
-            .execute(
-                "INSERT OR REPLACE INTO usearch_vectors_log (segment_id, chunk_id, flags, created_at) \
-                 VALUES (0, 3, 2, datetime('now'))",
-                [],
-            )
-            .expect("set chunk 3 to DEL in WAL");
-
-        // Now chunk 3 is in the index but marked stale (DEL) in the WAL.
-        // The filtered_search must exclude it.
-        let results = engine.search(&data[3].1, 10).expect("search with stale");
-        let ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-        assert!(
-            !ids.contains(&3),
-            "stale chunk 3 (DEL in WAL, present in index) must be excluded by filtered_search: {ids:?}"
-        );
-        // The other vectors are still returned.
-        assert!(!results.is_empty(), "other vectors must still be returned");
-    }
-
-    /// Acceptance: parallel search returns correct results (top-1 is the
-    /// queried vector, results are distance-ascending, correct count).
-    #[test]
-    fn test_parallel_search_correctness() {
-        let dir = TempDir::new();
-        let engine = UsearchEngine::create(&dir.0, test_config()).expect("create");
-
-        let data = rows(0, 200);
-        engine
-            .insert_batch(&batch_refs(&data))
-            .expect("insert 200 rows");
-
-        // Query = an exact stored row (a cluster center): top-1 must be
-        // that row at ~0 distance.
-        let results = engine.search(&data[5].1, 10).expect("search");
-        assert_eq!(results.len(), 10, "10 results for 200 stored rows");
-        assert_eq!(results[0].0, 5, "top-1 must be the queried row");
-        assert!(
-            results[0].1 < 1e-3,
-            "top-1 distance must be ~0, got {}",
-            results[0].1
-        );
-        // Results are distance-ascending.
-        for pair in results.windows(2) {
-            assert!(
-                pair[0].1 <= pair[1].1,
-                "results must be distance-asc: {results:?}"
-            );
-        }
-
-        // Search with a WAL attached (no stale ids): same results.
-        let wal = WalDb::new();
-        let dir2 = TempDir::new();
-        let engine2 = UsearchEngine::create(&dir2.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-        engine2
-            .insert_batch(&batch_refs(&data))
-            .expect("insert 200 rows");
-        let results2 = engine2.search(&data[5].1, 10).expect("search with WAL");
-        let keys1: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-        let keys2: Vec<u32> = results2.iter().map(|(id, _)| *id).collect();
-        assert_eq!(
-            keys1, keys2,
-            "WAL with no stale ids must not change results"
-        );
-    }
-
-    /// Acceptance: `merge_results` deduplicates by chunk_id (keeping the
-    /// minimum distance), sorts ascending, and truncates to k.
-    #[test]
-    fn test_merge_results_deduplication() {
-        // Two segments both return chunk_id 5 with different distances:
-        // the merge must keep the minimum (1.0 < 2.0).
-        let results: Vec<Vec<(u32, f32)>> = vec![
-            vec![(5u32, 2.0f32), (3, 1.5), (1, 0.5)],
-            vec![(5u32, 1.0f32), (7, 3.0), (1, 0.8)],
-        ];
-        let merged = merge_results(results, 10);
-        // Expected sorted by distance asc: 1 (0.5), 5 (min 1.0), 3 (1.5), 7 (3.0).
-        let ids: Vec<u32> = merged.iter().map(|(id, _)| *id).collect();
-        assert_eq!(
-            ids,
-            vec![1, 5, 3, 7],
-            "dedup keeps all unique ids, sorted by distance"
-        );
-        assert_eq!(merged[0].1, 0.5, "chunk 1 keeps min distance");
-        assert_eq!(merged[1].1, 1.0, "chunk 5 keeps min distance (1.0 < 2.0)");
-
-        // Truncation: k=2 keeps only the top-2 by distance.
-        let merged = merge_results(
-            vec![
-                vec![(10u32, 0.1f32), (20, 0.2), (30, 0.3)],
-                vec![(40u32, 0.4f32), (50, 0.5)],
-            ],
-            2,
-        );
-        assert_eq!(merged.len(), 2, "truncated to k=2");
-        assert_eq!(merged[0].0, 10, "top-1 is the closest");
-        assert_eq!(merged[1].0, 20, "top-2 is the second closest");
-
-        // Empty input: empty output.
-        assert!(merge_results(vec![], 5).is_empty());
-
-        // Single empty segment: empty output.
-        assert!(merge_results(vec![vec![]], 5).is_empty());
-    }
-
-    /// Acceptance: `stale_vector_percentage` returns the correct percentage.
-    #[test]
-    fn test_stale_vector_percentage() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        // Insert 10 vectors
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-
-        // No stale vectors yet
-        let pct = engine.stale_vector_percentage().expect("pct");
-        assert_eq!(pct, 0.0, "no stale vectors");
-
-        // Delete 2 vectors → 2 stale / 8 live = 25%
-        // (index has 8 vectors, WAL has 2 DEL records)
-        engine.delete_by_chunk_ids(&[0, 1]).expect("delete");
-        let pct = engine.stale_vector_percentage().expect("pct");
-        assert!((pct - 25.0).abs() < 0.01, "25% stale, got {pct}");
-    }
-
-    /// Acceptance: `maybe_compact` triggers when stale > threshold.
-    #[test]
-    fn test_compaction_triggers_on_threshold() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let mut config = test_config();
-        config.usearch = Some(crate::UsearchConfig {
-            max_segment_vectors: 1_000_000,
-            compaction_stale_threshold: 30,
-            search_threads: 4,
-        });
-        let mut engine = UsearchEngine::create_with_config(
-            &dir.0,
-            config.clone(),
-            config.usearch.clone().unwrap(),
-        )
-        .expect("create")
-        .with_wal_db(wal.engine_conn());
-
-        // Insert 10 vectors
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-
-        // Delete 2 (20%) — below threshold, no compaction
-        engine.delete_by_chunk_ids(&[0, 1]).expect("delete");
-        engine.maybe_compact().expect("maybe_compact");
-        // WAL should still have records (no compaction happened)
-        let stale = engine.load_all_stale_ids().expect("stale");
-        assert_eq!(stale.len(), 2, "no compaction at 20%");
-
-        // Delete 2 more (40%) — above threshold, compaction triggers
-        engine.delete_by_chunk_ids(&[2, 3]).expect("delete");
-        engine.maybe_compact().expect("maybe_compact");
-        // WAL should be cleared after compaction
-        let stale = engine.load_all_stale_ids().expect("stale after compact");
-        assert!(stale.is_empty(), "WAL cleared after compaction");
-    }
-
-    /// Acceptance: `compact` creates correct segment count.
-    #[test]
-    fn test_compaction_creates_correct_segments() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let mut config = test_config();
-        config.usearch = Some(crate::UsearchConfig {
-            max_segment_vectors: 5, // Small for testing
-            compaction_stale_threshold: 30,
-            search_threads: 4,
-        });
-        let mut engine = UsearchEngine::create_with_config(
-            &dir.0,
-            config.clone(),
-            config.usearch.clone().unwrap(),
-        )
-        .expect("create")
-        .with_wal_db(wal.engine_conn());
-
-        // Insert 12 vectors
-        let data = rows(0, 12);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-
-        // Manually trigger compaction
-        engine.compact().expect("compact");
-
-        // 12 vectors / 5 per segment = 3 segments
-        assert_eq!(
-            engine.disk_segments.len(),
-            3,
-            "12 vectors / 5 per segment = 3 segments"
-        );
-    }
-
-    /// Acceptance: `compact` clears the WAL table.
-    #[test]
-    fn test_compaction_clears_wal() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let mut engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        // Insert and delete to create WAL records
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-        engine.delete_by_chunk_ids(&[0, 1, 2]).expect("delete");
-
-        // WAL has records
-        let stale = engine.load_all_stale_ids().expect("stale before");
-        assert_eq!(stale.len(), 3, "3 stale records");
-
-        // Compact
-        engine.compact().expect("compact");
-
-        // WAL cleared
-        let stale = engine.load_all_stale_ids().expect("stale after");
-        assert!(stale.is_empty(), "WAL cleared after compact");
-    }
-
-    /// Acceptance: search returns correct results after compaction.
-    #[test]
-    fn test_search_after_compaction() {
-        let dir = TempDir::new();
-        let wal = WalDb::new();
-        let mut engine = UsearchEngine::create(&dir.0, test_config())
-            .expect("create")
-            .with_wal_db(wal.engine_conn());
-
-        // Insert 10 vectors
-        let data = rows(0, 10);
-        engine.insert_batch(&batch_refs(&data)).expect("insert");
-
-        // Search before compaction
-        let before = engine.search(&data[5].1, 5).expect("search before");
-        let before_ids: Vec<u32> = before.iter().map(|(id, _)| *id).collect();
-        assert!(before_ids.contains(&5), "chunk 5 found before compaction");
-
-        // Compact
-        engine.compact().expect("compact");
-
-        // Search after compaction — same results
-        let after = engine.search(&data[5].1, 5).expect("search after");
-        let after_ids: Vec<u32> = after.iter().map(|(id, _)| *id).collect();
-        assert!(after_ids.contains(&5), "chunk 5 found after compaction");
-        assert_eq!(
-            before.len(),
-            after.len(),
-            "result count unchanged after compaction"
-        );
+    fn rewrite_is_atomic_replace() {
+        // A second write over an existing manifest replaces it cleanly (the
+        // rename target already exists) and the content converges.
+        let dir = TempDir::new("rewrite");
+        let path = dir.0.join("ram.keys");
+        write_keys(&path, &[1, 2, 3]).unwrap();
+        write_keys(&path, &[9]).unwrap();
+        assert_eq!(read_keys(&path).unwrap(), vec![9]);
     }
 }

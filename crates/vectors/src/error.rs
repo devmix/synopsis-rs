@@ -1,8 +1,9 @@
 //! Crate error type.
 //!
 //! [`VectorsError`] covers the whole vectors crate: argument and dimension
-//! validation, a missing index, the LanceDB engine, filesystem I/O, and the
-//! SYNX fixture format (magic, version, truncation, zero dimensionality).
+//! validation, a missing index, the LanceDB engine, filesystem I/O, the
+//! SYNX fixture format (magic, version, truncation, zero dimensionality),
+//! and the sidecar key manifest format (magic, truncation, trailing bytes).
 
 use thiserror::Error;
 
@@ -20,8 +21,10 @@ pub enum VectorsError {
         /// Length of the offending vector.
         actual: usize,
     },
-    /// The requested index does not exist (e.g. opening a path with no table).
-    /// The payload is the index directory that was looked up.
+    /// A requested on-disk resource does not exist: an index directory with
+    /// no index (opening a path that was never created), or a sidecar
+    /// `.keys` key manifest (usearch-wal-persistence task 3.2). The payload
+    /// is the path that was looked up.
     #[error("index not found at {0}")]
     NotFound(String),
     /// The ANN engine (LanceDB) reported a failure.
@@ -43,4 +46,17 @@ pub enum VectorsError {
     /// A SYNX fixture file declares zero dimensionality.
     #[error("SYNX: dim must be > 0")]
     SyNxZeroDim,
+    /// A sidecar key manifest (`.keys`, usearch-wal-persistence task 3.2)
+    /// does not start with the `"SKEY"` magic bytes.
+    #[error("key manifest: bad magic")]
+    KeysBadMagic,
+    /// A sidecar key manifest is truncated: the header or a key record ends
+    /// before the declared number of bytes. The payload says where.
+    #[error("key manifest: truncated file ({0})")]
+    KeysTruncated(String),
+    /// A sidecar key manifest carries trailing bytes beyond the declared
+    /// key count. The payload is the number of extra bytes and the declared
+    /// count.
+    #[error("key manifest: {0} trailing bytes after {1} declared keys")]
+    KeysTrailingBytes(usize, u32),
 }
