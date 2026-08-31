@@ -146,7 +146,7 @@ use layout::{
     load_ram_layer, ram_index_path, ram_keys_path, segments_dir, to_str,
 };
 use options::{map_sqlite, map_usearch, options};
-use search::add_rows;
+use search::{add_rows, build_search_pool};
 use wal::{StaleCache, load_stale_sets, reconcile_wal};
 
 use crate::{VectorIndex, VectorIndexConfig, VectorsError};
@@ -193,6 +193,13 @@ pub struct UsearchEngine {
     /// without it the `VectorEngine` enum (Lance vs Usearch variants) would
     /// trip `clippy::large_enum_variant`.
     wal: Option<Mutex<Box<Connection>>>,
+    /// The dedicated rayon search pool sized by
+    /// `UsearchConfig::search_threads` (ADR 0004 §6/§9: `search` runs its
+    /// per-layer HNSW queries here, off the global pool — the superseded
+    /// implementation ignored the config, defect #9). Built in
+    /// `create_with_config`/`open_with_wal` from the validated thread
+    /// count.
+    search_pool: rayon::ThreadPool,
 }
 
 impl UsearchEngine {
@@ -238,6 +245,9 @@ impl UsearchEngine {
         // thread; reserving 1 slot keeps an empty index searchable (and
         // insertable) from the start.
         index.reserve(1).map_err(map_usearch)?;
+        // ADR 0004 §6/§9: the dedicated search pool, sized by the
+        // validated `search_threads` (defect #9 closed).
+        let search_pool = build_search_pool(usearch_config.search_threads)?;
         let engine = Self {
             index,
             ram_keys: Mutex::new(HashSet::new()),
@@ -247,6 +257,7 @@ impl UsearchEngine {
             usearch_config,
             stale: StaleCache::empty(),
             wal: None,
+            search_pool,
         };
         // The create-time snapshot: an empty `ram.usearch` (carrying the
         // dimension) + the empty `ram.keys` sidecar. `open`'s dim check
@@ -311,6 +322,9 @@ impl UsearchEngine {
             }
             None => (None, StaleCache::empty()),
         };
+        // ADR 0004 §6/§9: the dedicated search pool, sized by the
+        // validated `search_threads` (defect #9 closed).
+        let search_pool = build_search_pool(usearch_config.search_threads)?;
         Ok(Self {
             index,
             ram_keys: Mutex::new(ram_keys),
@@ -320,6 +334,7 @@ impl UsearchEngine {
             usearch_config,
             stale,
             wal,
+            search_pool,
         })
     }
 
