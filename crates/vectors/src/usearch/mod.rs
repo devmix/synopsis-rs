@@ -136,14 +136,14 @@ mod wal;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use rusqlite::Connection;
 use usearch::Index;
 
 use layout::{
     DiskSegment, RAM_INDEX_FILE, cleanup_garbage, layout_exists, load_disk_segments,
-    load_ram_layer, ram_index_path, ram_keys_path, segments_dir, to_str,
+    load_ram_layer, ram_index_path, ram_keys_path, segment_keys_path, segments_dir, to_str,
 };
 use options::{map_sqlite, map_usearch, options};
 use search::{add_rows, build_search_pool};
@@ -200,6 +200,12 @@ pub struct UsearchEngine {
     /// `create_with_config`/`open_with_wal` from the validated thread
     /// count.
     search_pool: rayon::ThreadPool,
+    /// The layout lock (ADR 0004 §5/§7): serializes the structural layout
+    /// operations — the flush (task 3.7) and the background compaction
+    /// (task 3.8) — so two of them never compute the same next segment id
+    /// or replace the segment list at once. A payload-less `Mutex<()>`
+    /// held for the duration of one procedure.
+    layout_lock: Mutex<()>,
 }
 
 impl UsearchEngine {
@@ -258,6 +264,7 @@ impl UsearchEngine {
             stale: StaleCache::empty(),
             wal: None,
             search_pool,
+            layout_lock: Mutex::new(()),
         };
         // The create-time snapshot: an empty `ram.usearch` (carrying the
         // dimension) + the empty `ram.keys` sidecar. `open`'s dim check
@@ -335,6 +342,7 @@ impl UsearchEngine {
             stale,
             wal,
             search_pool,
+            layout_lock: Mutex::new(()),
         })
     }
 
@@ -387,7 +395,9 @@ impl UsearchEngine {
     ///
     /// The mutation lands on the RAM layer only; persist it with
     /// [`Self::build_index`] or [`Self::rebuild`] (module docs: on-disk
-    /// layout).
+    /// layout). When the batch pushes the RAM layer to
+    /// `UsearchConfig::max_segment_vectors`, it is flushed to a new DISK
+    /// segment automatically (ADR 0004 §5, the `flush_ram` procedure).
     pub fn insert_batch(&self, rows: &[(u32, &[f32])]) -> Result<(), VectorsError> {
         if rows.is_empty() {
             return Ok(());
@@ -422,6 +432,13 @@ impl UsearchEngine {
         let mut ram_keys = mutex_guard(&self.ram_keys);
         for &(chunk_id, _) in rows {
             ram_keys.insert(chunk_id);
+        }
+        drop(ram_keys);
+        // ADR 0004 §5: overflow — the RAM layer reached the configured
+        // segment size; flush it to a new DISK segment (monotonic id,
+        // crash-safe ordering in `flush_ram`).
+        if self.index.size() >= self.usearch_config.max_segment_vectors {
+            self.flush_ram()?;
         }
         Ok(())
     }
@@ -519,8 +536,92 @@ impl UsearchEngine {
     /// the index is search-ready the moment a row lands. This call is the
     /// engine's persistence point: it flushes the in-memory state (e.g.
     /// inserts that have not been saved yet) to disk. It never loses data.
+    ///
+    /// Idempotent: a repeated save rewrites the same snapshot pair, and an
+    /// empty RAM layer is a no-op (the create-time or the last flush
+    /// already persisted the empty snapshot — ADR 0004 §1).
     pub fn build_index(&self) -> Result<(), VectorsError> {
+        if self.index.size() == 0 {
+            return Ok(());
+        }
         self.save()
+    }
+
+    /// ADR 0004 §5: flush the RAM layer into a new DISK segment — the
+    /// overflow procedure (trigger: `RAM.size() ≥ max_segment_vectors`
+    /// inside `insert_batch`).
+    ///
+    /// Ordering (ADR §5, verified against the §7/§8 crash matrix): segment
+    /// file → sidecar → WAL delete → RAM reset, under the layout lock
+    /// (serializes with the compaction of task 3.8 and with a concurrent
+    /// flush — two flushes would otherwise compute the same next id). A
+    /// crash between any two steps is recoverable by
+    /// [`Self::open_with_wal`]:
+    ///
+    /// - file without sidecar → the distinct sidecar error (ADR §3: both
+    ///   files of a pair must exist);
+    /// - sidecar without the WAL delete / RAM reset → the old RAM snapshot
+    ///   still holds the flushed keys: the freshest-wins merge and the key
+    ///   union of `count`/`chunk_ids` keep the state consistent;
+    /// - WAL delete without the RAM reset → the same, with the redundant
+    ///   segment-0 rows already gone.
+    ///
+    /// The flushed segment is appended to the DISK segment list (a read-only
+    /// mmap view of the just-written file), so it is immediately available
+    /// to search.
+    fn flush_ram(&self) -> Result<(), VectorsError> {
+        // The layout lock (ADR §5): one structural procedure at a time.
+        let _layout = mutex_guard(&self.layout_lock);
+        // 1. n = max(id) + 1 — monotonic, never renumbered (ADR §2).
+        let next_id = {
+            let segments = disk_segments_read_guard(&self.disk_segments);
+            segments
+                .iter()
+                .map(|segment| segment.id)
+                .max()
+                .map(|id| id.saturating_add(1))
+                .unwrap_or(1)
+        };
+        // 2. save() the RAM index → segments/segment-n.usearch (tmp +
+        //    rename) + the sidecar manifest from ram_keys (ADR §5 step 2).
+        let dir = segments_dir(&self.root);
+        let index_path = dir.join(format!("segment-{next_id}.usearch"));
+        let tmp = dir.join(format!("segment-{next_id}.usearch.tmp"));
+        self.index.save(&to_str(&tmp)?).map_err(map_usearch)?;
+        rename_over(&tmp, &index_path)?;
+        let mut keys: Vec<u32> = mutex_guard(&self.ram_keys).iter().copied().collect();
+        keys.sort_unstable();
+        keys_manifest::write_keys(&segment_keys_path(&self.root, next_id), &keys)?;
+        // The flushed segment is immediately available to search: map the
+        // just-written file read-only (ADR §1: DISK layers are views) and
+        // append it to the list (the write lock excludes a concurrent
+        // rebuild/compaction swap).
+        {
+            let view = Index::restore_view(&to_str(&index_path)?).map_err(map_usearch)?;
+            let segment = DiskSegment {
+                id: next_id,
+                index: Arc::new(view),
+                keys: keys.iter().copied().collect(),
+            };
+            disk_segments_write_guard(&self.disk_segments).push(segment);
+        }
+        // 3. WAL: the segment-0 rows are redundant now — their keys are
+        //    physically absent from the flushed file, and the older-segment
+        //    supersessions live in their own rows (ADR §5 step 3, §3).
+        self.flush_wal_ram_rows()?;
+        // 4. RAM: reset, clear the manifest, persist the empty snapshot
+        //    pair (ADR §5 step 4: the empty snapshot carries the
+        //    dimension).
+        self.index.reset().map_err(map_usearch)?;
+        self.index.reserve(1).map_err(map_usearch)?;
+        mutex_guard(&self.ram_keys).clear();
+        self.save()?;
+        // 5. Bump the stale cache: the segment-0 rows are gone (ADR §5
+        //    step 5).
+        self.stale.apply(|sets| {
+            sets.remove(&0);
+        });
+        Ok(())
     }
 
     /// Full reset (ADR 0004 §4, the ultimate repair of the cascade
@@ -804,5 +905,304 @@ mod test_util {
         let path = segments_dir(root).join(format!("segment-{id}.usearch"));
         index.save(path.to_str().unwrap()).unwrap();
         write_keys(&segment_keys_path(root, id), keys).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod flush_tests {
+    //! Flush-on-overflow and shutdown-save tests (usearch-wal-persistence
+    //! task 3.7, ADR 0004 §5/§7/§8): the overflow trigger, the flush
+    //! ordering crash matrix, the segment-0 WAL cleanup, and the
+    //! idempotent shutdown save point.
+
+    // Test code: unwrap/expect are intentional (the fixtures are deterministic).
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    use rusqlite::Connection;
+
+    use super::UsearchEngine;
+    use super::keys_manifest::read_keys;
+    use super::test_util::{TempDir, create_wal_table, test_config, test_vector, wal_rows};
+    use crate::{UsearchConfig, VectorIndexConfig, VectorsError};
+
+    /// A test config (dim 8) with `max_segment_vectors = max` and the
+    /// given `ef_search`, as the pair [`UsearchEngine::create_with_config`]
+    /// and the `VectorIndexConfig.usearch` section expect. The HNSW graph
+    /// quality is raised (m = 16, efConstruction = 100) so the small
+    /// fixtures get full recall in the k = N "find everything" searches.
+    fn small_config(max: usize, ef_search: usize) -> (VectorIndexConfig, UsearchConfig) {
+        let mut config = test_config();
+        config.m = 16;
+        config.ef_construction = 100;
+        config.ef_search = ef_search;
+        let usearch = UsearchConfig {
+            max_segment_vectors: max,
+            ..UsearchConfig::default()
+        };
+        config.usearch = Some(usearch.clone());
+        (config, usearch)
+    }
+
+    /// Inserts `ids` as axis unit vectors in one batch.
+    fn insert_axis_rows(engine: &UsearchEngine, ids: impl Iterator<Item = u32>) {
+        let rows: Vec<(u32, Vec<f32>)> = ids.map(|id| (id, test_vector(8, id as usize))).collect();
+        let refs: Vec<(u32, &[f32])> = rows
+            .iter()
+            .map(|(id, vector)| (*id, vector.as_slice()))
+            .collect();
+        engine.insert_batch(&refs).unwrap();
+    }
+
+    /// A WAL database (table created) at `dir/knowledge.db`.
+    fn wal_db(dir: &TempDir) -> PathBuf {
+        let path = dir.0.join("knowledge.db");
+        let conn = Connection::open(&path).unwrap();
+        create_wal_table(&conn);
+        drop(conn);
+        path
+    }
+
+    /// ADR 0004 §5: with `max_segment_vectors = 100`, inserting 150 rows
+    /// flushes the first 100 to segment-1 and keeps the last 50 in RAM;
+    /// the search spans both layers and finds every row.
+    #[test]
+    fn overflow_flush_creates_disk_segment_and_search_spans_layers() {
+        let dir = TempDir::new("overflow-flush");
+        let (config, usearch_config) = small_config(100, 512);
+        let engine = UsearchEngine::create_with_config(&dir.0, config, usearch_config).unwrap();
+
+        // Three batches of 50: batch 2 pushes the RAM layer to 100
+        // (>= max_segment_vectors) -> flush; batch 3 lands in the fresh
+        // RAM layer.
+        insert_axis_rows(&engine, 1..=50);
+        insert_axis_rows(&engine, 51..=100);
+        insert_axis_rows(&engine, 101..=150);
+
+        // One DISK segment (segment-1) with the first 100 keys.
+        let segments = dir.0.join("segments");
+        assert!(
+            segments.join("segment-1.usearch").is_file(),
+            "segment-1 index"
+        );
+        assert_eq!(
+            read_keys(&segments.join("segment-1.keys")).unwrap(),
+            (1..=100).collect::<Vec<u32>>(),
+            "the sidecar holds the flushed keys"
+        );
+        // RAM holds the remaining 50.
+        assert_eq!(engine.index.size(), 50, "RAM size after the flush");
+        // count/chunk_ids span RAM + DISK (manifests, no stale rows yet).
+        assert_eq!(engine.count().unwrap(), 150);
+        let mut ids = engine.chunk_ids().unwrap();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=150).collect::<Vec<u32>>());
+
+        // Search spans both layers: every inserted key is found (k = 150;
+        // the high ef_search of the test config gives full recall here).
+        let results = engine.search(&test_vector(8, 1), 150).unwrap();
+        assert_eq!(results.len(), 150, "every inserted key is found");
+        let found: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+        assert_eq!(found, (1..=150).collect::<HashSet<_>>());
+    }
+
+    /// ADR 0004 §5 step 3: the flush deletes every segment-0 WAL row —
+    /// the RAM-layer invalidations become redundant once the RAM layer is
+    /// a DISK segment.
+    #[test]
+    fn flush_deletes_wal_segment0_rows() {
+        let dir = TempDir::new("flush-wal");
+        let (config, usearch_config) = small_config(100, 8);
+        let db_path = wal_db(&dir);
+        UsearchEngine::create_with_config(&dir.0, config.clone(), usearch_config).unwrap();
+        let engine = UsearchEngine::open_with_wal(&dir.0, config, Some(db_path.as_path())).unwrap();
+
+        // Batch 1 (1..=100) flushes to segment-1; batch 2 (101..=150) in RAM.
+        insert_axis_rows(&engine, 1..=100);
+        insert_axis_rows(&engine, 101..=150);
+        // Delete 11 RAM keys: the WAL gets (0, k, DEL) rows.
+        let deleted: Vec<u32> = (101..=111).collect();
+        engine.delete_by_chunk_ids(&deleted).unwrap();
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(
+            wal_rows(&conn),
+            (101..=111).map(|key| (0, key as i64)).collect::<Vec<_>>(),
+            "the deletes journal segment-0 rows"
+        );
+        drop(conn);
+
+        // Batch 3 (151..=211, 61 keys) pushes RAM to 100 -> the second
+        // flush must delete the segment-0 rows.
+        insert_axis_rows(&engine, 151..=211);
+
+        let segments = dir.0.join("segments");
+        assert!(
+            segments.join("segment-1.usearch").is_file(),
+            "segment-1 intact"
+        );
+        assert!(
+            segments.join("segment-2.usearch").is_file(),
+            "segment-2 flushed"
+        );
+        let conn = Connection::open(&db_path).unwrap();
+        assert!(
+            wal_rows(&conn).is_empty(),
+            "the flush must delete the segment-0 rows: {:?}",
+            wal_rows(&conn)
+        );
+        drop(conn);
+
+        // count = segment-1 (100: 1..=100) + segment-2 (100: the 39
+        // surviving RAM keys 112..=150 plus the new 151..=211).
+        assert_eq!(engine.count().unwrap(), 200);
+        let mut ids = engine.chunk_ids().unwrap();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=100).chain(112..=211).collect::<Vec<u32>>());
+    }
+
+    /// ADR 0004 §5/§7 crash matrix: a crash between the segment file and
+    /// the sidecar (or a lost sidecar) leaves an incomplete pair — open
+    /// must fail with the distinct sidecar error (ADR §3), never recover
+    /// silently.
+    #[test]
+    fn flush_crash_missing_sidecar_is_distinct_error() {
+        // Build the flushed state (segment-1 + 50 RAM keys).
+        let dir = TempDir::new("crash-sidecar");
+        let (config, usearch_config) = small_config(100, 8);
+        let engine =
+            UsearchEngine::create_with_config(&dir.0, config.clone(), usearch_config).unwrap();
+        insert_axis_rows(&engine, 1..=150);
+        drop(engine);
+
+        // The sidecar is gone: the pair is incomplete.
+        std::fs::remove_file(dir.0.join("segments").join("segment-1.keys")).unwrap();
+
+        match UsearchEngine::open(&dir.0, config) {
+            Err(VectorsError::NotFound(path)) => {
+                assert!(
+                    path.contains("segment-1.keys"),
+                    "the error must name the missing manifest: {path}"
+                );
+            }
+            Ok(_) => panic!("expected a distinct sidecar error, got an opened engine"),
+            Err(other) => panic!("expected a distinct sidecar error, got: {other:?}"),
+        }
+    }
+
+    /// ADR 0004 §5/§7 crash matrix: a lost segment file (the sidecar
+    /// survives) is recoverable — open drops the segment with its keys
+    /// and the engine stays consistent on the surviving layers.
+    #[test]
+    fn flush_crash_missing_segment_file_recovers() {
+        // With a WAL: the flushed state + a saved RAM snapshot.
+        let dir = TempDir::new("crash-segfile");
+        let (config, usearch_config) = small_config(100, 64);
+        let db_path = wal_db(&dir);
+        UsearchEngine::create_with_config(&dir.0, config.clone(), usearch_config).unwrap();
+        let engine =
+            UsearchEngine::open_with_wal(&dir.0, config.clone(), Some(db_path.as_path())).unwrap();
+        // Three batches of 50: batch 2 pushes RAM to 100 -> segment-1;
+        // batch 3 leaves the 50 RAM keys to be saved.
+        insert_axis_rows(&engine, 1..=50);
+        insert_axis_rows(&engine, 51..=100);
+        insert_axis_rows(&engine, 101..=150);
+        // Persist the RAM snapshot (the shutdown save) so the reopen sees
+        // the 50 RAM keys.
+        engine.build_index().unwrap();
+        drop(engine);
+
+        // The segment file is gone (the sidecar survives).
+        std::fs::remove_file(dir.0.join("segments").join("segment-1.usearch")).unwrap();
+
+        let engine = UsearchEngine::open_with_wal(&dir.0, config, Some(db_path.as_path())).unwrap();
+        assert_eq!(engine.count().unwrap(), 50, "only the RAM layer survives");
+        let mut ids = engine.chunk_ids().unwrap();
+        ids.sort_unstable();
+        assert_eq!(ids, (101..=150).collect::<Vec<u32>>());
+        // The surviving RAM keys are searchable.
+        let results = engine.search(&test_vector(8, 101), 50).unwrap();
+        let found: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            found,
+            (101..=150).collect::<HashSet<_>>(),
+            "every surviving RAM key is found"
+        );
+    }
+
+    /// ADR 0004 §4: the shutdown save point (`build_index`) persists the
+    /// RAM layer; it is idempotent — a repeated save with no new inserts
+    /// is a no-op with no error and no duplicate.
+    #[test]
+    fn shutdown_save_persists_ram_and_is_idempotent() {
+        let dir = TempDir::new("shutdown-save");
+        let (config, usearch_config) = small_config(100, 64);
+        let engine =
+            UsearchEngine::create_with_config(&dir.0, config.clone(), usearch_config).unwrap();
+        insert_axis_rows(&engine, 1..=10);
+        // The shutdown save point (trait method): persist the RAM layer.
+        engine.build_index().unwrap();
+        drop(engine);
+
+        // A fresh engine on the same layout sees all 10 rows.
+        let reopened = UsearchEngine::open(&dir.0, config.clone()).unwrap();
+        assert_eq!(reopened.count().unwrap(), 10);
+        let mut ids = reopened.chunk_ids().unwrap();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=10).collect::<Vec<u32>>());
+        let results = reopened.search(&test_vector(8, 1), 10).unwrap();
+        let found: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            found,
+            (1..=10).collect::<HashSet<_>>(),
+            "search finds every saved row"
+        );
+
+        // Save again with no new inserts: no error, no duplicate.
+        reopened.build_index().unwrap();
+        drop(reopened);
+        let again = UsearchEngine::open(&dir.0, config).unwrap();
+        assert_eq!(
+            again.count().unwrap(),
+            10,
+            "no duplicate after the second save"
+        );
+        let mut ids = again.chunk_ids().unwrap();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=10).collect::<Vec<u32>>());
+    }
+
+    /// ADR 0004 §5/§6: `count`/`chunk_ids` across RAM + DISK after a
+    /// flush — manifests minus the per-segment stale sets (a superseded
+    /// DISK key and a deleted RAM key both drop out exactly once).
+    #[test]
+    fn count_and_chunk_ids_across_flush() {
+        let dir = TempDir::new("count-flush");
+        let (config, usearch_config) = small_config(100, 8);
+        let db_path = wal_db(&dir);
+        UsearchEngine::create_with_config(&dir.0, config.clone(), usearch_config).unwrap();
+        let engine = UsearchEngine::open_with_wal(&dir.0, config, Some(db_path.as_path())).unwrap();
+
+        insert_axis_rows(&engine, 1..=100); // flushes to segment-1
+        insert_axis_rows(&engine, 101..=150); // RAM
+        // Supersede a DISK key (re-insert 50) and delete a RAM key (150).
+        engine.insert(50, &test_vector(8, 5)).unwrap();
+        engine.delete_by_chunk_ids(&[150]).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(
+            wal_rows(&conn),
+            vec![(0, 150), (1, 50)],
+            "the supersession + delete rows"
+        );
+        drop(conn);
+
+        // count = |keys(1) − stale[1]| + |ram − stale[0]|
+        //       = (100 − 1) + (51 − 1) = 149.
+        assert_eq!(engine.count().unwrap(), 149);
+        let mut ids = engine.chunk_ids().unwrap();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=149).collect::<Vec<u32>>());
     }
 }

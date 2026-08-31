@@ -208,6 +208,23 @@ impl UsearchEngine {
         Ok(())
     }
 
+    /// The ADR 0004 §5 flush WAL step (procedure step 3): removes every
+    /// segment-0 row in one transaction. After the RAM layer is persisted
+    /// as a new DISK segment, the RAM-layer invalidations are redundant:
+    /// their keys are physically absent from the flushed file, and the
+    /// older-segment supersessions live in their own rows (ADR §3). A
+    /// no-op when no WAL connection is attached.
+    pub(super) fn flush_wal_ram_rows(&self) -> Result<(), VectorsError> {
+        if self.wal.is_none() {
+            return Ok(());
+        }
+        self.wal_transaction(|tx| {
+            tx.execute("DELETE FROM usearch_vectors_log WHERE segment_id = 0", [])
+                .map_err(map_sqlite)?;
+            Ok(())
+        })
+    }
+
     /// Compaction trigger check (ADR 0004 §7) — the background repack
     /// (monotonic ids, atomic directory swap) lands in task 3.8. The
     /// superseded 2.2 implementation is removed with the old write path:
