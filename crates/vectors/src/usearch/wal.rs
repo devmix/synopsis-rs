@@ -53,6 +53,16 @@ impl StaleCache {
         }
     }
 
+    /// Replaces the sets wholesale and bumps the version (used by
+    /// [`UsearchEngine::with_wal_db`], which attaches a WAL to an
+    /// existing engine, and by the compaction thread, which clears the
+    /// stale sets of the replaced segments after the WAL cleanup).
+    pub(super) fn replace(&self, sets: HashMap<u32, HashSet<u32>>) {
+        let mut current = cache_guard(&self.sets);
+        *current = sets;
+        self.version.fetch_add(1, Ordering::Release);
+    }
+
     /// The current version (0 = never written; bumped per write
     /// transaction).
     ///
@@ -87,10 +97,12 @@ impl UsearchEngine {
         &self,
         apply: impl FnOnce(&Transaction) -> Result<(), VectorsError>,
     ) -> Result<(), VectorsError> {
-        let Some(wal) = &self.wal else {
+        // `transaction` needs `&mut Connection`: the guard is interior
+        // mutability, so the mutable deref is explicit.
+        let mut wal = mutex_guard(&self.wal);
+        let Some(conn) = wal.as_deref_mut() else {
             return Ok(());
         };
-        let mut conn = wal_guard(wal);
         let tx = conn.transaction().map_err(map_sqlite)?;
         apply(&tx)?;
         tx.commit().map_err(map_sqlite)
@@ -108,7 +120,7 @@ impl UsearchEngine {
     pub(super) fn insert_supersession(&self, keys: &[u32]) -> Result<(), VectorsError> {
         // No WAL attached (RAM-only engine): nothing to journal, and the
         // stale cache must not be bumped (there is no durable log behind it).
-        if self.wal.is_none() {
+        if mutex_guard(&self.wal).is_none() {
             return Ok(());
         }
         // The DISK layers are immutable for this operation (flush/
@@ -152,7 +164,7 @@ impl UsearchEngine {
     pub(super) fn delete_invalidations(&self, keys: &[u32]) -> Result<(), VectorsError> {
         // No WAL attached (RAM-only engine): nothing to journal, and the
         // stale cache must not be bumped (there is no durable log behind it).
-        if self.wal.is_none() {
+        if mutex_guard(&self.wal).is_none() {
             return Ok(());
         }
         let mut pairs: Vec<(u32, u32)> = Vec::new();
@@ -199,8 +211,8 @@ impl UsearchEngine {
     /// the cache reset always runs (the cache is empty without a WAL, but
     /// the version bump keeps readers consistent with the cleared state).
     pub(super) fn clear_wal(&self) -> Result<(), VectorsError> {
-        if let Some(wal) = &self.wal {
-            let conn = wal_guard(wal);
+        let wal = mutex_guard(&self.wal);
+        if let Some(conn) = wal.as_deref() {
             conn.execute("DELETE FROM usearch_vectors_log", [])
                 .map_err(map_sqlite)?;
         }
@@ -215,7 +227,7 @@ impl UsearchEngine {
     /// older-segment supersessions live in their own rows (ADR §3). A
     /// no-op when no WAL connection is attached.
     pub(super) fn flush_wal_ram_rows(&self) -> Result<(), VectorsError> {
-        if self.wal.is_none() {
+        if mutex_guard(&self.wal).is_none() {
             return Ok(());
         }
         self.wal_transaction(|tx| {
@@ -223,17 +235,6 @@ impl UsearchEngine {
                 .map_err(map_sqlite)?;
             Ok(())
         })
-    }
-
-    /// Compaction trigger check (ADR 0004 §7) — the background repack
-    /// (monotonic ids, atomic directory swap) lands in task 3.8. The
-    /// superseded 2.2 implementation is removed with the old write path:
-    /// its ADD-based live-key enumeration is incompatible with the
-    /// DEL-only WAL (ADR audit #7 — it would wipe all data), so this is a
-    /// no-op until 3.8.
-    pub fn maybe_compact(&mut self) -> Result<(), VectorsError> {
-        let _ = self.usearch_config.compaction_stale_threshold;
-        Ok(())
     }
 }
 
@@ -304,17 +305,6 @@ pub(super) fn load_stale_sets(
         stale.entry(segment_id).or_default().insert(chunk_id);
     }
     Ok(stale)
-}
-
-/// Locks the WAL connection, recovering the guard from a poisoned mutex:
-/// a panic in an earlier WAL operation does not make the connection
-/// unusable (SQLite rolls a panicked statement back itself, so the
-/// database state stays consistent).
-fn wal_guard(wal: &Mutex<Box<Connection>>) -> MutexGuard<'_, Box<Connection>> {
-    match wal.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
 }
 
 /// Locks the stale-cache sets, recovering the guard from a poisoned mutex
@@ -515,8 +505,7 @@ mod wal_tests {
         UsearchEngine::create(&dir.0, config.clone()).unwrap();
         write_segment(&dir.0, 1, &config, &[7, 8]);
         let db_path = wal_db(&dir);
-        let mut engine =
-            UsearchEngine::open_with_wal(&dir.0, config, Some(db_path.as_path())).unwrap();
+        let engine = UsearchEngine::open_with_wal(&dir.0, config, Some(db_path.as_path())).unwrap();
 
         engine.insert(7, &test_vector(8, 1)).unwrap(); // (1, 7, DEL)
         engine.delete_by_chunk_ids(&[8]).unwrap(); // (1, 8, DEL)
@@ -527,7 +516,7 @@ mod wal_tests {
         );
 
         // Detach the WAL connection: the steady-state reads must not need it.
-        engine.wal = None;
+        *mutex_guard(&engine.wal) = None;
         assert_eq!(engine.count().unwrap(), 1, "count from the cache, no SQL");
         assert_eq!(engine.chunk_ids().unwrap(), vec![7]);
     }

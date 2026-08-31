@@ -4,7 +4,7 @@
 
 ### Requirement: Жизненный цикл индекса
 
-Крейт `vectors` обеспечивает создание, открытие, персистентность и пересоздание ANN-индекса в каталоге данных. Индекс создаётся под фиксированную размерность (по умолчанию 1024 для bge-m3); открытие несуществующего индекса — различимая ошибка; пересоздание атомарно заменяет содержимое. Повторное открытие существующего индекса не перестраивает его. UsearchEngine поддерживает WAL (Write-Ahead Log) для durability вставок между rebuild.
+Крейт `vectors` обеспечивает создание, открытие, персистентность и пересоздание ANN-индекса в каталоге данных. Индекс создаётся под фиксированную размерность (по умолчанию 1024 для bge-m3); открытие несуществующего индекса — различимая ошибка; пересоздание атомарно заменяет содержимое. Повторное открытие существующего индекса не перестраивает его. UsearchEngine поддерживает двухслойную архитектуру RAM/DISK с per-segment WAL в SQLite для durability вставок между rebuild (ADR 0004).
 
 #### Scenario: Создание нового индекса
 - **WHEN** создаётся индекс в пустом каталоге данных
@@ -12,7 +12,7 @@
 
 #### Scenario: Открытие существующего индекса
 - **WHEN** открывается ранее сохранённый индекс
-- **THEN** хранилище открывается без перестроения, все ранее вставленные векторы доступны поиску
+- **THEN** RAM-слой восстанавливается из снапшота, DISK-слои — как read-only mmap-виды, все вставленные векторы доступны поиску
 
 #### Scenario: Открытие несуществующего индекса
 - **WHEN** открывается индекс, отсутствующий в каталоге данных
@@ -20,23 +20,23 @@
 
 #### Scenario: Пересоздание индекса
 - **WHEN** выполняется пересоздание индекса
-- **THEN** прежнее содержимое полностью заменяется новым набором векторов без накопления мусора
+- **THEN** WAL очищается, файлы DISK-слоёв удаляются, RAM заменяется новым набором векторов — без накопления мусора
 
-#### Scenario: WAL flush при превышении порога
-- **WHEN** размер RAM-индекса превышает `wal.ram_threshold_mb` (default 512 MB)
-- **THEN** RAM-индекс сохраняется на DISK как read-only mmap слой, RAM очищается
+#### Scenario: Flush при переполнении RAM
+- **WHEN** размер RAM-индекса достигает `vectors.usearch.max_segment_vectors`
+- **THEN** RAM-слой сохраняется как новый DISK-сегмент (read-only mmap), WAL сегмента RAM очищается, RAM сбрасывается в пустой
 
-#### Scenario: Поиск с WAL фильтрацией
+#### Scenario: Поиск с WAL-фильтрацией
 - **WHEN** выполняется поиск по индексу с DISK-слоями
-- **THEN** результаты фильтруются по WAL каждого слоя (пропуск удалённых/обновлённых ID)
+- **THEN** результаты каждого слоя фильтруются по stale-множеству (DEL-записи WAL: удалённые и superseded ключи); дубликаты между слоями разрешаются в пользу свежего слоя
 
 #### Scenario: Компактификация
-- **WHEN** количество DISK-слоёв превышает `wal.disk_count_threshold` (default 5)
-- **THEN** последние два слоя мёрджатся в один, старые удаляются
+- **WHEN** доля устаревших векторов в DISK-слоях превышает `vectors.usearch.compaction_stale_threshold`
+- **THEN** фоновая компакция упаковывает live-векторы в новые сегменты (монотонные id), каталог сегментов меняется атомарно, WAL очищается после смены
 
 #### Scenario: Persistence при restart
 - **WHEN** индекс перезапускается после краша
-- **THEN** WAL replay восстанавливает consistency между RAM и DISK слоями
+- **THEN** WAL-строки несуществующих сегментов удаляются (self-healing), мусорные файлы каталога очищаются; вставки RAM с последнего flush/shutdown-save теряются (документированное окно, repair — consumer-реконсиляция или `rebuild`)
 
 ### Requirement: Производственные гейты
 
@@ -52,7 +52,7 @@
 
 ### Requirement: Конфигурация индекса
 
-Параметры индекса конфигурируются: структура конфигурации в крейте `vectors` с дефолтами ADR 0003 (M=16, efConstruction=100, num_partitions=256, nprobes=32, efSearch=200, L2, размерность 1024); опциональная секция `vectors:` в config preset (аддитивное расширение config-format, решение человека 2026-08-21) прокидывает переопределения; пресет без секции даёт дефолты. Секция `vectors.wal:` содержит параметры WAL persistence.
+Параметры индекса конфигурируются: структура конфигурации в крейте `vectors` с дефолтами ADR 0003 (M=16, efConstruction=100, num_partitions=256, nprobes=32, efSearch=200, L2, размерность 1024); опциональная секция `vectors:` в config preset (аддитивное расширение config-format, решение человека 2026-08-21) прокидывает переопределения; пресет без секции даёт дефолты. Секция `vectors.usearch:` содержит параметры двухслойной persistence UsearchEngine (ADR 0004): `max_segment_vectors` (default 1000000), `compaction_stale_threshold` (default 30), `search_threads` (default 4).
 
 #### Scenario: Дефолты без секции
 - **WHEN** пресет конфигурации не содержит секцию `vectors`
@@ -62,16 +62,16 @@
 - **WHEN** секция `vectors` задаёт efSearch/nprobes
 - **THEN** поиск использует переопределённые значения без перестроения индекса
 
-#### Scenario: WAL config defaults
-- **WHEN** секция `vectors.wal` отсутствует в конфиге
-- **THEN** применяются дефолты: ram_threshold_mb=512, disk_count_threshold=5, wal_size_threshold_pct=50
+#### Scenario: Usearch config defaults
+- **WHEN** секция `vectors.usearch` отсутствует в конфиге
+- **THEN** применяются дефолты: max_segment_vectors=1000000, compaction_stale_threshold=30, search_threads=4
 
-#### Scenario: WAL config override
-- **WHEN** секция `vectors.wal` задаёт `ram_threshold_mb: 1024`
-- **THEN** используется значение 1024 MB для порога сброса
+#### Scenario: Usearch config override
+- **WHEN** секция `vectors.usearch` задаёт `max_segment_vectors: 50000`
+- **THEN** flush RAM выполняется при достижении 50000 векторов
 
-#### Scenario: Invalid WAL config
-- **WHEN** `wal.ram_threshold_mb: 0` или `wal.wal_size_threshold_pct: 101`
+#### Scenario: Invalid usearch config
+- **WHEN** `vectors.usearch.max_segment_vectors: 0` или `compaction_stale_threshold: 101` или `search_threads: 0`
 - **THEN** возвращается ошибка валидации
 
 ### Requirement: Выбор ANN-движка (lance | usearch)

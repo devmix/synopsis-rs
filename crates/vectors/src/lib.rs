@@ -321,6 +321,19 @@ pub trait VectorIndex: Send + Sync {
     /// empties the index. The ultimate repair of the cascade protocol
     /// (design D3).
     fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError>;
+
+    /// Best-effort background compaction (usearch-wal-persistence task 3.8,
+    /// ADR 0004 §7): merges the stale DISK segments into fresh ones when
+    /// the stale-vector fraction crosses the engine's configured threshold.
+    ///
+    /// Additive default no-op: every existing implementation (the Lance
+    /// engine) keeps compiling and behaves unchanged; the usearch engine
+    /// overrides it with the ADR 0004 §7 background repack. The call
+    /// returns promptly — the repack runs on a background thread, never
+    /// blocking the query path.
+    fn maybe_compact(&self) -> Result<(), VectorsError> {
+        Ok(())
+    }
 }
 
 /// The LanceDB engine name (feature `engine-lance`).
@@ -398,6 +411,10 @@ impl VectorIndex for VectorEngine {
 
     fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError> {
         self.inner().rebuild(rows)
+    }
+
+    fn maybe_compact(&self) -> Result<(), VectorsError> {
+        self.inner().maybe_compact()
     }
 }
 

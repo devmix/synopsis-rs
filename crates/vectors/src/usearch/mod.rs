@@ -128,6 +128,7 @@
 //! carry at least one worker thread from the file header, so `open` needs
 //! no reserve.
 
+mod compaction;
 mod keys_manifest;
 mod layout;
 mod options;
@@ -136,6 +137,7 @@ mod wal;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use rusqlite::Connection;
@@ -171,8 +173,10 @@ pub struct UsearchEngine {
     ram_keys: Mutex<HashSet<u32>>,
     /// DISK segments (segment id 1..N): read-only mmap views (ADR 0004
     /// §1). `RwLock` because rebuild/compaction replace the list while
-    /// searches clone the current `Arc`s (ADR 0004 §6).
-    disk_segments: RwLock<Vec<DiskSegment>>,
+    /// searches clone the current `Arc`s (ADR 0004 §6); `Arc` because the
+    /// background compaction thread (task 3.8) swaps the list after
+    /// cloning its state.
+    disk_segments: Arc<RwLock<Vec<DiskSegment>>>,
     config: VectorIndexConfig,
     /// The engine root directory (ADR 0004 §1 layout).
     root: PathBuf,
@@ -182,8 +186,10 @@ pub struct UsearchEngine {
     /// mirror of the durable WAL — `segment_id → deleted/superseded chunk
     /// ids`, loaded with one SQL select on open and bumped by every write
     /// transaction. Steady-state reads (`search`/`count`/`chunk_ids`) take
-    /// a snapshot of the sets: zero SQL on the query path.
-    stale: StaleCache,
+    /// a snapshot of the sets: zero SQL on the query path. `Arc` because
+    /// the background compaction thread (task 3.8) bumps it after the
+    /// post-swap WAL cleanup.
+    stale: Arc<StaleCache>,
     /// The SQLite connection holding the `usearch_vectors_log` WAL table
     /// (ADR 0004 §3); `None` (the default) disables the WAL — every WAL
     /// call is a no-op. `Mutex` because `rusqlite::Connection` is `Send`
@@ -191,8 +197,10 @@ pub struct UsearchEngine {
     /// (`VectorIndex: Send + Sync`). The `Connection` is heap-allocated
     /// (`Box`) so the optional WAL stays out of the inline struct size —
     /// without it the `VectorEngine` enum (Lance vs Usearch variants) would
-    /// trip `clippy::large_enum_variant`.
-    wal: Option<Mutex<Box<Connection>>>,
+    /// trip `clippy::large_enum_variant`. `Arc<Mutex<Option<..>>>` because
+    /// the background compaction thread (task 3.8) cleans the DISK rows
+    /// after the directory swap.
+    wal: Arc<Mutex<Option<Box<Connection>>>>,
     /// The dedicated rayon search pool sized by
     /// `UsearchConfig::search_threads` (ADR 0004 §6/§9: `search` runs its
     /// per-layer HNSW queries here, off the global pool — the superseded
@@ -204,8 +212,14 @@ pub struct UsearchEngine {
     /// operations — the flush (task 3.7) and the background compaction
     /// (task 3.8) — so two of them never compute the same next segment id
     /// or replace the segment list at once. A payload-less `Mutex<()>`
-    /// held for the duration of one procedure.
-    layout_lock: Mutex<()>,
+    /// held for the duration of one procedure. `Arc` because the
+    /// compaction thread takes it.
+    layout_lock: Arc<Mutex<()>>,
+    /// Single-flight flag for the background compaction (task 3.8, ADR
+    /// 0004 §7): `true` while the repack thread is running; a concurrent
+    /// `maybe_compact` is a no-op. The thread clears it on completion
+    /// (and on panic, so a failed repack never wedges the trigger).
+    compacting: Arc<AtomicBool>,
 }
 
 impl UsearchEngine {
@@ -257,14 +271,15 @@ impl UsearchEngine {
         let engine = Self {
             index,
             ram_keys: Mutex::new(HashSet::new()),
-            disk_segments: RwLock::new(Vec::new()),
+            disk_segments: Arc::new(RwLock::new(Vec::new())),
             config,
             root,
             usearch_config,
-            stale: StaleCache::empty(),
-            wal: None,
+            stale: Arc::new(StaleCache::empty()),
+            wal: Arc::new(Mutex::new(None)),
             search_pool,
-            layout_lock: Mutex::new(()),
+            layout_lock: Arc::new(Mutex::new(())),
+            compacting: Arc::new(AtomicBool::new(false)),
         };
         // The create-time snapshot: an empty `ram.usearch` (carrying the
         // dimension) + the empty `ram.keys` sidecar. `open`'s dim check
@@ -325,7 +340,7 @@ impl UsearchEngine {
                 let disk_ids: Vec<u32> = disk_segments.iter().map(|segment| segment.id).collect();
                 reconcile_wal(&conn, &disk_ids)?;
                 let stale = load_stale_sets(&conn)?;
-                (Some(Mutex::new(Box::new(conn))), StaleCache::loaded(stale))
+                (Some(Box::new(conn)), StaleCache::loaded(stale))
             }
             None => (None, StaleCache::empty()),
         };
@@ -335,14 +350,15 @@ impl UsearchEngine {
         Ok(Self {
             index,
             ram_keys: Mutex::new(ram_keys),
-            disk_segments: RwLock::new(disk_segments),
+            disk_segments: Arc::new(RwLock::new(disk_segments)),
             config,
             root,
             usearch_config,
-            stale,
-            wal,
+            stale: Arc::new(stale),
+            wal: Arc::new(Mutex::new(wal)),
             search_pool,
-            layout_lock: Mutex::new(()),
+            layout_lock: Arc::new(Mutex::new(())),
+            compacting: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -360,10 +376,10 @@ impl UsearchEngine {
     /// clears the table — each before the RAM index is mutated (WAL-first,
     /// module docs). Without it (the default from
     /// [`Self::create`]/[`Self::open`]), all WAL calls are no-ops.
-    pub fn with_wal_db(mut self, conn: Connection) -> Result<Self, VectorsError> {
+    pub fn with_wal_db(self, conn: Connection) -> Result<Self, VectorsError> {
         let stale = load_stale_sets(&conn)?;
-        self.stale = StaleCache::loaded(stale);
-        self.wal = Some(Mutex::new(Box::new(conn)));
+        self.stale.replace(stale);
+        *mutex_guard(&self.wal) = Some(Box::new(conn));
         Ok(self)
     }
 
@@ -751,6 +767,10 @@ impl VectorIndex for UsearchEngine {
 
     fn rebuild(&self, rows: &[(u32, Vec<f32>)]) -> Result<(), VectorsError> {
         UsearchEngine::rebuild(self, rows)
+    }
+
+    fn maybe_compact(&self) -> Result<(), VectorsError> {
+        UsearchEngine::maybe_compact(self)
     }
 }
 

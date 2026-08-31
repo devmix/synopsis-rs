@@ -45,6 +45,18 @@ pub(super) fn segments_dir(root: &Path) -> PathBuf {
     root.join(SEGMENTS_DIR)
 }
 
+/// The compaction scratch directory (ADR 0004 §7): the new segments are
+/// assembled here before the atomic directory swap.
+pub(super) fn segments_tmp_dir(root: &Path) -> PathBuf {
+    root.join(SEGMENTS_TMP_DIR)
+}
+
+/// The previous segment directory (ADR 0004 §7): `segments/` is renamed
+/// here during the compaction swap and removed once the swap is complete.
+pub(super) fn segments_old_dir(root: &Path) -> PathBuf {
+    root.join(SEGMENTS_OLD_DIR)
+}
+
 /// The DISK segment sidecar manifest path for segment id `id`.
 pub(super) fn segment_keys_path(root: &Path, id: u32) -> PathBuf {
     segments_dir(root).join(format!("{SEGMENT_FILE_PREFIX}{id}.keys"))
