@@ -9,7 +9,7 @@
 //! - [`engine::LanceEngine`] (feature `engine-lance`) runs the async LanceDB API on a
 //!   dedicated tokio runtime (design D2) behind sync methods: call it only from sync
 //!   contexts or `spawn_blocking` workers.
-//! - [`usearch_engine::UsearchEngine`] (feature `engine-usearch`) wraps the USearch 2.26
+//! - [`usearch::UsearchEngine`] (feature `engine-usearch`) wraps the USearch 2.26
 //!   C++11 HNSW core (cxx FFI, `L2sq` metric with configurable scalar quantization,
 //!   default `BF16`) with sync, thread-safe methods; `open` loads the index file
 //!   for read-write.
@@ -47,13 +47,13 @@ pub mod engine;
 pub mod error;
 pub mod synx;
 #[cfg(feature = "engine-usearch")]
-pub mod usearch_engine;
+pub mod usearch;
 
 #[cfg(feature = "engine-lance")]
 pub use engine::LanceEngine;
 pub use error::VectorsError;
 #[cfg(feature = "engine-usearch")]
-pub use usearch_engine::UsearchEngine;
+pub use usearch::UsearchEngine;
 
 use std::path::Path;
 use std::sync::Arc;
