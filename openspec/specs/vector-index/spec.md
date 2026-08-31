@@ -44,7 +44,7 @@
 
 ### Requirement: Вставка и kNN-поиск
 
-Крейт `vectors` принимает готовые пары `(chunk_id, вектор)` — крейт НЕ вызывает модель эмбеддингов (запросный путь и путь вставки не загружают модель). Вставка стриминговая (батчами). Поиск возвращает top-k ближайших `(chunk_id, distance)` по метрике L2; ранжирование — по distance. Параметры поиска (efSearch, nprobes) — runtime-настройки с дефолтами из ADR 0003 (efSearch=200, nprobes=32).
+Крейт `vectors` принимает готовые пары `(chunk_id, вектор)` — крейт НЕ вызывает модель эмбеддингов (запросный путь и путь вставки не загружают модель). Вставка стриминговая (батчами). Поиск возвращает top-k ближайших `(chunk_id, distance)` по метрике L2; ранжирование — по distance. Параметр поиска efSearch — runtime-настройка с дефолтом из ADR 0003 (efSearch=200); IVF-only-поле nprobes удалено вместе с lance-движком (`post-migration-lance-removal`, 2026-08-31).
 
 #### Scenario: Вставка и поиск
 - **WHEN** вставлен набор векторов и выполняется поиск по запросному вектору
@@ -76,14 +76,14 @@
 
 ### Requirement: Производственные гейты
 
-Гейты ADR 0003 (p95 латентности поиска < 10 ms, recall@10 ≥ 0.95 против exact-L2 brute force, RSS-delta ≤ ~2 GB) подтверждаются машинно на корпусах до класса N≈250K × 1024-dim включительно (спайк s3b_lance и интеграционные гейты CI-масштаба). На экстраполяционной точке N=1M измеренное отклонение принято человеком как задокументированный worst-case (решение 2026-08-21, вариант 1): p95 32–55 ms, recall@10 0.911–0.933 при дефолтных параметрах; recall при этом лимитируется efSearch (луч HNSW внутри партиции), а не IVF-покрытием. efSearch/nprobes остаются runtime-настройками для баланса «точность/латентность» без перестроения индекса. Индекс квантованный и disk-backed (u8 scalar quantization внутри IvfHnswSq; исходные f32 — в таблице), параметры: M=16, efConstruction=100, num_partitions=256, метрика L2.
+The ADR 0003 machine gates (search p95 latency < 10 ms, recall@10 ≥ 0.95 against exact-L2 brute force, RSS-delta ≤ ~2 GB) SHALL be confirmed by machine on corpora up to the N≈250K × 1024-dim class (s3b spike and CI-scale integration gates). At the extrapolation point N=1M the measured deviation was accepted by the human as a documented worst-case (decision 2026-08-21, option 1): p95 32–55 ms, recall@10 0.911–0.933 at default parameters; recall is limited by efSearch (the HNSW beam), not by partition coverage. efSearch remains a runtime setting for the accuracy/latency balance without index rebuild. The index is quantized and disk-backed (usearch HNSW, scalar quantization default bf16), parameters: M=16, efConstruction=100, metric L2sq.
 
 #### Scenario: Гейт recall на синтетике
-- **WHEN** на seeded синтетическом корпусе CI-масштаба выполняется пакет запросов с известным brute-force ground truth
+- **WHEN** a batch of queries with known brute-force ground truth is run on a seeded CI-scale synthetic corpus
 - **THEN** recall@10 ≥ 0.95
 
 #### Scenario: Гейт латентности
-- **WHEN** измеряется латентность поиска на прогретом индексе в release-профиле
+- **WHEN** search latency is measured on a warmed index in the release profile
 - **THEN** p95 < 10 ms
 
 ### Requirement: Формат фикстур SYNX (vectors.bin)
@@ -100,51 +100,44 @@
 
 ### Requirement: Конфигурация индекса
 
-Параметры индекса конфигурируются: структура конфигурации в крейте `vectors` с дефолтами ADR 0003 (M=16, efConstruction=100, num_partitions=256, nprobes=32, efSearch=200, L2, размерность 1024); опциональная секция `vectors:` в config preset (аддитивное расширение config-format, решение человека 2026-08-21) прокидывает переопределения; пресет без секции даёт дефолты. Секция `vectors.usearch:` содержит параметры двухслойной persistence UsearchEngine (ADR 0004): `max_segment_vectors` (default 1000000), `compaction_stale_threshold` (default 30), `search_threads` (default 4).
+Index parameters SHALL be configurable: a config struct in the `vectors` crate with defaults (M=16, efConstruction=100, efSearch=200, scalar quantization default bf16, metric L2sq, dimension 1024); the optional `vectors:` section in the config preset (additive config-format extension, decision 2026-08-21) passes overrides; a preset without the section gets the defaults. The IVF-only fields `num_partitions`/`nprobes` were removed with the lance engine (they do not apply to pure HNSW). The `vectors.usearch:` section holds the two-layer persistence parameters of UsearchEngine (ADR 0004): `max_segment_vectors` (default 1000000), `compaction_stale_threshold` (default 30), `search_threads` (default 4).
 
 #### Scenario: Дефолты без секции
-- **WHEN** пресет конфигурации не содержит секцию `vectors`
-- **THEN** используются дефолты ADR 0003
+- **WHEN** the config preset has no `vectors` section
+- **THEN** the defaults above apply
 
 #### Scenario: Переопределение runtime-параметров
-- **WHEN** секция `vectors` задаёт efSearch/nprobes
-- **THEN** поиск использует переопределённые значения без перестроения индекса
+- **WHEN** the `vectors` section sets efSearch
+- **THEN** search uses the overridden value without rebuilding the index
 
 #### Scenario: Usearch config defaults
-- **WHEN** секция `vectors.usearch` отсутствует в конфиге
-- **THEN** применяются дефолты: max_segment_vectors=1000000, compaction_stale_threshold=30, search_threads=4
+- **WHEN** the `vectors.usearch` section is absent from the config
+- **THEN** defaults apply: max_segment_vectors=1000000, compaction_stale_threshold=30, search_threads=4
 
 #### Scenario: Usearch config override
-- **WHEN** секция `vectors.usearch` задаёт `max_segment_vectors: 50000`
-- **THEN** flush RAM выполняется при достижении 50000 векторов
+- **WHEN** the `vectors.usearch` section sets `max_segment_vectors: 50000`
+- **THEN** the RAM flush happens at 50000 vectors
 
 #### Scenario: Invalid usearch config
-- **WHEN** `vectors.usearch.max_segment_vectors: 0` или `compaction_stale_threshold: 101` или `search_threads: 0`
-- **THEN** возвращается ошибка валидации
+- **WHEN** `vectors.usearch.max_segment_vectors: 0` or `compaction_stale_threshold: 101` or `search_threads: 0`
+- **THEN** a validation error is returned
 
-### Requirement: Выбор ANN-движка (lance | usearch)
+### Requirement: ANN engine (usearch only)
 
-Крейт `vectors` поддерживает два ANN-движка за одним трейтом `VectorIndex` с идентичной семантикой:
-`LanceEngine` (IvfHnswSq, ADR 0003) и `UsearchEngine` (usearch v2.26.1, C++/cxx FFI, bf16-квантование,
-disk-backed). Выбор — гибридный: compile-time через Cargo-фичи `engine-lance` и `engine-usearch`
-(default), и runtime через поле `vectors.engine` (`"lance"` | `"usearch"`) в конфиге.
-`open_vectors_engine()` диспетчеризует через `enum VectorEngine` и возвращает `Arc<dyn VectorIndex>`
-без изменения сигнатуры, поэтому `search`/`ingestion`/`mcp` не зависят от конкретного движка.
-Если обе фичи включены, а `vectors.engine` не задан — используется `usearch` (default);
-невалидное значение — явная ошибка.
+The `vectors` crate SHALL provide exactly one ANN engine: `UsearchEngine` (usearch 2.x, C++/cxx FFI, disk-backed HNSW, scalar quantization default bf16, L2sq metric, two-layer RAM/DISK persistence with per-segment WAL per ADR 0004). The engine SHALL be compiled unconditionally — there are no Cargo engine features. The optional `vectors.engine` config field selects the engine at runtime: absent or `"usearch"` instantiates `UsearchEngine`; `"lance"` SHALL return an explicit error stating that the lance engine was removed; any other value SHALL return an explicit configuration error. The factory keeps its public signature (`create_vector_engine(engine_name, path, config, wal_db) -> Arc<dyn VectorIndex>`), so `search`/`ingestion`/`mcp` remain engine-agnostic. The index directory stays engine-tagged (`<vectors_path>/usearch`) so existing dataset data is unaffected.
 
-#### Scenario: Дефолт без поля engine
-- **WHEN** пресет не задаёт `vectors.engine`, а включены обе фичи
-- **THEN** инстанцируется `UsearchEngine`
+#### Scenario: Default without engine field
+- **WHEN** the preset does not set `vectors.engine`
+- **THEN** a `UsearchEngine` is instantiated
 
-#### Scenario: Явный выбор usearch
-- **WHEN** `vectors.engine = "usearch"` и включена фича `engine-usearch`
-- **THEN** инстанцируется `UsearchEngine` с bf16-квантованием и L2sq-метрикой
+#### Scenario: Explicit usearch selection
+- **WHEN** `vectors.engine = "usearch"`
+- **THEN** a `UsearchEngine` is instantiated with bf16 quantization and the L2sq metric
 
-#### Scenario: Невалидное значение
+#### Scenario: Removed engine value
+- **WHEN** `vectors.engine = "lance"`
+- **THEN** the factory (and config validation) returns an explicit error stating that the lance engine was removed and that usearch is the only engine
+
+#### Scenario: Invalid value
 - **WHEN** `vectors.engine = "foo"`
-- **THEN** `open_vectors_engine` возвращает явную ошибку конфигурации
-
-#### Scenario: Фича не включена
-- **WHEN** `vectors.engine = "usearch"`, но фича `engine-usearch` выключена
-- **THEN** `open_vectors_engine` возвращает ошибку «движок недоступен в данной сборке»
+- **THEN** the factory (and config validation) returns an explicit configuration error

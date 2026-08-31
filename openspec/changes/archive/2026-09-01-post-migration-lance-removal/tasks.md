@@ -8,7 +8,7 @@ the Go oracle's vec0 index was never ported — no parity surface).
 - [x] 1.2 Remove engine-feature plumbing from `cli` and the workspace root
 - [x] 1.3 Remove the A/B-benchmark transitional code from `parity-harness`
 - [x] 1.4 Config validation: `vectors.engine` rejects `"lance"`
-- [ ] 1.5 Docs, specs context, and CI sweep
+- [x] 1.5 Docs, specs context, and CI sweep
 
 ---
 

@@ -68,32 +68,21 @@
 
 ### Requirement: Подкоманда db
 
-Новая подкоманда для обслуживания БД датасета. Подкоманды: `db stats` — выводит
-статистику по датасету и knowledge DB (число documents, chunks, entities,
-entity_links, facts, queue-заданий), read-only, без изменений и без подтверждения;
-`db clear` — выводит ту же статистику, запрашивает подтверждение (`Confirm
-deletion? [y/N]` на stdin) и при ответе `y`/`Y` удаляет ВЕСЬ каталог состояния
-датасета (`<workspace_dir>/datasets/<name>/state`, содержащий `knowledge.db` и
-Lance-индекс векторов `vectors/`) целиком с диска (`std::fs::remove_dir_all`,
-игнорируя отсутствие каталога). Это атомарно удаляет и SQLite-БД, и векторы за
-один вызов. Команда one-shot, не загружает embedding-модель / ONNX (открывает
-только dataset-bound БД для вывода статистики, затем закрывает его перед удалением).
-После `db clear` нужен restart `serve`, чтобы startup reconcile заново поставил
-файлы в очередь, а фоновый worker пере-эмбеддил документы и пересоздал БД + Lance-индекс.
+A subcommand for dataset database maintenance. It SHALL provide two actions: `db stats` — prints dataset and knowledge-DB statistics (document, chunk, entity, entity_link, fact and queue-job counts), read-only, no modification and no confirmation; `db clear` — prints the same statistics, asks for confirmation (`Confirm deletion? [y/N]` on stdin) and on `y`/`Y` deletes the entire dataset state directory (`<workspace_dir>/datasets/<name>/state`, containing `knowledge.db` and the vector index directory `vectors/`) from disk (`std::fs::remove_dir_all`, ignoring a missing directory). This atomically removes both the SQLite DB and the vectors in one call. The command is one-shot and does not load the embedding model / ONNX (it opens only the dataset-bound DB to print statistics, then closes it before deletion). After `db clear` a `serve` restart is required so the startup reconcile re-enqueues the files and the background worker re-embeds the documents and recreates the DB + vector index.
 
 #### Scenario: Stats
-- **WHEN** вызвать `synopsis db stats`
-- **THEN** выводятся counts по documents/chunks/entities/entity_links/facts/queue; БД не меняется
+- **WHEN** `synopsis db stats` is invoked
+- **THEN** counts for documents/chunks/entities/entity_links/facts/queue are printed; the DB is not modified
 
 #### Scenario: Clear with confirmation
-- **WHEN** вызвать `synopsis db clear` и ответить `y`
-- **THEN** весь каталог состояния датасета (knowledge.db + vectors/) удаляется с диска; выводится итог очистки
+- **WHEN** `synopsis db clear` is invoked and the answer is `y`
+- **THEN** the whole dataset state directory (knowledge.db + vectors/) is removed from disk; a cleanup summary is printed
 
 #### Scenario: Clear aborted
-- **WHEN** вызвать `synopsis db clear` и ответить `n` (или любой не-`y` ввод)
-- **THEN** удаление не выполняется, команда завершается без изменений БД
+- **WHEN** `synopsis db clear` is invoked and the answer is `n` (or any non-`y` input)
+- **THEN** no deletion happens; the command exits without modifying the DB
 
 #### Scenario: Stats shown before prompt
-- **WHEN** вызвать `synopsis db clear`
-- **THEN** до запроса подтверждения выводятся counts по documents/chunks/entities/entity_links/facts/queue
+- **WHEN** `synopsis db clear` is invoked
+- **THEN** before the confirmation prompt, counts for documents/chunks/entities/entity_links/facts/queue are printed
 

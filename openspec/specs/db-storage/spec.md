@@ -96,8 +96,8 @@ DAO-слой покрывает таблицы v5-схемы: documents, chunks,
 
 ### Requirement: vec0 исключён
 
-Крейт `db` НЕ содержит операций над vec0-таблицами (SearchVector, UpsertVector, FormatVector, DeleteVectorsByChunkIDs и пр.) — векторный поиск переезжает в change `vectors` (ADR 0003, lance); векторы пересобираются из текста чанков, старый vec0 не читается.
+The `db` crate SHALL contain no vec0-table operations (SearchVector, UpsertVector, FormatVector, DeleteVectorsByChunkIDs, etc.) — vector search lives in the `vectors` crate (ADR 0003/0004, usearch engine); vectors are rebuilt from chunk text, the old vec0 is never read.
 
 #### Scenario: Отсутствие vec0-кода
-- **WHEN** проверяется исходный код крейта db
-- **THEN** в нём нет ссылок на vec0-таблицы или vec0-операции (grep-проверка в CI)
+- **WHEN** the db crate source is checked
+- **THEN** it contains no references to vec0 tables or vec0 operations (grep check in CI)
