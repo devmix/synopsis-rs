@@ -418,16 +418,10 @@ pub fn build_registry(chunking: &ChunkingConfig) -> Result<Registry, IngestionEr
 pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, VectorsError> {
     let tuning = config.vectors_config();
     let dim = i32::max(config.vector_dim(), 0) as usize;
-    let mut index_config = VectorIndexConfig::new(
-        dim,
-        tuning.m,
-        tuning.ef_construction,
-        tuning.num_partitions,
-        tuning.nprobes,
-        tuning.ef_search,
-    )?;
-    // The scalar quantization is a usearch-engine parameter (the Lance engine
-    // ignores it); the config default is "bf16".
+    let mut index_config =
+        VectorIndexConfig::new(dim, tuning.m, tuning.ef_construction, tuning.ef_search)?;
+    // The scalar quantization is a usearch-engine parameter; the config
+    // default is "bf16".
     index_config = index_config.with_quantization(tuning.quantization);
     // The usearch tuning section (usearch-wal-persistence task 3.9, ADR
     // 0004 §10): mapped field by field (dependency direction D7: config

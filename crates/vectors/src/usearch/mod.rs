@@ -15,8 +15,7 @@
 //!   trade-off; the Rust side always passes f32 and never works around the
 //!   down-cast;
 //! - HNSW parameters from [`VectorIndexConfig`]: `connectivity = m`,
-//!   `expansion_add = ef_construction`, `expansion_search = ef_search`
-//!   (the IVF fields `num_partitions`/`nprobes` do not apply to pure HNSW);
+//!   `expansion_add = ef_construction`, `expansion_search = ef_search`;
 //! - the HNSW graph is built incrementally during every `add`, so the index
 //!   is always search-ready; [`UsearchEngine::build_index`] is the
 //!   persistence point (layout below).
@@ -195,11 +194,9 @@ pub struct UsearchEngine {
     /// call is a no-op. `Mutex` because `rusqlite::Connection` is `Send`
     /// but not `Sync`, while the engine is shared across threads
     /// (`VectorIndex: Send + Sync`). The `Connection` is heap-allocated
-    /// (`Box`) so the optional WAL stays out of the inline struct size —
-    /// without it the `VectorEngine` enum (Lance vs Usearch variants) would
-    /// trip `clippy::large_enum_variant`. `Arc<Mutex<Option<..>>>` because
-    /// the background compaction thread (task 3.8) cleans the DISK rows
-    /// after the directory swap.
+    /// (`Box`) so the optional WAL stays out of the inline struct size.
+    /// `Arc<Mutex<Option<..>>>` because the background compaction thread
+    /// (task 3.8) cleans the DISK rows after the directory swap.
     wal: Arc<Mutex<Option<Box<Connection>>>>,
     /// The dedicated rayon search pool sized by
     /// `UsearchConfig::search_threads` (ADR 0004 §6/§9: `search` runs its
@@ -580,12 +577,11 @@ impl UsearchEngine {
     /// Persists the current RAM layer state (the save point of the
     /// shutdown path, ADR 0004 §4).
     ///
-    /// Unlike `LanceEngine::build_index` (which builds the IvfHnswSq index
-    /// over already-stored rows), the usearch HNSW graph is built
-    /// incrementally during every `add` — there is nothing to (re)build;
-    /// the index is search-ready the moment a row lands. This call is the
-    /// engine's persistence point: it flushes the in-memory state (e.g.
-    /// inserts that have not been saved yet) to disk. It never loses data.
+    /// The usearch HNSW graph is built incrementally during every `add` —
+    /// there is nothing to (re)build; the index is search-ready the moment a
+    /// row lands. This call is the engine's persistence point: it flushes
+    /// the in-memory state (e.g. inserts that have not been saved yet) to
+    /// disk. It never loses data.
     ///
     /// Idempotent: a repeated save rewrites the same snapshot pair, and an
     /// empty RAM layer is a no-op (the create-time or the last flush
@@ -897,7 +893,7 @@ mod test_util {
 
     /// A small, fast test config (dim 8, minimal HNSW parameters).
     pub(crate) fn test_config() -> VectorIndexConfig {
-        VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("valid test config")
+        VectorIndexConfig::new(8, 4, 8, 8).expect("valid test config")
     }
 
     /// A deterministic test vector: unit vector on axis `axis`.

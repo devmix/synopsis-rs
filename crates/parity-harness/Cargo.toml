@@ -9,13 +9,6 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# Engine feature forwarding (add-usearch-ann-engine, task 1.4): the A/B
-# benchmark test builds both engines when both features are enabled.
-# These forward to the `vectors` crate's engine features.
-[features]
-engine-lance = ["vectors/engine-lance"]
-engine-usearch = ["vectors/engine-usearch"]
-
 # MCP protocol: official SDK rmcp over Streamable HTTP (design D8, task 3.1).
 # Client path: `client` + reqwest-backed streamable-HTTP transport; the `reqwest`
 # feature selects the rustls TLS provider for that transport's HTTP stack.
@@ -25,7 +18,7 @@ serde_json = { workspace = true }
 # SYNX fixture format (vectors change, native-seam-spikes D4): the harness is the
 # consumer of `vectors::synx` (vectors design D6). parity-harness sits outside the
 # product dependency graph (D1), so depending on `vectors` is fine.
-vectors = { workspace = true, default-features = false }
+vectors = { workspace = true }
 
 # Round-trip integration test (task 3.1 acceptance b): in-process rmcp
 # Streamable HTTP server from the same crates.io release as the client.
@@ -45,4 +38,4 @@ search = { workspace = true }
 ingestion = { workspace = true }
 embedding = { workspace = true }
 mcp = { workspace = true }
-vectors = { workspace = true, default-features = false, features = ["engine-lance"] }
+vectors = { workspace = true }

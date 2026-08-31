@@ -278,13 +278,13 @@ mod layout_tests {
     #[test]
     fn empty_created_index_dimension_is_durable() {
         let dir = TempDir::new("empty-dim");
-        let config = VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("dim-8 config");
+        let config = VectorIndexConfig::new(8, 4, 8, 8).expect("dim-8 config");
         let engine = UsearchEngine::create(&dir.0, config.clone()).unwrap();
         assert_eq!(engine.count().unwrap(), 0, "the created index is empty");
         drop(engine);
 
         // A dim-4 config against the stored dim-8 layout must fail.
-        let other = VectorIndexConfig::new(4, 4, 8, 1, 1, 8).expect("dim-4 config");
+        let other = VectorIndexConfig::new(4, 4, 8, 8).expect("dim-4 config");
         match UsearchEngine::open(&dir.0, other) {
             Err(VectorsError::DimensionMismatch { expected, actual }) => {
                 assert_eq!((expected, actual), (4, 8));
@@ -300,7 +300,7 @@ mod layout_tests {
     #[test]
     fn empty_rebuild_leaves_dim_detectable_layout() {
         let dir = TempDir::new("empty-rebuild");
-        let config = VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("dim-8 config");
+        let config = VectorIndexConfig::new(8, 4, 8, 8).expect("dim-8 config");
         let engine = UsearchEngine::create(&dir.0, config.clone()).unwrap();
         engine
             .rebuild(&[(1, test_vector(8, 1)), (2, test_vector(8, 2))])
@@ -311,7 +311,7 @@ mod layout_tests {
         assert!(dir.0.join("ram.usearch").is_file(), "snapshot persisted");
         drop(engine);
 
-        let other = VectorIndexConfig::new(4, 4, 8, 1, 1, 8).expect("dim-4 config");
+        let other = VectorIndexConfig::new(4, 4, 8, 8).expect("dim-4 config");
         assert!(
             matches!(
                 UsearchEngine::open(&dir.0, other),
@@ -466,7 +466,7 @@ mod layout_tests {
         UsearchEngine::create(&dir.0, config.clone()).unwrap();
 
         // A segment file built with another dimality (16).
-        let other = VectorIndexConfig::new(16, 4, 8, 1, 1, 8).expect("other-dim config");
+        let other = VectorIndexConfig::new(16, 4, 8, 8).expect("other-dim config");
         write_segment(&dir.0, 1, &other, &[1, 2]);
 
         match UsearchEngine::open(&dir.0, config) {

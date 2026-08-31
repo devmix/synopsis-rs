@@ -64,7 +64,7 @@ fn build_config(
     search_threads: usize,
     ef_search: usize,
 ) -> VectorIndexConfig {
-    let mut config = VectorIndexConfig::new(DIM, 16, 100, 1, 1, ef_search).expect("valid config");
+    let mut config = VectorIndexConfig::new(DIM, 16, 100, ef_search).expect("valid config");
     config.usearch = Some(UsearchConfig {
         max_segment_vectors,
         compaction_stale_threshold: 30,

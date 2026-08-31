@@ -18,8 +18,8 @@ use super::options::{key_to_chunk_id, map_usearch};
 use super::{UsearchEngine, disk_segments_read_guard};
 use crate::VectorsError;
 
-/// Rows per rayon task in `insert_batch`/`rebuild` (mirrors the
-/// LanceEngine batch size of 1000; each row is a single concurrent `add`).
+/// Rows per rayon task in `insert_batch`/`rebuild` (each row is a single
+/// concurrent `add`).
 pub(super) const ADD_CHUNK: usize = 1000;
 
 /// The RAM layer's freshness rank in the merge (ADR 0004 §2): the RAM

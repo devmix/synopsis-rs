@@ -1,7 +1,7 @@
 //! Crate error type.
 //!
 //! [`VectorsError`] covers the whole vectors crate: argument and dimension
-//! validation, a missing index, the LanceDB engine, filesystem I/O, the
+//! validation, a missing index, the ANN engine, filesystem I/O, the
 //! SYNX fixture format (magic, version, truncation, zero dimensionality),
 //! and the sidecar key manifest format (magic, truncation, trailing bytes).
 
@@ -27,9 +27,14 @@ pub enum VectorsError {
     /// is the path that was looked up.
     #[error("index not found at {0}")]
     NotFound(String),
-    /// The ANN engine (LanceDB) reported a failure.
+    /// The ANN engine reported a failure.
     #[error("engine error: {0}")]
     Engine(String),
+    /// The `"lance"` engine was removed (post-migration-lance-removal,
+    /// design D2): a config still selecting it gets a loud, actionable error
+    /// instead of a silent engine swap.
+    #[error("the \"lance\" engine was removed; the only engine is \"usearch\"")]
+    EngineRemoved,
     /// A failure while accessing the on-disk index.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
