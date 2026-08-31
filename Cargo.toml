@@ -59,7 +59,7 @@ expect_used = "warn" # same as unwrap_used
 # config, db, vectors, utils, llm -> embedding, ingestion, graph -> search -> mcp -> cli
 config = { path = "crates/config" }
 db = { path = "crates/db" }
-vectors = { path = "crates/vectors" }
+vectors = { path = "crates/vectors", default-features = false }
 utils = { path = "crates/utils" }
 # Base tier (llm change D1): OpenAI-compatible LLM client; only internal
 # dependency is config (LlmConfig). graph/embedding depend on it, never

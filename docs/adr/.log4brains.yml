@@ -1,0 +1,11 @@
+project:
+  name: tekBlueprint
+  tz: Europe/Samara
+  adrFolder: ./
+  packages:
+    - name: infra
+      path: ../../infra
+      adrFolder: ../../infra/docs/adr
+    - name: specs
+      path: ../../specs
+      adrFolder: ../../specs/docs/adr
