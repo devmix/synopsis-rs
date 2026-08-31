@@ -11,11 +11,10 @@
 - [x] 3.4 Module split (usearch_engine.rs → vectors/src/usearch/ submodules)
 - [x] 3.5 WAL write path (transactional DEL, stale cache, count/chunk_ids)
 - [x] 3.6 Parallel search (rayon pool, per-segment filters, freshest-wins merge)
-- [ ] 3.7 Flush on overflow + shutdown save
 - [x] 3.7 Flush on overflow + shutdown save (build_index)
-- [ ] 3.8 Background compaction (maybe_compact, monotonic ids, atomic swap)
-- [ ] 3.9 Wiring (factory + WAL db path + UsearchConfig, bootstrap, cleanup)
-- [ ] 3.10 Integration tests + fix layout-dependent tests
+- [x] 3.8 Background compaction (maybe_compact, monotonic ids, atomic swap)
+- [x] 3.9 Wiring (factory, bootstrap, cleanup, shutdown)
+- [x] 3.10 Integration tests + fix layout-dependent tests
 
 **Source of truth for all 3.x tasks:** `docs/adr/0004-usearch-lsm-segments.md` (architecture, crash semantics, usearch 2.26.1 API facts). Each agent MUST read the ADR, this file, `openspec/config.yaml`, and the current `crates/vectors/src/{lib.rs,usearch_engine.rs}` before coding. No Go-oracle reference exists (new operational mechanism); the only parity surface is the `VectorIndex` trait contract.
 
@@ -302,3 +301,5 @@
 - `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all --check` clean.
 - No test references the old `index.usearch` path (grep: `git grep 'index\.usearch'` returns nothing outside the ADR/doc text).
 - Summary lists every test file touched and why.
+
+**Ревизия 1 (2026-08-31, решение человека после review 3.9):** также выровнять API-асимметрию create/open-путей в `crates/vectors/src/usearch/mod.rs`: `create_with_wal` принимает `usearch_config` как отдельный параметр, тогда как `open_with_wal` извлекает его из `config.usearch` внутри. Убрать `usearch_config` из сигнатуры `create_with_wal` (делегирование: `create_with_config(path, config, config.usearch.clone().unwrap_or_default())` + `with_wal_db`) и обновить все call sites (фабрика в `lib.rs`, тесты). Критерий приёмки дополнен: `create_with_wal` и `open_with_wal` имеют симметричные сигнатуры (оба берут `usearch_config` из `config`).

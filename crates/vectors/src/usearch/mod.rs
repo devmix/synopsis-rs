@@ -288,13 +288,16 @@ impl UsearchEngine {
         Ok(engine)
     }
 
-    /// Creates a new engine with UsearchConfig and attaches the WAL
-    /// database (the create-side counterpart of [`Self::open_with_wal`]):
-    /// the empty layout is created and a dedicated long-lived
-    /// `rusqlite::Connection` to `wal_db` (the knowledge.db path) is
-    /// attached, so the engine journals its mutations to the
-    /// `usearch_vectors_log` table from the first insert (module docs:
-    /// WAL journal). `None` (the default) disables the WAL.
+    /// Creates a new engine and attaches the WAL database (the create-side
+    /// counterpart of [`Self::open_with_wal`]): the empty layout is created
+    /// and a dedicated long-lived `rusqlite::Connection` to `wal_db` (the
+    /// knowledge.db path) is attached, so the engine journals its mutations
+    /// to the `usearch_vectors_log` table from the first insert (module
+    /// docs: WAL journal). `None` (the default) disables the WAL.
+    ///
+    /// Symmetric with [`Self::open_with_wal`]: the `usearch` tuning section
+    /// travels with the index config (ADR 0004 §10) — an absent section
+    /// resolves to the engine defaults.
     ///
     /// The table is created by the knowledge database's migration
     /// (db crate) — this method opens a connection but does not migrate.
@@ -304,9 +307,11 @@ impl UsearchEngine {
     pub fn create_with_wal(
         path: impl Into<PathBuf>,
         config: VectorIndexConfig,
-        usearch_config: crate::UsearchConfig,
         wal_db: Option<&Path>,
     ) -> Result<Self, VectorsError> {
+        // The usearch tuning section travels with the index config
+        // (ADR 0004 §10), exactly as in `open_with_wal`.
+        let usearch_config = config.usearch.clone().unwrap_or_default();
         let engine = Self::create_with_config(path, config, usearch_config)?;
         match wal_db {
             Some(db_path) => {

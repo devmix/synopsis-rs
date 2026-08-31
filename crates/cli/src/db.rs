@@ -509,7 +509,14 @@ mod tests {
         let usearch = state.join("vectors/usearch");
         std::fs::create_dir_all(lance.join("vectors.lance")).expect("lance fixture");
         std::fs::create_dir_all(&usearch).expect("usearch fixture");
-        std::fs::write(usearch.join("index.usearch"), b"index").expect("usearch file");
+        // ADR 0004 §1 layout: the RAM snapshot + sidecar and the DISK segment
+        // directory (task 3.10: the old single-file index fixture is gone).
+        std::fs::write(usearch.join("ram.usearch"), b"ram").expect("ram file");
+        std::fs::write(usearch.join("ram.keys"), b"keys").expect("ram sidecar");
+        let segments = usearch.join("segments");
+        std::fs::create_dir_all(&segments).expect("segments fixture");
+        std::fs::write(segments.join("segment-1.usearch"), b"segment").expect("segment file");
+        std::fs::write(segments.join("segment-1.keys"), b"keys").expect("segment sidecar");
         std::fs::create_dir_all(state.join("db")).expect("db fixture");
         std::fs::write(state.join("db/knowledge.db"), b"db").expect("db file");
 

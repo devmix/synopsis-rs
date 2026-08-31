@@ -489,16 +489,15 @@ pub fn create_vector_engine(
     if name == ENGINE_USEARCH {
         // ADR 0004 §10 (usearch-wal-persistence task 3.9): the `usearch`
         // tuning section travels with the index config; an absent section
-        // resolves to the engine defaults.
-        let usearch_config = config.usearch.clone().unwrap_or_default();
+        // resolves to the engine defaults. Both create and open read it
+        // from `config.usearch` (Revision 1, task 3.10), so the factory
+        // passes nothing extra — `create_with_wal` is now symmetric with
+        // `open_with_wal`.
         let engine = match UsearchEngine::open_with_wal(&engine_path, config.clone(), wal_db) {
             Ok(engine) => engine,
-            Err(VectorsError::NotFound(_)) => UsearchEngine::create_with_wal(
-                &engine_path,
-                config.clone(),
-                usearch_config,
-                wal_db,
-            )?,
+            Err(VectorsError::NotFound(_)) => {
+                UsearchEngine::create_with_wal(&engine_path, config.clone(), wal_db)?
+            }
             Err(err) => return Err(err),
         };
         return Ok(Arc::new(VectorEngine::Usearch(engine)));

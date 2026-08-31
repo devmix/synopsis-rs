@@ -55,6 +55,15 @@ libsqlite3-sys = { workspace = true, optional = true }
 [build-dependencies]
 cxx-build = "1"
 
+# Persistence integration tests (usearch-wal-persistence task 3.10): the
+# tests create and inspect the `knowledge.db` fixture (the
+# `usearch_vectors_log` table) directly. Same bundled SQLite build as the
+# engine's optional dependency (the direct libsqlite3-sys dev-dep forces
+# `bundled`; cargo forbids enabling it transitively through rusqlite).
+[dev-dependencies]
+rusqlite = { workspace = true }
+libsqlite3-sys = { workspace = true }
+
 # The ADR 0003 machine gates (task vectors 1.6/1.8) exercise `LanceEngine`
 # directly, so they only build when the lance engine is enabled (task 1.1
 # feature gating; mirrored usearch gates arrive with tasks 1.2/1.4).
@@ -65,3 +74,11 @@ required-features = ["engine-lance"]
 [[test]]
 name = "full_benchmark"
 required-features = ["engine-lance"]
+
+# Persistence integration tests (usearch-wal-persistence task 3.10, ADR 0004
+# §8): end-to-end restart, WAL supersession/delete, compaction, and
+# parallel-search correctness. They exercise the usearch engine, so they only
+# build when that engine feature is enabled.
+[[test]]
+name = "persistence_integration"
+required-features = ["engine-usearch"]
