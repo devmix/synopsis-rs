@@ -249,7 +249,10 @@ mod tests {
         config.apply_defaults();
         std::fs::create_dir_all(config.dataset.state_path(&config.paths.workspace_dir))
             .expect("create dataset state dir");
-        let db = open_db(workspace_dir.join("knowledge.db").as_path()).expect("open db");
+        // The knowledge db at the derived dataset path (the same file the
+        // production bootstrap opens): the engine's WAL wiring (task 3.9)
+        // points the factory at it.
+        let db = open_db(&config.dataset.db_path(&config.paths.workspace_dir)).expect("open db");
         Bootstrap {
             config,
             global: None,

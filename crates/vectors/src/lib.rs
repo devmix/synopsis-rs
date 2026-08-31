@@ -433,6 +433,15 @@ impl VectorIndex for VectorEngine {
 /// indexes coexist under one dataset and a `vectors.engine` switch never
 /// reads the other engine's files.
 ///
+/// `wal_db` is the knowledge database path holding the
+/// `usearch_vectors_log` WAL table (ADR 0004 §3, usearch-wal-persistence
+/// task 3.9): the usearch engine opens a dedicated long-lived connection to
+/// it and journals its mutations there (WAL-first); `None` disables the
+/// WAL (RAM-only usearch behavior). The Lance engine ignores the path — it
+/// has no WAL. The `config.usearch` tuning section (ADR 0004 §10) travels
+/// with the index config; an absent section resolves to the engine
+/// defaults.
+///
 /// # Errors
 ///
 /// - [`VectorsError::InvalidArgument`] for an unrecognized engine name or a
@@ -446,6 +455,7 @@ pub fn create_vector_engine(
     engine_name: &str,
     path: &Path,
     config: &VectorIndexConfig,
+    wal_db: Option<&Path>,
 ) -> Result<Arc<dyn VectorIndex>, VectorsError> {
     let name = if engine_name.is_empty() {
         ENGINE_USEARCH
@@ -477,9 +487,18 @@ pub fn create_vector_engine(
 
     #[cfg(feature = "engine-usearch")]
     if name == ENGINE_USEARCH {
-        let engine = match UsearchEngine::open(&engine_path, config.clone()) {
+        // ADR 0004 §10 (usearch-wal-persistence task 3.9): the `usearch`
+        // tuning section travels with the index config; an absent section
+        // resolves to the engine defaults.
+        let usearch_config = config.usearch.clone().unwrap_or_default();
+        let engine = match UsearchEngine::open_with_wal(&engine_path, config.clone(), wal_db) {
             Ok(engine) => engine,
-            Err(VectorsError::NotFound(_)) => UsearchEngine::create(&engine_path, config.clone())?,
+            Err(VectorsError::NotFound(_)) => UsearchEngine::create_with_wal(
+                &engine_path,
+                config.clone(),
+                usearch_config,
+                wal_db,
+            )?,
             Err(err) => return Err(err),
         };
         return Ok(Arc::new(VectorEngine::Usearch(engine)));
@@ -708,7 +727,8 @@ mod tests {
         let dir = TempDir::new("factory-lance");
         let config = VectorIndexConfig::default();
 
-        let engine = create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("lance engine");
+        let engine =
+            create_vector_engine(ENGINE_LANCE, &dir.0, &config, None).expect("lance engine");
         // The on-disk artifact is the LanceDB table directory inside the
         // engine-tagged subdirectory (task 1.5 layout, LanceDB
         // local-storage layout) — the fingerprint that the LanceEngine was
@@ -726,7 +746,7 @@ mod tests {
         // First run created the index; a second factory call must OPEN it
         // (the cascade), not reset it — both engines' `create` fails on an
         // existing index, so success proves the open path.
-        let reopened = create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("reopen");
+        let reopened = create_vector_engine(ENGINE_LANCE, &dir.0, &config, None).expect("reopen");
         assert_eq!(
             reopened.count().expect("count"),
             0,
@@ -740,7 +760,8 @@ mod tests {
         let dir = TempDir::new("factory-usearch");
         let config = VectorIndexConfig::default();
 
-        let engine = create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
+        let engine =
+            create_vector_engine(ENGINE_USEARCH, &dir.0, &config, None).expect("usearch engine");
         // The on-disk artifact is the ADR 0004 §1 layout inside the
         // engine-tagged subdirectory (task 3.3) — the fingerprint that the
         // UsearchEngine was selected.
@@ -754,7 +775,7 @@ mod tests {
             "empty index on first run"
         );
 
-        let reopened = create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("reopen");
+        let reopened = create_vector_engine(ENGINE_USEARCH, &dir.0, &config, None).expect("reopen");
         assert_eq!(
             reopened.count().expect("count"),
             0,
@@ -767,7 +788,7 @@ mod tests {
     fn create_vector_engine_empty_name_defaults_to_usearch() {
         let dir = TempDir::new("factory-default");
         let config = VectorIndexConfig::default();
-        let engine = create_vector_engine("", &dir.0, &config).expect("default engine");
+        let engine = create_vector_engine("", &dir.0, &config, None).expect("default engine");
         // The usearch RAM manifest under the usearch subdirectory is the
         // fingerprint that the default engine (usearch) was selected.
         assert!(
@@ -790,9 +811,10 @@ mod tests {
         let dir = TempDir::new("factory-coexist");
         let config = VectorIndexConfig::default();
 
-        let lance = create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("lance engine");
+        let lance =
+            create_vector_engine(ENGINE_LANCE, &dir.0, &config, None).expect("lance engine");
         let usearch =
-            create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
+            create_vector_engine(ENGINE_USEARCH, &dir.0, &config, None).expect("usearch engine");
 
         assert!(dir.0.join("lance").join("vectors.lance").exists());
         assert!(dir.0.join("usearch").join("ram.keys").exists());
@@ -818,7 +840,7 @@ mod tests {
         let config = VectorIndexConfig::default();
 
         let dir = TempDir::new("cross-open");
-        create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
+        create_vector_engine(ENGINE_USEARCH, &dir.0, &config, None).expect("usearch engine");
         match LanceEngine::open(dir.0.join("usearch"), config.clone()) {
             Err(VectorsError::NotFound(_)) => {}
             Err(err) => panic!("expected NotFound, got: {err:?}"),
@@ -826,7 +848,7 @@ mod tests {
         }
 
         let dir = TempDir::new("cross-open-lance");
-        create_vector_engine(ENGINE_LANCE, &dir.0, &config).expect("lance engine");
+        create_vector_engine(ENGINE_LANCE, &dir.0, &config, None).expect("lance engine");
         match UsearchEngine::open(dir.0.join("lance"), config) {
             Err(VectorsError::NotFound(_)) => {}
             Err(err) => panic!("expected NotFound, got: {err:?}"),
@@ -841,12 +863,13 @@ mod tests {
         // engine-tagged path (512-dim stored vs 1024-dim configured).
         let dir = TempDir::new("lance-dim-mismatch");
         let stored = VectorIndexConfig::new(512, 16, 100, 256, 32, 200).expect("stored config");
-        create_vector_engine(ENGINE_LANCE, &dir.0, &stored).expect("create 512-dim index");
+        create_vector_engine(ENGINE_LANCE, &dir.0, &stored, None).expect("create 512-dim index");
 
         let err = err_of(create_vector_engine(
             ENGINE_LANCE,
             &dir.0,
             &VectorIndexConfig::default(),
+            None,
         ));
         match err {
             VectorsError::DimensionMismatch { expected, actual } => {
@@ -863,7 +886,8 @@ mod tests {
         // engine-tagged path (512-dim stored vs 1024-dim configured).
         let dir = TempDir::new("usearch-dim-mismatch");
         let stored = VectorIndexConfig::new(512, 16, 100, 256, 32, 200).expect("stored config");
-        let engine = create_vector_engine(ENGINE_USEARCH, &dir.0, &stored).expect("create index");
+        let engine =
+            create_vector_engine(ENGINE_USEARCH, &dir.0, &stored, None).expect("create index");
         // Task 3.3 (ADR 0004 layout): the dim check fires against stored
         // files, so the layout needs a saved 512-dim snapshot first.
         engine
@@ -875,6 +899,7 @@ mod tests {
             ENGINE_USEARCH,
             &dir.0,
             &VectorIndexConfig::default(),
+            None,
         ));
         match err {
             VectorsError::DimensionMismatch { expected, actual } => {
@@ -888,7 +913,7 @@ mod tests {
     fn create_vector_engine_unknown_name_is_invalid_argument() {
         let dir = TempDir::new("factory-unknown");
         let config = VectorIndexConfig::default();
-        let err = err_of(create_vector_engine("foo", &dir.0, &config));
+        let err = err_of(create_vector_engine("foo", &dir.0, &config, None));
         match err {
             VectorsError::InvalidArgument(message) => {
                 assert!(
@@ -905,7 +930,7 @@ mod tests {
     fn create_vector_engine_usearch_unavailable_in_lance_only_build() {
         let dir = TempDir::new("factory-unavailable");
         let config = VectorIndexConfig::default();
-        let err = err_of(create_vector_engine(ENGINE_USEARCH, &dir.0, &config));
+        let err = err_of(create_vector_engine(ENGINE_USEARCH, &dir.0, &config, None));
         match err {
             VectorsError::Engine(message) => {
                 assert!(
@@ -922,7 +947,7 @@ mod tests {
     fn create_vector_engine_lance_unavailable_in_usearch_only_build() {
         let dir = TempDir::new("factory-unavailable");
         let config = VectorIndexConfig::default();
-        let err = err_of(create_vector_engine(ENGINE_LANCE, &dir.0, &config));
+        let err = err_of(create_vector_engine(ENGINE_LANCE, &dir.0, &config, None));
         match err {
             VectorsError::Engine(message) => {
                 assert!(
@@ -932,5 +957,85 @@ mod tests {
             }
             other => panic!("expected Engine, got: {other:?}"),
         }
+    }
+
+    #[cfg(feature = "engine-usearch")]
+    #[test]
+    fn factory_wires_wal_db_and_usearch_section() {
+        // Task 3.9 (ADR 0004 §9/§10): the factory passes the WAL database
+        // path and the `usearch` tuning section into the engine — the
+        // defect #2/#3 wiring.
+        use rusqlite::Connection;
+
+        let dir = TempDir::new("factory-wal");
+        // The knowledge database: the WAL table (migrations 3+4 shape).
+        let db_path = dir.0.join("knowledge.db");
+        let conn = Connection::open(&db_path).expect("open wal db");
+        conn.execute(
+            "CREATE TABLE usearch_vectors_log (
+                segment_id INTEGER NOT NULL,
+                chunk_id INTEGER NOT NULL,
+                flags INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (segment_id, chunk_id)
+            )",
+            [],
+        )
+        .expect("create wal table");
+        drop(conn);
+
+        // The usearch section is applied (defect #3): `max_segment_vectors =
+        // 42` means the 42-row batch overflows the RAM layer into segment-1
+        // (the engine default of 1M would never flush).
+        let mut config = VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("test config");
+        config.usearch = Some(UsearchConfig {
+            max_segment_vectors: 42,
+            ..UsearchConfig::default()
+        });
+
+        let engine = create_vector_engine(ENGINE_USEARCH, &dir.0, &config, Some(db_path.as_path()))
+            .expect("factory with the WAL db");
+        let vector = vec![0.5f32; config.dim];
+        for id in 1..=42u32 {
+            engine.insert(id, &vector).expect("insert");
+        }
+        assert!(
+            dir.0
+                .join("usearch")
+                .join("segments")
+                .join("segment-1.usearch")
+                .is_file(),
+            "the 42-row batch must overflow into segment-1 (max_segment_vectors = 42)"
+        );
+
+        // The WAL is wired end-to-end (defect #2): a fresh engine on the
+        // same db + dir (the open cascade) sees the saved state, and a
+        // re-insert of a DISK key journals the supersession row.
+        drop(engine);
+        let reopened =
+            create_vector_engine(ENGINE_USEARCH, &dir.0, &config, Some(db_path.as_path()))
+                .expect("reopen on the same db + dir");
+        assert_eq!(
+            reopened.count().expect("count"),
+            42,
+            "the flushed data must survive the restart"
+        );
+        reopened.insert(1, &vector).expect("re-insert a DISK key");
+
+        let conn = Connection::open(&db_path).expect("reopen wal db");
+        let rows: Vec<(i64, i64)> = {
+            let mut stmt = conn
+                .prepare("SELECT segment_id, chunk_id FROM usearch_vectors_log")
+                .expect("prepare wal rows");
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("query wal rows")
+                .collect::<Result<_, _>>()
+                .expect("collect wal rows")
+        };
+        assert_eq!(
+            rows,
+            vec![(1, 1)],
+            "the supersession row for the DISK key must be journaled"
+        );
     }
 }

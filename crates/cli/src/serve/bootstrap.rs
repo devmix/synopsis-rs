@@ -418,7 +418,7 @@ pub fn build_registry(chunking: &ChunkingConfig) -> Result<Registry, IngestionEr
 pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, VectorsError> {
     let tuning = config.vectors_config();
     let dim = i32::max(config.vector_dim(), 0) as usize;
-    let index_config = VectorIndexConfig::new(
+    let mut index_config = VectorIndexConfig::new(
         dim,
         tuning.m,
         tuning.ef_construction,
@@ -428,7 +428,19 @@ pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, Vector
     )?;
     // The scalar quantization is a usearch-engine parameter (the Lance engine
     // ignores it); the config default is "bf16".
-    Ok(index_config.with_quantization(tuning.quantization))
+    index_config = index_config.with_quantization(tuning.quantization);
+    // The usearch tuning section (usearch-wal-persistence task 3.9, ADR
+    // 0004 §10): mapped field by field (dependency direction D7: config
+    // cannot depend on vectors). An absent section stays `None` (the
+    // engine resolves [`vectors::UsearchConfig::default`]).
+    if let Some(usearch) = &tuning.usearch {
+        index_config.usearch = Some(vectors::UsearchConfig {
+            max_segment_vectors: usearch.max_segment_vectors,
+            compaction_stale_threshold: usearch.compaction_stale_threshold,
+            search_threads: usearch.search_threads,
+        });
+    }
+    Ok(index_config)
 }
 
 /// Opens the vector-index engine (design D5), creating it on first run:
@@ -463,21 +475,34 @@ pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     // `vectors.engine` field ("lance" | "usearch"; absent → the default
     // engine). The factory performs the open → NotFound → create cascade.
     let engine_name = boot.config.vectors_config().engine;
-    let engine =
-        match create_vector_engine(engine_name.as_deref().unwrap_or(""), &path, &index_config) {
-            Ok(engine) => engine,
-            Err(err) => {
-                if let Some(mismatch) = DimensionMismatch::from_vectors_error(&err) {
-                    tracing::error!(
-                        expected = mismatch.expected,
-                        actual = mismatch.actual,
-                        "vector dimension mismatch"
-                    );
-                    boot.dimension_mismatch = Some(mismatch);
-                }
-                return Err(CliError::Vectors(err));
+    // The WAL database (usearch-wal-persistence task 3.9, ADR 0004 §3):
+    // the knowledge.db path (the same file [`bootstrap`] opened in step 6)
+    // — the usearch engine journals its mutations to the
+    // `usearch_vectors_log` table there (migrations 3+4). The Lance engine
+    // ignores the path.
+    let wal_db = boot
+        .config
+        .dataset
+        .db_path(&boot.config.paths.workspace_dir);
+    let engine = match create_vector_engine(
+        engine_name.as_deref().unwrap_or(""),
+        &path,
+        &index_config,
+        Some(wal_db.as_path()),
+    ) {
+        Ok(engine) => engine,
+        Err(err) => {
+            if let Some(mismatch) = DimensionMismatch::from_vectors_error(&err) {
+                tracing::error!(
+                    expected = mismatch.expected,
+                    actual = mismatch.actual,
+                    "vector dimension mismatch"
+                );
+                boot.dimension_mismatch = Some(mismatch);
             }
-        };
+            return Err(CliError::Vectors(err));
+        }
+    };
     tracing::info!(
         path = %boot
             .config
@@ -1023,9 +1048,13 @@ models:
         let dir = TempDir::new("build-runner");
         let src = dir.as_ref().join("src");
         std::fs::create_dir_all(&src).expect("create source dir");
-        let config = sync_config(&dir.as_ref().join("workspace"));
+        let mut config = sync_config(&dir.as_ref().join("workspace"));
+        config.dataset.name = "edtech".to_string();
         let global = one_markdown_source(&src);
-        let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
+        // The knowledge db at the derived dataset path (the same file the
+        // production bootstrap opens): the engine's WAL wiring (task 3.9)
+        // points the factory at it.
+        let db = open_db(&config.dataset.db_path(&config.paths.workspace_dir)).expect("open db");
         let mut boot = test_bootstrap(config, Some(global), db);
 
         let runner = must_build(&mut boot);
@@ -1052,10 +1081,11 @@ models:
             ENGINE_USEARCH,
             &config.dataset.vectors_path(&config.paths.workspace_dir),
             &stored,
+            None,
         )
         .expect("create stored index");
 
-        let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
+        let db = open_db(&config.dataset.db_path(&config.paths.workspace_dir)).expect("open db");
         let mut boot = test_bootstrap(config, None, db);
 
         // `Runner` is not `Debug`, so the failure is unwrapped by hand.
@@ -1076,6 +1106,75 @@ models:
                 expected: 4,
                 actual: 8
             })
+        );
+    }
+
+    // --- vectors_index_config / open_vectors_engine (task 3.9) ---------------
+
+    /// Task 3.9: `vectors_index_config` maps the `vectors.usearch` preset
+    /// section field by field (dependency direction D7: config cannot
+    /// depend on vectors).
+    #[test]
+    fn vectors_index_config_maps_the_usearch_section() {
+        let dir = TempDir::new("index-config");
+        let mut config = local_config(dir.as_ref());
+        config.vectors = Some(config::preset::VectorsConfig {
+            usearch: Some(config::preset::UsearchConfig {
+                max_segment_vectors: 42,
+                compaction_stale_threshold: 25,
+                search_threads: 2,
+            }),
+            ..Default::default()
+        });
+
+        let index_config = vectors_index_config(&config).expect("mapping succeeds");
+        let usearch = index_config
+            .usearch
+            .expect("the usearch section must be mapped");
+        assert_eq!(usearch.max_segment_vectors, 42);
+        assert_eq!(usearch.compaction_stale_threshold, 25);
+        assert_eq!(usearch.search_threads, 2);
+    }
+
+    /// Task 3.9: `open_vectors_engine` wires the WAL database end-to-end —
+    /// the factory receives the knowledge.db path (ADR 0004 §3): insert →
+    /// shutdown save (task 3.7) → restart the engine on the same db + dir
+    /// → the data is visible.
+    #[test]
+    fn open_vectors_engine_wires_the_wal_db_end_to_end() {
+        let dir = TempDir::new("wiring-wal");
+        let mut config = sync_config(&dir.as_ref().join("workspace"));
+        config.dataset.name = "edtech".to_string();
+        let db_path = config.dataset.db_path(&config.paths.workspace_dir);
+        let db = open_db(&db_path).expect("open db");
+        let mut boot = test_bootstrap(config, None, db);
+
+        open_vectors_engine(&mut boot).expect("engine opens");
+        let engine = boot.vectors.clone().expect("engine stored");
+        engine.insert(7, &[0.5f32; 4]).expect("insert");
+        // The shutdown save point (task 3.7): persist the RAM layer.
+        engine.build_index().expect("save the RAM layer");
+
+        // Restart: a fresh engine on the same db + dir (the open cascade)
+        // sees the saved row.
+        drop(engine);
+        let index_config = vectors_index_config(&boot.config).expect("index config");
+        let path = boot
+            .config
+            .dataset
+            .vectors_path(&boot.config.paths.workspace_dir);
+        let engine_name = boot.config.vectors_config().engine;
+        let restarted = create_vector_engine(
+            engine_name.as_deref().unwrap_or(""),
+            &path,
+            &index_config,
+            Some(db_path.as_path()),
+        )
+        .expect("restart on the same db + dir");
+        assert_eq!(
+            restarted.count().expect("count"),
+            1,
+            "the saved row must be visible after the restart"
         );
     }
 

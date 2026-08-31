@@ -611,6 +611,15 @@ pub fn serve_with_stop(
         }
     }
 
+    // ADR 0004 §9 (usearch-wal-persistence task 3.9): the shutdown save
+    // point — persist the vector engine's in-memory state (the usearch
+    // RAM layer snapshot) before exit. Best-effort: a failure warns (the
+    // cascade protocol tolerates the unsaved RAM window) and never fails
+    // the serve.
+    if let Err(err) = vectors.build_index() {
+        tracing::warn!(error = %err, "vector index shutdown save failed");
+    }
+
     // D7: graceful shutdown under one 10 s bound — the axum drain first
     // (in-flight requests), then the watcher debounce task; the polling
     // backend stops when the watcher drops. The worker and its sweep-tick
@@ -746,9 +755,17 @@ pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliErr
     if engine_path.exists() {
         std::fs::remove_dir_all(&engine_path)?;
     }
+    // The WAL database (usearch-wal-persistence task 3.9, ADR 0004 §3):
+    // the knowledge.db path — the recreated engine journals into the same
+    // `usearch_vectors_log` table (the rebuild clears it). The Lance
+    // engine ignores the path.
+    let wal_db = boot
+        .config
+        .dataset
+        .db_path(&boot.config.paths.workspace_dir);
     // The factory performs the (now guaranteed) create at the engine-tagged
     // path and dispatches to the compiled engine.
-    let engine = create_vector_engine(name, &base, &index_config)?;
+    let engine = create_vector_engine(name, &base, &index_config, Some(wal_db.as_path()))?;
     tracing::info!(
         path = %engine_path.display(),
         dim = index_config.dim,
@@ -926,7 +943,10 @@ mod tests {
         config.dataset.name = "edtech".to_string();
         std::fs::create_dir_all(config.dataset.state_path(&config.paths.workspace_dir))
             .expect("create dataset state dir");
-        let db = open_db(dir.as_ref().join("knowledge.db").as_path()).expect("open db");
+        // The knowledge db at the derived dataset path (the same file the
+        // production bootstrap opens): the engine's WAL wiring (task 3.9)
+        // points the factory at it.
+        let db = open_db(&config.dataset.db_path(&config.paths.workspace_dir)).expect("open db");
         Bootstrap {
             config,
             global: None,
@@ -1298,7 +1318,7 @@ mod tests {
         // Pre-create the stored index (at the fixture's dataset vectors
         // path, default engine) with a different dimension.
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        create_vector_engine(ENGINE_USEARCH, &dataset_vectors_path(&dir), &stored)
+        create_vector_engine(ENGINE_USEARCH, &dataset_vectors_path(&dir), &stored, None)
             .expect("create stored index");
 
         let port = free_port();
@@ -1383,7 +1403,7 @@ mod tests {
     fn serve_mismatch_without_auto_rebuild_is_fatal() {
         let dir = TempDir::new("dim-fatal");
         let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
-        create_vector_engine(ENGINE_USEARCH, &dataset_vectors_path(&dir), &stored)
+        create_vector_engine(ENGINE_USEARCH, &dataset_vectors_path(&dir), &stored, None)
             .expect("create stored index");
 
         let mut boot = test_bootstrap(&dir);

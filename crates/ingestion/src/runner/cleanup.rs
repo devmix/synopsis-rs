@@ -102,6 +102,14 @@ impl<'a> Runner<'a> {
             Ok(())
         })?;
         stats.vectors_deleted = reconcile_vectors(self.db, self.vectors)?;
+        // ADR 0004 §9 (usearch-wal-persistence task 3.9): after the
+        // reconciliation batch, trigger the background compaction
+        // (single-flight, returns promptly — the repack runs off-thread).
+        // Fire-and-forget: a failure is logged, never fatal (the next GC
+        // phase retries the trigger).
+        if let Err(err) = self.vectors.maybe_compact() {
+            eprintln!("vector compaction: {err}");
+        }
         Ok(stats)
     }
 
