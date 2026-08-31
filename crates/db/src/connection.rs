@@ -342,8 +342,8 @@ mod tests {
 
     // (a, 1.1) open a nonexistent file → fresh v5 schema + document_jobs
     //     (migration 2-document-jobs) + usearch_vectors_log (migration
-    //     3-usearch-vectors-log), user_version = 3, no
-    //     _schema_migrations table.
+    //     3-usearch-vectors-log + 4-usearch-vectors-log-segment-id),
+    //     user_version = 4, no _schema_migrations table.
     #[test]
     fn open_creates_fresh_v5_schema() {
         let (db, _temp) = open_temp_db();
@@ -353,8 +353,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 3,
-            "PRAGMA user_version must be 3 after init + 2-document-jobs + 3-usearch-vectors-log"
+            user_version, 4,
+            "PRAGMA user_version must be 4 after init + 2-document-jobs \
+             + 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id"
         );
 
         let tracking_rows: i64 = db
@@ -431,14 +432,15 @@ mod tests {
         );
     }
 
-    // Migration 3-usearch-vectors-log (usearch-wal-persistence task 2.1):
-    // the WAL table and its flags index exist, and the table is writable
-    // with the documented columns (chunk_id PK, flags, created_at).
+    // Migrations 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id
+    // (usearch-wal-persistence tasks 2.1/2.4): the WAL table with the
+    // composite (segment_id, chunk_id) PK and both indexes exist, and the
+    // table is writable with the documented columns.
     #[test]
     fn usearch_vectors_log_table_and_index_exist() {
         let (db, _temp) = open_temp_db();
 
-        let (table, index): (i64, i64) = db
+        let (table, flags_index, segment_index): (i64, i64, i64) = db
             .with_conn(|conn| {
                 let table = conn
                     .query_row(
@@ -448,7 +450,7 @@ mod tests {
                         |r| r.get(0),
                     )
                     .unwrap();
-                let index = conn
+                let flags_index = conn
                     .query_row(
                         "SELECT COUNT(*) FROM sqlite_master \
                          WHERE type = 'index' AND name = 'idx_usearch_vectors_log_flags'",
@@ -456,36 +458,73 @@ mod tests {
                         |r| r.get(0),
                     )
                     .unwrap();
-                (table, index)
+                let segment_index = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master \
+                         WHERE type = 'index' AND name = 'idx_usearch_vectors_log_segment'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                (table, flags_index, segment_index)
             })
             .unwrap();
         assert_eq!(table, 1, "usearch_vectors_log table must exist");
-        assert_eq!(index, 1, "idx_usearch_vectors_log_flags must exist");
+        assert_eq!(flags_index, 1, "idx_usearch_vectors_log_flags must exist");
+        assert_eq!(
+            segment_index, 1,
+            "idx_usearch_vectors_log_segment must exist"
+        );
+
+        // Composite PK (segment_id, chunk_id), all columns NOT NULL —
+        // PRAGMA table_info columns: (name, notnull, pk position).
+        let info: Vec<(String, i64, i64)> = db
+            .with_conn(|conn| {
+                conn.prepare("PRAGMA table_info(usearch_vectors_log)")
+                    .unwrap()
+                    .query_map([], |r| Ok((r.get(1)?, r.get(3)?, r.get(5)?)))
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect()
+            })
+            .unwrap();
+        assert_eq!(
+            info,
+            vec![
+                ("segment_id".to_string(), 1, 1),
+                ("chunk_id".to_string(), 1, 2),
+                ("flags".to_string(), 1, 0),
+                ("created_at".to_string(), 1, 0),
+            ],
+            "WAL table must have (segment_id, chunk_id) PK, all columns NOT NULL"
+        );
 
         // The table accepts a WAL row (INSERT OR REPLACE semantics are the
-        // write path of task 2.2; here only the schema contract is checked).
+        // write path of task 3.4; here only the schema contract is checked).
         db.exec_tx(|tx| {
             tx.execute(
-                "INSERT OR REPLACE INTO usearch_vectors_log (chunk_id, flags, created_at) \
-                 VALUES (1, 1, '2026-08-30T00:00:00Z')",
+                "INSERT OR REPLACE INTO usearch_vectors_log \
+                 (segment_id, chunk_id, flags, created_at) \
+                 VALUES (0, 1, 1, '2026-08-30T00:00:00Z')",
                 [],
             )
             .map_err(DbError::from)
         })
         .expect("insert a WAL row");
-        let (chunk_id, flags): (i64, i64) = db
+        let (segment_id, chunk_id, flags): (i64, i64, i64) = db
             .with_conn(|conn| {
                 conn.query_row(
-                    "SELECT chunk_id, flags FROM usearch_vectors_log WHERE chunk_id = 1",
+                    "SELECT segment_id, chunk_id, flags FROM usearch_vectors_log \
+                     WHERE segment_id = 0 AND chunk_id = 1",
                     [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
             })
             .unwrap()
             .unwrap();
         assert_eq!(
-            (chunk_id, flags),
-            (1, 1),
+            (segment_id, chunk_id, flags),
+            (0, 1, 1),
             "the WAL row must be stored as inserted"
         );
     }
@@ -659,7 +698,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 3);
+        assert_eq!(user_version, 4);
         let hash: String = db
             .with_conn(|conn| {
                 conn.query_row(
@@ -862,7 +901,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 3);
+        assert_eq!(user_version, 4);
 
         db.exec_tx(|tx| {
             tx.execute(
