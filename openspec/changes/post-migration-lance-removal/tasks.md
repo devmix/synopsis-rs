@@ -4,7 +4,7 @@ Order: 1.1 → 1.2 → 1.3 → 1.4 → 1.5. Each task leaves the workspace compi
 all gates green. Oracle reference: N/A for every task (lance is a Rust-side engine;
 the Go oracle's vec0 index was never ported — no parity surface).
 
-- [ ] 1.1 Remove LanceEngine and all engine features from the `vectors` crate
+- [x] 1.1 Remove LanceEngine and all engine features from the `vectors` crate
 - [ ] 1.2 Remove engine-feature plumbing from `cli` and the workspace root
 - [ ] 1.3 Remove the A/B-benchmark transitional code from `parity-harness`
 - [ ] 1.4 Config validation: `vectors.engine` rejects `"lance"`

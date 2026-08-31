@@ -17,17 +17,17 @@
 //! 2. The vectors engine and the embedding provider are sync facades over
 //!    their own runtimes and must never be called from inside a tokio
 //!    runtime context (a nested `block_on` panics with "Cannot start a
-//!    runtime from within a runtime"; `vectors::LanceEngine` module docs:
-//!    sync contexts and `spawn_blocking` workers only).
+//!    runtime from within a runtime"; `vectors::UsearchEngine` module docs:
+//!    sync methods, `spawn_blocking` workers only).
 //!
 //! The serve flow is therefore a *synchronous* function on the main
 //! thread:
 //!
-//! - all Lance-touching work (engine open/create/recreate, and the document
+//! - all vector-engine work (engine open/create/recreate, and the document
 //!   worker's per-job pipeline + GC sweep) runs inline on the main thread
 //!   *between* runtime-context entries (the watcher batch, the startup
 //!   reconcile and the forced-rebuild clear + reconcile only enqueue
-//!   `document_jobs` rows — no Lance);
+//!   `document_jobs` rows — no vector-engine work);
 //! - the runtime is entered only for short async bits that require it:
 //!   creating the watcher debounce task, spawning the worker's sweep-tick
 //!   timer, binding the listener, and the owner-loop event select
@@ -54,7 +54,7 @@
 //! # Dimension-mismatch rebuild
 //!
 //! In the Rust codebase the mismatch surfaces from the ANN engine at open
-//! time, so the auto-rebuild drops the stored Lance table and recreates
+//! time, so the auto-rebuild drops the stored vector table and recreates
 //! the engine, then clears the knowledge DB tables in place and re-enqueues
 //! every source through the startup reconcile — clear-then-queue (the Rust
 //! form of the oracle's `DropVectorTable` + `ReEmbedChunks`); the worker
@@ -170,8 +170,8 @@ impl PooledSearcher {
     ///
     /// Runs synchronously on the calling thread: the mcp dispatch boundary
     /// (`call_tool`) hops tool calls to `spawn_blocking`, and the tests
-    /// call this from plain threads — both safe contexts for the Lance
-    /// facade (module docs).
+    /// call this from plain threads — both safe contexts for the
+    /// vector-engine facade (module docs).
     fn run<T>(
         &self,
         f: impl FnOnce(&HybridSearcher<'_>) -> Result<T, SearchError>,
@@ -560,8 +560,9 @@ pub fn serve_with_stop(
     });
 
     // Owner loop: the watcher callback and the document worker cycle run
-    // inline on the main thread (no runtime context — the Lance facade is
-    // safe here); the runtime is entered only for the event select. Fresh
+    // inline on the main thread (no runtime context — the vector-engine
+    // facade is safe here); the runtime is entered only for the event
+    // select. Fresh
     // futures per iteration keep each select self-contained.
     let mut serve_result: Option<io::Result<()>> = None;
     'owner: loop {
@@ -740,8 +741,7 @@ pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliErr
     let index_config = bootstrap::vectors_index_config(&boot.config)?;
     // The ANN index is per-dataset and per-engine:
     // <workspace_dir>/datasets/<name>/state/vectors/<engine> (task 1.5).
-    // Only the ACTIVE engine's subdirectory is dropped — a stored index of
-    // the other engine (if any) is left untouched.
+    // Only the active engine's subdirectory is dropped.
     let engine_name = boot.config.vectors_config().engine;
     let name = engine_name.as_deref().unwrap_or(ENGINE_USEARCH);
     let base = boot
@@ -757,8 +757,7 @@ pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliErr
     }
     // The WAL database (usearch-wal-persistence task 3.9, ADR 0004 §3):
     // the knowledge.db path — the recreated engine journals into the same
-    // `usearch_vectors_log` table (the rebuild clears it). The Lance
-    // engine ignores the path.
+    // `usearch_vectors_log` table (the rebuild clears it).
     let wal_db = boot
         .config
         .dataset
@@ -1034,7 +1033,7 @@ mod tests {
 
     /// The task's integration shape: collaborators with a temp db + fake
     /// embed (no real sources). The test thread is the owner thread (no
-    /// runtime context — the Lance facade is safe here, mirroring
+    /// runtime context — the vector-engine facade is safe here, mirroring
     /// `run_serve`'s main thread); a killer task on the runtime waits for
     /// `/health` 200 and fires the same stop broadcast the SIGINT/SIGTERM
     /// task feeds in production.
@@ -1317,7 +1316,7 @@ mod tests {
         let dir = TempDir::new("dim-rebuild");
         // Pre-create the stored index (at the fixture's dataset vectors
         // path, default engine) with a different dimension.
-        let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
+        let stored = VectorIndexConfig::new(8, 16, 100, 256).expect("index config");
         create_vector_engine(ENGINE_USEARCH, &dataset_vectors_path(&dir), &stored, None)
             .expect("create stored index");
 
@@ -1366,31 +1365,30 @@ mod tests {
         assert_eq!(vectors.count().expect("count"), 0, "stale vectors dropped");
     }
 
-    /// Task 1.5: `recreate_vectors_engine` drops ONLY the active engine's
-    /// subdirectory; a stored index of the other engine is left untouched.
+    /// Task 1.5: `recreate_vectors_engine` drops the stored engine
+    /// subdirectory wholesale (stale index files included) and recreates a
+    /// fresh empty index in its place.
     #[test]
-    fn recreate_leaves_the_other_engine_subdirectory_untouched() {
-        let dir = TempDir::new("recreate-other-engine");
-        let vectors_base = dataset_vectors_path(&dir);
-        // The other engine's subdirectory (lance layout: one index file).
-        // The foreign index is faked with plain files — recreate must not
-        // touch it.
-        let other = vectors_base.join("lance");
-        std::fs::create_dir_all(&other).expect("create other-engine dir");
-        std::fs::write(other.join("vectors.lance"), b"other").expect("seed other index");
+    fn recreate_drops_the_stored_engine_subdirectory() {
+        let dir = TempDir::new("recreate-drop");
+        // A stale stored index (ADR 0004 §1 layout): the engine subdirectory
+        // is faked with plain files — recreate must drop it wholesale.
+        let engine_path = dataset_vectors_path(&dir).join("usearch");
+        std::fs::create_dir_all(&engine_path).expect("create engine dir");
+        std::fs::write(engine_path.join("stale.index"), b"stale").expect("seed stale index");
 
         let mut boot = test_bootstrap(&dir);
         recreate_vectors_engine(&mut boot).expect("recreate must succeed");
 
-        // The active (default: usearch) engine is recreated at its
-        // engine-tagged subdirectory (ADR 0004 §1 layout, task 3.3).
+        // The engine is recreated at its engine-tagged subdirectory (ADR
+        // 0004 §1 layout, task 3.3), and the stale file is gone.
         assert!(
-            vectors_base.join("usearch").join("ram.keys").exists(),
-            "the active engine subdirectory must be recreated"
+            engine_path.join("ram.keys").exists(),
+            "the engine subdirectory must be recreated"
         );
         assert!(
-            other.join("vectors.lance").exists(),
-            "the other engine subdirectory must be untouched"
+            !engine_path.join("stale.index").exists(),
+            "the stored engine subdirectory must be dropped"
         );
         let vectors = boot.vectors.as_deref().expect("engine recreated");
         assert_eq!(vectors.count().expect("count"), 0, "fresh empty index");
@@ -1402,7 +1400,7 @@ mod tests {
     #[test]
     fn serve_mismatch_without_auto_rebuild_is_fatal() {
         let dir = TempDir::new("dim-fatal");
-        let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
+        let stored = VectorIndexConfig::new(8, 16, 100, 256).expect("index config");
         create_vector_engine(ENGINE_USEARCH, &dataset_vectors_path(&dir), &stored, None)
             .expect("create stored index");
 

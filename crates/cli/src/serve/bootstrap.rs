@@ -454,8 +454,8 @@ pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, Vector
 /// # Errors
 ///
 /// [`CliError::Vectors`] when the index cannot be opened/created (including
-/// an unknown or build-unavailable `vectors.engine` value) or its stored
-/// dimension disagrees with the configuration.
+/// an unknown `vectors.engine` value) or its stored dimension disagrees
+/// with the configuration.
 pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = vectors_index_config(&boot.config)?;
     // The ANN index is per-dataset and per-engine:
@@ -466,14 +466,13 @@ pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
         .dataset
         .vectors_path(&boot.config.paths.workspace_dir);
     // Runtime engine selection (add-usearch-ann-engine, design.md): the
-    // `vectors.engine` field ("lance" | "usearch"; absent → the default
-    // engine). The factory performs the open → NotFound → create cascade.
+    // `vectors.engine` field ("usearch"; absent → the default engine). The
+    // factory performs the open → NotFound → create cascade.
     let engine_name = boot.config.vectors_config().engine;
     // The WAL database (usearch-wal-persistence task 3.9, ADR 0004 §3):
     // the knowledge.db path (the same file [`bootstrap`] opened in step 6)
-    // — the usearch engine journals its mutations to the
-    // `usearch_vectors_log` table there (migrations 3+4). The Lance engine
-    // ignores the path.
+    // — the engine journals its mutations to the `usearch_vectors_log`
+    // table there (migrations 3+4).
     let wal_db = boot
         .config
         .dataset
@@ -501,7 +500,7 @@ pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
         path = %boot
             .config
             .dataset
-            .vectors_engine_path(&boot.config.paths.workspace_dir, engine_name.as_deref().unwrap_or("lance"))
+            .vectors_engine_path(&boot.config.paths.workspace_dir, engine_name.as_deref().unwrap_or("usearch"))
             .display(),
         dim = index_config.dim,
         "vector index ready"
@@ -1070,7 +1069,7 @@ models:
         config.dataset.name = "edtech".to_string();
         // Pre-create the stored index (at the dataset's vectors path) with a
         // different dimension.
-        let stored = VectorIndexConfig::new(8, 16, 100, 256, 32, 200).expect("index config");
+        let stored = VectorIndexConfig::new(8, 16, 100, 256).expect("index config");
         create_vector_engine(
             ENGINE_USEARCH,
             &config.dataset.vectors_path(&config.paths.workspace_dir),

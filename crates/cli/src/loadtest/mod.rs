@@ -272,7 +272,7 @@ mod tests {
     /// fixture's dataset vectors path (dataset `edtech`, default engine:
     /// the `vectors/usearch` subdirectory, task 1.5 layout).
     fn stored_index(workspace_dir: &Path, dim: usize) {
-        let stored = VectorIndexConfig::new(dim, 16, 100, 256, 32, 200).expect("index config");
+        let stored = VectorIndexConfig::new(dim, 16, 100, 256).expect("index config");
         let vectors_path = workspace_dir
             .join("datasets")
             .join("edtech")
@@ -338,7 +338,7 @@ mod tests {
         let vectors = Arc::new(
             vectors::UsearchEngine::create(
                 std::env::temp_dir().join(format!("lt-test-{}", std::process::id())),
-                VectorIndexConfig::new(dim, 16, 100, 1, 1, 10).unwrap(),
+                VectorIndexConfig::new(dim, 16, 100, 1).unwrap(),
             )
             .unwrap(),
         );

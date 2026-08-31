@@ -59,7 +59,7 @@ expect_used = "warn" # same as unwrap_used
 # config, db, vectors, utils, llm -> embedding, ingestion, graph -> search -> mcp -> cli
 config = { path = "crates/config" }
 db = { path = "crates/db" }
-vectors = { path = "crates/vectors", default-features = false }
+vectors = { path = "crates/vectors" }
 utils = { path = "crates/utils" }
 # Base tier (llm change D1): OpenAI-compatible LLM client; only internal
 # dependency is config (LlmConfig). graph/embedding depend on it, never
@@ -135,9 +135,9 @@ indicatif = "0.18"
 clap = "4.6.6"
 # Structured logging in the cli binary only (cli change, design D2; user-approved
 # 2026-08-27): library crates stay logger-less. Both are already in the lock
-# graph (tracing via lancedb, verified 2026-08-27: tracing 0.1.44 /
-# tracing-subscriber 0.3.23 are the current pins); `env-filter` honors RUST_LOG,
-# `json` is the oracle's other log format (design D2).
+# graph (verified 2026-08-27: tracing 0.1.44 / tracing-subscriber 0.3.23 are the
+# current pins); `env-filter` honors RUST_LOG, `json` is the oracle's other log
+# format (design D2).
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
@@ -240,19 +240,7 @@ flate2 = "1"
 # tar 0.4.46 (MSRV 1.63): .tar.gz runtime packages (design D8).
 tar = "0.4"
 
-# ANN engine (vectors change, design D5; ADR 0003): lancedb 0.37.1 / lance 10.0.0.
-# Verified against registry source (task vectors 1.1, 2026-08-21): lancedb 0.37.1 has
-# `default = []`, so local-filesystem storage needs NO features at all - the cloud
-# object-store features (aws/azure/gcp/oss/huggingface/remote) are all opt-in and are
-# deliberately excluded (single local binary, no cloud). MSRV 1.91.0 (lancedb/lance),
-# datafusion 1.88 / arrow 1.85 - all below our pinned Rust 1.96.0.
-lancedb = { version = "0.37", default-features = false }
-# Stream consumption for the vectors engine (vectors task 1.3): LanceDB query
-# results are `futures`-based streams. Re-introduces the spike-only pin removed
-# in scaffold task 5.1 ("they come back per module change"); already in the
-# lock graph via lancedb (0.3.34 locked), so no new code is compiled.
-futures = "0.3"
-# ANN engine candidate (add-usearch-ann-engine, task 1.1 spike, 2026-08-29):
+# ANN engine (add-usearch-ann-engine, task 1.1 spike, 2026-08-29):
 # usearch 2.26.1 - C++11 single-file HNSW core compiled in-tree via cxx FFI
 # (its only build deps are cxx + cxx-build - no datafusion/arrow/parquet).
 # Verified on crates.io: 2.26.1 is the latest 2.x (published 2026-08-22,
@@ -266,10 +254,10 @@ usearch = { version = "2.26", default-features = false }
 cxx = "1"
 
 # Intentionally NOT pinned here - decisions deferred to module changes:
-# - Spike-only pins (ort/tokenizers/lancedb/futures) were removed from this palette in task
-#   5.1; they come back per module change: rusqlite_migration + include_dir with db-module
-#   (task 1.1, ADR 0001), ort + tokenizers with the embedding change (task 1.1, ADR 0002),
-#   lancedb with the vectors change (task 1.1, ADR 0003 - pin above).
+# - Spike-only pins (ort/tokenizers) were removed from this palette in task 5.1; they
+#   come back per module change: rusqlite_migration + include_dir with db-module
+#   (task 1.1, ADR 0001), ort + tokenizers with the embedding change (task 1.1, ADR
+#   0002), usearch + cxx with the vectors change (task 1.1, ADR 0004 - pins above).
 # MCP protocol crate: decision made 2026-08-18 -> rmcp 3.x above (design D8).
 
 # Date/time engine (utils-crate change, design D2; human directive 2026-08-25:
@@ -280,9 +268,8 @@ cxx = "1"
 # default-features OFF, features = ["std"] only: everything is UTC, so the
 # tz-system/tzdb features (IANA timezone machinery + windows-link) are never
 # requested here. Precise note (verified via cargo tree, utils-crate task 1.2):
-# `std` itself pulls no tz machinery, but jsonb (transitively via
-# lancedb → lance) re-enables jiff's default features through feature
-# unification; the only tz-data crate in that set, jiff-tzdb-platform
-# (~10 KB), is target-gated to Windows/wasm — never built on the Linux/macOS
-# targets and never accessed by this UTC-only code.
+# `std` itself pulls no tz machinery; the only tz-data crate in jiff's default
+# feature set, jiff-tzdb-platform (~10 KB), is target-gated to Windows/wasm —
+# never built on the Linux/macOS targets and never accessed by this UTC-only
+# code.
 jiff = { version = "0.2", default-features = false, features = ["std"] }

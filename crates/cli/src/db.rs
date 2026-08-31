@@ -499,15 +499,13 @@ mod tests {
     }
 
     #[test]
-    fn clear_dataset_removes_both_engine_subdirectories() {
-        // Task 1.5: the state directory holds BOTH engine subdirectories
-        // (vectors/lance + vectors/usearch); the whole-directory clear
-        // removes them in one shot.
+    fn clear_dataset_removes_the_engine_subdirectory() {
+        // Task 1.5: the state directory holds the vector engine subdirectory
+        // (vectors/usearch); the whole-directory clear removes it in one
+        // shot.
         let dir = TempDir::new("clear-engines");
         let state = dir.as_ref().join("workspace/datasets/edtech/state");
-        let lance = state.join("vectors/lance");
         let usearch = state.join("vectors/usearch");
-        std::fs::create_dir_all(lance.join("vectors.lance")).expect("lance fixture");
         std::fs::create_dir_all(&usearch).expect("usearch fixture");
         // ADR 0004 §1 layout: the RAM snapshot + sidecar and the DISK segment
         // directory (task 3.10: the old single-file index fixture is gone).
@@ -523,10 +521,6 @@ mod tests {
         clear_dataset(&state).expect("clear must succeed");
 
         assert!(!state.exists(), "the state directory must be gone");
-        assert!(
-            !lance.exists(),
-            "the lance engine subdirectory must be gone"
-        );
         assert!(
             !usearch.exists(),
             "the usearch engine subdirectory must be gone"

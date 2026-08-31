@@ -32,7 +32,7 @@ pub enum CliError {
     /// session, tokenizer).
     #[error("embedding: {0}")]
     Embedding(#[from] EmbeddingError),
-    /// Vector index failure (LanceDB engine, dimension mismatch, fixture
+    /// Vector index failure (vector engine, dimension mismatch, fixture
     /// format).
     #[error("vectors: {0}")]
     Vectors(#[from] VectorsError),
