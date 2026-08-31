@@ -18,9 +18,9 @@ context: |
   - ort (ONNX Runtime, внешний .so/.dylib) — эмбеддинги (bge-m3 int8, 1024-dim) и NER;
     рантайм скачивается в data/ по onnx.yaml (механизм переносится из Go оригинала).
     Биндинги-крейт отложен: финальный пин — в change `embedding` (ADR 0002)
-  - lance (IvfHnswSq, disk-backed/квантованный HNSW) — векторный поиск, заменяет vec0
-    brute-force (ADR 0003; usearch отклонён). Векторы НЕ читаются из старого vec0:
-    пересобираются по тексту чанков
+  - usearch 2.x (C++11 HNSW core via cxx, disk-backed, scalar-quantized default bf16,
+    WAL + segments per ADR 0004) — the sole ANN engine, replaces vec0 brute-force.
+    Векторы НЕ читаются из старого vec0: пересобираются по тексту чанков
   - rmcp 3.x — MCP протокол (Streamable HTTP, design D8; legacy SSE оракула намеренно
     не поддерживается); cel-interpreter — выражения линковки сущностей; tokenizers,
     notify, indicatif

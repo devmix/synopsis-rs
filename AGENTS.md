@@ -23,7 +23,7 @@ Rust rewrite of the Go service "Synopsis" (`../synopsis`): a local RAG + knowled
 - Rust + tokio (async runtime) + axum (HTTP/SSE for non-MCP endpoints such as `/health`)
 - rusqlite (`bundled` + `fts5`) — FTS5 always available, no cgo flags; sync driver behind `spawn_blocking`/connection pool. Migrations via `rusqlite_migration` 2.x (`from-directory`) with `PRAGMA user_version` as sole schema-state authority (design D6)
 - ONNX runtime as external `.so`/`.dylib` (bge-m3 int8, 1024-dim embeddings + NER); the download/verify mechanism per `onnx.yaml` is ported from the oracle. **Bindings crate deferred:** the frozen-stack entry "onnxruntime-rs" no longer exists on crates.io and its successor `ort` has no stable release yet — decided in the embedding change
-- usearch or lance — disk-backed / quantized HNSW replacing vec0 brute-force; engine chosen by benchmark in `native-seam-spikes`. Vectors are NOT read from old vec0: they are rebuilt from chunk text
+- usearch 2.x — the sole ANN engine (ADR 0004): C++11 HNSW core via cxx, disk-backed, scalar-quantized (default bf16), WAL + segments; replaces vec0 brute-force. Vectors are NOT read from old vec0: they are rebuilt from chunk text
 - rmcp 3.x — official MCP SDK over Streamable HTTP (design D8); wire compatibility with the oracle's legacy SSE transport is **deliberately not preserved**
 - cel-interpreter (entity-linking expressions), tokenizers, notify, tokio-cron-scheduler, indicatif
 

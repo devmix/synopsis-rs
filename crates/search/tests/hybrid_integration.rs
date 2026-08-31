@@ -10,7 +10,7 @@
 //!   (bag-of-words over a fixed 6-word vocabulary), so vector distances are
 //!   exact and the expected orderings are hand-computable;
 //! - [`MemoryIndex`] — a brute-force in-memory L2 [`VectorIndex`] (the
-//!   mock-pattern stand-in for the LanceDB engine; ties keep insertion
+//!   mock-pattern stand-in for the vector engine; ties keep insertion
 //!   order via the stable sort).
 //!
 //! Covered (task 4.7 acceptance): lexical / semantic / hybrid runs through

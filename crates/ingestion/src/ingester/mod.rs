@@ -65,9 +65,9 @@ const DEFAULT_BATCH_SIZE: usize = 100;
 ///
 /// The ingester only needs the post-commit write half of the vectors
 /// engine's contract; a narrow trait keeps that dependency explicit and lets
-/// tests record or fail writes without a LanceDB engine. The blanket
-/// implementation makes every [`VectorIndex`] (notably
-/// `vectors::LanceEngine`, behind `&` or `Arc`) a sink directly.
+/// tests record or fail writes without a vector engine. The blanket
+/// implementation makes every [`VectorIndex`] (behind `&` or `Arc`) a sink
+/// directly.
 pub trait VectorSink: Send + Sync {
     /// Stores one vector per chunk after the SQLite transaction has
     /// committed (design D5). `chunk_id` is the SQLite chunk row id.

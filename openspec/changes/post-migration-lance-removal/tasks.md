@@ -7,7 +7,7 @@ the Go oracle's vec0 index was never ported — no parity surface).
 - [x] 1.1 Remove LanceEngine and all engine features from the `vectors` crate
 - [x] 1.2 Remove engine-feature plumbing from `cli` and the workspace root
 - [x] 1.3 Remove the A/B-benchmark transitional code from `parity-harness`
-- [ ] 1.4 Config validation: `vectors.engine` rejects `"lance"`
+- [x] 1.4 Config validation: `vectors.engine` rejects `"lance"`
 - [ ] 1.5 Docs, specs context, and CI sweep
 
 ---
@@ -299,3 +299,16 @@ grep is meaningful).
    available; otherwise state so in the report).
 
 **Oracle reference.** N/A (see change header).
+
+**Revision history.**
+- Rev 1 (orchestrator-caused, before review): two defects in the
+  `openspec/config.yaml` bullet — (a) 3-space indent instead of 2 (sibling
+  bullets), (b) "the sole ANN engine" was translated to Russian although the task
+  body and the user's standing mandate specify English for produced text. Both
+  fixed; the preserved pre-existing Russian sentence ("Векторы НЕ читаются из
+  старого vec0...") stays as-is. AC #1 literal "zero matches" deviation
+  documented by the implementer and accepted: substring false-positives
+  ("bal**ance**d"/"bal**ance**r" in out-of-scope mediawiki files), the 4 mandated
+  residuals in `crates/vectors` (task 1.1) + 4 in `crates/config` (documented in
+  this task's AC #1), and `openspec/specs/**` (synced from the delta specs at
+  archive time — explicitly out of scope).

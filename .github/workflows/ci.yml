@@ -78,15 +78,6 @@ jobs:
   cross-builds:
     name: Cross ${{ matrix.target }}
     runs-on: ubuntu-latest
-    # The lancedb graph links the lance-arrow cdylib against
-    # `-framework CoreFoundation` on the darwin leg, but the official Zig 0.16
-    # SDK ships no macOS framework stubs (ziglang/zig#1349). A minimal vendored
-    # stub lives in ci/darwin-sdk (see its README.md); this target-specific
-    # RUSTFLAGS adds it as a framework search path. The variable name is
-    # scoped to the darwin triple, so it is inert on every other leg.
-    env:
-      CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS: >-
-        -C link-arg=-F${{ github.workspace }}/ci/darwin-sdk
     strategy:
       fail-fast: false
       matrix:

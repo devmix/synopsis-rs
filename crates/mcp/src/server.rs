@@ -225,7 +225,7 @@ impl ServerHandler for Server {
             .as_ref()
             .map(|map| Value::Object(map.clone()));
         // The handler body is synchronous and may block (SQLite through the
-        // pool, the ONNX embedding model, the Lance index — the db/vectors/
+        // pool, the ONNX embedding model, the vector index — the db/vectors/
         // embedding crate docs: those sync facades run only in sync
         // contexts or on `spawn_blocking` workers, never inside an async
         // task). One hop at the dispatch boundary covers all 12 tools and

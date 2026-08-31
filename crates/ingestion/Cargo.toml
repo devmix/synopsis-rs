@@ -63,7 +63,7 @@ embedding = { workspace = true }
 # Vector-index seam for the pipeline's post-commit vector write (task 3.4,
 # design D5): the Ingester holds a `&dyn VectorSink` (a narrow local trait
 # with a blanket impl over `vectors::VectorIndex`), so tests record writes
-# without a LanceDB engine.
+# without a vector engine.
 vectors = { workspace = true }
 # Cross-domain entity linking for the Runner's post-run tail (task 3.8,
 # design D1: ingestion → graph edge): the runner delegates to

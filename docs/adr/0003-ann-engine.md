@@ -1,5 +1,7 @@
 # ADR 0003 — ANN-движок: LanceDB (IVF-HNSW, u8-SQ)
 
+**Status:** Superseded by ADR 0004 (2026-08-31): the lance engine was removed; usearch is the sole ANN engine.
+
 **Статус:** GO; конфигурация зафиксирована ниже. Полные таблицы измерений — в [spike-s3-results.md](spike-s3-results.md).
 **Дата:** 2026-08-18 · **Change:** native-seam-spikes, задача 3.2 (спайк S3b: `crates/spikes/src/bin/s3b_lance.rs`)
 
