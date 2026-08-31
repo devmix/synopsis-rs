@@ -382,8 +382,8 @@ mod tests {
 
     /// Real-fixture recall gate (task 1.1, design D3): load the committed
     /// `fixtures/vectors.bin` (SYNX, dim=384, 270 rows extracted from the Go
-    /// oracle's vec0 — task 1.2), build a LanceEngine ANN index over it in a
-    /// scratch dir, and score the engine's top-10 against exact-L2
+    /// oracle's vec0 — task 1.2), build a UsearchEngine ANN index over it in
+    /// a scratch dir, and score the engine's top-10 against exact-L2
     /// brute-force ground truth computed here. The committed fixture is only
     /// ever READ, never regenerated or overwritten.
     ///
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn recall_at_k_on_real_fixture_meets_the_gate() {
         use crate::metrics::recall_at_k;
-        use vectors::{LanceEngine, VectorIndexConfig};
+        use vectors::{UsearchEngine, VectorIndexConfig};
 
         const K: usize = 10;
         // 20 queries spread across the corpus: fixture rows 0, 13, ..., 247.
@@ -409,12 +409,12 @@ mod tests {
             "fixture dim is 384"
         );
 
-        // ANN index over the fixture in a scratch dir. nprobes = all
-        // partitions, ef_search larger than any partition: the search is
-        // exhaustive per partition, so recall must be (near) perfect.
-        let dir = scratch_dir("recall-lance");
-        let config = VectorIndexConfig::new(384, 16, 100, 8, 8, 200).expect("config is valid");
-        let engine = LanceEngine::create(dir.join("lance"), config).expect("create engine");
+        // ANN index over the fixture in a scratch dir. ef_search larger than
+        // the 270-row corpus: the HNSW search is exhaustive, so recall must
+        // be (near) perfect.
+        let dir = scratch_dir("recall-usearch");
+        let config = VectorIndexConfig::new(384, 16, 100, 300).expect("config is valid");
+        let engine = UsearchEngine::create(dir.join("usearch"), config).expect("create engine");
         let refs: Vec<(u32, &[f32])> = rows
             .iter()
             .map(|(id, vector)| (*id, vector.as_slice()))

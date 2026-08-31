@@ -5,7 +5,7 @@ all gates green. Oracle reference: N/A for every task (lance is a Rust-side engi
 the Go oracle's vec0 index was never ported — no parity surface).
 
 - [x] 1.1 Remove LanceEngine and all engine features from the `vectors` crate
-- [ ] 1.2 Remove engine-feature plumbing from `cli` and the workspace root
+- [x] 1.2 Remove engine-feature plumbing from `cli` and the workspace root
 - [ ] 1.3 Remove the A/B-benchmark transitional code from `parity-harness`
 - [ ] 1.4 Config validation: `vectors.engine` rejects `"lance"`
 - [ ] 1.5 Docs, specs context, and CI sweep

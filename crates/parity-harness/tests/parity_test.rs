@@ -36,17 +36,19 @@
 //! environment (missing `workspace/` artifacts, unsupported platform), the
 //! test prints a clear message and returns without failing the suite.
 //!
-//! # Unindexed Lance table
+//! # Unpersisted vector index
 //!
-//! The corpus is far smaller than the ADR 0003 IVF partition count (256),
-//! so `build_index` is deliberately NOT called: lancedb falls back to flat
-//! search — the same state the production `serve` flow runs in until an
-//! explicit index build (only the loadtest filler builds one).
+//! For the usearch engine `build_index` is the persistence point (RAM layer
+//! → DISK segment); the HNSW graph is built incrementally on every insert,
+//! so the index is search-ready without it. `build_index` is deliberately NOT
+//! called here: the corpus stays in the RAM layer — the same state the
+//! production `serve` flow runs in until an explicit index build (only the
+//! loadtest filler builds one).
 //!
 //! # Runtime layout
 //!
 //! The test is a plain `#[test]` (synchronous). The ONNX provider and the
-//! Lance engine are sync facades over their own runtimes and must not be
+//! usearch engine are sync facades over their own runtimes and must not be
 //! touched from inside a tokio runtime context, so everything is built on
 //! the test thread; a single `Runtime::block_on` then serves the MCP
 //! server and drives the client. Tool dispatch hops to `spawn_blocking`
@@ -82,7 +84,7 @@ use search::{
     Enricher, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult, Searcher,
     SemanticSearcher,
 };
-use vectors::{LanceEngine, VectorIndex, VectorIndexConfig};
+use vectors::{UsearchEngine, VectorIndex, VectorIndexConfig};
 
 /// Go oracle `search` baseline p50 in ms (design.md D4, knowledge.db).
 const GO_SEARCH_P50_MS: u64 = 107;
@@ -154,10 +156,10 @@ fn mcp_tool_latency_meets_go_gates() {
     let corpus = scratch.join("corpus");
     write_corpus(&corpus);
 
-    // 3. File-backed database + Lance engine (production configuration).
+    // 3. File-backed database + usearch engine (production configuration).
     let db = test_util::temp_file_db();
-    let engine = LanceEngine::create(scratch.join("vectors"), vector_index_config(dim))
-        .expect("lance engine create");
+    let engine = UsearchEngine::create(scratch.join("vectors"), vector_index_config(dim))
+        .expect("usearch engine create");
     let vectors: Arc<dyn VectorIndex> = Arc::new(engine);
 
     // 4. Ingest the corpus through the production pipeline (sync facade).
@@ -417,10 +419,10 @@ fn build_provider(repo_root: &Path) -> Option<Arc<dyn EmbeddingProvider>> {
     new_onnx_provider(&cfg, repo_root.join("workspace"), &onnx_cfg).ok()
 }
 
-/// ADR 0003 ANN parameters for the test dimension (the index itself is
-/// never built — see the module docs).
+/// ADR 0004 HNSW parameters for the test dimension (the index is never
+/// persisted — see the module docs).
 fn vector_index_config(dim: usize) -> VectorIndexConfig {
-    VectorIndexConfig::new(dim, 16, 100, 256, 32, 200).expect("ADR 0003 parameters validate")
+    VectorIndexConfig::new(dim, 16, 100, 200).expect("ADR 0004 parameters validate")
 }
 
 /// Hybrid search configuration for the test (both legs enabled; explicit
