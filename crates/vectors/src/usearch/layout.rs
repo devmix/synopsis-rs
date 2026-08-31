@@ -212,83 +212,19 @@ mod layout_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use std::collections::HashMap;
-    use std::path::Path;
 
-    use rusqlite::{Connection, params};
+    use rusqlite::Connection;
 
     use super::super::{
         UsearchEngine,
         keys_manifest::{read_keys, write_keys},
         options::options,
-        test_util::TempDir,
+        test_util::{
+            TempDir, create_wal_table, insert_wal_row, test_config, test_vector, wal_rows,
+            write_segment,
+        },
     };
     use super::*;
-
-    /// A small, fast test config (dim 8, minimal HNSW parameters).
-    fn test_config() -> VectorIndexConfig {
-        VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("valid test config")
-    }
-
-    /// A deterministic test vector: unit vector on axis `axis`.
-    fn test_vector(dim: usize, axis: usize) -> Vec<f32> {
-        let mut vector = vec![0.0f32; dim];
-        vector[axis % dim] = 1.0;
-        vector
-    }
-
-    /// Creates the ADR 0004 WAL table (migrations 3+4 shape) in `conn`.
-    fn create_wal_table(conn: &Connection) {
-        conn.execute(
-            "CREATE TABLE usearch_vectors_log (
-                segment_id INTEGER NOT NULL,
-                chunk_id INTEGER NOT NULL,
-                flags INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (segment_id, chunk_id)
-            )",
-            [],
-        )
-        .unwrap();
-    }
-
-    /// Inserts one WAL row (flags: 1 = ADD, 2 = DEL).
-    fn insert_wal_row(conn: &Connection, segment_id: u32, chunk_id: u32, flags: u8) {
-        conn.execute(
-            "INSERT OR REPLACE INTO usearch_vectors_log (segment_id, chunk_id, flags, created_at)
-             VALUES (?1, ?2, ?3, datetime('now'))",
-            params![segment_id as i64, chunk_id as i64, flags as i64],
-        )
-        .unwrap();
-    }
-
-    /// The WAL rows as `(segment_id, chunk_id)` pairs, ordered.
-    fn wal_rows(conn: &Connection) -> Vec<(i64, i64)> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT segment_id, chunk_id FROM usearch_vectors_log \
-                 ORDER BY segment_id, chunk_id",
-            )
-            .unwrap();
-        let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
-            .unwrap();
-        rows.collect::<Result<_, _>>().unwrap()
-    }
-
-    /// Writes one DISK segment file pair (index + sidecar manifest) with the
-    /// given keys, each key stored as a distinct unit vector.
-    fn write_segment(root: &Path, id: u32, config: &VectorIndexConfig, keys: &[u32]) {
-        let index = Index::new(&options(config)).unwrap();
-        index.reserve(keys.len().max(1)).unwrap();
-        for (i, &key) in keys.iter().enumerate() {
-            index
-                .add(key as u64, &test_vector(config.dim, i + 1))
-                .unwrap();
-        }
-        let path = segments_dir(root).join(format!("segment-{id}.usearch"));
-        index.save(path.to_str().unwrap()).unwrap();
-        write_keys(&segment_keys_path(root, id), keys).unwrap();
-    }
 
     #[test]
     fn create_then_open_empty_layout() {
@@ -565,12 +501,15 @@ mod layout_tests {
         expected.insert(0, HashSet::from([4]));
         assert_eq!(engine.stale_sets(), expected);
 
-        // The WAL write path stays attached after open.
-        engine.insert(50, &test_vector(8, 1)).unwrap();
+        // The WAL write path stays attached after open: re-inserting a key
+        // that lives in a DISK segment writes its supersession row (ADR
+        // 0004 §3). Key 10 is in segment-2.
+        engine.insert(10, &test_vector(8, 1)).unwrap();
         let conn = Connection::open(&db_path).unwrap();
         assert!(
-            wal_rows(&conn).contains(&(0, 50)),
-            "the insert must be journaled to the attached WAL"
+            wal_rows(&conn).contains(&(2, 10)),
+            "the insert must journal the supersession row to the attached WAL: {:?}",
+            wal_rows(&conn)
         );
         drop(conn);
     }

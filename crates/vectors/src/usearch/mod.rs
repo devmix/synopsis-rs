@@ -72,20 +72,32 @@
 //! 5. every layer's dimensionality is checked against `config.dim`
 //!    ([`VectorsError::DimensionMismatch`]).
 //!
-//! # WAL journal (ADR 0004 §3)
+//! # WAL journal (ADR 0004 §3/§4)
 //!
 //! With a SQLite database attached (a dedicated long-lived connection
 //! opened by [`UsearchEngine::open_with_wal`] from the knowledge.db path,
 //! or an injected one via [`UsearchEngine::with_wal_db`]), mutations are
 //! journaled to the `usearch_vectors_log` table (migrations 3+4, db crate)
 //! BEFORE the RAM index is mutated (WAL-first): `insert`/`insert_batch`
-//! write an ADD record (flag 1), `delete_by_chunk_ids` writes a DEL record
-//! (flag 2), and `rebuild` clears the table (its result is fully persisted
-//! to the layout). The table is `PK (segment_id, chunk_id)`; `segment_id`
-//! 0 is the RAM layer, `n` a DISK layer. The WAL stores only `chunk_id` +
-//! flags — never the vector payload (design: "WAL without vectors"; the
-//! payload comes from the chunks table). Without an attached database (the
-//! default), every WAL call is a no-op and the engine behaves RAM-only.
+//! upsert one `(s, K, DEL)` supersession row per DISK segment `s` holding
+//! `K`, `delete_by_chunk_ids` upserts `(0, K, DEL)` for keys in RAM plus
+//! `(s, K, DEL)` for each DISK segment holding `K`, and `rebuild` clears
+//! the table (its result is fully persisted to the layout). Only the DEL
+//! flag is ever written — a row means "the key is invalid in that segment"
+//! (deleted or superseded by a fresher layer); ADD/UPD are reserved, never
+//! written, because the key record lives in the sidecar manifests. Each
+//! operation's rows commit in ONE SQLite transaction (atomic supersession,
+//! ADR 0004 §3 invariant 3). The table is `PK (segment_id, chunk_id)`;
+//! `segment_id` 0 is the RAM layer, `n` a DISK layer. The WAL stores only
+//! `chunk_id` + flags — never the vector payload (design: "WAL without
+//! vectors"; the payload comes from the chunks table). Without an attached
+//! database (the default), every WAL call is a no-op and the engine
+//! behaves RAM-only.
+//!
+//! The durable WAL is mirrored in a versioned in-memory stale-set cache
+//! (ADR 0004 §3): loaded with one SQL select on open and bumped by every
+//! write transaction, so steady-state `search`/`count`/`chunk_ids` read the
+//! cache with zero SQL.
 //!
 //! # Open engines are read-write
 //!
@@ -96,15 +108,15 @@
 //!
 //! # Key enumeration
 //!
-//! The usearch Rust bindings expose no "list all keys" API, so
-//! [`UsearchEngine::chunk_ids`] currently runs `exact_search` (a guaranteed
-//! full brute-force scan) with `k = size()` and a fixed non-zero query on
-//! the RAM layer: every live vector is a distinct top-k hit (the index is
-//! non-multi), so the match keys are exactly the stored chunk ids. Like
-//! `LanceEngine::chunk_ids` this is a full scan — the reconciliation
-//! primitive of the cascade protocol (design D3), called rarely by the GC,
-//! never on the query path. (Task 3.4 switches `chunk_ids`/`count` to the
-//! sidecar manifests minus the stale sets.)
+//! The usearch Rust bindings expose no "list all keys" API, so every
+//! layer's keys are recorded in the sidecar key manifests (the
+//! [`keys_manifest`] codec): the RAM manifest is the in-memory `ram_keys`
+//! set, each DISK manifest is loaded with its segment at open.
+//! [`UsearchEngine::chunk_ids`] and [`UsearchEngine::count`] enumerate the
+//! live keys as the union of the manifests minus the per-segment stale sets
+//! (ADR 0004 §6) — no index scans and no SQL on the steady-state path.
+//! This is the reconciliation primitive of the cascade protocol (design
+//! D3), called rarely by the GC, never on the query path.
 //!
 //! # Reserve-before-mutate
 //!
@@ -133,9 +145,9 @@ use layout::{
     DiskSegment, RAM_INDEX_FILE, cleanup_garbage, layout_exists, load_disk_segments,
     load_ram_layer, ram_index_path, ram_keys_path, segments_dir, to_str,
 };
-use options::{key_to_chunk_id, map_sqlite, map_usearch, options};
+use options::{map_sqlite, map_usearch, options};
 use search::add_rows;
-use wal::{WAL_ADD, WAL_DEL, load_stale_sets, reconcile_wal};
+use wal::{StaleCache, load_stale_sets, reconcile_wal};
 
 use crate::{VectorIndex, VectorIndexConfig, VectorsError};
 
@@ -166,16 +178,21 @@ pub struct UsearchEngine {
     root: PathBuf,
     /// Usearch-specific config (max_segment_vectors, compaction threshold, etc.)
     usearch_config: crate::UsearchConfig,
-    /// Raw per-segment stale sets loaded from the WAL at open (ADR 0004
-    /// §3/§8): `segment_id → deleted/superseded chunk ids`. Task 3.4
-    /// turns this into the versioned search-path cache.
-    stale: Mutex<HashMap<u32, HashSet<u32>>>,
+    /// Versioned in-memory stale-set cache (ADR 0004 §3): the in-memory
+    /// mirror of the durable WAL — `segment_id → deleted/superseded chunk
+    /// ids`, loaded with one SQL select on open and bumped by every write
+    /// transaction. Steady-state reads (`search`/`count`/`chunk_ids`) take
+    /// a snapshot of the sets: zero SQL on the query path.
+    stale: StaleCache,
     /// The SQLite connection holding the `usearch_vectors_log` WAL table
     /// (ADR 0004 §3); `None` (the default) disables the WAL — every WAL
     /// call is a no-op. `Mutex` because `rusqlite::Connection` is `Send`
     /// but not `Sync`, while the engine is shared across threads
-    /// (`VectorIndex: Send + Sync`).
-    wal: Option<Mutex<Connection>>,
+    /// (`VectorIndex: Send + Sync`). The `Connection` is heap-allocated
+    /// (`Box`) so the optional WAL stays out of the inline struct size —
+    /// without it the `VectorEngine` enum (Lance vs Usearch variants) would
+    /// trip `clippy::large_enum_variant`.
+    wal: Option<Mutex<Box<Connection>>>,
 }
 
 impl UsearchEngine {
@@ -228,7 +245,7 @@ impl UsearchEngine {
             config,
             root,
             usearch_config,
-            stale: Mutex::new(HashMap::new()),
+            stale: StaleCache::empty(),
             wal: None,
         };
         // The create-time snapshot: an empty `ram.usearch` (carrying the
@@ -283,16 +300,16 @@ impl UsearchEngine {
         //    (ADR 0004 §8 step 3).
         let (index, ram_keys) = load_ram_layer(&root, &config)?;
         // 4. WAL: dedicated connection, orphan-row reconciliation, and
-        //    the raw stale sets (ADR 0004 §8 steps 4/6).
+        //    the versioned stale-set cache (ADR 0004 §8 steps 4/6).
         let (wal, stale) = match wal_db {
             Some(db_path) => {
                 let conn = Connection::open(db_path).map_err(map_sqlite)?;
                 let disk_ids: Vec<u32> = disk_segments.iter().map(|segment| segment.id).collect();
                 reconcile_wal(&conn, &disk_ids)?;
                 let stale = load_stale_sets(&conn)?;
-                (Some(Mutex::new(conn)), Mutex::new(stale))
+                (Some(Mutex::new(Box::new(conn))), StaleCache::loaded(stale))
             }
-            None => (None, Mutex::new(HashMap::new())),
+            None => (None, StaleCache::empty()),
         };
         Ok(Self {
             index,
@@ -307,20 +324,24 @@ impl UsearchEngine {
     }
 
     /// Attaches the SQLite connection that holds the `usearch_vectors_log`
-    /// WAL table (usearch-wal-persistence task 2.2) and takes ownership of
-    /// it.
+    /// WAL table and takes ownership of it.
     ///
     /// The table is created by the knowledge database's migration
     /// `3-usearch-vectors-log` (db crate); this method does not open or
     /// migrate anything — the consumer (which owns the database) opens the
-    /// connection. With the WAL attached, `insert`/`insert_batch` journal
-    /// an ADD record, `delete_by_chunk_ids` journals a DEL record, and
-    /// `rebuild` clears the table — each before the RAM index is mutated
-    /// (WAL-first, module docs). Without it (the default from
+    /// connection. On attach it loads the per-segment stale sets from the
+    /// WAL into the versioned cache (ADR 0004 §8 step 6), so the steady-state
+    /// reads start consistent with the durable log. With the WAL attached,
+    /// `insert`/`insert_batch` journal supersession DEL rows,
+    /// `delete_by_chunk_ids` journals invalidation DEL rows, and `rebuild`
+    /// clears the table — each before the RAM index is mutated (WAL-first,
+    /// module docs). Without it (the default from
     /// [`Self::create`]/[`Self::open`]), all WAL calls are no-ops.
-    pub fn with_wal_db(mut self, conn: Connection) -> Self {
-        self.wal = Some(Mutex::new(conn));
-        self
+    pub fn with_wal_db(mut self, conn: Connection) -> Result<Self, VectorsError> {
+        let stale = load_stale_sets(&conn)?;
+        self.stale = StaleCache::loaded(stale);
+        self.wal = Some(Mutex::new(Box::new(conn)));
+        Ok(self)
     }
 
     /// Stores `vector` under `chunk_id` (single-row convenience over
@@ -340,9 +361,14 @@ impl UsearchEngine {
     /// before anything is stored). Uniqueness of `chunk_id` is the caller's
     /// responsibility.
     ///
-    /// With a WAL attached ([`Self::with_wal_db`]), an ADD record is
-    /// journaled for every row BEFORE the index is mutated (module docs:
-    /// WAL journal).
+    /// With a WAL attached ([`Self::with_wal_db`]), the supersession rows
+    /// (one `(s, K, DEL)` per DISK segment holding `K`) are journaled in one
+    /// transaction BEFORE the index is mutated (module docs: WAL journal);
+    /// a transaction failure stores nothing in RAM (WAL-first).
+    ///
+    /// Re-inserting a key already present in RAM is a supersession: the old
+    /// copy is removed and the new one stored (the non-multi index rejects a
+    /// duplicate `add`).
     ///
     /// The mutation lands on the RAM layer only; persist it with
     /// [`Self::build_index`] or [`Self::rebuild`] (module docs: on-disk
@@ -360,11 +386,17 @@ impl UsearchEngine {
                 });
             }
         }
-        // WAL-first: journal every row before the RAM index is mutated, so
-        // a crash mid-batch leaves a self-healing log (the payload comes
-        // from the chunks table on replay).
-        for &(chunk_id, _) in rows {
-            self.write_wal(chunk_id, WAL_ADD)?;
+        // WAL-first: the supersession rows commit before the RAM index is
+        // mutated, so a crash mid-batch leaves a self-healing log (the
+        // payload comes from the chunks table on replay) and a failed
+        // transaction stores nothing (ADR 0004 §3 invariant 3).
+        let keys: Vec<u32> = rows.iter().map(|(chunk_id, _)| *chunk_id).collect();
+        self.insert_supersession(&keys)?;
+        // The non-multi RAM index rejects a duplicate `add`, so a
+        // supersession removes the old copy first. `remove` on an absent key
+        // is a no-op (0 removed), so fresh keys are unaffected.
+        for &key in &keys {
+            self.index.remove(key as u64).map_err(map_usearch)?;
         }
         self.index
             .reserve(self.index.size() + rows.len())
@@ -386,9 +418,11 @@ impl UsearchEngine {
     /// a crash between the vector delete and the SQLite chunk delete
     /// (design D3) — is always safe.
     ///
-    /// With a WAL attached ([`Self::with_wal_db`]), a DEL record is
-    /// journaled for every id BEFORE the index is mutated (module docs:
-    /// WAL journal).
+    /// With a WAL attached ([`Self::with_wal_db`]), the invalidation rows
+    /// (`(0, K, DEL)` for keys in RAM plus `(s, K, DEL)` per DISK segment
+    /// holding `K`) are journaled in one transaction BEFORE the index is
+    /// mutated (module docs: WAL journal); a transaction failure stores
+    /// nothing (WAL-first).
     ///
     /// The mutation lands on the RAM layer only (module docs: on-disk
     /// layout): an unsaved delete leaves orphaned vectors after a restart,
@@ -398,11 +432,9 @@ impl UsearchEngine {
         if chunk_ids.is_empty() {
             return Ok(());
         }
-        // WAL-first: journal every id before the RAM index is mutated
-        // (crash-safety as in `insert_batch`).
-        for &chunk_id in chunk_ids {
-            self.write_wal(chunk_id, WAL_DEL)?;
-        }
+        // WAL-first: the invalidation rows commit before the RAM index is
+        // mutated (crash-safety as in `insert_batch`, ADR 0004 §3/§4).
+        self.delete_invalidations(chunk_ids)?;
         for &chunk_id in chunk_ids {
             self.index.remove(chunk_id as u64).map_err(map_usearch)?;
         }
@@ -415,43 +447,52 @@ impl UsearchEngine {
         Ok(())
     }
 
-    /// All chunk ids currently stored, in no particular order.
+    /// All live chunk ids (manifests minus the per-segment stale sets, ADR
+    /// 0004 §6), in no particular order.
     ///
     /// Reconciliation primitive (design D3): the GC job computes
     /// "index − SQLite → delete" from this listing. The usearch bindings
-    /// expose no key-enumeration API, so this runs `exact_search` (a
-    /// guaranteed full brute-force scan) with `k = size()` and a fixed
-    /// non-zero query: every live vector is a distinct top-k hit (the index
-    /// is non-multi), so the match keys are exactly the stored ids —
-    /// soft-deleted slots are excluded by the core. Like
-    /// `LanceEngine::chunk_ids` this is a full scan, called rarely by the
-    /// GC, never on the query path.
+    /// expose no key-enumeration API, so the keys come from the sidecar
+    /// manifests (module docs: key enumeration): the RAM manifest minus
+    /// `stale[0]`, unioned with each DISK manifest minus `stale[s]`. No
+    /// index scans and no SQL — called rarely by the GC, never on the query
+    /// path.
     pub fn chunk_ids(&self) -> Result<Vec<u32>, VectorsError> {
-        let count = self.index.size();
-        if count == 0 {
-            return Ok(Vec::new());
+        let stale = self.stale.snapshot();
+        let mut ids: HashSet<u32> = HashSet::new();
+        // RAM layer (segment 0): live = ram_keys − stale[0].
+        let ram_keys = mutex_guard(&self.ram_keys);
+        if let Some(ram_stale) = stale.get(&0) {
+            for key in ram_keys.iter() {
+                if !ram_stale.contains(key) {
+                    ids.insert(*key);
+                }
+            }
+        } else {
+            ids.extend(ram_keys.iter().copied());
         }
-        // Defensive: a restored index already carries worker threads from
-        // the file header, and a created one was reserved before its first
-        // add — this is a no-op in both cases.
-        self.index.reserve(count).map_err(map_usearch)?;
-        // A non-zero query: the integer down-cast divides by the vector norm.
-        let query = vec![1.0f32; self.config.dim];
-        let matches = self
-            .index
-            .exact_search(&query, count)
-            .map_err(map_usearch)?;
-        matches
-            .keys
-            .iter()
-            .map(|&key| key_to_chunk_id(key))
-            .collect()
+        drop(ram_keys);
+        // DISK layers: live = keys(s) − stale[s].
+        let segments = disk_segments_read_guard(&self.disk_segments);
+        for segment in segments.iter() {
+            if let Some(seg_stale) = stale.get(&segment.id) {
+                for key in segment.keys.iter() {
+                    if !seg_stale.contains(key) {
+                        ids.insert(*key);
+                    }
+                }
+            } else {
+                ids.extend(segment.keys.iter().copied());
+            }
+        }
+        Ok(ids.into_iter().collect())
     }
 
-    /// Number of vectors currently stored (soft-deleted rows are not
-    /// counted).
+    /// Number of live vectors currently stored across the RAM and DISK
+    /// layers (ADR 0004 §6): the sidecar manifests minus the per-segment
+    /// stale sets. Stale (deleted or superseded) rows are not counted.
     pub fn count(&self) -> Result<u64, VectorsError> {
-        Ok(self.index.size() as u64)
+        Ok(self.chunk_ids()?.len() as u64)
     }
 
     /// Persists the current RAM layer state (the save point of the
@@ -521,10 +562,9 @@ impl UsearchEngine {
             ram_keys.insert(*id);
         }
         drop(ram_keys);
-        // 4. Persist the new state (ADR 0004 §4: save ram + sidecar).
+        // 4. Persist the new state (ADR 0004 §4: save ram + sidecar). The
+        //    stale cache was already reset with the WAL at step 1.
         self.save()?;
-        // The WAL is empty again: the open-time stale sets are stale.
-        *mutex_guard(&self.stale) = HashMap::new();
         Ok(())
     }
 
@@ -552,12 +592,11 @@ impl UsearchEngine {
         &self.root
     }
 
-    /// Snapshot of the raw per-segment stale sets loaded from the WAL at
-    /// open (ADR 0004 §3/§8): `segment_id → deleted/superseded chunk
-    /// ids`. Empty when no WAL database is attached. Task 3.4 turns this
-    /// into the versioned search-path cache with write-path bumps.
+    /// Snapshot of the versioned per-segment stale-set cache (ADR 0004 §3):
+    /// `segment_id → deleted/superseded chunk ids`. Empty when no WAL
+    /// database is attached.
     pub fn stale_sets(&self) -> HashMap<u32, HashSet<u32>> {
-        mutex_guard(&self.stale).clone()
+        self.stale.snapshot()
     }
 }
 
@@ -645,13 +684,23 @@ fn rename_over(tmp: &Path, target: &Path) -> Result<(), VectorsError> {
 #[cfg(test)]
 mod test_util {
     //! Shared test fixtures: a unique temporary directory that removes
-    //! itself (and its contents) when dropped.
+    //! itself (and its contents) when dropped, plus the small config /
+    //! vector / WAL-table / DISK-segment helpers shared by the layout and
+    //! WAL test modules.
 
-    // Test code: unwrap/expect are intentional (the fixture is deterministic).
+    // Test code: unwrap/expect are intentional (the fixtures are deterministic).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    use rusqlite::{Connection, params};
+    use usearch::Index;
+
+    use super::keys_manifest::write_keys;
+    use super::layout::{segment_keys_path, segments_dir};
+    use super::options::options;
+    use crate::VectorIndexConfig;
 
     /// A unique temporary directory that removes itself (and its contents)
     /// when dropped.
@@ -674,5 +723,71 @@ mod test_util {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// A small, fast test config (dim 8, minimal HNSW parameters).
+    pub(crate) fn test_config() -> VectorIndexConfig {
+        VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("valid test config")
+    }
+
+    /// A deterministic test vector: unit vector on axis `axis`.
+    pub(crate) fn test_vector(dim: usize, axis: usize) -> Vec<f32> {
+        let mut vector = vec![0.0f32; dim];
+        vector[axis % dim] = 1.0;
+        vector
+    }
+
+    /// Creates the ADR 0004 WAL table (migrations 3+4 shape) in `conn`.
+    pub(crate) fn create_wal_table(conn: &Connection) {
+        conn.execute(
+            "CREATE TABLE usearch_vectors_log (
+                segment_id INTEGER NOT NULL,
+                chunk_id INTEGER NOT NULL,
+                flags INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (segment_id, chunk_id)
+            )",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// Inserts one WAL row (flags: 1 = ADD, 2 = DEL, 4 = UPD).
+    pub(crate) fn insert_wal_row(conn: &Connection, segment_id: u32, chunk_id: u32, flags: u8) {
+        conn.execute(
+            "INSERT OR REPLACE INTO usearch_vectors_log (segment_id, chunk_id, flags, created_at)
+             VALUES (?1, ?2, ?3, datetime('now'))",
+            params![segment_id as i64, chunk_id as i64, flags as i64],
+        )
+        .unwrap();
+    }
+
+    /// The WAL rows as `(segment_id, chunk_id)` pairs, ordered.
+    pub(crate) fn wal_rows(conn: &Connection) -> Vec<(i64, i64)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT segment_id, chunk_id FROM usearch_vectors_log \
+                 ORDER BY segment_id, chunk_id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap();
+        rows.collect::<Result<_, _>>().unwrap()
+    }
+
+    /// Writes one DISK segment file pair (index + sidecar manifest) with the
+    /// given keys, each key stored as a distinct unit vector.
+    pub(crate) fn write_segment(root: &Path, id: u32, config: &VectorIndexConfig, keys: &[u32]) {
+        let index = Index::new(&options(config)).unwrap();
+        index.reserve(keys.len().max(1)).unwrap();
+        for (i, &key) in keys.iter().enumerate() {
+            index
+                .add(key as u64, &test_vector(config.dim, i + 1))
+                .unwrap();
+        }
+        let path = segments_dir(root).join(format!("segment-{id}.usearch"));
+        index.save(path.to_str().unwrap()).unwrap();
+        write_keys(&segment_keys_path(root, id), keys).unwrap();
     }
 }

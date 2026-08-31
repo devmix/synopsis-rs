@@ -1,8 +1,11 @@
 //! Search-path helpers (usearch-wal-persistence task 3.4 split): the
 //! multi-segment `search` implementation, concurrent row insertion, and
 //! the per-segment result merge.
-
-use std::collections::HashSet;
+//!
+//! The stale filtering reads the versioned in-memory stale-set cache
+//! (ADR 0004 §3/§6) — zero SQL on the query path. Each layer filters by its
+//! OWN per-segment stale set (a key superseded in an older segment stays
+//! live in the fresher layer, so a global stale set would wrongly hide it).
 
 use rayon::prelude::*;
 use usearch::Index;
@@ -21,64 +24,54 @@ impl UsearchEngine {
     /// module docs). An empty index yields an empty vec (not an error).
     /// Requires `k > 0` and `query.len() == config.dim`.
     ///
-    /// WAL filtering (usearch-wal-persistence task 2.3): chunk ids whose
-    /// `usearch_vectors_log` record carries the DEL or UPD bit are excluded
-    /// during HNSW traversal via usearch's `filtered_search` (the filter
-    /// closure is evaluated per-candidate inside the C++ core, not as a
-    /// post-filter), so deleted/updated vectors never appear in the results.
-    ///
-    /// Per-segment WAL filtering: each segment uses cumulative WAL entries
-    /// from segment 0..N, ensuring correct filtering across multiple segments.
-    /// The WAL is loaded once into memory, then cumulative stale sets are
-    /// computed without repeated SQL queries.
+    /// Stale filtering (ADR 0004 §3/§6): each layer excludes the keys in its
+    /// OWN per-segment stale set, evaluated per-candidate inside the C++ core
+    /// via usearch's `filtered_search` (not a post-filter), so deleted or
+    /// superseded vectors never appear in the results. The stale sets come
+    /// from the versioned in-memory cache — zero SQL on the query path. A
+    /// layer with an empty stale set uses plain `search` (no filter-closure
+    /// overhead). A key superseded in an older segment stays live in the
+    /// fresher layer, which is why the filter is per-segment, not global.
     ///
     /// The search runs across the engine's segments in parallel (rayon
     /// `par_iter`); per-segment results are merged by [`merge_results`]
     /// (dedup by chunk_id keeping the minimum distance, sort ascending,
-    /// truncate to `k`).
+    /// truncate to `k`). The freshest-wins merge and the dedicated
+    /// `search_threads` pool land in task 3.6.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, VectorsError> {
         self.config.validate_search(query, k)?;
 
-        // Load all WAL stale entries once (DEL/UPD in ANY segment_id)
-        let wal_by_segment = self.load_wal_grouped()?;
+        // The per-segment stale sets come from the versioned in-memory cache
+        // (ADR 0004 §3): zero SQL on the query path.
+        let stale = self.stale.snapshot();
 
-        // A DEL/UPD in ANY segment makes the vector stale everywhere.
-        // Build a single global stale set from all segments.
-        let mut global_stale: HashSet<u32> = HashSet::new();
-        for ids in wal_by_segment.values() {
-            global_stale.extend(ids);
-        }
-
-        // Search DISK segments with global WAL filtering
+        // Search the DISK segments in parallel; each filters by its OWN
+        // stale set only (ADR 0004 §3: a segment is self-contained).
         let segments = disk_segments_read_guard(&self.disk_segments);
         let disk_results: Vec<Vec<(u32, f32)>> = segments
             .par_iter()
             .map(|segment| {
-                let matches = segment
-                    .index
-                    .filtered_search(query, k, |key: u64| !global_stale.contains(&(key as u32)))
-                    .map_err(map_usearch)?;
-                let mut results = Vec::with_capacity(matches.keys.len());
-                for j in 0..matches.keys.len() {
-                    results.push((key_to_chunk_id(matches.keys[j])?, matches.distances[j]));
-                }
-                Ok(results)
+                let matches = match stale.get(&segment.id) {
+                    Some(seg_stale) if !seg_stale.is_empty() => segment
+                        .index
+                        .filtered_search(query, k, |key: u64| !seg_stale.contains(&(key as u32)))
+                        .map_err(map_usearch)?,
+                    _ => segment.index.search(query, k).map_err(map_usearch)?,
+                };
+                to_results(&matches.keys, &matches.distances)
             })
             .collect::<Result<Vec<_>, VectorsError>>()?;
         drop(segments);
 
-        // Search RAM layer with global WAL filtering
-        let ram_results = self
-            .index
-            .filtered_search(query, k, |key: u64| !global_stale.contains(&(key as u32)))
-            .map_err(map_usearch)?;
-        let mut ram_vec = Vec::with_capacity(ram_results.keys.len());
-        for j in 0..ram_results.keys.len() {
-            ram_vec.push((
-                key_to_chunk_id(ram_results.keys[j])?,
-                ram_results.distances[j],
-            ));
-        }
+        // Search the RAM layer (segment 0) with its own stale set.
+        let ram_matches = match stale.get(&0) {
+            Some(ram_stale) if !ram_stale.is_empty() => self
+                .index
+                .filtered_search(query, k, |key: u64| !ram_stale.contains(&(key as u32)))
+                .map_err(map_usearch)?,
+            _ => self.index.search(query, k).map_err(map_usearch)?,
+        };
+        let ram_vec = to_results(&ram_matches.keys, &ram_matches.distances)?;
 
         // Merge all results
         let mut all_results = disk_results;
@@ -98,6 +91,16 @@ pub(super) fn add_rows(index: &Index, rows: &[(u32, &[f32])]) -> Result<(), Vect
             Ok(())
         })
         .map(|_| ())
+}
+
+/// Converts usearch search `matches` (keys + distances) into
+/// `(chunk_id, distance)` pairs.
+fn to_results(keys: &[u64], distances: &[f32]) -> Result<Vec<(u32, f32)>, VectorsError> {
+    let mut results = Vec::with_capacity(keys.len());
+    for j in 0..keys.len() {
+        results.push((key_to_chunk_id(keys[j])?, distances[j]));
+    }
+    Ok(results)
 }
 
 /// Merges per-segment search results (usearch-wal-persistence task 2.3):
