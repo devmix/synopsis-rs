@@ -1,8 +1,8 @@
-//! USearch-backed ANN engine (add-usearch-ann-engine, task 1.2).
+//! USearch-backed ANN engine (add-usearch-ann-engine, task 1.2; ADR 0004
+//! two-layer RAM/DISK layout, usearch-wal-persistence task 3.3).
 //!
 //! [`UsearchEngine`] implements the full [`crate::VectorIndex`] contract on
-//! the USearch 2.26 C++11 HNSW core (cxx FFI), mirroring the [`crate::engine::LanceEngine`]
-//! semantics:
+//! the USearch 2.26 C++11 HNSW core (cxx FFI):
 //!
 //! - `L2sq` metric with configurable scalar quantization (default `BF16`;
 //!   [`VectorIndexConfig::quantization`] selects `u8`/`i8`/`f16`/`bf16`/`f32`):
@@ -17,58 +17,94 @@
 //! - HNSW parameters from [`VectorIndexConfig`]: `connectivity = m`,
 //!   `expansion_add = ef_construction`, `expansion_search = ef_search`
 //!   (the IVF fields `num_partitions`/`nprobes` do not apply to pure HNSW);
-//! - disk-backed serving: [`UsearchEngine::open`] restores the index from
-//!   `<dir>/index.usearch` (`Index::restore` loads the file into memory for
-//!   read-write) — the opened engine is fully writable;
 //! - the HNSW graph is built incrementally during every `add`, so the index
 //!   is always search-ready; [`UsearchEngine::build_index`] is the
-//!   persistence point (persistence model below).
+//!   persistence point (layout below).
 //!
-//! # Persistence model (deliberately differs from `LanceEngine`)
+//! # On-disk layout (ADR 0004 §1)
 //!
-//! A usearch index is one in-memory file, not a versioned dataset:
-//! `insert_batch` and `delete_by_chunk_ids` mutate the live index
-//! only, and the state is flushed to disk by [`UsearchEngine::build_index`]
-//! (plain save) and [`UsearchEngine::rebuild`] (atomic temp-file + rename).
-//! This fits the cascade protocol (design D3): an unsaved delete leaves
-//! orphaned vectors after a restart, which the consumer filters against
-//! SQLite and the GC re-detects via `chunk_ids`/`count`; an unsaved insert
-//! is repaired by the full `rebuild` from chunk text (the ultimate repair).
-//! A full-file save per ingested document would be O(N²) writes at corpus
-//! scale, so persistence is batched at the build/rebuild boundary.
+//! The engine directory (`<vectors_path>/usearch/`) holds a two-layer index:
 //!
-//! # WAL journal (usearch-wal-persistence task 2.2)
+//! ```text
+//! <vectors_path>/usearch/
+//! ├── ram.usearch              # RAM layer snapshot (written at create, then on flush/shutdown)
+//! ├── ram.keys                 # sidecar key manifest of the RAM layer
+//! └── segments/
+//!     ├── segment-1.usearch    # DISK[n] layer, read-only, id monotonic
+//!     ├── segment-1.keys       # sidecar key manifest
+//!     └── ...
+//! ```
 //!
-//! With a SQLite connection attached via [`UsearchEngine::with_wal_db`],
-//! mutations are journaled to the `usearch_vectors_log` table (migration
-//! `3-usearch-vectors-log`, db crate) BEFORE the RAM index is mutated
-//! (WAL-first): `insert`/`insert_batch` write an ADD record (flag 1),
-//! `delete_by_chunk_ids` writes a DEL record (flag 2), and `rebuild`
-//! clears the table (its result is fully persisted to the index file).
-//! The WAL stores only `chunk_id` + flags — never the vector payload
-//! (design: "WAL without vectors"; the payload comes from the chunks
-//! table). A crash between the journal write and the RAM mutation leaves
-//! a self-healing record. Without an attached connection (the default),
-//! every WAL call is a no-op and the engine behaves exactly as before.
+//! - **RAM layer (segment id 0)** — the freshest data, kept as a mutable
+//!   in-memory copy: `open` loads `ram.usearch` with
+//!   `Index::restore_from_buffer` (a memory copy — the usearch core does
+//!   not persist `add`/`remove` through an mmap file, ADR audit #12, so
+//!   the snapshot is written explicitly by [`UsearchEngine::save`] at
+//!   create time, on flush/shutdown, and by [`UsearchEngine::rebuild`];
+//!   the create-time empty snapshot carries the dimensionality in the
+//!   file header, so even an empty index is identifiable by dimension on
+//!   `open` — the dim check always has a file to read);
+//! - **DISK layers (segment id 1..N)** — historical, read-only: `open`
+//!   maps each `segment-<n>.usearch` with `Index::restore_view` (mmap
+//!   view, zero-copy); the ids grow monotonically and are never
+//!   renumbered (ADR 0004 §2), so a higher id is always the fresher layer;
+//! - **Sidecar key manifests (`.keys`)** — the usearch core exposes no
+//!   key-enumeration API, so every layer's keys are recorded in a binary
+//!   manifest next to the index file (the [`keys_manifest`] codec):
+//!   `magic u32 LE`, `count u32 LE`, `count × key u32 LE`, written
+//!   atomically (tmp + fsync + rename).
+//!
+//! # Startup recovery (`open`, ADR 0004 §7/§8)
+//!
+//! [`UsearchEngine::open_with_wal`] runs the crash-matrix recovery:
+//!
+//! 1. garbage cleanup — `segments.tmp/` (compaction scratch; promoted to
+//!    `segments/` in the "crash between the two directory renames" case),
+//!    `segments.old/`, and `*.tmp`/`*.old` files left by atomic writes are
+//!    removed;
+//! 2. DISK segments are mapped read-only with their sidecars (a missing or
+//!    corrupt sidecar is a distinct error, never a silent gap);
+//! 3. the RAM layer is restored (missing snapshot → empty index: the
+//!    honest loss window, ADR 0004 §5);
+//! 4. with a WAL database attached, orphan WAL rows whose segment files no
+//!    longer exist are deleted (self-heal after a crashed compaction/flush)
+//!    and the per-segment stale sets are loaded;
+//! 5. every layer's dimensionality is checked against `config.dim`
+//!    ([`VectorsError::DimensionMismatch`]).
+//!
+//! # WAL journal (ADR 0004 §3)
+//!
+//! With a SQLite database attached (a dedicated long-lived connection
+//! opened by [`UsearchEngine::open_with_wal`] from the knowledge.db path,
+//! or an injected one via [`UsearchEngine::with_wal_db`]), mutations are
+//! journaled to the `usearch_vectors_log` table (migrations 3+4, db crate)
+//! BEFORE the RAM index is mutated (WAL-first): `insert`/`insert_batch`
+//! write an ADD record (flag 1), `delete_by_chunk_ids` writes a DEL record
+//! (flag 2), and `rebuild` clears the table (its result is fully persisted
+//! to the layout). The table is `PK (segment_id, chunk_id)`; `segment_id`
+//! 0 is the RAM layer, `n` a DISK layer. The WAL stores only `chunk_id` +
+//! flags — never the vector payload (design: "WAL without vectors"; the
+//! payload comes from the chunks table). Without an attached database (the
+//! default), every WAL call is a no-op and the engine behaves RAM-only.
 //!
 //! # Open engines are read-write
 //!
-//! [`UsearchEngine::open`] loads the index file into memory
-//! (`Index::restore`), so an opened engine is fully writable: `insert`,
-//! `insert_batch` and `delete_by_chunk_ids` work on it exactly as on a
-//! created engine. Mutations still land on the live index only until
-//! persisted (persistence model above).
+//! The RAM layer is an in-memory copy, so an opened engine is fully
+//! writable: `insert`, `insert_batch` and `delete_by_chunk_ids` work on it
+//! exactly as on a created engine. Mutations land on the RAM layer until
+//! persisted by a save (layout above).
 //!
 //! # Key enumeration
 //!
 //! The usearch Rust bindings expose no "list all keys" API, so
-//! [`UsearchEngine::chunk_ids`] runs `exact_search` (a guaranteed full
-//! brute-force scan) with `k = size()` and a fixed non-zero query: every
-//! live vector is a distinct top-k hit (the index is non-multi), so the
-//! match keys are exactly the stored chunk ids. Like
+//! [`UsearchEngine::chunk_ids`] currently runs `exact_search` (a guaranteed
+//! full brute-force scan) with `k = size()` and a fixed non-zero query on
+//! the RAM layer: every live vector is a distinct top-k hit (the index is
+//! non-multi), so the match keys are exactly the stored chunk ids. Like
 //! `LanceEngine::chunk_ids` this is a full scan — the reconciliation
 //! primitive of the cascade protocol (design D3), called rarely by the GC,
-//! never on the query path.
+//! never on the query path. (Task 3.4 switches `chunk_ids`/`count` to the
+//! sidecar manifests minus the stale sets.)
 //!
 //! # Reserve-before-mutate
 //!
@@ -82,7 +118,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use rayon::prelude::*;
 use rusqlite::{Connection, params};
@@ -90,80 +126,116 @@ use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
 use crate::{VectorIndex, VectorIndexConfig, VectorsError};
 
-/// Single on-disk index file inside the engine directory (design.md layout:
-/// `<vectors_path>/usearch/`).
-const INDEX_FILE: &str = "index.usearch";
-/// Temp file for the atomic `rebuild` save (same directory as
-/// [`INDEX_FILE`] → the final rename is atomic on the same filesystem).
-const INDEX_TMP_FILE: &str = "index.usearch.tmp";
+/// RAM layer snapshot file inside the engine directory (ADR 0004 §1).
+const RAM_INDEX_FILE: &str = "ram.usearch";
+/// RAM layer sidecar key manifest (ADR 0004 §1/§3).
+const RAM_KEYS_FILE: &str = "ram.keys";
+/// DISK segment directory (ADR 0004 §1).
+const SEGMENTS_DIR: &str = "segments";
+/// Compaction scratch directory: the new segments are assembled here
+/// before the atomic directory swap (ADR 0004 §7).
+const SEGMENTS_TMP_DIR: &str = "segments.tmp";
+/// Previous segment directory, kept until the compaction swap is complete
+/// (ADR 0004 §7).
+const SEGMENTS_OLD_DIR: &str = "segments.old";
+/// DISK segment file prefix: `segment-<n>.usearch` / `segment-<n>.keys`
+/// (ADR 0004 §1; `n` is decimal and monotonic).
+const SEGMENT_FILE_PREFIX: &str = "segment-";
+/// DISK segment index file extension.
+const SEGMENT_INDEX_EXT: &str = ".usearch";
 /// Rows per rayon task in `insert_batch`/`rebuild` (mirrors the
 /// LanceEngine batch size of 1000; each row is a single concurrent `add`).
 const ADD_CHUNK: usize = 1000;
 /// WAL flag: a vector was added (usearch-wal-persistence design).
 const WAL_ADD: u8 = 1;
-/// WAL flag: a vector was deleted.
+/// WAL flag: a vector was deleted or superseded in that segment.
 const WAL_DEL: u8 = 2;
 
-/// USearch-backed ANN index (add-usearch-ann-engine task 1.2).
+/// The RAM layer snapshot file path (ADR 0004 §1).
+fn ram_index_path(root: &Path) -> PathBuf {
+    root.join(RAM_INDEX_FILE)
+}
+
+/// The RAM layer sidecar manifest path (ADR 0004 §1).
+fn ram_keys_path(root: &Path) -> PathBuf {
+    root.join(RAM_KEYS_FILE)
+}
+
+/// The DISK segment directory (ADR 0004 §1).
+fn segments_dir(root: &Path) -> PathBuf {
+    root.join(SEGMENTS_DIR)
+}
+
+/// The DISK segment sidecar manifest path for segment id `id`.
+fn segment_keys_path(root: &Path, id: u32) -> PathBuf {
+    segments_dir(root).join(format!("{SEGMENT_FILE_PREFIX}{id}.keys"))
+}
+
+/// One loaded DISK segment (ADR 0004 §1/§2): the read-only mmap view, its
+/// monotonic id (the `segment-<n>` file number; higher = fresher), and the
+/// sidecar key manifest (the durable key record, ADR 0004 §3).
+#[derive(Clone)]
+struct DiskSegment {
+    id: u32,
+    index: Arc<Index>,
+    /// The sidecar key manifest (ADR 0004 §3): the durable key record for
+    /// this layer. Task 3.4 reads it for `count`/`chunk_ids` and task 3.7
+    /// for the compaction live-key set; task 3.3 only stores it.
+    #[allow(dead_code)]
+    keys: HashSet<u32>,
+}
+
+/// USearch-backed ANN index (ADR 0004 two-layer RAM/DISK layout).
 ///
-/// Owns a usearch `Index` (`Send + Sync`; every mutating method takes
-/// `&self` — the C++ index is concurrent by design) and the on-disk file it
-/// was created or restored from. All methods are sync; the engine is safe
-/// to share across threads and `spawn_blocking` workers.
+/// Owns the RAM layer index (usearch `Index` is `Send + Sync`; every
+/// method takes `&self` — the C++ index is concurrent by design), the
+/// loaded DISK segment views, and the engine directory (ADR 0004 §1
+/// layout). All methods are sync; the engine is safe to share across
+/// threads and `spawn_blocking` workers.
 ///
 /// Implements [`VectorIndex`] by pure delegation to the inherent methods,
 /// so `Arc<dyn VectorIndex>` and `UsearchEngine` are interchangeable.
 pub struct UsearchEngine {
+    /// RAM layer (segment id 0): the freshest data, a mutable in-memory
+    /// copy (ADR 0004 §1: `restore_from_buffer`, never mmap).
     index: Index,
-    /// DISK segments (read-only mmap, segment_id = 1..N)
-    disk_segments: Vec<Index>,
+    /// RAM key manifest: the in-memory content of `ram.keys` (ADR 0004
+    /// §3). Updated on every RAM mutation; the sidecar is rewritten on
+    /// save/rebuild.
+    ram_keys: Mutex<HashSet<u32>>,
+    /// DISK segments (segment id 1..N): read-only mmap views (ADR 0004
+    /// §1). `RwLock` because rebuild/compaction replace the list while
+    /// searches clone the current `Arc`s (ADR 0004 §6).
+    disk_segments: RwLock<Vec<DiskSegment>>,
     config: VectorIndexConfig,
-    /// The `<dir>/index.usearch` file backing the index.
-    path: PathBuf,
+    /// The engine root directory (ADR 0004 §1 layout).
+    root: PathBuf,
     /// Usearch-specific config (max_segment_vectors, compaction threshold, etc.)
     usearch_config: crate::UsearchConfig,
+    /// Raw per-segment stale sets loaded from the WAL at open (ADR 0004
+    /// §3/§8): `segment_id → deleted/superseded chunk ids`. Task 3.4
+    /// turns this into the versioned search-path cache.
+    stale: Mutex<HashMap<u32, HashSet<u32>>>,
     /// The SQLite connection holding the `usearch_vectors_log` WAL table
-    /// (usearch-wal-persistence task 2.2); `None` (the default) disables
-    /// the WAL — every WAL call is a no-op. `Mutex` because
-    /// `rusqlite::Connection` is `Send` but not `Sync`, while the engine
-    /// is shared across threads (`VectorIndex: Send + Sync`).
+    /// (ADR 0004 §3); `None` (the default) disables the WAL — every WAL
+    /// call is a no-op. `Mutex` because `rusqlite::Connection` is `Send`
+    /// but not `Sync`, while the engine is shared across threads
+    /// (`VectorIndex: Send + Sync`).
     wal: Option<Mutex<Connection>>,
 }
 
 impl UsearchEngine {
-    /// Creates a new engine with an EMPTY index at `path` (creating the
-    /// directory if needed) and persists the empty index to
-    /// `<path>/index.usearch`. Fails if that file already exists — use
-    /// [`Self::open`] for that.
+    /// Creates a new engine with an EMPTY RAM layer at `path` (creating
+    /// the directory layout if needed): the empty RAM snapshot pair
+    /// (`ram.usearch` + `ram.keys` — the snapshot carries the configured
+    /// dimensionality, so the dimension is durable from the start) and an
+    /// empty `segments/` directory (ADR 0004 §1). Fails if the layout
+    /// already exists — use [`Self::open`] for that.
     pub fn create(
         path: impl Into<PathBuf>,
         config: VectorIndexConfig,
     ) -> Result<Self, VectorsError> {
-        let path = path.into();
-        config.validate()?;
-        let file = path.join(INDEX_FILE);
-        if file.exists() {
-            return Err(VectorsError::Engine(format!(
-                "index already exists at {}",
-                file.display()
-            )));
-        }
-        std::fs::create_dir_all(&path)?;
-        let index = Index::new(&options(&config)).map_err(map_usearch)?;
-        // The 2.26 core rejects a search that finds no reserved worker
-        // thread; reserving 1 slot keeps an empty index searchable (and
-        // insertable) from the start.
-        index.reserve(1).map_err(map_usearch)?;
-        let engine = Self {
-            index,
-            disk_segments: Vec::new(),
-            config,
-            path: file,
-            usearch_config: crate::UsearchConfig::default(),
-            wal: None,
-        };
-        engine.save()?;
-        Ok(engine)
+        Self::create_with_config(path, config, crate::UsearchConfig::default())
     }
 
     /// Creates a new engine with UsearchConfig.
@@ -172,59 +244,111 @@ impl UsearchEngine {
         config: VectorIndexConfig,
         usearch_config: crate::UsearchConfig,
     ) -> Result<Self, VectorsError> {
-        let path = path.into();
+        let root = path.into();
         config.validate()?;
-        let file = path.join(INDEX_FILE);
-        if file.exists() {
+        usearch_config.validate()?;
+        if layout_exists(&root) {
             return Err(VectorsError::Engine(format!(
                 "index already exists at {}",
-                file.display()
+                root.display()
             )));
         }
-        std::fs::create_dir_all(&path)?;
+        // ADR 0004 §1: the empty layout is durable from the start — the
+        // (empty) segment directory and the RAM layer pair. The empty
+        // `ram.usearch` snapshot is written at create time (not at the
+        // first flush/shutdown): the usearch file header carries the
+        // dimensionality, so an empty created index stays identifiable by
+        // dimension on `open` — without it an 8-dim and a 4-dim empty
+        // index were byte-identical on disk and the dim check never ran
+        // (task 3.3 revision).
+        std::fs::create_dir_all(segments_dir(&root))?;
         let index = Index::new(&options(&config)).map_err(map_usearch)?;
+        // The 2.26 core rejects a search that finds no reserved worker
+        // thread; reserving 1 slot keeps an empty index searchable (and
+        // insertable) from the start.
         index.reserve(1).map_err(map_usearch)?;
         let engine = Self {
             index,
-            disk_segments: Vec::new(),
+            ram_keys: Mutex::new(HashSet::new()),
+            disk_segments: RwLock::new(Vec::new()),
             config,
-            path: file,
+            root,
             usearch_config,
+            stale: Mutex::new(HashMap::new()),
             wal: None,
         };
+        // The create-time snapshot: an empty `ram.usearch` (carrying the
+        // dimension) + the empty `ram.keys` sidecar. `open`'s dim check
+        // then always has a file to read.
         engine.save()?;
         Ok(engine)
     }
 
     /// Opens an engine at `path` created earlier by [`Self::create`]: the
-    /// index file is loaded into memory for read-write (`Index::restore`),
-    /// so the opened engine is fully writable (module docs: "Open engines
-    /// are read-write").
+    /// ADR 0004 §7/§8 startup recovery runs (module docs), so the opened
+    /// engine is fully writable (module docs: "Open engines are
+    /// read-write").
     ///
-    /// Returns [`VectorsError::NotFound`] if no index file exists at
-    /// `path`, and [`VectorsError::DimensionMismatch`] if the stored
-    /// index's vector dimensionality differs from `config.dim`.
+    /// Returns [`VectorsError::NotFound`] if no index layout exists at
+    /// `path`, and [`VectorsError::DimensionMismatch`] if a stored
+    /// layer's vector dimensionality differs from `config.dim`.
     pub fn open(path: impl Into<PathBuf>, config: VectorIndexConfig) -> Result<Self, VectorsError> {
-        let path = path.into();
+        Self::open_with_wal(path, config, None)
+    }
+
+    /// Opens an engine at `path` with an optional WAL database (ADR 0004
+    /// §8/§9): the engine opens a dedicated long-lived `rusqlite::Connection`
+    /// to `wal_db` (the knowledge.db path), reconciles the orphan
+    /// `usearch_vectors_log` rows (ADR 0004 §7 crash matrix), and loads
+    /// the per-segment stale sets (ADR 0004 §3). `None` (the default)
+    /// disables the WAL — every WAL call is a no-op.
+    ///
+    /// See [`Self::open`] for the error contract.
+    pub fn open_with_wal(
+        path: impl Into<PathBuf>,
+        config: VectorIndexConfig,
+        wal_db: Option<&Path>,
+    ) -> Result<Self, VectorsError> {
+        let root = path.into();
         config.validate()?;
-        let file = path.join(INDEX_FILE);
-        if !file.exists() {
-            return Err(VectorsError::NotFound(path.display().to_string()));
+        // The usearch tuning section travels with the index config
+        // (ADR 0004 §10: all three fields get their real value).
+        let usearch_config = config.usearch.clone().unwrap_or_default();
+        if !root.is_dir() {
+            return Err(VectorsError::NotFound(root.display().to_string()));
         }
-        let index = Index::restore(&to_str(&file)?).map_err(map_usearch)?;
-        if index.dimensions() != config.dim {
-            return Err(VectorsError::DimensionMismatch {
-                expected: config.dim,
-                actual: index.dimensions(),
-            });
+        // 1. Crash garbage (ADR 0004 §7 crash matrix, §8 step 1).
+        cleanup_garbage(&root)?;
+        if !layout_exists(&root) {
+            return Err(VectorsError::NotFound(root.display().to_string()));
         }
+        // 2. DISK segments: read-only mmap views + sidecar manifests
+        //    (ADR 0004 §8 step 2; the dim check is step 5).
+        let disk_segments = load_disk_segments(&root, &config)?;
+        // 3. RAM layer: in-memory copy of the snapshot, or empty
+        //    (ADR 0004 §8 step 3).
+        let (index, ram_keys) = load_ram_layer(&root, &config)?;
+        // 4. WAL: dedicated connection, orphan-row reconciliation, and
+        //    the raw stale sets (ADR 0004 §8 steps 4/6).
+        let (wal, stale) = match wal_db {
+            Some(db_path) => {
+                let conn = Connection::open(db_path).map_err(map_sqlite)?;
+                let disk_ids: Vec<u32> = disk_segments.iter().map(|segment| segment.id).collect();
+                reconcile_wal(&conn, &disk_ids)?;
+                let stale = load_stale_sets(&conn)?;
+                (Some(Mutex::new(conn)), Mutex::new(stale))
+            }
+            None => (None, Mutex::new(HashMap::new())),
+        };
         Ok(Self {
             index,
-            disk_segments: Vec::new(),
+            ram_keys: Mutex::new(ram_keys),
+            disk_segments: RwLock::new(disk_segments),
             config,
-            path: file,
-            usearch_config: crate::UsearchConfig::default(),
-            wal: None,
+            root,
+            usearch_config,
+            stale,
+            wal,
         })
     }
 
@@ -266,9 +390,9 @@ impl UsearchEngine {
     /// journaled for every row BEFORE the index is mutated (module docs:
     /// WAL journal).
     ///
-    /// The mutation lands on the live index only; persist it with
-    /// [`Self::build_index`] or [`Self::rebuild`] (module docs: persistence
-    /// model).
+    /// The mutation lands on the RAM layer only; persist it with
+    /// [`Self::build_index`] or [`Self::rebuild`] (module docs: on-disk
+    /// layout).
     pub fn insert_batch(&self, rows: &[(u32, &[f32])]) -> Result<(), VectorsError> {
         if rows.is_empty() {
             return Ok(());
@@ -292,6 +416,12 @@ impl UsearchEngine {
             .reserve(self.index.size() + rows.len())
             .map_err(map_usearch)?;
         add_rows(&self.index, rows)?;
+        // The RAM key manifest tracks the index (ADR 0004 §3); the
+        // sidecar is rewritten on save/rebuild.
+        let mut ram_keys = mutex_guard(&self.ram_keys);
+        for &(chunk_id, _) in rows {
+            ram_keys.insert(chunk_id);
+        }
         Ok(())
     }
 
@@ -329,11 +459,12 @@ impl UsearchEngine {
         }
 
         // Search DISK segments with global WAL filtering
-        let disk_results: Vec<Vec<(u32, f32)>> = self
-            .disk_segments
+        let segments = disk_segments_read_guard(&self.disk_segments);
+        let disk_results: Vec<Vec<(u32, f32)>> = segments
             .par_iter()
-            .map(|seg| {
-                let matches = seg
+            .map(|segment| {
+                let matches = segment
+                    .index
                     .filtered_search(query, k, |key: u64| !global_stale.contains(&(key as u32)))
                     .map_err(map_usearch)?;
                 let mut results = Vec::with_capacity(matches.keys.len());
@@ -343,6 +474,7 @@ impl UsearchEngine {
                 Ok(results)
             })
             .collect::<Result<Vec<_>, VectorsError>>()?;
+        drop(segments);
 
         // Search RAM layer with global WAL filtering
         let ram_results = self
@@ -374,8 +506,8 @@ impl UsearchEngine {
     /// journaled for every id BEFORE the index is mutated (module docs:
     /// WAL journal).
     ///
-    /// The mutation lands on the live index only (module docs: persistence
-    /// model): an unsaved delete leaves orphaned vectors after a restart,
+    /// The mutation lands on the RAM layer only (module docs: on-disk
+    /// layout): an unsaved delete leaves orphaned vectors after a restart,
     /// which the cascade protocol tolerates and the GC re-detects via
     /// `chunk_ids`/`count`.
     pub fn delete_by_chunk_ids(&self, chunk_ids: &[u32]) -> Result<(), VectorsError> {
@@ -389,6 +521,12 @@ impl UsearchEngine {
         }
         for &chunk_id in chunk_ids {
             self.index.remove(chunk_id as u64).map_err(map_usearch)?;
+        }
+        // The RAM key manifest tracks the index (ADR 0004 §3); the
+        // sidecar is rewritten on save/rebuild.
+        let mut ram_keys = mutex_guard(&self.ram_keys);
+        for &chunk_id in chunk_ids {
+            ram_keys.remove(&chunk_id);
         }
         Ok(())
     }
@@ -432,7 +570,8 @@ impl UsearchEngine {
         Ok(self.index.size() as u64)
     }
 
-    /// Persists the current index state to `<dir>/index.usearch`.
+    /// Persists the current RAM layer state (the save point of the
+    /// shutdown path, ADR 0004 §4).
     ///
     /// Unlike `LanceEngine::build_index` (which builds the IvfHnswSq index
     /// over already-stored rows), the usearch HNSW graph is built
@@ -444,25 +583,20 @@ impl UsearchEngine {
         self.save()
     }
 
-    /// Atomically replaces the entire content with `rows`.
+    /// Full reset (ADR 0004 §4, the ultimate repair of the cascade
+    /// protocol, design D3): replaces the entire state with `rows` and
+    /// persists it:
     ///
-    /// Strategy: `reset()` clears the live index, the rows are added in
-    /// one batch, and the result is saved to a temp file that is renamed
-    /// over `<dir>/index.usearch` (atomic on the same filesystem, so a
-    /// crash mid-rebuild leaves the previous file intact — the operation is
-    /// simply re-run). No content from before the call remains (no
-    /// accumulation).
+    /// 1. the WAL is cleared entirely (every pre-rebuild record is stale);
+    /// 2. every DISK segment file is deleted — the old layers must NOT
+    ///    survive (ADR audit #8) — and the in-memory views are dropped;
+    /// 3. the RAM layer becomes `rows` only;
+    /// 4. the new state is persisted (`ram.usearch` + `ram.keys`).
     ///
     /// Every vector must have length `config.dim` (the whole call is
     /// rejected otherwise, before anything is touched). An empty `rows`
-    /// slice empties the index. This is the ultimate repair of the cascade
-    /// protocol (design D3): rebuild from chunk text after the embedding
+    /// slice empties the index. Rebuild from chunk text after the embedding
     /// layer re-encodes the chunks.
-    ///
-    /// With a WAL attached ([`Self::with_wal_db`]), the WAL table is
-    /// cleared before the rebuild: the rebuilt content is fully persisted
-    /// to the index file, so every pre-rebuild record is stale (module
-    /// docs: WAL journal).
     ///
     /// Like `compact` in the C++ core, do not run a search concurrently
     /// with a rebuild on the same engine.
@@ -476,11 +610,18 @@ impl UsearchEngine {
                 });
             }
         }
-        // The rebuild replaces the entire content and persists it to the
-        // index file, so the pre-rebuild WAL is stale: clear it before
-        // touching the index (module docs: WAL journal).
+        // 1. The rebuild replaces the entire state and persists it, so
+        //    every WAL record is stale (module docs: WAL journal).
         self.clear_wal()?;
-        // Clear the live index.
+        // 2. The old DISK layers must not survive: files first, then the
+        //    in-memory views.
+        let segments = segments_dir(&self.root);
+        if segments.exists() {
+            std::fs::remove_dir_all(&segments)?;
+        }
+        std::fs::create_dir_all(&segments)?;
+        disk_segments_write_guard(&self.disk_segments).clear();
+        // 3. RAM = rows only.
         self.index.reset().map_err(map_usearch)?;
         // Reserve the final size up front (1 slot minimum keeps an empty
         // index searchable and insertable).
@@ -490,25 +631,31 @@ impl UsearchEngine {
             .map(|(id, vector)| (*id, vector.as_slice()))
             .collect();
         add_rows(&self.index, &refs)?;
-        // Atomic replace: save to a temp file, then rename over the index
-        // file.
-        let tmp = self.path.with_file_name(INDEX_TMP_FILE);
-        self.index.save(&to_str(&tmp)?).map_err(map_usearch)?;
-        if let Err(original) = std::fs::rename(&tmp, &self.path) {
-            // `rename` over an existing target is atomic on Unix but fails
-            // on Windows; fall back to remove + rename (a tiny non-atomic
-            // window, bounded by the rebuild-repair of the cascade
-            // protocol).
-            let _ = original;
-            std::fs::remove_file(&self.path)?;
-            std::fs::rename(&tmp, &self.path)?;
+        let mut ram_keys = mutex_guard(&self.ram_keys);
+        ram_keys.clear();
+        for (id, _) in rows {
+            ram_keys.insert(*id);
         }
+        drop(ram_keys);
+        // 4. Persist the new state (ADR 0004 §4: save ram + sidecar).
+        self.save()?;
+        // The WAL is empty again: the open-time stale sets are stale.
+        *mutex_guard(&self.stale) = HashMap::new();
         Ok(())
     }
 
-    /// Persists the index to the on-disk file.
+    /// Persists the RAM layer (ADR 0004 §1): the `ram.usearch` snapshot
+    /// (atomic tmp + rename) and the `ram.keys` sidecar from the
+    /// in-memory manifest. The file → sidecar order keeps a crash
+    /// recoverable by [`Self::open_with_wal`] (ADR 0004 §5/§7).
     pub fn save(&self) -> Result<(), VectorsError> {
-        self.index.save(&to_str(&self.path)?).map_err(map_usearch)
+        let snapshot = ram_index_path(&self.root);
+        let tmp = self.root.join(format!("{RAM_INDEX_FILE}.tmp"));
+        self.index.save(&to_str(&tmp)?).map_err(map_usearch)?;
+        rename_over(&tmp, &snapshot)?;
+        let mut keys: Vec<u32> = mutex_guard(&self.ram_keys).iter().copied().collect();
+        keys.sort_unstable();
+        keys_manifest::write_keys(&ram_keys_path(&self.root), &keys)
     }
 
     /// The index/query configuration this engine was created with.
@@ -516,9 +663,17 @@ impl UsearchEngine {
         &self.config
     }
 
-    /// The on-disk index file backing this engine (`<dir>/index.usearch`).
+    /// The engine root directory (ADR 0004 §1 layout).
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.root
+    }
+
+    /// Snapshot of the raw per-segment stale sets loaded from the WAL at
+    /// open (ADR 0004 §3/§8): `segment_id → deleted/superseded chunk
+    /// ids`. Empty when no WAL database is attached. Task 3.4 turns this
+    /// into the versioned search-path cache with write-path bumps.
+    pub fn stale_sets(&self) -> HashMap<u32, HashSet<u32>> {
+        mutex_guard(&self.stale).clone()
     }
 
     /// Journals one WAL record: `INSERT OR REPLACE` into
@@ -595,54 +750,75 @@ impl UsearchEngine {
     ///
     /// Uses SQL query to enumerate live keys per segment instead of
     /// `exact_search` (O(N) brute-force with distance computation).
+    ///
+    /// Transitional (task 3.3): the merge result replaces the in-memory
+    /// list only — the on-disk directory swap (ADR 0004 §7) lands in task
+    /// 3.7. New segments take the next monotonic ids (ADR 0004 §2).
     fn compact(&mut self) -> Result<(), VectorsError> {
-        // No DISK segments to compact
-        if self.disk_segments.is_empty() {
-            return Ok(());
+        // No DISK segments to compact.
+        {
+            let segments = disk_segments_read_guard(&self.disk_segments);
+            if segments.is_empty() {
+                return Ok(());
+            }
         }
 
-        // 1. Load live keys per DISK segment via SQL (O(log N) indexed query)
+        // 1. Load live keys per DISK segment via SQL (O(log N) indexed
+        //    query).
         let live_keys_per_seg = self.load_live_keys_per_segment()?;
 
         // 2. Collect live vectors from DISK segments using get().
-        //    WAL segment_id = seg_idx + 1 (segment_id=0 is RAM).
         //    Deduplicate by key: later segments win (higher segment_id =
         //    more recent snapshot).
         let dim = self.config.dim;
         let mut seen: HashSet<u32> = HashSet::new();
         let mut live_vectors: Vec<(u32, Vec<f32>)> = Vec::new();
-        for (seg_idx, seg) in self.disk_segments.iter().enumerate() {
-            let wal_segment_id = (seg_idx as u32) + 1;
-            let keys = live_keys_per_seg.get(&wal_segment_id);
-            let Some(keys) = keys else {
-                continue;
-            };
-            for id in keys {
-                // Skip duplicates: later segment version wins
-                if !seen.insert(*id) {
+        {
+            let segments = disk_segments_read_guard(&self.disk_segments);
+            for segment in segments.iter() {
+                let keys = live_keys_per_seg.get(&segment.id);
+                let Some(keys) = keys else {
                     continue;
+                };
+                for id in keys {
+                    // Skip duplicates: later segment version wins.
+                    if !seen.insert(*id) {
+                        continue;
+                    }
+                    let mut vector = vec![0.0f32; dim];
+                    segment
+                        .index
+                        .get::<f32>(*id as u64, &mut vector)
+                        .map_err(map_usearch)?;
+                    live_vectors.push((*id, vector));
                 }
-                let mut vector = vec![0.0f32; dim];
-                seg.get::<f32>(*id as u64, &mut vector)
-                    .map_err(map_usearch)?;
-                live_vectors.push((*id, vector));
             }
         }
 
-        // 3. Create new segments (sliced by max_segment_vectors)
+        // 3. Create new segments (sliced by max_segment_vectors) with the
+        //    next monotonic ids.
+        let next_id = {
+            let segments = disk_segments_read_guard(&self.disk_segments);
+            segments.iter().map(|segment| segment.id).max().unwrap_or(0) + 1
+        };
         let max = self.usearch_config.max_segment_vectors;
         let mut new_segments = Vec::new();
-        for chunk in live_vectors.chunks(max) {
+        for (segment_id, chunk) in (next_id..).zip(live_vectors.chunks(max)) {
             let new_index = Index::new(&options(&self.config)).map_err(map_usearch)?;
-            new_index.reserve(chunk.len()).map_err(map_usearch)?;
+            new_index.reserve(chunk.len().max(1)).map_err(map_usearch)?;
             for (id, vector) in chunk {
                 new_index.add(*id as u64, vector).map_err(map_usearch)?;
             }
-            new_segments.push(new_index);
+            let keys: HashSet<u32> = chunk.iter().map(|(id, _)| *id).collect();
+            new_segments.push(DiskSegment {
+                id: segment_id,
+                index: Arc::new(new_index),
+                keys,
+            });
         }
 
-        // 4. Replace old segments
-        self.disk_segments = new_segments;
+        // 4. Replace old segments (in-memory list; on-disk swap is 3.7).
+        disk_segments_write_guard(&self.disk_segments).clone_from(&new_segments);
 
         // 5. Remove old DISK segment records from WAL (RAM records remain)
         self.clear_old_segments()?;
@@ -706,7 +882,13 @@ impl UsearchEngine {
     /// orphaned DEL records from segment_id=0 that don't correspond to
     /// any DISK vectors.
     fn stale_vector_percentage(&self) -> Result<f64, VectorsError> {
-        let total = self.disk_segments.iter().map(|s| s.size()).sum::<usize>();
+        let total = {
+            let segments = disk_segments_read_guard(&self.disk_segments);
+            segments
+                .iter()
+                .map(|segment| segment.index.size())
+                .sum::<usize>()
+        };
         if total == 0 {
             return Ok(0.0);
         }
@@ -747,32 +929,7 @@ impl UsearchEngine {
         let Some(wal) = &self.wal else {
             return Ok(HashMap::new());
         };
-        let conn = wal_guard(wal);
-        let mut stmt = conn
-            .prepare(
-                "SELECT segment_id, chunk_id FROM usearch_vectors_log \
-                 WHERE flags = ?1",
-            )
-            .map_err(map_sqlite)?;
-        let rows = stmt
-            .query_map(params![WAL_DEL as i64], |row| {
-                let segment_id = row.get::<_, i64>(0)?;
-                let chunk_id = row.get::<_, i64>(1)?;
-                Ok((segment_id, chunk_id))
-            })
-            .map_err(map_sqlite)?;
-        let mut grouped: HashMap<u32, HashSet<u32>> = HashMap::new();
-        for row in rows {
-            let (segment_id, chunk_id) = row.map_err(map_sqlite)?;
-            let segment_id = u32::try_from(segment_id).map_err(|_| {
-                VectorsError::Engine(format!("WAL segment_id {segment_id} exceeds u32 range"))
-            })?;
-            let chunk_id = u32::try_from(chunk_id).map_err(|_| {
-                VectorsError::Engine(format!("WAL chunk_id {chunk_id} exceeds u32 range"))
-            })?;
-            grouped.entry(segment_id).or_default().insert(chunk_id);
-        }
-        Ok(grouped)
+        load_stale_sets(&wal_guard(wal))
     }
 }
 
@@ -852,12 +1009,10 @@ fn merge_results(results: Vec<Vec<(u32, f32)>>, k: usize) -> Vec<(u32, f32)> {
 
 /// Sidecar key manifest codec (usearch-wal-persistence task 3.2, ADR 0004 §3).
 ///
-/// The manifest is the durable record of every key stored in a segment (the
+/// The manifest is the durable record of every key stored in a layer (the
 /// usearch core exposes no key-enumeration API, so the manifest is the only
-/// key listing). The engine's on-disk layout (task 3.3) is the codec's first
-/// production call site; until then only the tests in this file exercise it,
-/// hence the module-level `dead_code` allow.
-#[allow(dead_code)]
+/// key listing). The engine's on-disk layout (task 3.3) writes the manifest
+/// next to every index file and reads it back on `create`/`open`/`save`.
 mod keys_manifest {
     use std::path::Path;
 
@@ -1062,27 +1217,264 @@ fn to_str(path: &Path) -> Result<String, VectorsError> {
     })
 }
 
-#[cfg(test)]
-mod keys_tests {
-    //! Sidecar key manifest codec tests (usearch-wal-persistence task 3.2).
+/// Locks a `Mutex`, recovering the guard from a poisoned mutex: a panic in
+/// an earlier operation does not make the locked state unusable (the
+/// engine's invariants are restored by the next save/rebuild).
+fn mutex_guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
-    // Test code: unwrap/expect are intentional (the fixtures are deterministic).
+/// Locks the DISK segment list for reading (ADR 0004 §6 step 2: searches
+/// clone the current `Arc`s while a rebuild/compaction replaces the list).
+fn disk_segments_read_guard(
+    segments: &RwLock<Vec<DiskSegment>>,
+) -> RwLockReadGuard<'_, Vec<DiskSegment>> {
+    match segments.read() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Locks the DISK segment list for writing (rebuild/compaction swap).
+fn disk_segments_write_guard(
+    segments: &RwLock<Vec<DiskSegment>>,
+) -> RwLockWriteGuard<'_, Vec<DiskSegment>> {
+    match segments.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Atomic replace of `target` by `tmp`: `rename` over an existing target is
+/// atomic on Unix but fails on Windows; the fallback (remove + rename)
+/// opens a tiny non-atomic window, bounded by the rebuild-repair of the
+/// cascade protocol.
+fn rename_over(tmp: &Path, target: &Path) -> Result<(), VectorsError> {
+    if std::fs::rename(tmp, target).is_err() {
+        std::fs::remove_file(target)?;
+        std::fs::rename(tmp, target)?;
+    }
+    Ok(())
+}
+
+/// True if the ADR 0004 §1 layout exists at `root`: a `ram.keys` manifest,
+/// a `ram.usearch` snapshot, or a `segments/` directory.
+fn layout_exists(root: &Path) -> bool {
+    ram_keys_path(root).is_file() || ram_index_path(root).is_file() || segments_dir(root).is_dir()
+}
+
+/// A fresh empty RAM-layer index (the create-state of ADR 0004 §8 step 3).
+fn empty_index(config: &VectorIndexConfig) -> Result<Index, VectorsError> {
+    let index = Index::new(&options(config)).map_err(map_usearch)?;
+    // The 2.26 core rejects a search that finds no reserved worker thread;
+    // reserving 1 slot keeps an empty index searchable and insertable.
+    index.reserve(1).map_err(map_usearch)?;
+    Ok(index)
+}
+
+/// Removes crash garbage (ADR 0004 §7 crash matrix, §8 step 1): the
+/// `segments.tmp/` and `segments.old/` directories and `*.tmp`/`*.old`
+/// files left by atomic writes. The special case "no `segments/` but a
+/// `segments.tmp/`" (a crash between the two directory renames of a
+/// compaction) is repaired by promoting the scratch directory to the live
+/// one.
+fn cleanup_garbage(root: &Path) -> Result<(), VectorsError> {
+    let tmp_dir = root.join(SEGMENTS_TMP_DIR);
+    let live_dir = segments_dir(root);
+    let old_dir = root.join(SEGMENTS_OLD_DIR);
+    if tmp_dir.is_dir() {
+        if live_dir.is_dir() {
+            std::fs::remove_dir_all(&tmp_dir)?;
+        } else {
+            // Crash between the two renames: the scratch directory holds
+            // the compaction result and the live directory is gone.
+            std::fs::rename(&tmp_dir, &live_dir)?;
+        }
+    }
+    if old_dir.is_dir() {
+        std::fs::remove_dir_all(&old_dir)?;
+    }
+    // Atomic-write residue in the root and the live segment directory.
+    for dir in [root, live_dir.as_path()] {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+            let is_garbage = name.ends_with(".tmp") || name.ends_with(".old");
+            if is_garbage && entry.file_type()?.is_file() {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Loads the DISK segments (ADR 0004 §8 step 2): scans `segments/` for
+/// `segment-<n>.usearch` files, maps each read-only with its sidecar key
+/// manifest, and checks the dimensionality (step 5). A missing or corrupt
+/// sidecar is a distinct error, never a silent gap (ADR 0004 §3).
+fn load_disk_segments(
+    root: &Path,
+    config: &VectorIndexConfig,
+) -> Result<Vec<DiskSegment>, VectorsError> {
+    let dir = segments_dir(root);
+    let mut segments = Vec::new();
+    if dir.is_dir() {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    return false;
+                };
+                name.starts_with(SEGMENT_FILE_PREFIX) && name.ends_with(SEGMENT_INDEX_EXT)
+            })
+            .collect();
+        files.sort();
+        for path in files {
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            let id: u32 = file_name
+                .strip_prefix(SEGMENT_FILE_PREFIX)
+                .and_then(|rest| rest.strip_suffix(SEGMENT_INDEX_EXT))
+                .and_then(|id_text| id_text.parse().ok())
+                .ok_or_else(|| {
+                    VectorsError::Engine(format!("segment file has a non-numeric id: {file_name}"))
+                })?;
+            // The sidecar is the durable key record (ADR 0004 §3); a
+            // missing or corrupt manifest is a distinct error.
+            let keys = keys_manifest::read_keys(&segment_keys_path(root, id))?;
+            let index = Index::restore_view(&to_str(&path)?).map_err(map_usearch)?;
+            if index.dimensions() != config.dim {
+                return Err(VectorsError::DimensionMismatch {
+                    expected: config.dim,
+                    actual: index.dimensions(),
+                });
+            }
+            segments.push(DiskSegment {
+                id,
+                index: Arc::new(index),
+                keys: keys.into_iter().collect(),
+            });
+        }
+    }
+    segments.sort_by_key(|segment| segment.id);
+    Ok(segments)
+}
+
+/// Loads the RAM layer (ADR 0004 §8 step 3): the `ram.usearch` snapshot
+/// into an in-memory copy (`restore_from_buffer` — never mmap, ADR audit
+/// #12), or an empty index if the snapshot is absent (the honest loss
+/// window, ADR 0004 §5). The key manifest comes from `ram.keys`; a
+/// snapshot without its manifest is a distinct error (ADR 0004 §3).
+fn load_ram_layer(
+    root: &Path,
+    config: &VectorIndexConfig,
+) -> Result<(Index, HashSet<u32>), VectorsError> {
+    let snapshot = ram_index_path(root);
+    let keys_path = ram_keys_path(root);
+    if snapshot.is_file() {
+        let bytes = std::fs::read(&snapshot)?;
+        let index = Index::restore_from_buffer(&bytes).map_err(map_usearch)?;
+        if index.dimensions() != config.dim {
+            return Err(VectorsError::DimensionMismatch {
+                expected: config.dim,
+                actual: index.dimensions(),
+            });
+        }
+        let keys = keys_manifest::read_keys(&keys_path)?;
+        return Ok((index, keys.into_iter().collect()));
+    }
+    // No snapshot: the RAM layer is empty (create-state or the loss
+    // window). The manifest, when present, is trusted for the key listing.
+    if keys_path.is_file() {
+        let keys = keys_manifest::read_keys(&keys_path)?;
+        return Ok((empty_index(config)?, keys.into_iter().collect()));
+    }
+    Ok((empty_index(config)?, HashSet::new()))
+}
+
+/// WAL reconciliation on open (ADR 0004 §8 step 4): removes the orphan
+/// rows whose segment files no longer exist — the self-heal after a
+/// crashed compaction/flush. `segment_id = 0` (the RAM layer) is always
+/// kept.
+fn reconcile_wal(conn: &Connection, disk_ids: &[u32]) -> Result<(), VectorsError> {
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT segment_id FROM usearch_vectors_log WHERE segment_id != 0")
+        .map_err(map_sqlite)?;
+    let ids: Vec<i64> = stmt
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(map_sqlite)?
+        .collect::<Result<_, _>>()
+        .map_err(map_sqlite)?;
+    for id in ids {
+        let exists = disk_ids.contains(&(u32::try_from(id).unwrap_or(u32::MAX)));
+        if !exists {
+            conn.execute(
+                "DELETE FROM usearch_vectors_log WHERE segment_id = ?1",
+                params![id],
+            )
+            .map_err(map_sqlite)?;
+        }
+    }
+    Ok(())
+}
+
+/// Loads the raw per-segment stale sets from the WAL (ADR 0004 §8 step 6):
+/// `segment_id → deleted/superseded chunk ids` for every DEL record. The
+/// raw map is what task 3.4 turns into the versioned search-path cache.
+fn load_stale_sets(conn: &Connection) -> Result<HashMap<u32, HashSet<u32>>, VectorsError> {
+    let mut stmt = conn
+        .prepare("SELECT segment_id, chunk_id FROM usearch_vectors_log WHERE flags = ?1")
+        .map_err(map_sqlite)?;
+    let rows = stmt
+        .query_map(params![WAL_DEL as i64], |row| {
+            let segment_id = row.get::<_, i64>(0)?;
+            let chunk_id = row.get::<_, i64>(1)?;
+            Ok((segment_id, chunk_id))
+        })
+        .map_err(map_sqlite)?;
+    let mut stale: HashMap<u32, HashSet<u32>> = HashMap::new();
+    for row in rows {
+        let (segment_id, chunk_id) = row.map_err(map_sqlite)?;
+        let segment_id = u32::try_from(segment_id).map_err(|_| {
+            VectorsError::Engine(format!("WAL segment_id {segment_id} exceeds u32 range"))
+        })?;
+        let chunk_id = u32::try_from(chunk_id).map_err(|_| {
+            VectorsError::Engine(format!("WAL chunk_id {chunk_id} exceeds u32 range"))
+        })?;
+        stale.entry(segment_id).or_default().insert(chunk_id);
+    }
+    Ok(stale)
+}
+
+#[cfg(test)]
+mod test_util {
+    //! Shared test fixtures: a unique temporary directory that removes
+    //! itself (and its contents) when dropped.
+
+    // Test code: unwrap/expect are intentional (the fixture is deterministic).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    use super::keys_manifest::{read_keys, write_keys};
-    use super::*;
 
     /// A unique temporary directory that removes itself (and its contents)
     /// when dropped.
-    struct TempDir(PathBuf);
+    pub(crate) struct TempDir(pub(crate) PathBuf);
 
     impl TempDir {
-        fn new(tag: &str) -> Self {
+        pub(crate) fn new(tag: &str) -> Self {
             static COUNTER: AtomicU64 = AtomicU64::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "synopsis-vectors-keys-test-{}-{tag}-{}",
+                "synopsis-vectors-test-{}-{tag}-{}",
                 std::process::id(),
                 COUNTER.fetch_add(1, Ordering::Relaxed)
             ));
@@ -1096,6 +1488,18 @@ mod keys_tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+}
+
+#[cfg(test)]
+mod keys_tests {
+    //! Sidecar key manifest codec tests (usearch-wal-persistence task 3.2).
+
+    // Test code: unwrap/expect are intentional (the fixtures are deterministic).
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::keys_manifest::{read_keys, write_keys};
+    use super::test_util::TempDir;
+    use super::*;
 
     /// The on-disk spelling of the `"SKEY"` magic (0x534B4559, little-endian).
     const MAGIC_BYTES: [u8; 4] = [0x59, 0x45, 0x4B, 0x53];
@@ -1277,5 +1681,455 @@ mod keys_tests {
         write_keys(&path, &[1, 2, 3]).unwrap();
         write_keys(&path, &[9]).unwrap();
         assert_eq!(read_keys(&path).unwrap(), vec![9]);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    //! On-disk layout, startup recovery, and rebuild tests
+    //! (usearch-wal-persistence task 3.3, ADR 0004 §1/§4/§7/§8).
+
+    // Test code: unwrap/expect are intentional (the fixtures are deterministic).
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::path::Path;
+
+    use rusqlite::Connection;
+
+    use super::keys_manifest::{read_keys, write_keys};
+    use super::test_util::TempDir;
+    use super::*;
+
+    /// A small, fast test config (dim 8, minimal HNSW parameters).
+    fn test_config() -> VectorIndexConfig {
+        VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("valid test config")
+    }
+
+    /// A deterministic test vector: unit vector on axis `axis`.
+    fn test_vector(dim: usize, axis: usize) -> Vec<f32> {
+        let mut vector = vec![0.0f32; dim];
+        vector[axis % dim] = 1.0;
+        vector
+    }
+
+    /// Creates the ADR 0004 WAL table (migrations 3+4 shape) in `conn`.
+    fn create_wal_table(conn: &Connection) {
+        conn.execute(
+            "CREATE TABLE usearch_vectors_log (
+                segment_id INTEGER NOT NULL,
+                chunk_id INTEGER NOT NULL,
+                flags INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (segment_id, chunk_id)
+            )",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// Inserts one WAL row (flags: 1 = ADD, 2 = DEL).
+    fn insert_wal_row(conn: &Connection, segment_id: u32, chunk_id: u32, flags: u8) {
+        conn.execute(
+            "INSERT OR REPLACE INTO usearch_vectors_log (segment_id, chunk_id, flags, created_at)
+             VALUES (?1, ?2, ?3, datetime('now'))",
+            params![segment_id as i64, chunk_id as i64, flags as i64],
+        )
+        .unwrap();
+    }
+
+    /// The WAL rows as `(segment_id, chunk_id)` pairs, ordered.
+    fn wal_rows(conn: &Connection) -> Vec<(i64, i64)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT segment_id, chunk_id FROM usearch_vectors_log \
+                 ORDER BY segment_id, chunk_id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap();
+        rows.collect::<Result<_, _>>().unwrap()
+    }
+
+    /// Writes one DISK segment file pair (index + sidecar manifest) with the
+    /// given keys, each key stored as a distinct unit vector.
+    fn write_segment(root: &Path, id: u32, config: &VectorIndexConfig, keys: &[u32]) {
+        let index = Index::new(&options(config)).unwrap();
+        index.reserve(keys.len().max(1)).unwrap();
+        for (i, &key) in keys.iter().enumerate() {
+            index
+                .add(key as u64, &test_vector(config.dim, i + 1))
+                .unwrap();
+        }
+        let path = segments_dir(root).join(format!("segment-{id}.usearch"));
+        index.save(path.to_str().unwrap()).unwrap();
+        write_keys(&segment_keys_path(root, id), keys).unwrap();
+    }
+
+    #[test]
+    fn create_then_open_empty_layout() {
+        let dir = TempDir::new("create-open");
+        let config = test_config();
+        let engine = UsearchEngine::create(&dir.0, config.clone()).unwrap();
+        drop(engine);
+
+        // ADR 0004 §1: the empty layout is durable from create — the RAM
+        // snapshot pair (the empty snapshot carries the dimension, task
+        // 3.3 revision) and the segment directory.
+        assert!(dir.0.join("ram.keys").is_file(), "empty ram.keys manifest");
+        assert!(
+            dir.0.join("ram.usearch").is_file(),
+            "the create-time empty snapshot exists"
+        );
+        assert!(dir.0.join("segments").is_dir(), "segments directory");
+        assert!(
+            read_keys(&dir.0.join("ram.keys")).unwrap().is_empty(),
+            "the manifest starts empty"
+        );
+
+        // A second create on the same layout fails (use open for that).
+        assert!(UsearchEngine::create(&dir.0, config.clone()).is_err());
+
+        // open returns an empty engine (count = 0), no error.
+        let engine = UsearchEngine::open(&dir.0, config).unwrap();
+        assert_eq!(engine.count().unwrap(), 0);
+        assert!(engine.chunk_ids().unwrap().is_empty());
+    }
+
+    /// Task 3.3 revision (regression guard): the dimension of an EMPTY
+    /// created index is durable on disk — reopening with a different
+    /// dimension fails with [`VectorsError::DimensionMismatch`]. Before
+    /// the fix `create` wrote only the (empty) `ram.keys` manifest; the
+    /// `ram.usearch` snapshot appeared at the first save, so an 8-dim and
+    /// a 4-dim empty index were byte-identical on disk and `open` with a
+    /// different dimension silently succeeded.
+    #[test]
+    fn empty_created_index_dimension_is_durable() {
+        let dir = TempDir::new("empty-dim");
+        let config = VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("dim-8 config");
+        let engine = UsearchEngine::create(&dir.0, config.clone()).unwrap();
+        assert_eq!(engine.count().unwrap(), 0, "the created index is empty");
+        drop(engine);
+
+        // A dim-4 config against the stored dim-8 layout must fail.
+        let other = VectorIndexConfig::new(4, 4, 8, 1, 1, 8).expect("dim-4 config");
+        match UsearchEngine::open(&dir.0, other) {
+            Err(VectorsError::DimensionMismatch { expected, actual }) => {
+                assert_eq!((expected, actual), (4, 8));
+            }
+            Ok(_) => panic!("expected DimensionMismatch, got an opened engine"),
+            Err(other) => panic!("expected DimensionMismatch, got: {other:?}"),
+        }
+    }
+
+    /// Task 3.3 revision: an empty `rebuild` (0 rows) leaves a
+    /// dim-detectable layout — the saved snapshot carries the dimension,
+    /// so a later `open` with a different dimension still fails.
+    #[test]
+    fn empty_rebuild_leaves_dim_detectable_layout() {
+        let dir = TempDir::new("empty-rebuild");
+        let config = VectorIndexConfig::new(8, 4, 8, 1, 1, 8).expect("dim-8 config");
+        let engine = UsearchEngine::create(&dir.0, config.clone()).unwrap();
+        engine
+            .rebuild(&[(1, test_vector(8, 1)), (2, test_vector(8, 2))])
+            .unwrap();
+        // The empty rebuild: rows replaced by nothing, state persisted.
+        engine.rebuild(&[]).unwrap();
+        assert_eq!(engine.count().unwrap(), 0);
+        assert!(dir.0.join("ram.usearch").is_file(), "snapshot persisted");
+        drop(engine);
+
+        let other = VectorIndexConfig::new(4, 4, 8, 1, 1, 8).expect("dim-4 config");
+        assert!(
+            matches!(
+                UsearchEngine::open(&dir.0, other),
+                Err(VectorsError::DimensionMismatch { .. })
+            ),
+            "an empty rebuild must leave the dimension detectable"
+        );
+    }
+
+    #[test]
+    fn open_missing_path_is_not_found() {
+        let dir = TempDir::new("open-missing");
+        let config = test_config();
+
+        // A path that does not exist at all.
+        match UsearchEngine::open(dir.0.join("nope"), config.clone()) {
+            Err(VectorsError::NotFound(_)) => {}
+            Ok(_) => panic!("expected NotFound, got an opened engine"),
+            Err(other) => panic!("expected NotFound, got: {other:?}"),
+        }
+        // An existing directory without a layout.
+        match UsearchEngine::open(&dir.0, config) {
+            Err(VectorsError::NotFound(_)) => {}
+            Ok(_) => panic!("expected NotFound, got an opened engine"),
+            Err(other) => panic!("expected NotFound, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn garbage_cleanup_on_open() {
+        let dir = TempDir::new("garbage");
+        let config = test_config();
+        UsearchEngine::create(&dir.0, config.clone()).unwrap();
+
+        // A valid segment must survive the cleanup.
+        write_segment(&dir.0, 2, &config, &[7]);
+
+        // Crash garbage (ADR 0004 §7 crash matrix).
+        let tmp_dir = dir.0.join("segments.tmp");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        std::fs::write(tmp_dir.join("segment-9.usearch"), b"garbage").unwrap();
+        std::fs::write(dir.0.join("segment-1.tmp"), b"garbage").unwrap();
+        std::fs::write(dir.0.join("stale.old"), b"garbage").unwrap();
+
+        let engine = UsearchEngine::open(&dir.0, config.clone()).unwrap();
+
+        assert!(!dir.0.join("segments.tmp").exists(), "segments.tmp removed");
+        assert!(!dir.0.join("segment-1.tmp").exists(), "*.tmp removed");
+        assert!(!dir.0.join("stale.old").exists(), "*.old removed");
+        assert!(
+            dir.0.join("segments").join("segment-2.usearch").is_file(),
+            "valid segment intact"
+        );
+
+        // The restored DISK segment is searchable end-to-end (mmap view):
+        // key 7 holds the axis-0 unit vector, the query is axis 1, so the
+        // L2sq distance is exactly 2.0.
+        let results = engine.search(&test_vector(8, 2), 1).unwrap();
+        assert_eq!(results, vec![(7, 2.0)]);
+    }
+
+    #[test]
+    fn garbage_cleanup_promotes_segments_tmp() {
+        let dir = TempDir::new("promote");
+        let config = test_config();
+        UsearchEngine::create(&dir.0, config.clone()).unwrap();
+
+        // Simulate the crash between the two directory renames (ADR 0004
+        // §7): segments/ is gone, the compaction result sits in segments.tmp/.
+        std::fs::remove_dir_all(dir.0.join("segments")).unwrap();
+        let tmp_dir = dir.0.join("segments.tmp");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let index = Index::new(&options(&config)).unwrap();
+        index.reserve(1).unwrap();
+        index.add(3, &test_vector(8, 3)).unwrap();
+        index
+            .save(tmp_dir.join("segment-1.usearch").to_str().unwrap())
+            .unwrap();
+        write_keys(&tmp_dir.join("segment-1.keys"), &[3]).unwrap();
+
+        let engine = UsearchEngine::open(&dir.0, config.clone()).unwrap();
+
+        assert!(
+            !dir.0.join("segments.tmp").exists(),
+            "the scratch directory is promoted, not deleted"
+        );
+        assert!(
+            dir.0.join("segments").join("segment-1.usearch").is_file(),
+            "promoted segment intact"
+        );
+        let results = engine.search(&test_vector(8, 3), 1).unwrap();
+        assert_eq!(results.first().map(|(id, _)| *id), Some(3));
+    }
+
+    #[test]
+    fn open_missing_sidecar_is_distinct_error() {
+        let dir = TempDir::new("missing-sidecar");
+        let config = test_config();
+        UsearchEngine::create(&dir.0, config.clone()).unwrap();
+
+        // A segment index file WITHOUT its sidecar manifest (ADR 0004 §3:
+        // both files of a pair must exist).
+        let segments = dir.0.join("segments");
+        let index = Index::new(&options(&config)).unwrap();
+        index.reserve(1).unwrap();
+        index.add(1, &test_vector(8, 1)).unwrap();
+        index
+            .save(segments.join("segment-1.usearch").to_str().unwrap())
+            .unwrap();
+
+        match UsearchEngine::open(&dir.0, config) {
+            Err(VectorsError::NotFound(path)) => {
+                assert!(
+                    path.contains("segment-1.keys"),
+                    "the error must name the missing manifest: {path}"
+                );
+            }
+            Ok(_) => panic!("expected a distinct error, got an opened engine"),
+            Err(other) => panic!("expected a distinct error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_corrupt_sidecar_is_distinct_error() {
+        let dir = TempDir::new("corrupt-sidecar");
+        let config = test_config();
+        UsearchEngine::create(&dir.0, config.clone()).unwrap();
+
+        let segments = dir.0.join("segments");
+        let index = Index::new(&options(&config)).unwrap();
+        index.reserve(1).unwrap();
+        index.add(1, &test_vector(8, 1)).unwrap();
+        index
+            .save(segments.join("segment-1.usearch").to_str().unwrap())
+            .unwrap();
+        // A manifest with a corrupted magic (8 zero bytes).
+        std::fs::write(segments.join("segment-1.keys"), [0u8; 8]).unwrap();
+
+        assert!(
+            matches!(
+                UsearchEngine::open(&dir.0, config),
+                Err(VectorsError::KeysBadMagic)
+            ),
+            "a corrupted magic must be a distinct KeysBadMagic error, not a panic"
+        );
+    }
+
+    #[test]
+    fn open_dim_mismatch_is_distinct_error() {
+        let dir = TempDir::new("dim-mismatch");
+        let config = test_config(); // dim 8
+        UsearchEngine::create(&dir.0, config.clone()).unwrap();
+
+        // A segment file built with another dimality (16).
+        let other = VectorIndexConfig::new(16, 4, 8, 1, 1, 8).expect("other-dim config");
+        write_segment(&dir.0, 1, &other, &[1, 2]);
+
+        match UsearchEngine::open(&dir.0, config) {
+            Err(VectorsError::DimensionMismatch { expected, actual }) => {
+                assert_eq!((expected, actual), (8, 16));
+            }
+            Ok(_) => panic!("expected DimensionMismatch, got an opened engine"),
+            Err(other) => panic!("expected DimensionMismatch, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wal_reconciliation_drops_orphan_rows() {
+        let dir = TempDir::new("wal-reconcile");
+        let config = test_config();
+        UsearchEngine::create(&dir.0, config.clone()).unwrap();
+
+        // Segment 2 exists on disk; segment 5 does not (orphan rows).
+        write_segment(&dir.0, 2, &config, &[10, 11]);
+
+        let db_path = dir.0.join("knowledge.db");
+        let conn = Connection::open(&db_path).unwrap();
+        create_wal_table(&conn);
+        insert_wal_row(&conn, 5, 1, 2); // orphan: no segment-5 files
+        insert_wal_row(&conn, 2, 2, 2); // live: segment-2 exists
+        insert_wal_row(&conn, 2, 3, 2);
+        insert_wal_row(&conn, 0, 4, 2); // RAM (segment 0): always kept
+        drop(conn);
+
+        let engine =
+            UsearchEngine::open_with_wal(&dir.0, config.clone(), Some(db_path.as_path())).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(
+            wal_rows(&conn),
+            vec![(0, 4), (2, 2), (2, 3)],
+            "orphan rows are removed, existing-segment and RAM rows are kept"
+        );
+        drop(conn);
+
+        // The raw stale sets are loaded at open (ADR 0004 §8 step 6).
+        let mut expected: HashMap<u32, HashSet<u32>> = HashMap::new();
+        expected.insert(2, HashSet::from([2, 3]));
+        expected.insert(0, HashSet::from([4]));
+        assert_eq!(engine.stale_sets(), expected);
+
+        // The WAL write path stays attached after open.
+        engine.insert(50, &test_vector(8, 1)).unwrap();
+        let conn = Connection::open(&db_path).unwrap();
+        assert!(
+            wal_rows(&conn).contains(&(0, 50)),
+            "the insert must be journaled to the attached WAL"
+        );
+        drop(conn);
+    }
+
+    #[test]
+    fn rebuild_clears_disk_and_wal() {
+        let dir = TempDir::new("rebuild");
+        let config = test_config();
+        UsearchEngine::create(&dir.0, config.clone()).unwrap();
+
+        // Three DISK segments + WAL rows for all of them and for RAM.
+        write_segment(&dir.0, 1, &config, &[1, 2]);
+        write_segment(&dir.0, 2, &config, &[3]);
+        write_segment(&dir.0, 3, &config, &[4, 5]);
+
+        let db_path = dir.0.join("knowledge.db");
+        let conn = Connection::open(&db_path).unwrap();
+        create_wal_table(&conn);
+        for &(segment_id, chunk_id) in &[(1u32, 1u32), (1, 2), (2, 3), (3, 4), (3, 5), (0, 9)] {
+            insert_wal_row(&conn, segment_id, chunk_id, 2);
+        }
+        drop(conn);
+
+        let engine =
+            UsearchEngine::open_with_wal(&dir.0, config.clone(), Some(db_path.as_path())).unwrap();
+
+        let rows: Vec<(u32, Vec<f32>)> = (100..103)
+            .map(|id| (id, test_vector(8, id as usize)))
+            .collect();
+        engine.rebuild(&rows).unwrap();
+
+        // 0 DISK segments on disk: the old layers must not survive (ADR
+        // 0004 §4, defect #8 closed).
+        let remaining: Vec<String> = std::fs::read_dir(dir.0.join("segments"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            remaining.is_empty(),
+            "old DISK layers must not survive the rebuild: {remaining:?}"
+        );
+
+        // 0 WAL rows.
+        let conn = Connection::open(&db_path).unwrap();
+        assert!(wal_rows(&conn).is_empty(), "the WAL must be cleared");
+        drop(conn);
+
+        // RAM = rows only; the stale cache is reset with the WAL.
+        assert_eq!(engine.count().unwrap(), rows.len() as u64);
+        assert!(
+            engine.stale_sets().is_empty(),
+            "the stale sets must be reset with the WAL"
+        );
+    }
+
+    #[test]
+    fn ram_restore_round_trip() {
+        let dir = TempDir::new("ram-restore");
+        let config = test_config();
+        let engine = UsearchEngine::create(&dir.0, config.clone()).unwrap();
+        engine
+            .insert_batch(&[(1, &test_vector(8, 1)), (2, &test_vector(8, 2))])
+            .unwrap();
+        engine.save().unwrap();
+
+        // The snapshot + sidecar are on disk; no atomic-write residue.
+        assert!(dir.0.join("ram.usearch").is_file(), "snapshot saved");
+        assert_eq!(
+            read_keys(&dir.0.join("ram.keys")).unwrap(),
+            vec![1, 2],
+            "the sidecar tracks the RAM keys"
+        );
+        let residue: Vec<String> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp") || name.ends_with(".old"))
+            .collect();
+        assert!(residue.is_empty(), "no atomic-write residue: {residue:?}");
+
+        // The reopen restores the RAM layer into an in-memory copy.
+        let reopened = UsearchEngine::open(&dir.0, config).unwrap();
+        assert_eq!(reopened.count().unwrap(), 2);
+        let results = reopened.search(&test_vector(8, 2), 1).unwrap();
+        assert_eq!(results.first().map(|(id, _)| *id), Some(2));
     }
 }

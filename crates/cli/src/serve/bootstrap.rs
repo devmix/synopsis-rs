@@ -767,7 +767,7 @@ models:
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .expect("query user_version")
             .expect("user_version row");
-        assert_eq!(user_version, 3, "temp db must be migrated to v3");
+        assert_eq!(user_version, 4, "temp db must be migrated to v4");
     }
 
     // --- open_cache --------------------------------------------------------
@@ -1291,7 +1291,7 @@ dataset:
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .expect("query user_version")
             .expect("user_version row");
-        assert_eq!(user_version, 3, "migrated to v3");
+        assert_eq!(user_version, 4, "migrated to v4");
 
         // Cache DB opened (valid path).
         assert!(boot.cache.is_some(), "cache db must open");

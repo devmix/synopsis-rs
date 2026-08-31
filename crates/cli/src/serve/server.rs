@@ -1363,9 +1363,9 @@ mod tests {
         recreate_vectors_engine(&mut boot).expect("recreate must succeed");
 
         // The active (default: usearch) engine is recreated at its
-        // engine-tagged subdirectory.
+        // engine-tagged subdirectory (ADR 0004 §1 layout, task 3.3).
         assert!(
-            vectors_base.join("usearch").join("index.usearch").exists(),
+            vectors_base.join("usearch").join("ram.keys").exists(),
             "the active engine subdirectory must be recreated"
         );
         assert!(

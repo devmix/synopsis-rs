@@ -724,12 +724,12 @@ mod tests {
         let config = VectorIndexConfig::default();
 
         let engine = create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
-        // The on-disk artifact is the single index file inside the
-        // engine-tagged subdirectory (task 1.5 layout) — the fingerprint
-        // that the UsearchEngine was selected.
+        // The on-disk artifact is the ADR 0004 §1 layout inside the
+        // engine-tagged subdirectory (task 3.3) — the fingerprint that the
+        // UsearchEngine was selected.
         assert!(
-            dir.0.join("usearch").join("index.usearch").exists(),
-            "the usearch index file must be created under the usearch subdirectory"
+            dir.0.join("usearch").join("ram.keys").exists(),
+            "the usearch RAM manifest must be created under the usearch subdirectory"
         );
         assert_eq!(
             engine.count().expect("count"),
@@ -751,10 +751,10 @@ mod tests {
         let dir = TempDir::new("factory-default");
         let config = VectorIndexConfig::default();
         let engine = create_vector_engine("", &dir.0, &config).expect("default engine");
-        // The usearch index file under the usearch subdirectory is the
+        // The usearch RAM manifest under the usearch subdirectory is the
         // fingerprint that the default engine (usearch) was selected.
         assert!(
-            dir.0.join("usearch").join("index.usearch").exists(),
+            dir.0.join("usearch").join("ram.keys").exists(),
             "an absent engine name must resolve to the usearch default"
         );
         assert_eq!(
@@ -778,7 +778,7 @@ mod tests {
             create_vector_engine(ENGINE_USEARCH, &dir.0, &config).expect("usearch engine");
 
         assert!(dir.0.join("lance").join("vectors.lance").exists());
-        assert!(dir.0.join("usearch").join("index.usearch").exists());
+        assert!(dir.0.join("usearch").join("ram.keys").exists());
 
         // Independent contents: what one engine stores, the other does not
         // see.
@@ -846,7 +846,13 @@ mod tests {
         // engine-tagged path (512-dim stored vs 1024-dim configured).
         let dir = TempDir::new("usearch-dim-mismatch");
         let stored = VectorIndexConfig::new(512, 16, 100, 256, 32, 200).expect("stored config");
-        create_vector_engine(ENGINE_USEARCH, &dir.0, &stored).expect("create 512-dim index");
+        let engine = create_vector_engine(ENGINE_USEARCH, &dir.0, &stored).expect("create index");
+        // Task 3.3 (ADR 0004 layout): the dim check fires against stored
+        // files, so the layout needs a saved 512-dim snapshot first.
+        engine
+            .insert(1, &vec![0.5f32; 512])
+            .expect("insert a 512-dim row");
+        engine.build_index().expect("save the snapshot");
 
         let err = err_of(create_vector_engine(
             ENGINE_USEARCH,
