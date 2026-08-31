@@ -756,18 +756,24 @@ vectors_adr_default!(default_vectors_ef_search, 200);
 
 /// Validates the `vectors.engine` field at parse time
 /// (add-usearch-ann-engine, design.md "Runtime"): a present value must be
-/// exactly `"lance"` or `"usearch"`, otherwise the parse fails. An absent key
-/// stays `None` — the wiring (`vectors::create_vector_engine`) resolves the
-/// default engine (`"usearch"`), keeping pre-field presets backward compatible.
+/// exactly `"usearch"` — the only engine. The removed engine is rejected with
+/// an explicit removal error (a loud, actionable failure instead of a silent
+/// engine swap, design D2 of the engine-removal change); any other value
+/// fails the parse. An absent key stays `None` — the wiring
+/// (`vectors::create_vector_engine`) resolves the default engine (`"usearch"`),
+/// keeping pre-field presets backward compatible.
 fn de_vectors_engine<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = Option::<String>::deserialize(deserializer)?;
     match value {
-        Some(engine) if engine == "lance" || engine == "usearch" => Ok(Some(engine)),
+        Some(engine) if engine == "usearch" => Ok(Some(engine)),
+        Some(engine) if engine == "lance" => Err(SerdeError::custom(
+            "vectors.engine: the \"lance\" engine was removed; the only engine is \"usearch\"",
+        )),
         Some(engine) => Err(SerdeError::custom(format!(
-            "vectors.engine must be \"lance\" or \"usearch\", got {engine:?}"
+            "vectors.engine must be \"usearch\", got {engine:?}"
         ))),
         None => Ok(None),
     }
@@ -915,10 +921,12 @@ pub struct VectorsConfig {
     /// HNSW efSearch: candidate list size during query; runtime-tunable.
     #[serde(default = "default_vectors_ef_search")]
     pub ef_search: usize,
-    /// ANN engine selection (add-usearch-ann-engine, design.md): `"lance"`
-    /// (the default) or `"usearch"`. `None` when the key is absent: the
-    /// wiring resolves it to the default engine (`"usearch"`), so presets
-    /// written before the field stay backward compatible.
+    /// ANN engine selection (add-usearch-ann-engine, design.md):
+    /// `"usearch"` — the only engine; the removed engine is rejected with an
+    /// explicit error at parse time (see [`de_vectors_engine`]). `None` when
+    /// the key is absent: the wiring resolves it to the default engine
+    /// (`"usearch"`), so presets written before the field stay backward
+    /// compatible.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -927,8 +935,7 @@ pub struct VectorsConfig {
     pub engine: Option<String>,
     /// Scalar quantization for the ANN index (usearch engine): one of `"u8"`,
     /// `"i8"`, `"f16"`, `"bf16"`, `"f32"`. Default `"bf16"`. An absent key
-    /// resolves to the default; an unrecognized value fails the parse. The
-    /// Lance engine ignores this field (it uses its own IvfHnswSq u8-SQ index).
+    /// resolves to the default; an unrecognized value fails the parse.
     #[serde(
         default = "default_quantization",
         deserialize_with = "de_vectors_quantization"
@@ -1248,11 +1255,9 @@ impl DatasetConfig {
     }
 
     /// Dataset-bound ANN index directory for a specific engine
-    /// (add-usearch-ann-engine task 1.5): `<vectors_path>/<engine>`, so the
-    /// lance and usearch indexes coexist under one dataset and switching
-    /// `vectors.engine` never reads the other engine's files. `engine` is the
-    /// resolved engine name (`"lance"` or `"usearch"` — the absent-field
-    /// default is resolved by the wiring, not here).
+    /// (add-usearch-ann-engine task 1.5): `<vectors_path>/<engine>`. `engine`
+    /// is the resolved engine name (`"usearch"` — the only engine; the
+    /// absent-field default is resolved by the wiring, not here).
     pub fn vectors_engine_path(&self, workspace_dir: &str, engine: &str) -> PathBuf {
         self.vectors_path(workspace_dir).join(engine)
     }
@@ -1846,11 +1851,8 @@ auto_update:
             dataset.vectors_path("ws"),
             PathBuf::from("ws").join("datasets/edtech/state/vectors")
         );
-        // add-usearch-ann-engine task 1.5: the engine-tagged subdirectory.
-        assert_eq!(
-            dataset.vectors_engine_path("ws", "lance"),
-            PathBuf::from("ws").join("datasets/edtech/state/vectors/lance")
-        );
+        // add-usearch-ann-engine task 1.5: the engine-tagged subdirectory
+        // (usearch is the only engine).
         assert_eq!(
             dataset.vectors_engine_path("ws", "usearch"),
             PathBuf::from("ws").join("datasets/edtech/state/vectors/usearch")
@@ -2158,11 +2160,30 @@ vectors:
 
     #[test]
     fn vectors_engine_field_parses_valid_values() {
+        // usearch is the only accepted engine value (design D2 of the
+        // engine-removal change).
         let cfg = parse("vectors:\n  engine: usearch\n");
         assert_eq!(cfg.vectors_config().engine.as_deref(), Some("usearch"));
+    }
 
-        let cfg = parse("vectors:\n  engine: lance\n");
-        assert_eq!(cfg.vectors_config().engine.as_deref(), Some("lance"));
+    #[test]
+    fn vectors_engine_field_removed_engine_is_rejected() {
+        // The removed engine is rejected with an explicit, actionable error
+        // naming the removal and pointing to usearch (design D2) — a loud
+        // parse failure instead of a silent engine swap.
+        let err = load_from_str("vectors:\n  engine: lance\n")
+            .expect_err("the removed engine must fail the parse");
+        match err {
+            ConfigError::Yaml { .. } => {
+                assert!(
+                    err.to_string().contains(
+                        "the \"lance\" engine was removed; the only engine is \"usearch\""
+                    ),
+                    "the error must name the removal and point to usearch: {err}"
+                );
+            }
+            other => panic!("expected a YAML parse error, got: {other:?}"),
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ the Go oracle's vec0 index was never ported — no parity surface).
 
 - [x] 1.1 Remove LanceEngine and all engine features from the `vectors` crate
 - [x] 1.2 Remove engine-feature plumbing from `cli` and the workspace root
-- [ ] 1.3 Remove the A/B-benchmark transitional code from `parity-harness`
+- [x] 1.3 Remove the A/B-benchmark transitional code from `parity-harness`
 - [ ] 1.4 Config validation: `vectors.engine` rejects `"lance"`
 - [ ] 1.5 Docs, specs context, and CI sweep
 
@@ -203,7 +203,12 @@ preset tests for the `vectors` section.
   - `Some("usearch")` → Ok;
   - `Some("lance")` → Err with a message containing: `the "lance" engine was
     removed; the only engine is "usearch"`;
-  - `Some(other)` → Err (existing unknown-value error, keep wording).
+  - `Some(other)` → Err (unknown-value error). Rev 1: the message MUST no longer
+    list the removed engine — it becomes
+    `vectors.engine must be "usearch", got {engine:?}` (the old
+    `must be "lance" or "usearch"` wording is factually wrong after the removal;
+    the spec delta only requires "an explicit parse/validation error" and does not
+    pin the wording).
   Update struct/doc comments that mention the two-engine choice.
 - `crates/config` tests — update/extend the `vectors`-section tests:
   - absent field → Ok;
@@ -225,6 +230,13 @@ workspace green between commits.
 4. `cargo check --workspace` → green.
 
 **Oracle reference.** N/A (see change header).
+
+**Revision history.**
+- Rev 1: the task body's "keep wording" for the unknown-value error was an
+  orchestrator error — the original message `must be "lance" or "usearch"`
+  presents the removed engine as a valid option. Corrected above: the message
+  becomes `vectors.engine must be "usearch", got {engine:?}`. The `"foo"` test
+  only asserts the field name, so no test change is required.
 
 ---
 
