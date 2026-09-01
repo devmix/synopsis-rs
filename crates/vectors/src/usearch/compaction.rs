@@ -424,7 +424,13 @@ mod compaction_tests {
         // old ones are gone.
         wait_until(|| {
             let ids = segment_ids(&dir.0);
-            ids.contains(&3) && !ids.contains(&1) && !ids.contains(&2)
+            if !(ids.contains(&3) && !ids.contains(&1) && !ids.contains(&2)) {
+                return false;
+            }
+            // The WAL DELETE runs after the directory swap (ADR 0004 §7): wait for
+            // it too, or the WAL assertion below is racy under load.
+            let conn = Connection::open(&db_path).unwrap();
+            wal_rows(&conn).is_empty()
         });
 
         // The 24 live keys fit in one new segment-3 (id > old max); the
@@ -482,7 +488,13 @@ mod compaction_tests {
         engine.maybe_compact().unwrap();
         wait_until(|| {
             let ids = segment_ids(&dir.0);
-            ids.contains(&5) && !ids.contains(&1) && !ids.contains(&2)
+            if !(ids.contains(&5) && !ids.contains(&1) && !ids.contains(&2)) {
+                return false;
+            }
+            // The WAL DELETE runs after the directory swap (ADR 0004 §7): wait for
+            // it too, or the WAL assertion below is racy under load.
+            let conn = Connection::open(&db_path).unwrap();
+            wal_rows(&conn).is_empty()
         });
 
         // New ids 3..=5 (N = 2): 10 + 10 + 8, each ≤ max.
