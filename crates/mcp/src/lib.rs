@@ -5,10 +5,11 @@
 //! Oracle mapping: `../synopsis/internal/mcp` + `internal/mcp/handlers`
 //! (design.md D1). The Go code is a reference for behavior and contracts
 //! only — this crate is the Rust re-architecture (functional copy, not a
-//! code copy): the transport is rmcp's Streamable HTTP (design D8; the
-//! oracle's legacy SSE is deliberately not ported), tool schemas are
-//! transcribed from `../synopsis/internal/mcp/tools.go` and pinned by the
-//! registry test in [`server`].
+//! code copy): the transport is rmcp's Streamable HTTP (design D8) plus the
+//! oracle's legacy HTTP+SSE wire contract ([`transport`], restored by
+//! add-legacy-sse-transport), tool schemas are transcribed from
+//! `../synopsis/internal/mcp/tools.go` and pinned by the registry test in
+//! [`server`].
 //!
 //! # Public API
 //!
@@ -21,9 +22,9 @@
 //! - [`McpError`] — handler error mapped to MCP tool errors (design D7);
 //! - [`HealthStatus`] / [`KbCounters`] — the `GET /health` payload (design D5).
 //!
-//! The modules [`error`], [`health`], [`pagination`], [`server`] and
-//! [`tools`] stay public for intra-crate use and test access; deeper seams
-//! (e.g. `health::HealthState`, the per-tool `handle_*` functions) are
+//! The modules [`error`], [`health`], [`pagination`], [`server`], [`tools`]
+//! and [`transport`] stay public for intra-crate use and test access; deeper
+//! seams (e.g. `health::HealthState`, the per-tool `handle_*` functions) are
 //! reachable through them but are not part of the root API the cli
 //! consumes.
 
@@ -32,6 +33,7 @@ pub mod health;
 pub mod pagination;
 pub mod server;
 pub mod tools;
+pub mod transport;
 
 pub use error::McpError;
 pub use health::{HealthStatus, KbCounters};

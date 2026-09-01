@@ -22,6 +22,13 @@ db = { workspace = true }
 graph = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
 search = { workspace = true }
+# Legacy SSE transport (add-legacy-sse-transport D3): sse-stream serializes the
+# SSE frames, tokio-stream adapts the mpsc receiver to the body stream, uuid
+# mints the session ids. All three are already in the lock via rmcp, so no new
+# package enters Cargo.lock.
+sse-stream = { workspace = true }
+tokio-stream = { workspace = true }
+uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

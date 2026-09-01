@@ -1898,9 +1898,12 @@ dependencies = [
  "search",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tower",
+ "uuid",
 ]
 
 [[package]]

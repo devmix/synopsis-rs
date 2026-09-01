@@ -74,6 +74,16 @@ mcp = { path = "crates/mcp" }
 # Async runtime and HTTP/SSE transport (design D2)
 tokio = { version = "1", features = ["full"] } # 1.53.x is current stable
 axum = "0.8" # latest stable line; 0.9 not yet released on crates.io
+# Legacy SSE transport (add-legacy-sse-transport, design D3): all three are
+# already in the lock graph — rmcp 3.1.3 pulls sse-stream 0.2.5 and
+# tokio-stream 0.1.19, and uuid 1.24.1 is shared with cel/r2d2_sqlite/rmcp —
+# so promoting them to direct workspace deps adds NO new package to
+# Cargo.lock (verified with `cargo tree -i`). sse-stream serializes the SSE
+# frames, tokio-stream adapts the mpsc receiver to the axum body stream, and
+# uuid (v4) mints the server-generated session ids.
+sse-stream = "0.2"
+tokio-stream = "0.1"
+uuid = { version = "1", features = ["v4"] }
 
 # MCP protocol: official SDK (modelcontextprotocol/rust-sdk), decision design D8
 # (2026-08-18): Streamable HTTP transport, wire compatibility with the Go oracle's
