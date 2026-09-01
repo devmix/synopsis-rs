@@ -642,11 +642,13 @@ pub fn serve_with_stop(
 
     let serve_result = match serve_result {
         Some(result) => result,
-        // The shutdown bound expired before the serve task drained; the
-        // task is reaped when the runtime drops at the end of run_serve.
-        None => Err(io::Error::other(
-            "serve task did not finish within the shutdown bound",
-        )),
+        // A forced shutdown (the bound expired before the serve task drained) is
+        // not a failure: the process is about to exit, so the in-flight axum
+        // drain is abandoned — that is the point of the forced bound. The warn!
+        // above already logged it; returning Ok keeps the exit code clean (a
+        // forced stop met the user's intent: the server stopped). The serve task
+        // is reaped when the runtime drops at the end of run_serve.
+        None => Ok(()),
     };
     if let Err(err) = &serve_result {
         tracing::error!(error = %err, "MCP server error");
