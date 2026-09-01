@@ -27,7 +27,7 @@ Change: `fix-vectors-compaction-flag-clear-race`
 - **Test-count invariant:** the workspace total stays **1,474** (no tests added
   or removed).
 
-- [ ] **1.1** — Extend the two racy `wait_until` predicates to wait for the flag.
+- [x] **1.1** — Extend the two racy `wait_until` predicates to wait for the flag.
 
   **Goal:** close the window where the predicate passes (WAL empty) but the
   `compacting` flag is still set, which makes the flag assertion flake under
