@@ -36,6 +36,7 @@ struct CompactionState {
     root: PathBuf,
     index_options: IndexOptions,
     max_segment_vectors: usize,
+    compaction_stale_threshold: u8,
 }
 
 impl UsearchEngine {
@@ -85,6 +86,7 @@ impl UsearchEngine {
             root: self.root.clone(),
             index_options: options(&self.config),
             max_segment_vectors: self.usearch_config.max_segment_vectors,
+            compaction_stale_threshold: self.usearch_config.compaction_stale_threshold,
         };
         let compacting = Arc::clone(&self.compacting);
         let compacting_for_thread = Arc::clone(&compacting);
@@ -119,6 +121,28 @@ impl CompactionState {
     /// crash matrix; the "directory before WAL" ordering is mandatory).
     fn run(&self) -> Result<(), VectorsError> {
         let _layout = mutex_guard(&self.layout_lock);
+
+        // Double-check (ADR 0004 §7 single-flight): the trigger read the stale
+        // fraction BEFORE acquiring the flag; a concurrent repack may have cleared it
+        // since. Re-validate under the layout lock and bail if the work is already
+        // done — otherwise a redundant second repack would move the same live keys to
+        // yet newer ids.
+        {
+            let stale = self.stale.snapshot();
+            let stale_total: usize = stale
+                .iter()
+                .filter(|(id, _)| **id > 0)
+                .map(|(_, set)| set.len())
+                .sum();
+            let total_disk: usize = disk_segments_read_guard(&self.disk_segments)
+                .iter()
+                .map(|segment| segment.index.size())
+                .sum();
+            let threshold = self.compaction_stale_threshold;
+            if total_disk == 0 || stale_total * 100 <= threshold as usize * total_disk {
+                return Ok(());
+            }
+        }
 
         // 1. Live keys of every segment: keys(n) − stale[n] (sidecar +
         //    cache, no index scans; ADR 0004 §7 step 1). The snapshot is
