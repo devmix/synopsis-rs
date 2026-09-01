@@ -25,7 +25,7 @@ with all gates green.
 - [x] 1.2 `POST /message` + minimal JSON-RPC 2.0 method table
 - [x] 1.3 Router composition + main-spec Purpose update
 - [x] 1.4 parity-harness SSE client + cross-transport parity tests
-- [ ] 1.5 Session idle timeout + reaper (general-service hardening)
+- [x] 1.5 Session idle timeout + reaper (general-service hardening)
 
 ---
 
