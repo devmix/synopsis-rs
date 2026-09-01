@@ -35,7 +35,7 @@ Conventions for every task in this change:
 - [x] 1.1 Dedup: eliminate the `test_platform_key` duplicate
 - [x] 1.2 Extract `db/src/fact.rs` tests → `db/tests/fact.rs`
 - [x] 1.3 Extract `cli/src/serve/bootstrap.rs` tests → `cli/tests/serve_bootstrap.rs`
-- [ ] 1.4 Extract `mcp/src/tools/documents.rs` tests → `mcp/tests/documents.rs`
+- [x] 1.4 Extract `mcp/src/tools/documents.rs` tests → `mcp/tests/documents.rs`
 - [ ] 1.5 Extract `mcp/src/tools/graph_tools.rs` tests → `mcp/tests/graph_tools.rs`
 - [ ] 1.6 Extract `graph/src/cel.rs` tests → `graph/tests/cel.rs` (+ `cel` dev-dep)
 - [ ] 1.7 Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs`
@@ -147,13 +147,22 @@ inline test module to a new integration test file.
 conflict.)
 
 **Approach.** All 19 tests are MOVABLE (public API only). Move the module to
-`crates/mcp/tests/documents.rs`, rewrite imports to the `mcp` crate name, carry private
-helpers, keep names/assertions verbatim, `#![allow(clippy::unwrap_used)]`.
+`crates/mcp/tests/documents.rs`, rewrite `use crate::…`/`use super::*` → `use mcp::…`
+(the lib target is named `mcp`; `tools` and `tools::documents` are both `pub`, so
+`mcp::tools::documents::…` is importable), carry private helpers, keep
+names/assertions verbatim, `#![allow(clippy::unwrap_used, clippy::expect_used)]`
+(the source module has both and uses `.expect()`).
 
 **Acceptance criteria.**
 1. `documents.rs` has no `#[cfg(test)]` block; line count drops by the moved test lines.
 2. `cargo test -p mcp` test count unchanged (19 relocated); all gates green.
 3. Names/assertions verbatim; scope-only diff; `../synopsis` untouched.
+
+**Revision 1 (2026-09-01, human "revise").** The new file's module doc comment must not
+carry a relative `../synopsis/…` path (for consistency with the other relocated test
+files, 1.2/1.3, which do not reference the oracle by path). Replace the
+`../synopsis/internal/mcp/handlers/…` reference with a path-free description (e.g.
+"oracle: Go `internal/mcp/handlers/documents.go`"). Doc comment only — no code change.
 
 ---
 
