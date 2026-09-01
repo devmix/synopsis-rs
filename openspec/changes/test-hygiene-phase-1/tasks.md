@@ -33,7 +33,7 @@ Conventions for every task in this change:
 ## Task checklist
 
 - [x] 1.1 Dedup: eliminate the `test_platform_key` duplicate
-- [ ] 1.2 Extract `db/src/fact.rs` tests → `db/tests/fact.rs`
+- [x] 1.2 Extract `db/src/fact.rs` tests → `db/tests/fact.rs`
 - [ ] 1.3 Extract `cli/src/serve/bootstrap.rs` tests → `cli/tests/serve_bootstrap.rs`
 - [ ] 1.4 Extract `mcp/src/tools/documents.rs` tests → `mcp/tests/documents.rs`
 - [ ] 1.5 Extract `mcp/src/tools/graph_tools.rs` tests → `mcp/tests/graph_tools.rs`
