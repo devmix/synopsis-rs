@@ -34,7 +34,7 @@ Conventions for every task in this change:
 
 - [x] 1.1 Dedup: eliminate the `test_platform_key` duplicate
 - [x] 1.2 Extract `db/src/fact.rs` tests → `db/tests/fact.rs`
-- [ ] 1.3 Extract `cli/src/serve/bootstrap.rs` tests → `cli/tests/serve_bootstrap.rs`
+- [x] 1.3 Extract `cli/src/serve/bootstrap.rs` tests → `cli/tests/serve_bootstrap.rs`
 - [ ] 1.4 Extract `mcp/src/tools/documents.rs` tests → `mcp/tests/documents.rs`
 - [ ] 1.5 Extract `mcp/src/tools/graph_tools.rs` tests → `mcp/tests/graph_tools.rs`
 - [ ] 1.6 Extract `graph/src/cel.rs` tests → `graph/tests/cel.rs` (+ `cel` dev-dep)
@@ -120,9 +120,11 @@ inline test module to a new integration test file.
 **Dependencies.** None.
 
 **Approach.** All 22 tests are classified MOVABLE (public API only). Move the test module
-to `crates/cli/tests/serve_bootstrap.rs`, rewrite `use crate::…` → `use synopsis_cli::…`
-(check the crate's lib name in `crates/cli/Cargo.toml`), carry private helpers, keep
-names/assertions verbatim, `#![allow(clippy::unwrap_used)]`.
+to `crates/cli/tests/serve_bootstrap.rs`, rewrite `use crate::…`/`use super::*` →
+`use cli::…` (the lib target is named `cli` — the default = package name; the `[[bin]]`
+is `synopsis`. `serve` and `serve::bootstrap` are both `pub`, so
+`cli::serve::bootstrap::…` is importable), carry private helpers, keep
+names/assertions verbatim, `#![allow(clippy::unwrap_used, clippy::expect_used)]`.
 
 **Acceptance criteria.**
 1. `bootstrap.rs` has no `#[cfg(test)]` block; line count drops by the moved test lines.
