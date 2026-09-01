@@ -25,7 +25,7 @@ Change: `fix-vectors-singleflight-redundant-repack`
 - **Test-count invariant:** the workspace total stays **1,474** (no tests added
   or removed).
 
-- [ ] **1.1** — Add the single-flight double-check at the top of `run()`.
+- [x] **1.1** — Add the single-flight double-check at the top of `run()`.
 
   **Goal:** re-validate the compaction trigger under the layout lock and bail if
   the work was already done by a prior repack, so a redundant second repack
@@ -99,3 +99,12 @@ Change: `fix-vectors-singleflight-redundant-repack`
 
   **Oracle reference:** none — usearch is a new engine (design D5); the Go oracle
   has no compaction thread.
+
+  **Revision history:**
+  - Rev 1 (2026-09-01): the task body's guard block referenced
+    `self.usearch_config`, but `CompactionState` has no such field. Approved
+    deviation: copy out the scalar `compaction_stale_threshold: u8` (consistent
+    with the existing `max_segment_vectors` copy-out) instead of adding the whole
+    `UsearchConfig`; the guard reads `self.compaction_stale_threshold`.
+    Behavior-neutral, removes the `max_segment_vectors` redundancy the whole-config
+    approach would have introduced.
