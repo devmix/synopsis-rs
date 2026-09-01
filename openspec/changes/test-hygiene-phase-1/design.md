@@ -110,11 +110,16 @@ compared). The machine gates are the Rust workspace's own: fmt / clippy / test.
 
 ## Appendix A — Audit results (measured 2026-09-01, exact file:line)
 
-**Baseline:** 1,460 tests workspace-wide (cli 134, config 120, db 176, embedding 99,
-graph 94, ingestion 377, llm 42, mcp 183, parity-harness 42, search 102, utils 8,
-vectors 83). Note: six `#[tokio::test(start_paused = true)]` in `mcp/src/transport/sse.rs`
-(1114/1130/1154/1169/1187/1233) and one in `mcp/src/server.rs:1368` are easily missed by
-naive `#[test]` greps.
+**Baseline:** 1,474 tests workspace-wide (cli 134, config 120, db 187, embedding 101,
+graph 95, ingestion 377, llm 42, mcp 183, parity-harness 42, search 102, utils 8,
+vectors 83). *Corrected 2026-09-01 during task 1.1:* the initial static audit
+undercounted db (+11), embedding (+2), graph (+1); the authoritative total is from
+`cargo test --workspace -- --list`. The per-file counts below were re-verified against
+the tree and are unchanged. Note: six `#[tokio::test(start_paused = true)]` in
+`mcp/src/transport/sse.rs` (1114/1130/1154/1169/1187/1233) and one in
+`mcp/src/server.rs:1368` are easily missed by naive `#[test]` greps — and a comment at
+`sse.rs:1097` contains the literal attribute text, so attribute-grep counts must exclude
+comment lines (sse.rs has 23 tests, not 24).
 
 **Duplicates:** 0 true duplicate `#[test]` fns (43 duplicate *names* are coincidental
 parallel suites — different DAOs/parsers/types, bodies verified). One true duplicate

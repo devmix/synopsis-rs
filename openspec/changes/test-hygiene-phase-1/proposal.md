@@ -4,7 +4,7 @@
 
 Application-code source files are bloated by inline `#[cfg(test)] mod tests` blocks. A
 workspace audit (see design.md, Appendix A) measured 122 inline test modules across 160
-files (1,460 tests). The worst offenders are majority-test files:
+files (1,474 tests). The worst offenders are majority-test files:
 
 | File | Total lines | Test lines | Test % |
 |---|---|---|---|
@@ -54,7 +54,7 @@ deliberate, non-contract surface notes:
   Cargo.lock change**.
 
 Parity is unaffected: the parity-harness fixtures and the differential/ANN gates are not
-touched; the full suite must stay green (1,460 tests) with the same assertions.
+touched; the full suite must stay green (1,474 tests) with the same assertions.
 
 ## Non-goals
 

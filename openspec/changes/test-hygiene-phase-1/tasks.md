@@ -14,7 +14,7 @@ Conventions for every task in this change:
   `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test --workspace`
   green; `cargo check --workspace` clean.
 - **Test-count invariant:** extraction relocates tests, it does not delete them — the
-  workspace total stays **1,460** unless a task documents a true-duplicate removal
+  workspace total stays **1,474** unless a task documents a true-duplicate removal
   (design D4). Report the before/after count per crate in the task report.
 - **Pure moves are exempt from the ~500-line diff cap** (design D2, user decision
   2026-09-01); the cap still bounds any new/changed logic (test_support modules,
@@ -32,7 +32,7 @@ Conventions for every task in this change:
 
 ## Task checklist
 
-- [ ] 1.1 Dedup: eliminate the `test_platform_key` duplicate
+- [x] 1.1 Dedup: eliminate the `test_platform_key` duplicate
 - [ ] 1.2 Extract `db/src/fact.rs` tests → `db/tests/fact.rs`
 - [ ] 1.3 Extract `cli/src/serve/bootstrap.rs` tests → `cli/tests/serve_bootstrap.rs`
 - [ ] 1.4 Extract `mcp/src/tools/documents.rs` tests → `mcp/tests/documents.rs`
@@ -73,7 +73,7 @@ crate, widen it minimally (`pub`) and document it in the task report. Do NOT tou
 1. `rg -n "test_platform_key" crates/` shows no remaining inline OS/ARCH match
    re-implementation; both helpers are one-line delegations to `current_platform_key()`.
 2. All gates green. `cargo test -p cli -p embedding` green; workspace test count
-   unchanged (1,460).
+   unchanged (1,474).
 3. No files outside the scope touched; `../synopsis` untouched; no dependency changes.
 
 ---
@@ -332,14 +332,24 @@ conflict; none of them touch `lib.rs`.)
    `#[doc(hidden)] pub use crate::transport::sse::{…};` (adjust the path to how
    `transport/sse` is declared — check `crates/mcp/src/transport/mod.rs`), and declare the
    module in `lib.rs` as `#[doc(hidden)] pub mod test_support;`.
-2. **Move 18 tests** (all except the 5 below) to `crates/mcp/tests/sse_units.rs`:
-   `session_map_*` (3), `session_ids_are_unique`, `send_to_dropped_receiver`,
-   `sse_endpoint_serves`, `channel_payload_streams`, the four reaper tests,
-   `idle_sse_stream_ends` — all use the public `SseSessionMap` + public `handle_sse`.
+2. **Move 18 tests** (all except the 5 stay-inline below) to
+   `crates/mcp/tests/sse_units.rs`. **11 use only the public `SseSessionMap` /
+   `handle_sse`:** `session_map_create_get_remove_touch_round_trip`,
+   `session_map_unknown_id_get_none_touch_false`, `session_ids_are_unique_uuid_v4`,
+   `send_to_dropped_receiver_removes_session_and_errors`,
+   `sse_endpoint_serves_endpoint_event_and_cleans_up_on_drop`,
+   `channel_payload_streams_as_message_frame`, `reaper_reaps_idle_session_after_threshold`,
+   `reaper_keeps_touched_session`, `reaper_keeps_fresh_session`,
+   `spawn_reaper_twice_is_harmless`, `idle_sse_stream_ends_after_threshold`.
+   **7 use the `test_support` items** (rewrite the call to `mcp::test_support::…`):
+   `endpoint_url_no_proxy_headers_uses_http_and_host`,
+   `endpoint_url_uses_forwarded_proto_and_host`,
+   `endpoint_url_comma_list_proto_first_value_wins` (→ `endpoint_url`);
+   `endpoint_frame_bytes_match_wire_contract`, `message_frame_bytes_match_wire_contract`,
+   `multiline_data_is_split_into_data_fields` (→ `encode_sse_frame`);
+   `backpressure_channel_is_bounded` (→ `CHANNEL_CAPACITY`).
    Rewrite imports, carry exclusive private helpers, keep names/assertions verbatim,
-   `#![allow(clippy::unwrap_used)]`. The 7 tests that used private
-   `endpoint_url`/`encode_sse_frame`/`CHANNEL_CAPACITY` now go through
-   `mcp::test_support::…`.
+   `#![allow(clippy::unwrap_used)]`.
 3. **Stay inline (do NOT move)** — need the `#[cfg(test)] test_server()` helper because
    `handle_message` takes `State<SseState { sessions, server: Arc<Server> }>` (design D7):
    `message_without_session_id`, `message_with_unknown_session_id`,
@@ -443,7 +453,7 @@ duplicate (note it).
    (from design.md Appendix A / `git show` of pre-change blobs), after, and reduction %.
    Also `cli/src/serve/watcher.rs` listed as "not extracted (all private)" with its line
    count.
-2. **Test-count reconciliation:** workspace total before (1,460, Appendix A) vs after,
+2. **Test-count reconciliation:** workspace total before (1,474, Appendix A) vs after,
    per crate; every delta explained (expected: 0 — relocations only; any true-duplicate
    removals per design D4 named with file:line).
 3. **Residual inline test inventory:** for each file that kept a `#[cfg(test)]` block
@@ -454,6 +464,6 @@ duplicate (note it).
 **Acceptance criteria.**
 1. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
    `cargo test --workspace`, `cargo check --workspace` all green.
-2. Workspace test count == 1,460 (or every delta D4-documented in results.md).
+2. Workspace test count == 1,474 (or every delta D4-documented in results.md).
 3. Every one of the 11 extracted files is smaller than before; `results.md` committed
    with the change. No source files modified by this task; `../synopsis` untouched.
