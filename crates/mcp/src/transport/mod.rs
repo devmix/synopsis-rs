@@ -42,6 +42,64 @@
 //! each `/sse` handler and removes the session from the registry. The existing
 //! cli stop path (broadcast stop → axum graceful shutdown) is unchanged.
 
+pub mod jsonrpc;
 pub mod sse;
 
-pub use sse::{SseSession, SseSessionMap, handle_sse};
+pub use jsonrpc::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+pub use sse::{MessageQuery, SseSession, SseSessionMap, SseState, handle_message, handle_sse};
+
+#[cfg(test)]
+mod test_util {
+    //! Shared test fixtures for the transport tests: a server over an empty
+    //! in-memory KB (the same scaffold pattern as `server.rs` tests).
+
+    use std::sync::Arc;
+
+    use graph::GraphIndex;
+    use search::{SearchError, SearchResult};
+
+    use crate::server::Server;
+
+    /// A Searcher stub: the transport tests only need an injectable handle.
+    pub struct StubSearcher;
+
+    impl search::Searcher for StubSearcher {
+        fn hybrid_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Err(SearchError::Lexical("stub".to_owned()))
+        }
+
+        fn lexical_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Err(SearchError::Lexical("stub".to_owned()))
+        }
+
+        fn semantic_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Err(SearchError::Semantic("stub".to_owned()))
+        }
+    }
+
+    /// A server over an empty in-memory KB with no graph.
+    pub fn test_server() -> Server {
+        Server::new(
+            "synopsis-sse-test".to_owned(),
+            "0.2.0".to_owned(),
+            db::test_util::in_memory_db(),
+            Arc::new(StubSearcher),
+            Arc::new(GraphIndex::Unavailable),
+        )
+    }
+}

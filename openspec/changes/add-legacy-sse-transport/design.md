@@ -121,7 +121,10 @@ contain no SSE wire tests, so the library source is the wire reference.
 | `tools/call` | `Server::dispatch(name, args)`; tool-level `McpError` → MCP tool result `isError: true` with the error text in `content` (MCP convention; verify mcp-go behavior); protocol-level (unknown tool, bad params) → JSON-RPC error |
 | anything else | `-32601` Method not found (resources/prompts/completions included — the oracle's tools-only mcp-go server does not register them) |
 
-Parse error → `-32700`; structurally invalid params → `-32602`. Batch requests:
+Parse error → `-32700`; structurally invalid / unparsable params → `-32600`
+(INVALID_REQUEST — pinned from mcp-go v0.57.0 `UnparsableMessageError`; the
+earlier draft's `-32602` was corrected after source verification). Batch
+requests:
 mcp-go v0.57.0 does not support them → reject (verify exact error) — clients of
 the oracle never send batches.
 

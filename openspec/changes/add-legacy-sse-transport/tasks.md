@@ -164,7 +164,9 @@ record the pinned shapes as comments at the point of use.
 - `crates/mcp/src/transport/sse.rs` — extend with:
   - JSON-RPC 2.0 types: request (`jsonrpc`, `id: Option<Value>`, `method`,
     `params: Option<Value>`), response, error object (codes: -32700 parse,
-    -32602 invalid params, -32601 method not found);
+    -32600 invalid request [pinned from mcp-go v0.57.0 UnparsableMessageError —
+    NOT -32602, which the earlier task draft mis-stated], -32601 method not
+    found);
   - `handle_message` axum POST handler: extract `sessionId` query param
     (missing → 400; unknown → 400, mcp-go v0.57.0 status/body — pin it);
     parse body as JSON-RPC request (parse error → -32700 pushed to the session

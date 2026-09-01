@@ -29,8 +29,11 @@
 //! - D6 — no `CloseSessions` equivalent: the client disconnect drops the body,
 //!   which removes the session (the [`SessionGuard`]).
 //!
-//! `POST /message` + the JSON-RPC method table arrive in task 1.2; the router
-//! wiring arrives in task 1.3. This module is tested in isolation.
+//! Task 1.2 adds `POST /message` ([`handle_message`]): session validation
+//! (400 + pinned JSON-RPC error body), `202 Accepted`, background dispatch
+//! through the JSON-RPC method table ([`crate::transport::jsonrpc`]) and the
+//! response pushed back on the session's SSE channel. The router wiring
+//! arrives in task 1.3. This module is tested in isolation.
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -39,15 +42,20 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{FromRef, Query, State};
 use axum::http::header;
-use axum::http::{HeaderMap, HeaderName};
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, HeaderName, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
+use serde_json::Value;
 use sse_stream::Sse;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt, once};
 use uuid::Uuid;
+
+use crate::server::Server;
+use crate::transport::jsonrpc::{self, INVALID_PARAMS, JsonRpcResponse, PARSE_ERROR};
 
 /// Bounded per-session channel capacity (design D3 revision): a slow/dead
 /// client must not accumulate unbounded frames in RAM under the 16 GB
@@ -196,6 +204,26 @@ impl Default for SseSessionMap {
     }
 }
 
+/// Shared axum state for the legacy SSE routes (design D5): the session
+/// registry plus the MCP server handle [`handle_message`] dispatches through.
+/// `handle_sse` takes `State<SseSessionMap>` and resolves it from this state
+/// via the [`FromRef`] impl below (axum's `State` extractor accepts any
+/// router state with a `FromRef` into the target type), so the task 1.1
+/// handler signature is unchanged.
+#[derive(Clone)]
+pub struct SseState {
+    /// The active SSE sessions (task 1.1).
+    pub sessions: SseSessionMap,
+    /// The MCP server (the same handle the Streamable HTTP path serves from).
+    pub server: Arc<Server>,
+}
+
+impl FromRef<SseState> for SseSessionMap {
+    fn from_ref(state: &SseState) -> Self {
+        state.sessions.clone()
+    }
+}
+
 /// Build the absolute message-endpoint URL for the `endpoint` event (design D2
 /// revision — proxy-aware). Scheme: `X-Forwarded-Proto` (first value if a
 /// comma-list, lowercased) else `http`. Host: `X-Forwarded-Host` else the
@@ -322,6 +350,83 @@ pub async fn handle_sse(
         body,
     )
         .into_response()
+}
+
+/// The `sessionId` query parameter of `POST /message` (mcp-go v0.57.0 sse.go
+/// `r.URL.Query().Get("sessionId")`).
+#[derive(Debug, Deserialize)]
+pub struct MessageQuery {
+    /// The session id from the `endpoint` event; missing/empty → 400.
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+}
+
+/// The pinned mcp-go v0.57.0 400 response (sse.go handleMessage +
+/// jsonrpc_error.go writeJSONRPCError): `400 Bad Request`,
+/// `Content-Type: application/json`, body = the JSON-RPC error object with
+/// id null.
+fn http_jsonrpc_error(code: i32, message: &str) -> Response {
+    let response = JsonRpcResponse::error(Value::Null, code, message);
+    let body = serde_json::to_string(&response).unwrap_or_else(|err| err.to_string());
+    (
+        StatusCode::BAD_REQUEST,
+        [(header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
+}
+
+/// `POST /message?sessionId=<id>` handler (mcp-go v0.57.0 `handleMessage`):
+/// validate the session (missing/unknown → `400` + the pinned JSON-RPC error
+/// body), answer `202 Accepted` with an empty body, then dispatch the
+/// JSON-RPC message in the background and push the response (if any) onto
+/// the session's SSE channel as an `event: message` frame.
+///
+/// mcp-go v0.57.0 sse.go: "quick return request, send 202 Accepted with no
+/// body, then deal the message and sent response via SSE". A failed channel
+/// send after the 202 is dropped (mcp-go logs "Event queue full" for a full
+/// queue and silently skips a closed session; the library stays logger-less)
+/// — there is no HTTP error left to report. A non-POST method is rejected by
+/// the route (axum 405) rather than mcp-go's 400 "Method not allowed" body;
+/// the pinned contract covers the POST leg.
+pub async fn handle_message(
+    State(state): State<SseState>,
+    Query(query): Query<MessageQuery>,
+    body: Bytes,
+) -> Response {
+    // mcp-go v0.57.0 sse.go handleMessage: a missing sessionId → 400 with the
+    // JSON-RPC INVALID_PARAMS error body (id null, "Missing sessionId").
+    let Some(session_id) = query.session_id.filter(|id| !id.is_empty()) else {
+        return http_jsonrpc_error(INVALID_PARAMS, "Missing sessionId");
+    };
+    // mcp-go v0.57.0 sse.go handleMessage: an unknown sessionId → 400 with
+    // the JSON-RPC INVALID_PARAMS error body (id null, "Invalid session
+    // ID"). `touch` doubles as the existence check and refreshes
+    // last_activity for the idle reaper (design D9, task 1.5).
+    if !state.sessions.touch(&session_id) {
+        return http_jsonrpc_error(INVALID_PARAMS, "Invalid session ID");
+    }
+    // mcp-go v0.57.0 sse.go handleMessage: the body must decode as raw JSON
+    // (json.RawMessage) → 400 + the JSON-RPC PARSE_ERROR body ("Parse
+    // error", id null). A structurally invalid JSON-RPC message (valid JSON)
+    // is NOT a 400 here: mcp-go answers 202 and pushes the -32700 response
+    // over the SSE stream (jsonrpc::dispatch).
+    let Ok(raw) = serde_json::from_slice::<Value>(&body) else {
+        return http_jsonrpc_error(PARSE_ERROR, "Parse error");
+    };
+    let sessions = state.sessions.clone();
+    let server = state.server.clone();
+    tokio::spawn(async move {
+        if let Some(response) = jsonrpc::dispatch(&server, &raw).await {
+            let payload = serde_json::to_string(&response).unwrap_or_else(|err| err.to_string());
+            // A send failure after the 202 is a dead/reaped session: mcp-go
+            // logs and drops the frame (pinned); SseSessionMap::send already
+            // removed the dead session (design D3).
+            let _ = sessions.send(&session_id, payload).await;
+        }
+    });
+    // mcp-go v0.57.0 sse.go handleMessage: 202 Accepted, empty body.
+    StatusCode::ACCEPTED.into_response()
 }
 
 #[cfg(test)]
@@ -588,5 +693,279 @@ mod tests {
         assert_eq!(second, format!("event: message\ndata: {payload}\n\n"));
 
         drop(data_stream);
+    }
+
+    // --- POST /message (task 1.2) ---
+
+    use crate::transport::test_util::test_server;
+    use axum::routing::post;
+    use serde_json::json;
+
+    /// Accumulates body chunks and returns complete SSE frames (terminated by
+    /// the blank line), keeping the leftover bytes for the next call —
+    /// hyper may split or coalesce frames across chunk boundaries.
+    struct FrameReader {
+        buffer: String,
+    }
+
+    impl FrameReader {
+        fn new() -> Self {
+            Self {
+                buffer: String::new(),
+            }
+        }
+
+        async fn next_frame<S>(&mut self, stream: &mut S) -> Option<String>
+        where
+            S: StreamExt<Item = std::result::Result<Bytes, axum::Error>> + Unpin,
+        {
+            loop {
+                if let Some(end) = self.buffer.find("\n\n") {
+                    let frame = self.buffer[..end].to_owned();
+                    self.buffer = self.buffer[end + 2..].to_owned();
+                    return Some(frame);
+                }
+                match stream.next().await {
+                    Some(Ok(chunk)) => self.buffer.push_str(&String::from_utf8_lossy(&chunk)),
+                    Some(Err(_)) | None => return None,
+                }
+            }
+        }
+    }
+
+    /// Read the next `event: message` frame and parse its (single-line) data
+    /// payload as a JSON-RPC object.
+    async fn next_json_frame<S>(reader: &mut FrameReader, stream: &mut S) -> Value
+    where
+        S: StreamExt<Item = std::result::Result<Bytes, axum::Error>> + Unpin,
+    {
+        let frame = tokio::time::timeout(Duration::from_secs(5), reader.next_frame(stream))
+            .await
+            .expect("frame must arrive")
+            .expect("stream must not end");
+        assert!(
+            frame.starts_with("event: message\n"),
+            "message frame expected, got: {frame}"
+        );
+        let data_line = frame
+            .lines()
+            .find(|line| line.starts_with("data: "))
+            .expect("message frame carries data");
+        serde_json::from_str(data_line.strip_prefix("data: ").unwrap())
+            .expect("valid JSON-RPC payload")
+    }
+
+    /// A `POST /message` request (optionally with a sessionId).
+    fn post_message(session_id: Option<&str>, body: Value) -> Request<Body> {
+        let uri = match session_id {
+            Some(id) => format!("/message?sessionId={id}"),
+            None => "/message".to_owned(),
+        };
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap()
+    }
+
+    /// A `/message`-only router with a fresh session map and fixture server.
+    /// Returns the finalized `Router<()>` (axum only implements `Service`
+    /// for state-consumed routers).
+    fn message_router() -> Router {
+        Router::new()
+            .route("/message", post(handle_message))
+            .with_state(SseState {
+                sessions: SseSessionMap::new(),
+                server: Arc::new(test_server()),
+            })
+    }
+
+    /// POST one JSON-RPC message to `/message`; returns the response status.
+    async fn send_message(app: &Router, session_id: &str, body: Value) -> StatusCode {
+        app.clone()
+            .oneshot(post_message(Some(session_id), body))
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// POST /message without a sessionId → 400 + the pinned JSON-RPC error
+    /// body (mcp-go v0.57.0 sse.go: INVALID_PARAMS, "Missing sessionId", id
+    /// null, Content-Type application/json).
+    #[tokio::test]
+    async fn message_without_session_id_is_400() {
+        let app = message_router();
+        let response = app
+            .clone()
+            .oneshot(post_message(
+                None,
+                json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed,
+            json!({"jsonrpc":"2.0","id":null,"error":{"code":-32602,"message":"Missing sessionId"}})
+        );
+    }
+
+    /// POST /message with an unknown sessionId → 400 + the pinned JSON-RPC
+    /// error body (mcp-go v0.57.0 sse.go: INVALID_PARAMS, "Invalid session
+    /// ID", id null).
+    #[tokio::test]
+    async fn message_with_unknown_session_id_is_400() {
+        let app = message_router();
+        let response = app
+            .clone()
+            .oneshot(post_message(
+                Some("no-such-session"),
+                json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["error"]["code"], json!(-32602));
+        assert_eq!(parsed["error"]["message"], "Invalid session ID");
+        assert!(parsed["id"].is_null());
+    }
+
+    /// POST /message with a valid session but a non-JSON body → 400 + the
+    /// pinned PARSE_ERROR body (mcp-go v0.57.0 sse.go: "Parse error", id
+    /// null). A structurally invalid JSON-RPC message (valid JSON) instead
+    /// gets 202 + a -32700 frame on the stream (jsonrpc::dispatch).
+    #[tokio::test]
+    async fn message_with_malformed_body_is_400_parse_error() {
+        let sessions = SseSessionMap::new();
+        let (id, _rx) = sessions.create();
+        let app = Router::new()
+            .route("/message", post(handle_message))
+            .with_state(SseState {
+                sessions: sessions.clone(),
+                server: Arc::new(test_server()),
+            });
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/message?sessionId={id}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("not json"))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["error"]["code"], json!(-32700));
+        assert_eq!(parsed["error"]["message"], "Parse error");
+        assert!(parsed["id"].is_null());
+    }
+
+    /// In-process axum round-trip (task 1.2 acceptance criterion): GET /sse
+    /// → read the endpoint event → POST initialize + tools/list + tools/call
+    /// against a Server built on a temp fixture DB → the responses arrive
+    /// over the SSE stream in order, each after its `202 Accepted`.
+    #[tokio::test]
+    async fn message_round_trip_over_sse() {
+        let sessions = SseSessionMap::new();
+        let app = Router::new()
+            .route("/sse", get(handle_sse))
+            .route("/message", post(handle_message))
+            .with_state(SseState {
+                sessions: sessions.clone(),
+                server: Arc::new(test_server()),
+            });
+
+        // 1. GET /sse → the endpoint event carries the session id.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sse")
+                    .header(header::HOST, "localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut data = response.into_body().into_data_stream();
+        let mut reader = FrameReader::new();
+        let endpoint = reader
+            .next_frame(&mut data)
+            .await
+            .expect("endpoint frame arrives");
+        let session_id = endpoint
+            .lines()
+            .find(|line| line.starts_with("data: "))
+            .expect("endpoint frame carries data")
+            .strip_prefix("data: ")
+            .and_then(|url| url.split("sessionId=").nth(1))
+            .expect("endpoint URL carries a sessionId")
+            .to_owned();
+        assert!(!sessions.is_empty(), "the connection registered a session");
+
+        // 2. POST initialize → 202 → the response arrives on the stream.
+        let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}});
+        assert_eq!(
+            send_message(&app, &session_id, initialize).await,
+            StatusCode::ACCEPTED
+        );
+        let frame = next_json_frame(&mut reader, &mut data).await;
+        assert_eq!(frame["jsonrpc"], "2.0");
+        assert_eq!(frame["id"], json!(1));
+        assert_eq!(frame["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(
+            frame["result"]["capabilities"],
+            json!({"tools":{"listChanged":true}})
+        );
+        assert_eq!(
+            frame["result"]["serverInfo"],
+            json!({"name":"synopsis-sse-test","version":"0.2.0"})
+        );
+
+        // 3. POST tools/list → 202 → all 12 tools on the stream.
+        let list = json!({"jsonrpc":"2.0","id":2,"method":"tools/list"});
+        assert_eq!(
+            send_message(&app, &session_id, list).await,
+            StatusCode::ACCEPTED
+        );
+        let frame = next_json_frame(&mut reader, &mut data).await;
+        assert_eq!(frame["id"], json!(2));
+        assert_eq!(frame["result"]["tools"].as_array().unwrap().len(), 12);
+
+        // 4. POST tools/call (catalog_overview on the fixture DB) → 202 →
+        //    the result's content[0].text is the dispatch payload.
+        let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"catalog_overview"}});
+        assert_eq!(
+            send_message(&app, &session_id, call).await,
+            StatusCode::ACCEPTED
+        );
+        let frame = next_json_frame(&mut reader, &mut data).await;
+        assert_eq!(frame["id"], json!(3));
+        assert_eq!(frame["result"]["isError"], json!(false));
+        let payload: Value = serde_json::from_str(
+            frame["result"]["content"][0]["text"]
+                .as_str()
+                .expect("content[0] is text"),
+        )
+        .unwrap();
+        // The empty fixture DB: zero documents.
+        assert_eq!(payload["document_count"], json!(0));
+
+        drop(data);
     }
 }
