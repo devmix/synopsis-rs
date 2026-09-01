@@ -76,3 +76,8 @@ per-session channels, and an idle-session reaper.
   (resources/prompts/completions → -32601, same as mcp-go v0.57.0).
 - Adding authentication or multi-tenancy (the oracle has none; a separate
   explicit decision if ever needed — out of scope for this transport change).
+- Oracle `ReadHeaderTimeout: 10s` parity — axum 0.8's serve API has no header
+  timeout; the faithful hyper-util serve-loop rewrite is **declined for this
+  change** (user decision c, 2026-09-01) and recorded as a deferred future
+  improvement in design.md ("Deferred improvements"), to be done when the
+  service is actually exposed to an untrusted network.

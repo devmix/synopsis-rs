@@ -23,7 +23,7 @@ with all gates green.
 
 - [x] 1.1 SSE session core + `GET /sse` handler (transport module skeleton, general-service-hardened)
 - [x] 1.2 `POST /message` + minimal JSON-RPC 2.0 method table
-- [ ] 1.3 Router composition + main-spec Purpose update
+- [x] 1.3 Router composition + main-spec Purpose update
 - [ ] 1.4 parity-harness SSE client + cross-transport parity tests
 - [ ] 1.5 Session idle timeout + reaper (general-service hardening)
 
@@ -237,9 +237,9 @@ alongside `/health` and the Streamable HTTP fallback, sharing one `Arc<Server>`
 and one `SseSessionMap`; verify coexistence; update the mcp-contract main spec
 Purpose sentence (design D8) and module docs.
 
-**Read first.** `design.md` D5, D6, D8; `crates/mcp/src/server.rs` `router()`
-(lines ~74–94) and its module doc; `crates/cli/src/serve/server.rs` (the axum
-`serve` call site — check for `header_read_timeout`); `openspec/specs/mcp-contract/spec.md`
+**Read first.** `design.md` D5, D6, D8 + the "Deferred improvements" section
+(the `ReadHeaderTimeout` decision); `crates/mcp/src/server.rs` `router()`
+(lines ~74–94) and its module doc; `openspec/specs/mcp-contract/spec.md`
 (Purpose, line ~5).
 
 **Scope of files (exact).**
@@ -260,10 +260,13 @@ Purpose sentence (design D8) and module docs.
   (override D8, решение человека 2026-08-31; wire-контракт mcp-go v0.57.0).
   Do NOT touch the "Транспорт" requirement body (the delta carries it at sync
   time).
-- `crates/cli/src/serve/server.rs` — ONLY if the axum serve call lacks
-  `header_read_timeout`: add `.header_read_timeout(std::time::Duration::from_secs(10))`
-  with a comment (oracle parity: `ReadHeaderTimeout: 10s`,
-  `../synopsis/internal/mcp/server.go` line ~129). If it already exists, skip.
+- `crates/cli/src/serve/server.rs` — **do NOT modify.** The oracle's
+  `ReadHeaderTimeout: 10s` cannot be a one-liner here: axum 0.8's
+  `axum::serve` builder has no header-timeout method. The faithful parity is a
+  serve-loop rewrite on `hyper_util` — **declined for this change** (user
+  decision c, 2026-09-01) and recorded as a deferred future improvement in
+  `design.md` ("Deferred improvements"). Verify the file is untouched
+  (`git diff -- crates/cli/src/serve/server.rs` → empty).
 
 **Out of scope.** New CLI flags/config (none — both transports always on),
 tool handler changes, Streamable HTTP behavior changes, parity-harness.
@@ -287,6 +290,18 @@ tool handler changes, Streamable HTTP behavior changes, parity-harness.
 
 **Oracle reference.** `../synopsis/internal/mcp/server.go` lines ~114–155
 (mux composition, ReadHeaderTimeout, shutdown).
+
+**Revision history.**
+- **Rev 1 (2026-09-01)** — the conditional `crates/cli/src/serve/server.rs`
+  one-liner (`.header_read_timeout(10s)`) is **infeasible**: axum 0.8.9's
+  `axum::serve` builder has no header-timeout method (verified in the registry
+  source; axum's docs say "use hyper or hyper-util if you need configuration").
+  The faithful oracle parity (`ReadHeaderTimeout: 10s`) is a serve-loop rewrite
+  on `hyper_util` (~80–150 lines in the most concurrency-sensitive module).
+  **User decision (c, 2026-09-01): declined for this change** — recorded as a
+  deferred future improvement in `design.md` ("Deferred improvements"), to be
+  done when the service is actually exposed to an untrusted network. The cli
+  file is therefore explicitly out of scope (verified untouched).
 
 ---
 

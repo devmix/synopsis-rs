@@ -72,8 +72,16 @@ impl remains the exclusive Streamable HTTP path.
   the idle reaper fires (D9)** (revised 2026-09-01: the oracle has no idle
   timeout because it is a single-user local server; a general service must reap
   proxy-held idle connections).
-- `ReadHeaderTimeout: 10s` (oracle): verify the axum serve config in
-  `crates/cli/src/serve`; add `.header_read_timeout(10s)` if absent (task 1.3).
+- `ReadHeaderTimeout: 10s` (oracle): **deliberately NOT implemented**
+  (user decision c, 2026-09-01 — deferred as a future improvement). axum
+  0.8's `axum::serve` builder exposes no header-timeout configuration ("use
+  hyper or hyper-util if you need configuration"); the faithful parity needs a
+  serve-loop rewrite in `crates/cli/src/serve/server.rs` on
+  `hyper_util::server::conn::auto::Builder` with `.http1().header_read_timeout(10s)`
+  (~80–150 lines in the repo's most concurrency-sensitive module: dedicated
+  runtime, owner-loop select, stop-broadcast, `ServeDone` graceful shutdown).
+  `hyper` 1.11.0 / `hyper-util` 0.1.20 are already in the tree via axum, so
+  zero new Cargo.lock packages. See "Deferred improvements" below.
 
 **Verification source:** mcp-go v0.57.0 `server/sse.go` from the Go module
 cache (`$(go env GOMODCACHE)/github.com/mark3labs/mcp-go@v0.57.0/`, read-only) or
@@ -221,3 +229,17 @@ connection open indefinitely → the session (and its bounded channel) leaks.
   Accepted: 64 small JSON-RPC frames in 1 s is far beyond any real client's
   drain rate on a LAN; the alternative (unbounded) is a memory-growth vector
   under the 16 GB constraint.
+
+## Deferred improvements (future, out of scope for this change)
+
+- **Oracle `ReadHeaderTimeout: 10s` parity** (declined for this change — user
+  decision c, 2026-09-01; do when the service is actually exposed to an
+  untrusted network and slowloris-style header-stalling protection is needed):
+  rewrite the serve loop in `crates/cli/src/serve/server.rs` from
+  `axum::serve(listener, router).with_graceful_shutdown(…)` to a
+  `hyper_util::server::conn::auto::Builder` accept loop with
+  `.http1().header_read_timeout(Duration::from_secs(10))`, preserving the
+  owner-loop select / stop-broadcast / `ServeDone` graceful-shutdown behavior.
+  Deps: `hyper` + `hyper-util` as direct workspace deps (both already
+  transitive via axum — zero new Cargo.lock packages). Oracle reference:
+  `../synopsis/internal/mcp/server.go` (~line 129, `ReadHeaderTimeout: 10s`).
