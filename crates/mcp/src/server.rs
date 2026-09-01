@@ -1,17 +1,20 @@
-//! MCP server: rmcp 3.x Streamable HTTP transport composed into an axum
-//! router (design D1/D8) with the frozen 12-tool registry (`mcp-contract`).
+//! MCP server: dual transport composed into one axum router (design D1/D5)
+//! with the frozen 12-tool registry (`mcp-contract`): the rmcp 3.x
+//! Streamable HTTP service as the fallback (design D8) plus the Go oracle's
+//! legacy HTTP+SSE wire contract on explicit `GET /sse` + `POST /message`
+//! routes (D8 override, user decision 2026-08-31; wire reference mcp-go
+//! v0.57.0).
 //!
 //! Oracle mapping: `../synopsis/internal/mcp/{server.go,tools.go}`. The Go
 //! code is the behavior/contract reference only — this is the Rust
-//! re-architecture (functional copy, not a code copy): the legacy SSE
-//! transport is deliberately not ported (design D8), tool schemas are
+//! re-architecture (functional copy, not a code copy): tool schemas are
 //! transcribed from `tools.go` as `rmcp::model::Tool` objects, and every
 //! registered tool is backed by a real handler (design D2).
 
 use std::sync::{Arc, PoisonError, RwLock};
 
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
@@ -28,6 +31,7 @@ use serde_json::{Value, json};
 use crate::error::McpError;
 use crate::health::{HealthState, handler as health_handler};
 use crate::tools;
+use crate::transport;
 
 /// The MCP server: injected collaborators (design D1) + the frozen tool
 /// registry. Cloned per session by the rmcp service factory.
@@ -71,14 +75,35 @@ impl Server {
         }
     }
 
-    /// Assemble the axum router (design D1): `GET /health` is an explicit
-    /// route, and the rmcp Streamable HTTP service is the fallback serving
-    /// every other path (the oracle mounted its transport at "/").
+    /// Assemble the axum router (design D1/D5): dual transport on one
+    /// instance.
+    ///
+    /// Explicit routes: `GET /health` (design D5), `GET /sse` + `POST
+    /// /message` — the oracle's legacy HTTP+SSE wire contract (mcp-go
+    /// v0.57.0) — plus the rmcp Streamable HTTP service as the fallback for
+    /// every other path (design D8; the oracle mounted its SSE server at
+    /// "/"). The SSE routes are mounted BEFORE the fallback; both transports
+    /// share one `Arc<Server>` and one [`transport::SseSessionMap`], so a
+    /// tool call served over either leg runs the same `Server::dispatch`
+    /// seam.
+    ///
+    /// The legacy SSE leg was deliberately dropped by design D8 (2026-08-18)
+    /// and restored by an explicit user decision (2026-08-31, D8 override):
+    /// both transports are always on — no flags, no config (oracle parity:
+    /// the oracle's SSE server was the only transport and had no transport
+    /// switch).
+    ///
+    /// Axum consumes the SSE routes' state (`.with_state`) before the
+    /// state-less `GET /health` route joins — its handler state
+    /// (`HealthState`) is consumed per route.
     pub fn router(self) -> Router {
         let health_state = HealthState::new(self.db.clone(), self.version.clone());
+        // One Arc<Server> shared by the Streamable HTTP factory and the SSE
+        // routes (design D5: cheap clones per request).
+        let server = Arc::new(self);
         let service = StreamableHttpService::new(
             {
-                let server = Arc::new(self);
+                let server = server.clone();
                 move || Ok(server.as_ref().clone())
             },
             Arc::new(LocalSessionManager::default()),
@@ -89,6 +114,12 @@ impl Server {
             StreamableHttpServerConfig::default().disable_allowed_hosts(),
         );
         Router::new()
+            .route("/sse", get(transport::sse::handle_sse))
+            .route("/message", post(transport::sse::handle_message))
+            .with_state(transport::SseState {
+                sessions: transport::SseSessionMap::new(),
+                server,
+            })
             .route("/health", get(health_handler).with_state(health_state))
             .fallback_service(service)
     }
@@ -1109,5 +1140,207 @@ mod tests {
         assert_eq!(json["counters"]["chunks"], 0);
         assert_eq!(json["counters"]["entities"], 0);
         assert_eq!(json["counters"]["facts"], 0);
+    }
+
+    // --- dual-transport coexistence (add-legacy-sse-transport task 1.3) ---
+
+    /// A temp fixture DB: 1 document + 2 chunks. The in-memory pool is the
+    /// temp storage; the seeded rows give the `/health` leg real counters to
+    /// assert (the same seed shape as `tests/server_integration.rs`).
+    fn fixture_db() -> db::Db {
+        use db::{ChunkDao, ConnectionOrTx, DocumentDao};
+
+        let db = test_util::in_memory_db();
+        let seeded = db.with_conn(|conn| -> Result<(), db::DbError> {
+            let exec = ConnectionOrTx::Connection(conn);
+            let doc =
+                DocumentDao::new(exec).create("markdown", "/docs/hr-policy.md", None, None)?;
+            let chunks = ChunkDao::new(exec);
+            chunks.create(doc, "quarterly hiring policy", 0, Some(0), Some(25))?;
+            chunks.create(doc, "vacation rules", 1, None, None)?;
+            Ok(())
+        });
+        seeded.expect("pool checkout").expect("seed rows");
+        db
+    }
+
+    /// The coexistence test server: the fixture DB, the stub searcher, no
+    /// graph (identity `synopsis-router-test 9.9.9`).
+    fn fixture_server() -> Server {
+        Server::new(
+            "synopsis-router-test".to_owned(),
+            "9.9.9".to_owned(),
+            fixture_db(),
+            Arc::new(StubSearcher),
+            Arc::new(GraphIndex::Unavailable),
+        )
+    }
+
+    /// Reads the next complete SSE frame (terminated by the blank line) from
+    /// a body data stream, buffering partial chunks (hyper may split or
+    /// coalesce frames across chunk boundaries).
+    async fn next_sse_frame<S>(data: &mut S, buffer: &mut String) -> String
+    where
+        S: tokio_stream::StreamExt<Item = std::result::Result<axum::body::Bytes, axum::Error>>
+            + Unpin,
+    {
+        loop {
+            if let Some(end) = buffer.find("\n\n") {
+                let frame = buffer[..end].to_owned();
+                *buffer = buffer[end + 2..].to_owned();
+                return frame;
+            }
+            let Some(Ok(chunk)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), data.next())
+                    .await
+                    .expect("a frame arrives in time")
+            else {
+                panic!("the stream ended before a complete frame");
+            };
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    }
+
+    /// Dual-transport coexistence on the REAL `Server::router()` (task 1.3
+    /// acceptance): one router serves `GET /health`, the legacy SSE pair
+    /// (`GET /sse` + `POST /message`), and the Streamable HTTP fallback
+    /// (rmcp client) at the same time. The oneshot legs run on clones of the
+    /// same router — axum `Router` clones share the router state (one
+    /// `Arc<Server>`, one session map) — and the rmcp leg serves the
+    /// original router value on a listener.
+    #[tokio::test]
+    async fn router_serves_health_sse_and_streamable_http_together() {
+        use axum::body::Body;
+        use axum::http::header;
+        use axum::http::{Request, StatusCode};
+        use rmcp::ServiceExt as _;
+        use rmcp::model::{ClientCapabilities, ClientInfo, Implementation};
+        use rmcp::transport::StreamableHttpClientTransport;
+        use tower::ServiceExt as _;
+
+        let router = fixture_server().router();
+
+        // 1. GET /health → 200 with the seeded counters (existing behavior
+        //    unchanged).
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(health["status"], "ok");
+        assert_eq!(health["version"], "9.9.9");
+        assert_eq!(health["counters"]["documents"], json!(1));
+        assert_eq!(health["counters"]["chunks"], json!(2));
+
+        // 2. GET /sse → 200 text/event-stream; the first frame is the
+        //    endpoint event (proxy-aware absolute URL, no proxy headers).
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sse")
+                    .header(header::HOST, "localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/event-stream"
+        );
+        let mut data = response.into_body().into_data_stream();
+        let mut buffer = String::new();
+        let endpoint = next_sse_frame(&mut data, &mut buffer).await;
+        assert!(
+            endpoint.starts_with("event: endpoint\ndata: http://localhost:3000/message?sessionId="),
+            "got: {endpoint}"
+        );
+        let session_id = endpoint
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .and_then(|url| url.split("sessionId=").nth(1))
+            .expect("the endpoint URL carries a sessionId")
+            .to_owned();
+
+        // 3. POST /message?sessionId → 202 Accepted; the initialize response
+        //    arrives as an `event: message` frame on the same stream.
+        let initialize = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18" }
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/message?sessionId={session_id}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&initialize).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        drop(response);
+        let frame = next_sse_frame(&mut data, &mut buffer).await;
+        assert!(frame.starts_with("event: message\n"), "got: {frame}");
+        let reply: Value = serde_json::from_str(
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("the message frame carries data"),
+        )
+        .unwrap();
+        assert_eq!(reply["jsonrpc"], "2.0");
+        assert_eq!(reply["id"], json!(1));
+        assert_eq!(
+            reply["result"]["serverInfo"]["name"],
+            "synopsis-router-test"
+        );
+
+        // 4. Streamable HTTP on the same router instance: the rmcp client
+        //    (the tests/server_integration.rs pattern) completes initialize
+        //    + tools/list.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let transport = StreamableHttpClientTransport::from_uri(format!("http://{addr}/mcp"));
+        let mut client = ClientInfo::new(
+            ClientCapabilities::default(),
+            Implementation::new(
+                "synopsis-router-coexistence-test",
+                env!("CARGO_PKG_VERSION"),
+            ),
+        )
+        .serve(transport)
+        .await
+        .unwrap();
+        let peer = client.peer_info().expect("peer info after initialize");
+        assert_eq!(
+            peer.server_info.as_ref().expect("server info").name,
+            "synopsis-router-test"
+        );
+        let tools = client.list_all_tools().await.unwrap();
+        assert_eq!(tools.len(), 12);
+        client.close().await.unwrap();
+
+        // Drop the SSE stream: the client disconnect removes the session.
+        drop(data);
     }
 }

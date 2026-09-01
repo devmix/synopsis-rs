@@ -37,10 +37,11 @@
 //!
 //! # Shutdown (design D6)
 //!
-//! There is no `CloseSessions`-style call to port: server shutdown closes the
-//! TCP connections, which fires axum's body-drop (the client disconnect) in
-//! each `/sse` handler and removes the session from the registry. The existing
-//! cli stop path (broadcast stop → axum graceful shutdown) is unchanged.
+//! There is no `CloseSessions`-style call to port: when a connection closes
+//! — the client disconnects, or server shutdown closes the TCP
+//! connections — axum fires the body-drop (`Request::abort`) in each `/sse`
+//! handler, which removes the session from the registry. The existing cli
+//! stop path (broadcast stop → axum graceful shutdown) is unchanged.
 
 pub mod jsonrpc;
 pub mod sse;
