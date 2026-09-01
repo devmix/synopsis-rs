@@ -22,7 +22,7 @@ Change: `fix-vectors-compaction-flaky-test`
 - **Test-count invariant:** the workspace total stays **1,474** (no tests added or
   removed — only the wait predicate of two existing tests is widened).
 
-- [ ] **1.1** — Widen the `wait_until` predicate in both flaky compaction tests to
+- [x] **1.1** — Widen the `wait_until` predicate in both flaky compaction tests to
   also require the WAL to be empty.
 
   **Goal:** make each test wait for exactly the two conditions it asserts — the

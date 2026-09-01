@@ -63,4 +63,8 @@ changes. The post-wait assertions are kept unchanged.
 - Not re-architecting the compaction thread or its single-flight flag.
 - Not changing the ADR 0004 §7 "directory before WAL" ordering (it is mandatory
   and correct; only the test's wait condition was incomplete).
-- Not touching the already-correct test at `:586`.
+- Not touching the test at `:586` (`concurrent_maybe_compact_runs_exactly_once`):
+  it is flaky too, but for a **different** reason — the stale-threshold check and
+  the single-flight CAS in `maybe_compact` are not atomic, so a redundant second
+  repack can run under concurrent load. That is a production-behavior question and
+  is deferred to its own change (human decision 2026-09-01).
