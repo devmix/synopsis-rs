@@ -36,7 +36,7 @@ Conventions for every task in this change:
 - [x] 1.2 Extract `db/src/fact.rs` tests → `db/tests/fact.rs`
 - [x] 1.3 Extract `cli/src/serve/bootstrap.rs` tests → `cli/tests/serve_bootstrap.rs`
 - [x] 1.4 Extract `mcp/src/tools/documents.rs` tests → `mcp/tests/documents.rs`
-- [ ] 1.5 Extract `mcp/src/tools/graph_tools.rs` tests → `mcp/tests/graph_tools.rs`
+- [x] 1.5 Extract `mcp/src/tools/graph_tools.rs` tests → `mcp/tests/graph_tools.rs`
 - [ ] 1.6 Extract `graph/src/cel.rs` tests → `graph/tests/cel.rs` (+ `cel` dev-dep)
 - [ ] 1.7 Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs`
 - [ ] 1.8 Extract `graph/src/linker.rs` tests → `graph/tests/linker_units.rs`
@@ -178,8 +178,11 @@ its inline test module to a new integration test file.
 **Dependencies.** None.
 
 **Approach.** All 17 tests are MOVABLE (public API only). Move the module to
-`crates/mcp/tests/graph_tools.rs`, rewrite imports, carry private helpers, keep
-names/assertions verbatim, `#![allow(clippy::unwrap_used)]`.
+`crates/mcp/tests/graph_tools.rs`, rewrite `use crate::…`/`use super::*` → `use mcp::…`
+(the lib target is named `mcp`; `tools` and `tools::graph_tools` are both `pub`, so
+`mcp::tools::graph_tools::…` is importable), carry private helpers, keep
+names/assertions verbatim, `#![allow(clippy::unwrap_used, clippy::expect_used)]`
+(the source module has both and uses `.expect()`).
 
 **Acceptance criteria.**
 1. `graph_tools.rs` has no `#[cfg(test)]` block; line count drops by the moved test lines.
