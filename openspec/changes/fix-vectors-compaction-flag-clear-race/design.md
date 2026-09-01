@@ -105,7 +105,7 @@ the connection is already opened per poll).
 |---|---|---|---|
 | `compaction_merges_segments_with_monotonic_ids` | swap + WAL | `:497` | **racy — fix** |
 | `compaction_slices_live_vectors_by_max_segment_vectors` | swap + WAL | `:649` | **racy — fix** |
-| `single_flight_admits_exactly_one_repack` | flag only (`:629`) | — | fine (waits on the flag; a cleared flag implies the WAL is empty) |
+| `concurrent_maybe_compact_runs_exactly_once` | flag only (`:629`) | — | fine (waits on the flag; a cleared flag implies the WAL is empty) |
 | `below_threshold_is_a_noop` | none (sleep 300 ms) | `:419` | fine (no repack; flag never set) |
 | `ram_only_engine_is_a_noop` | none | `:649` | fine (no disk segments; flag never set) |
 

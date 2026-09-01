@@ -461,7 +461,12 @@ mod compaction_tests {
             // The WAL DELETE runs after the directory swap (ADR 0004 §7): wait for
             // it too, or the WAL assertion below is racy under load.
             let conn = Connection::open(&db_path).unwrap();
-            wal_rows(&conn).is_empty()
+            let wal_empty = wal_rows(&conn).is_empty();
+            drop(conn);
+            // The single-flight flag clears after the WAL cleanup + the in-memory
+            // list swap (the repack thread's last step): wait for it too, or the
+            // flag assertion below is racy under load.
+            wal_empty && !engine.compacting.load(Ordering::SeqCst)
         });
 
         // The 24 live keys fit in one new segment-3 (id > old max); the
@@ -525,7 +530,12 @@ mod compaction_tests {
             // The WAL DELETE runs after the directory swap (ADR 0004 §7): wait for
             // it too, or the WAL assertion below is racy under load.
             let conn = Connection::open(&db_path).unwrap();
-            wal_rows(&conn).is_empty()
+            let wal_empty = wal_rows(&conn).is_empty();
+            drop(conn);
+            // The single-flight flag clears after the WAL cleanup + the in-memory
+            // list swap (the repack thread's last step): wait for it too, or the
+            // flag assertion below is racy under load.
+            wal_empty && !engine.compacting.load(Ordering::SeqCst)
         });
 
         // New ids 3..=5 (N = 2): 10 + 10 + 8, each ≤ max.

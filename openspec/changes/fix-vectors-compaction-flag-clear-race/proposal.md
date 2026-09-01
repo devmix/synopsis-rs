@@ -52,7 +52,7 @@ thread).
   / 10 ms from the earlier `fix-vectors-compaction-wait-timeout` change).
 - Do NOT touch the other compaction tests: `below_threshold_is_a_noop` and
   `ram_only_engine_is_a_noop` never set the flag (no repack), and
-  `single_flight_admits_exactly_one_repack` already waits on the flag.
+  `concurrent_maybe_compact_runs_exactly_once` already waits on the flag.
 - Do NOT touch the cli test
   `serve_startup_reconcile_jobs_are_processed_by_the_worker` (tracked separately;
   not reproduced in 8 full-workspace runs).

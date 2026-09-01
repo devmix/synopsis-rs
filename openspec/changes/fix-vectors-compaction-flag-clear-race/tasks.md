@@ -87,8 +87,8 @@ Change: `fix-vectors-compaction-flag-clear-race`
     any other test/file.
   - `Ordering` and `SeqCst` are already used in this test module (the existing
     flag asserts load with `Ordering::SeqCst`), so no new import is needed.
-  - Do NOT touch `single_flight_admits_exactly_one_repack` (it already waits on
-    the flag), `below_threshold_is_a_noop`, or `ram_only_engine_is_a_noop`
+  - Do NOT touch `concurrent_maybe_compact_runs_exactly_once` (it already waits
+    on the flag), `below_threshold_is_a_noop`, or `ram_only_engine_is_a_noop`
     (neither sets the flag).
 
   **Approach:** edit the two predicates to add the flag load, run the gates.
