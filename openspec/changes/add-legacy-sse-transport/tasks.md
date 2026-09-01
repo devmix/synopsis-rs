@@ -24,7 +24,7 @@ with all gates green.
 - [x] 1.1 SSE session core + `GET /sse` handler (transport module skeleton, general-service-hardened)
 - [x] 1.2 `POST /message` + minimal JSON-RPC 2.0 method table
 - [x] 1.3 Router composition + main-spec Purpose update
-- [ ] 1.4 parity-harness SSE client + cross-transport parity tests
+- [x] 1.4 parity-harness SSE client + cross-transport parity tests
 - [ ] 1.5 Session idle timeout + reaper (general-service hardening)
 
 ---
