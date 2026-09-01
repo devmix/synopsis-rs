@@ -37,7 +37,7 @@ Conventions for every task in this change:
 - [x] 1.3 Extract `cli/src/serve/bootstrap.rs` tests → `cli/tests/serve_bootstrap.rs`
 - [x] 1.4 Extract `mcp/src/tools/documents.rs` tests → `mcp/tests/documents.rs`
 - [x] 1.5 Extract `mcp/src/tools/graph_tools.rs` tests → `mcp/tests/graph_tools.rs`
-- [ ] 1.6 Extract `graph/src/cel.rs` tests → `graph/tests/cel.rs` (+ `cel` dev-dep)
+- [x] 1.6 Extract `graph/src/cel.rs` tests → `graph/tests/cel.rs` (no dev-dep — D6 corrected)
 - [ ] 1.7 Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs`
 - [ ] 1.8 Extract `graph/src/linker.rs` tests → `graph/tests/linker_units.rs`
 - [ ] 1.9 Extract `llm/src/client.rs` tests → `llm/tests/client.rs` (+ `llm` test_support, new `tests/` dir)
@@ -204,19 +204,33 @@ test module to a new integration test file.
 
 **Dependencies.** None. (Task 1.8 touches a different graph file — no conflict.)
 
-**Approach.** All 29 tests are MOVABLE, but 36 assertions use `cel::Value`, which
-integration tests cannot reach through `graph`'s `[dependencies]` (design D6). Add
-`cel` to `graph` `[dev-dependencies]` at the SAME version already used in
-`[dependencies]` (no new package, no Cargo.lock change — verify with
-`git diff --stat Cargo.lock` being empty). Then move the test module to
-`crates/graph/tests/cel.rs`, rewrite imports, carry private helpers, keep
-names/assertions verbatim, `#![allow(clippy::unwrap_used)]`.
+**Approach.** All 29 tests are MOVABLE, but the test module references the `cel` crate
+directly (e.g. `cel::Program`, `cel::ExecutionError::function_error`), which integration
+tests cannot reach through `graph`'s `[dependencies]` (design D6). Add
+`cel = { workspace = true }` to `graph` `[dev-dependencies]` at the SAME version already
+used in `[dependencies]` (no new package, no Cargo.lock change — verify with
+`git diff --stat -- Cargo.lock` being empty). Then move the test module to
+`crates/graph/tests/cel.rs`, rewrite `use crate::…`/`use super::*` → `use graph::…`
+(the lib target is named `graph`; `cel` is `pub` in `graph`'s lib — confirm the exact
+public path of the items the tests use), carry private helpers, keep
+names/assertions verbatim, `#![allow(clippy::unwrap_used, clippy::expect_used)]`
+(the source module has both and uses `.expect()`).
 
 **Acceptance criteria.**
 1. `cel.rs` has no `#[cfg(test)]` block; line count drops by the moved test lines.
 2. `cargo test -p graph` test count unchanged (29 relocated); all gates green.
 3. `git diff --stat -- Cargo.lock` is empty (no package added). Names/assertions
    verbatim; scope-only diff; `../synopsis` untouched.
+
+**Revision 1 (2026-09-01, human chose option B).** The `cel` dev-dep added by the
+original approach is REDUNDANT: Cargo makes a crate's `[dependencies]` available to all
+targets including integration tests, and the sibling `graph/tests/{linker_pipeline,
+llm_linker_pipeline}.rs` already use `db::`/`config::` (both `[dependencies]`) directly.
+So `tests/cel.rs` reaches `cel::Value`/`cel::Program`/`cel::ExecutionError` without a
+dev-dep. REMOVE the `cel = { workspace = true }` line (and its comment) from
+`crates/graph/Cargo.toml` `[dev-dependencies]`; re-verify `tests/cel.rs` still compiles
+and all 29 tests pass without it. Design D6's premise ("integration tests cannot reach
+`[dependencies]`") is corrected accordingly.
 
 ---
 

@@ -76,14 +76,20 @@ The audit found no production item referenced only from tests: `with_sleeper`,
 `#[cfg(test)]` infrastructure; `db::test_util` is public and used by integration tests.
 No task deletes production code for this reason.
 
-### D6 — `cel` dev-dependency for `graph` (not a new dependency)
+### D6 — `cel` types in the extracted `graph` integration tests (no new dependency)
 
-The 29 extracted `cel.rs` tests assert on `cel::Value`, which `graph` does not re-export
-and integration tests cannot reach through `graph`'s `[dependencies]`. Adding `cel` to
-`graph` `[dev-dependencies]` (same version, already in the tree) is the minimal fix.
+The 29 extracted `cel.rs` tests reference the `cel` crate directly (`cel::Value`,
+`cel::Program`, `cel::ExecutionError`). Cargo makes a crate's `[dependencies]` available
+to ALL of its targets — including integration tests in `tests/` — so `tests/cel.rs`
+reaches `cel::…` directly through `graph`'s existing `[dependencies]` entry; **no
+`[dev-dependencies]` line is needed**. This is the same way the sibling
+`graph/tests/{linker_pipeline,llm_linker_pipeline}.rs` already use `db::` and `config::`
+(both `[dependencies]` of graph) without any dev-dep. No package is added and
+Cargo.lock is unchanged.
 
-*Why not re-export `Value` from `graph`:* would expand the public API for a test need;
-the dev-dep touches no production surface and changes Cargo.lock in no way.
+*(Superseded note: an earlier draft of this design assumed integration tests could not
+reach `[dependencies]` and prescribed a `cel` dev-dep. That premise was wrong — the
+sibling tests prove otherwise — so the dev-dep was dropped in task 1.6 Revision 1.)*
 
 ### D7 — Stay-inline tests stay; no widening beyond D3 items
 
@@ -142,7 +148,7 @@ helper: `test_platform_key` — `crates/cli/src/onnx_runtime.rs:212` ≡
 | `mcp/src/transport/sse.rs` (23) | 11: `session_map_*` (3), `session_ids_are_unique`, `send_to_dropped_receiver`, `sse_endpoint_serves`, `channel_payload_streams`, reaper ×4, `idle_sse_stream_ends` | 5: `message_without_session_id`, `message_with_unknown_session_id`, `message_with_malformed_body`, `message_round_trip`, `touched_sse_stream` — need `#[cfg(test)] test_server()` (`handle_message` takes `State<SseState{sessions, server}>`) | 7: `endpoint_url` ×3, `encode_sse_frame` ×3, `CHANNEL_CAPACITY` ×1 (private) |
 | `mcp/src/tools/documents.rs` (19) | 19 | — | — |
 | `mcp/src/tools/graph_tools.rs` (17) | 17 | — | — |
-| `graph/src/cel.rs` (29) | 29 (need `cel` dev-dep for `cel::Value` assertions) | — | — |
+| `graph/src/cel.rs` (29) | 29 (use `cel::…` directly via `[dependencies]`, no dev-dep — D6) | — | — |
 | `graph/src/linker.rs` (16) | 7: equals ×2, expression ×3, `method_order_from_config`, `self_link_never_created` | 9: `cross_domain_pairs` ×2 (private fn); `llm_*` ×7 (private `MockLlm` at :1283) | — |
 | **Total** | **173** | **33** | **50** (walk_matched_files 35, llm 8, sse 7) |
 
