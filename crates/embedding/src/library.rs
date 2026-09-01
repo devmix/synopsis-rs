@@ -266,7 +266,11 @@ fn unsupported_format(format: String) -> EmbeddingError {
 /// Maps the Rust compile-time OS/arch to the oracle-style platform key
 /// (e.g. `"linux-amd64"`), the `key` values used in `onnx.yaml` (computed
 /// from Go's `GOOS`/`GOARCH` in the oracle).
-fn current_platform_key() -> Option<String> {
+///
+/// Public so other crates' tests (e.g. `cli`) can delegate their
+/// `test_platform_key` fixture helper to the production code path instead
+/// of re-implementing the OS/arch mapping (test-hygiene-phase-1 D8).
+pub fn current_platform_key() -> Option<String> {
     let os = match std::env::consts::OS {
         "linux" | "windows" => std::env::consts::OS,
         "macos" => "darwin",

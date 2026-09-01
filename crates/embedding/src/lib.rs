@@ -29,7 +29,7 @@ pub mod tokenizer;
 pub use cache::{DEFAULT_MAX_SIZE, EmbeddingCache, cache_key};
 pub use downloader::Downloader;
 pub use error::EmbeddingError;
-pub use library::{LibraryCache, LibraryManager};
+pub use library::{LibraryCache, LibraryManager, current_platform_key};
 pub use model::{InstalledModel, ModelCache, ModelManager};
 pub use provider::OnnxProvider;
 pub use runtime::{build_session, init_runtime};
@@ -324,17 +324,7 @@ mod tests {
     /// The platform key of the machine running the tests (the CI matrix covers
     /// linux-amd64 / linux-arm64 / windows-amd64 / darwin-arm64).
     fn test_platform_key() -> String {
-        let os = match std::env::consts::OS {
-            "linux" | "windows" => std::env::consts::OS,
-            "macos" => "darwin",
-            _ => panic!("unsupported test platform"),
-        };
-        let arch = match std::env::consts::ARCH {
-            "x86_64" => "amd64",
-            "aarch64" => "arm64",
-            _ => panic!("unsupported test architecture"),
-        };
-        format!("{os}-{arch}")
+        current_platform_key().expect("test host must be a supported platform")
     }
 
     /// Registry fixture: a runtime entry for the current platform (the archive
