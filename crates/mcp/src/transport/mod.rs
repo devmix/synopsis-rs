@@ -27,13 +27,26 @@
 //! The per-session channel is **bounded** (design D3 revision) with a
 //! `send()` backpressure helper: a slow/dead client must not accumulate
 //! unbounded frames in RAM under the 16 GB constraint. `last_activity` +
-//! `touch()` (design D9) feed task 1.5's idle reaper, which reaps proxy-held
-//! idle connections the oracle (single local user) never needed to reap.
+//! `touch()` (design D9) feed the idle reaper, which reaps proxy-held idle
+//! connections the oracle (single local user) never needed to reap.
 //!
 //! The oracle's `mux.Handle("/", sseSrv)` mounted the SSE server at the root
 //! path; the Rust router instead exposes explicit `GET /sse` + `POST
 //! /message` routes and keeps the Streamable HTTP service as the fallback for
 //! every other path (design D5).
+//!
+//! # Idle timeout (design D9, task 1.5)
+//!
+//! The oracle has no idle timeout — a single local user always closes their
+//! connection. A general service behind a reverse proxy can hold an idle SSE
+//! connection open indefinitely, leaking the session and its bounded channel.
+//! `SseSessionMap::spawn_reaper()` (spawned once from `Server::router()`)
+//! runs a detached process-lifetime task that every 30 s (tick) removes
+//! sessions idle beyond 300 s (threshold) — the design D9 defaults, stored in
+//! the map as constructor parameters (`with_idle_timeout` / `with_tick`); the
+//! oracle has no such surface, so no config knob is invented here. Removal
+//! drops the session's outbound sender, which ends the SSE stream and fires
+//! the disconnect guard — one removal code path (design D6).
 //!
 //! # Shutdown (design D6)
 //!

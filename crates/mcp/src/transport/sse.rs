@@ -24,22 +24,27 @@
 //! - D3 — in-memory session map, bounded per-session channel (capacity
 //!   [`CHANNEL_CAPACITY`]) with a `send()` backpressure helper; `tx` is private
 //!   (encapsulation). Zero new crates.
-//! - D9 — `last_activity` is set on create and refreshed by `touch()`; task
-//!   1.5's idle reaper reads it.
+//! - D9 — `last_activity` is set on create and refreshed by `touch()`;
+//!   [`SseSessionMap::spawn_reaper`] (spawned once from `Server::router()`)
+//!   reaps sessions idle beyond the threshold (300 s default) every tick
+//!   (30 s default) — a general-service hardening the oracle (single local
+//!   user) never needed.
 //! - D6 — no `CloseSessions` equivalent: the client disconnect drops the body,
-//!   which removes the session (the [`SessionGuard`]).
+//!   which removes the session (the [`SessionGuard`]) — the same single
+//!   removal path the reaper's removal takes (it drops the sender, the stream
+//!   ends, the body drops).
 //!
-//! Task 1.2 adds `POST /message` ([`handle_message`]): session validation
-//! (400 + pinned JSON-RPC error body), `202 Accepted`, background dispatch
-//! through the JSON-RPC method table ([`crate::transport::jsonrpc`]) and the
-//! response pushed back on the session's SSE channel. The router wiring
-//! arrives in task 1.3. This module is tested in isolation.
+//! `POST /message` ([`handle_message`]): session validation (400 + pinned
+//! JSON-RPC error body), `202 Accepted`, background dispatch through the
+//! JSON-RPC method table ([`crate::transport::jsonrpc`]) and the response
+//! pushed back on the session's SSE channel. The routes are wired in
+//! `Server::router()` (task 1.3).
 
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{FromRef, Query, State};
@@ -50,6 +55,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use sse_stream::Sse;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt, once};
 use uuid::Uuid;
@@ -67,6 +73,14 @@ const CHANNEL_CAPACITY: usize = 64;
 /// and is reaped.
 const SEND_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Design D9 default idle threshold: a session idle this long is reaped.
+/// Constructor parameter of [`SseSessionMap`] (`with_idle_timeout`) — the
+/// oracle has no such surface, so no config knob is invented here.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Design D9 default reaper tick: how often the reaper checks for idle
+/// sessions. Constructor parameter of [`SseSessionMap`] (`with_tick`).
+pub const DEFAULT_REAPER_TICK: Duration = Duration::from_secs(30);
+
 /// Non-standard proxy headers (not in `http::header`); the service may sit
 /// behind a TLS-terminating reverse proxy (design D2 revision).
 const X_FORWARDED_PROTO: HeaderName = HeaderName::from_static("x-forwarded-proto");
@@ -80,8 +94,8 @@ type Frame = std::result::Result<Bytes, axum::BoxError>;
 ///
 /// `tx` is the bounded outbound channel (capacity [`CHANNEL_CAPACITY`]); each
 /// payload is one JSON-RPC 2.0 object string. `last_activity` is refreshed by
-/// [`SseSessionMap::touch`] and read by the idle reaper (design D9, task 1.5).
-/// Both fields are private: the [`SseSessionMap`] is the only writer (design D3
+/// [`SseSessionMap::touch`] and read by the idle reaper (design D9). Both
+/// fields are private: the [`SseSessionMap`] is the only writer (design D3
 /// revision — encapsulation, no raw `tx` escape).
 pub struct SseSession {
     tx: mpsc::Sender<String>,
@@ -94,15 +108,47 @@ pub struct SseSession {
 /// HashMap ops (microseconds), never across I/O or `.await` — fine at
 /// service-scale session counts. DashMap would be a new dependency (rejected
 /// per the frozen stack). A session lives until its SSE stream closes (client
-/// disconnect or server shutdown, design D6) or is reaped by the idle timeout
-/// (design D9, task 1.5).
+/// disconnect or server shutdown, design D6) or the idle reaper removes it
+/// (design D9): idle beyond the threshold as of a reaper tick.
+///
+/// The idle threshold and reaper tick are constructor parameters
+/// ([`Self::with_idle_timeout`] / [`Self::with_tick`]; design D9 defaults
+/// [`DEFAULT_IDLE_TIMEOUT`] / [`DEFAULT_REAPER_TICK`]) — the oracle has no
+/// such surface, so no config knob is invented here.
 #[derive(Clone)]
-pub struct SseSessionMap(Arc<Mutex<HashMap<String, SseSession>>>);
+pub struct SseSessionMap {
+    map: Arc<Mutex<HashMap<String, SseSession>>>,
+    /// Sessions idle beyond this are reaped (design D9).
+    idle_timeout: Duration,
+    /// The reaper's check cadence (design D9).
+    tick: Duration,
+}
 
 impl SseSessionMap {
-    /// Build an empty registry.
+    /// Build an empty registry with the design D9 defaults (a
+    /// [`DEFAULT_IDLE_TIMEOUT`] idle threshold and a [`DEFAULT_REAPER_TICK`]
+    /// reaper tick).
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(HashMap::new())))
+        Self::with_idle_timeout(DEFAULT_IDLE_TIMEOUT)
+    }
+
+    /// Build an empty registry with a custom idle threshold (design D9: the
+    /// threshold and tick are constructor parameters — the oracle has no such
+    /// surface, so no config knob is invented); the tick stays at
+    /// [`DEFAULT_REAPER_TICK`].
+    pub fn with_idle_timeout(idle_timeout: Duration) -> Self {
+        Self {
+            map: Arc::new(Mutex::new(HashMap::new())),
+            idle_timeout,
+            tick: DEFAULT_REAPER_TICK,
+        }
+    }
+
+    /// Set the reaper tick (design D9; tests use a short tick with a paused
+    /// clock). Builder-style: returns `self`.
+    pub fn with_tick(mut self, tick: Duration) -> Self {
+        self.tick = tick;
+        self
     }
 
     /// Create a session with a fresh server-generated UUIDv4 id (mcp-go
@@ -156,9 +202,10 @@ impl SseSessionMap {
         }
     }
 
-    /// Refresh the session's `last_activity` (design D3/D9). Task 1.2's
-    /// `POST /message` handler calls this on every request; task 1.5's reaper
-    /// reads it to reap idle sessions. `true` if the session existed.
+    /// Refresh the session's `last_activity` (design D3/D9). The `POST
+    /// /message` handler calls this on every request; the idle reaper
+    /// ([`Self::spawn_reaper`]) reads it to reap idle sessions. `true` if the
+    /// session existed.
     pub fn touch(&self, id: &str) -> bool {
         let mut guard = self.lock();
         match guard.get_mut(id) {
@@ -191,10 +238,51 @@ impl SseSessionMap {
         self.lock().is_empty()
     }
 
+    /// Spawn the idle reaper (design D9): a detached task that every `tick`
+    /// removes sessions whose `last_activity` is older than the idle
+    /// threshold. Removal drops the session's outbound sender — the SSE
+    /// stream ends, the body drops, and the [`SessionGuard`] fires (one
+    /// removal code path, design D6).
+    ///
+    /// The returned [`tokio::task::JoinHandle`] is deliberately dropped by the
+    /// caller (`Server::router()`): the reaper is process-lifetime and
+    /// self-terminating in effect — once the map drains, its passes remove
+    /// nothing, and process exit is the only shutdown (design D6).
+    ///
+    /// Context tolerance: `Server::router()` is assembled on the cli's sync
+    /// owner thread, which holds a `&Runtime` and runs outside any runtime
+    /// context — a bare `tokio::spawn` would panic there. Inside a runtime
+    /// (tests, in-runtime callers) the reaper joins that runtime — its
+    /// paused-clock determinism is what the unit tests rely on; outside one it
+    /// runs on a dedicated process-lifetime thread with a minimal time-enabled
+    /// runtime (see [`spawn_detached_reaper`]). In production both clocks are
+    /// real-time (system-anchored), so a `last_activity` recorded on the
+    /// serving runtime compares correctly against the reaper's clock.
+    pub fn spawn_reaper(self) -> tokio::task::JoinHandle<()> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.spawn(reaper_loop(self)),
+            Err(_) => spawn_detached_reaper(self),
+        }
+    }
+
+    /// Remove the sessions idle beyond the threshold (design D9): those whose
+    /// `last_activity` is strictly older than `now - idle_timeout`. The
+    /// comparison uses the tokio clock, so paused-clock tests are
+    /// deterministic. Called only by the reaper task.
+    fn reap_idle(&self) {
+        let Some(cutoff) = Instant::now().checked_sub(self.idle_timeout) else {
+            // The clock is younger than the threshold (a freshly paused test
+            // clock): no session can be idle yet.
+            return;
+        };
+        let mut guard = self.lock();
+        guard.retain(|_id, session| session.last_activity >= cutoff);
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, SseSession>> {
         // A poisoned lock only occurs if a holder panicked mid-mutation; the
         // map is still intact, so recover it (the no-panic rule, design D7).
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.map.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -202,6 +290,41 @@ impl Default for SseSessionMap {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The reaper body (design D9): every `tick`, one removal pass over the map.
+/// The first tick of a tokio interval is immediate; skipping it makes the
+/// first real pass a full tick out.
+async fn reaper_loop(map: SseSessionMap) {
+    let mut interval = tokio::time::interval(map.tick);
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        map.reap_idle();
+    }
+}
+
+/// The no-runtime fallback for [`SseSessionMap::spawn_reaper`]: a dedicated
+/// process-lifetime thread running a minimal current-thread runtime (time
+/// enabled) on which the same [`reaper_loop`] runs. See the `spawn_reaper`
+/// docs for why this path exists (the cli's sync owner thread assembles the
+/// router outside any runtime context).
+fn spawn_detached_reaper(map: SseSessionMap) -> tokio::task::JoinHandle<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap_or_else(|err| panic!("sse idle reaper: runtime build failed: {err}"));
+    let handle = runtime.spawn(reaper_loop(map));
+    std::thread::Builder::new()
+        .name("sse-idle-reaper".to_owned())
+        .spawn(move || {
+            // `pending` never resolves: the thread's only job is to keep the
+            // runtime (and the reaper task on it) alive for the process
+            // lifetime.
+            runtime.block_on(std::future::pending::<()>());
+        })
+        .unwrap_or_else(|err| panic!("sse idle reaper: thread spawn failed: {err}"));
+    handle
 }
 
 /// Shared axum state for the legacy SSE routes (design D5): the session
@@ -402,7 +525,7 @@ pub async fn handle_message(
     // mcp-go v0.57.0 sse.go handleMessage: an unknown sessionId → 400 with
     // the JSON-RPC INVALID_PARAMS error body (id null, "Invalid session
     // ID"). `touch` doubles as the existence check and refreshes
-    // last_activity for the idle reaper (design D9, task 1.5).
+    // last_activity for the idle reaper (design D9).
     if !state.sessions.touch(&session_id) {
         return http_jsonrpc_error(INVALID_PARAMS, "Invalid session ID");
     }
@@ -967,5 +1090,223 @@ mod tests {
         assert_eq!(payload["document_count"], json!(0));
 
         drop(data);
+    }
+
+    // --- idle reaper (design D9, task 1.5) ---
+    //
+    // `#[tokio::test(start_paused = true)]` + short thresholds/ticks keep
+    // every test deterministic: the paused clock auto-advances to each
+    // reaper tick as the test `sleep()`s (no real waiting). Each test
+    // sleeps PAST the reaping pass under test, so that pass is guaranteed
+    // complete before the assertion (a pass at the same instant the test
+    // wakes is not yet guaranteed to have run).
+
+    /// A session that is never touched is reaped once its `last_activity` is
+    /// strictly older than the threshold: the map empties, and sending to the
+    /// removed session fails (its sender is gone).
+    ///
+    /// Paused-clock determinism: with `start_paused`, the test's own
+    /// `sleep()` auto-advances the virtual clock to each reaper tick (no real
+    /// waiting). The test sleeps PAST the reaping pass (t=3 s for a 2 s
+    /// threshold / 1 s tick: passes at t=1 and t=2 keep the session — not
+    /// strictly older — the t=3 pass reaps it) so that pass is guaranteed
+    /// complete before the assertion.
+    #[tokio::test(start_paused = true)]
+    async fn reaper_reaps_idle_session_after_threshold() {
+        let map = SseSessionMap::with_idle_timeout(Duration::from_secs(2))
+            .with_tick(Duration::from_secs(1));
+        let (id, rx) = map.create();
+        drop(rx); // the client side is gone; only the map's sender remains
+        map.clone().spawn_reaper();
+        assert_eq!(map.len(), 1);
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(map.is_empty(), "the idle session must be reaped");
+        // The session is gone: a send to its id fails.
+        assert!(map.send(&id, "payload".to_owned()).await.is_err());
+    }
+
+    /// A session touched within the threshold at every reaper tick survives —
+    /// even well past the threshold in absolute terms.
+    #[tokio::test(start_paused = true)]
+    async fn reaper_keeps_touched_session() {
+        let map = SseSessionMap::with_idle_timeout(Duration::from_secs(10))
+            .with_tick(Duration::from_secs(1));
+        let (id, _rx) = map.create();
+        map.clone().spawn_reaper();
+        // Five 2 s cycles: 10 s elapse, but the idle gap never exceeds 2 s
+        // (the reaper passes on every 1 s tick in between).
+        for _ in 0..5 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            assert!(map.touch(&id), "the touched session must still exist");
+        }
+        assert_eq!(
+            map.len(),
+            1,
+            "a session touched within the threshold survives"
+        );
+    }
+
+    /// A freshly created session is not reaped before its own threshold
+    /// elapses (the reaper measures per-session age, not process uptime).
+    /// The session is created at t=5 s and lives to t=14 s (age 9 s < 10 s
+    /// threshold); the reaper's cutoff is live for the passes at t=10..14, so
+    /// the keep is a real comparison, not a missing-cutoff short-circuit.
+    #[tokio::test(start_paused = true)]
+    async fn reaper_keeps_fresh_session() {
+        let map = SseSessionMap::with_idle_timeout(Duration::from_secs(10))
+            .with_tick(Duration::from_secs(1));
+        map.clone().spawn_reaper();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let (id, _rx) = map.create(); // created mid-run
+        tokio::time::sleep(Duration::from_secs(9)).await; // age 9 s < 10 s
+        assert_eq!(map.len(), 1, "a fresh session must survive");
+        assert!(map.get(&id).is_some());
+    }
+
+    /// Spawning a second reaper is harmless: both passes run the same
+    /// idempotent removal (removing an absent id is a no-op), so a double
+    /// spawn neither double-removes nor panics.
+    #[tokio::test(start_paused = true)]
+    async fn spawn_reaper_twice_is_harmless() {
+        let map = SseSessionMap::with_idle_timeout(Duration::from_secs(2))
+            .with_tick(Duration::from_secs(1));
+        let _first = map.clone().spawn_reaper();
+        let _second = map.clone().spawn_reaper();
+        let (id, _rx) = map.create();
+        // Past the t=3 s reaping pass (2 s threshold / 1 s tick).
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(map.is_empty(), "one removal is enough; both reapers agree");
+        assert!(!map.remove(&id), "the session was removed exactly once");
+    }
+
+    /// In-process axum (task 1.5 acceptance): with a short idle threshold, a
+    /// `GET /sse` stream with no activity ends — the client observes EOF —
+    /// once the reaper removes the idle session (the sender drop ends the
+    /// stream; the disconnect guard fires — one removal code path, design
+    /// D6/D9).
+    #[tokio::test(start_paused = true)]
+    async fn idle_sse_stream_ends_after_threshold() {
+        let sessions = SseSessionMap::with_idle_timeout(Duration::from_secs(5))
+            .with_tick(Duration::from_secs(1));
+        sessions.clone().spawn_reaper();
+        let app = Router::new()
+            .route("/sse", get(handle_sse))
+            .with_state(sessions.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/sse")
+                    .header(header::HOST, "localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut data = response.into_body().into_data_stream();
+        let first = data
+            .next()
+            .await
+            .expect("the endpoint frame arrives")
+            .expect("no frame error");
+        let first = String::from_utf8(first.to_vec()).unwrap();
+        assert!(first.starts_with("event: endpoint\n"), "got: {first}");
+        assert_eq!(sessions.len(), 1, "the connection registered a session");
+
+        // No POSTs: the session idles past the 5 s threshold — the first
+        // reaping pass lands at t=6 s; sleeping to t=7 s guarantees it is
+        // complete.
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        assert!(sessions.is_empty(), "the idle session must be reaped");
+        // The reaper dropped the session's sender: the stream ends (EOF).
+        assert!(
+            data.next().await.is_none(),
+            "the reaped session's stream must end"
+        );
+    }
+
+    /// In-process axum (task 1.5 acceptance): periodic `POST /message`
+    /// activity (the handler's `touch`) keeps the stream open past the idle
+    /// threshold — the same threshold that reaps the idle stream above. The
+    /// touches are notifications (no response, no channel frames), so the
+    /// final payload is the only message frame on the stream.
+    #[tokio::test(start_paused = true)]
+    async fn touched_sse_stream_stays_open_past_threshold() {
+        let sessions = SseSessionMap::with_idle_timeout(Duration::from_secs(5))
+            .with_tick(Duration::from_secs(1));
+        sessions.clone().spawn_reaper();
+        let app = Router::new()
+            .route("/sse", get(handle_sse))
+            .route("/message", post(handle_message))
+            .with_state(SseState {
+                sessions: sessions.clone(),
+                server: Arc::new(test_server()),
+            });
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sse")
+                    .header(header::HOST, "localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut data = response.into_body().into_data_stream();
+        let first = data
+            .next()
+            .await
+            .expect("the endpoint frame arrives")
+            .expect("no frame error");
+        let first = String::from_utf8(first.to_vec()).unwrap();
+        let session_id = first
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .and_then(|url| url.split("sessionId=").nth(1))
+            .expect("the endpoint URL carries a sessionId")
+            .to_owned();
+
+        // Touch every 2 s while virtual time advances: each request touches
+        // the session, so its idle gap never exceeds 2 s (< the 5 s
+        // threshold) even as its absolute age runs well past it.
+        for _ in 1..=6 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let status = app
+                .clone()
+                .oneshot(post_message(
+                    Some(&session_id),
+                    json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+                ))
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::ACCEPTED);
+        }
+        // ~12 s have elapsed — past the threshold — but the session
+        // survived: still registered, channel open, and the stream still
+        // delivers.
+        assert_eq!(
+            sessions.len(),
+            1,
+            "a touched session survives past the threshold"
+        );
+        let tx = sessions
+            .get(&session_id)
+            .expect("the session is still registered");
+        assert!(!tx.is_closed(), "the session's channel is still open");
+        let payload = r#"{"jsonrpc":"2.0","id":100,"result":{}}"#;
+        sessions
+            .send(&session_id, payload.to_owned())
+            .await
+            .expect("the channel is still open");
+        let frame = data
+            .next()
+            .await
+            .expect("the stream is still alive")
+            .expect("no frame error");
+        let frame = String::from_utf8(frame.to_vec()).unwrap();
+        assert_eq!(frame, format!("event: message\ndata: {payload}\n\n"));
     }
 }

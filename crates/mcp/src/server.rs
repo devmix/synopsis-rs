@@ -96,6 +96,10 @@ impl Server {
     /// Axum consumes the SSE routes' state (`.with_state`) before the
     /// state-less `GET /health` route joins — its handler state
     /// (`HealthState`) is consumed per route.
+    ///
+    /// The idle reaper (design D9, task 1.5) is spawned once here from the
+    /// shared [`transport::SseSessionMap`] — see the `spawn_reaper` call below
+    /// for why its `JoinHandle` is not held.
     pub fn router(self) -> Router {
         let health_state = HealthState::new(self.db.clone(), self.version.clone());
         // One Arc<Server> shared by the Streamable HTTP factory and the SSE
@@ -113,13 +117,20 @@ impl Server {
             // transport, not the oracle's missing validation).
             StreamableHttpServerConfig::default().disable_allowed_hosts(),
         );
+        let sessions = transport::SseSessionMap::new();
+        // Idle reaper (design D9, task 1.5): a detached process-lifetime task
+        // that reaps sessions idle beyond the 300 s default every 30 s — a
+        // general-service hardening the oracle (single local user) never
+        // needed. The JoinHandle is deliberately NOT held: the reaper is
+        // process-lifetime and self-terminating in effect (once the map
+        // drains it removes nothing; process exit is the only shutdown,
+        // design D6). `spawn_reaper` is context-tolerant — this assembly runs
+        // on the cli's sync owner thread, outside any runtime context.
+        sessions.clone().spawn_reaper();
         Router::new()
             .route("/sse", get(transport::sse::handle_sse))
             .route("/message", post(transport::sse::handle_message))
-            .with_state(transport::SseState {
-                sessions: transport::SseSessionMap::new(),
-                server,
-            })
+            .with_state(transport::SseState { sessions, server })
             .route("/health", get(health_handler).with_state(health_state))
             .fallback_service(service)
     }
@@ -1342,5 +1353,61 @@ mod tests {
 
         // Drop the SSE stream: the client disconnect removes the session.
         drop(data);
+    }
+
+    // --- idle reaper on the real router (add-legacy-sse-transport task 1.5) ---
+
+    /// The idle reaper is live on the REAL `Server::router()` (task 1.5
+    /// acceptance): the threshold is not injectable through `Server` (no
+    /// config surface is invented — the oracle has none), so the production
+    /// defaults (300 s threshold / 30 s tick, design D9) are exercised on a
+    /// paused clock: a `/sse` session with no activity is reaped at the first
+    /// reaper pass past the threshold (t=330 s), and the client observes the
+    /// stream end. Short-threshold behavior is covered by the map-level unit
+    /// tests in `transport/sse.rs`.
+    #[tokio::test(start_paused = true)]
+    async fn router_spawns_idle_reaper() {
+        use axum::body::Body;
+        use axum::http::header;
+        use axum::http::{Request, StatusCode};
+        use tokio_stream::StreamExt as _;
+        use tower::ServiceExt as _;
+
+        let router = test_server().router();
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sse")
+                    .header(header::HOST, "localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut data = response.into_body().into_data_stream();
+        let first = data
+            .next()
+            .await
+            .expect("the endpoint frame arrives")
+            .expect("no frame error");
+        let first = String::from_utf8(first.to_vec()).unwrap();
+        assert!(
+            first.starts_with("event: endpoint\ndata: http://localhost:3000/message?sessionId="),
+            "got: {first}"
+        );
+
+        // The production defaults (design D9): 300 s threshold, 30 s tick —
+        // the first reaping pass lands at t=330 s. The paused clock
+        // auto-advances through each reaper tick as the test sleeps (no real
+        // waiting); sleeping to t=331 s guarantees that pass is complete.
+        tokio::time::sleep(std::time::Duration::from_secs(331)).await;
+        // The reaper dropped the session's sender: the stream ends (EOF).
+        assert!(
+            data.next().await.is_none(),
+            "the idle session on the real router must be reaped"
+        );
     }
 }

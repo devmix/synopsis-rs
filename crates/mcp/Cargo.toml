@@ -39,7 +39,13 @@ tokio = { workspace = true }
 # rmcp's client role + reqwest-backed Streamable HTTP client transport (the
 # same feature set the parity-harness pins), and reqwest for the plain-HTTP
 # GET /health assertion (workspace palette entry, `json` only).
+# tokio `test-util` (task 1.5): the idle-reaper tests use the paused clock
+# (`#[tokio::test(start_paused = true)]`, which auto-advances virtual time as
+# the tests sleep) — tokio's `full` feature does not include `test-util`, so
+# it is enabled here, test-only (no effect on the production binary, no new
+# packages).
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
+tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
