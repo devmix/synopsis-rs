@@ -32,7 +32,7 @@ Change: `fix-cli-forced-shutdown-error`
 - **Test-count invariant:** the workspace total stays **1,474** (no tests added
   or removed).
 
-- [ ] **1.1** — Return `Ok(())` on a forced shutdown.
+- [x] **1.1** — Return `Ok(())` on a forced shutdown.
 
   **Goal:** close the `warn!`-then-`Err` inconsistency so a load-induced forced
   stop is not reported as a CLI failure.
