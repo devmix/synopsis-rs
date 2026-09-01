@@ -345,9 +345,16 @@ mod compaction_tests {
         (config, usearch)
     }
 
+    /// Generous bound for the background-repack poll. The repack is tiny
+    /// (finishes in milliseconds under normal scheduling); this ceiling only
+    /// matters when the OS deschedules the background thread for many seconds
+    /// under full-workspace parallel load. 10 s proved too tight on a 16 GB
+    /// laptop; 60 s is 6x headroom.
+    const REPACK_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
     /// Polls `cond` every 10 ms until it holds or the timeout expires.
     fn wait_until(cond: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + REPACK_WAIT_TIMEOUT;
         while !cond() {
             assert!(
                 Instant::now() < deadline,
