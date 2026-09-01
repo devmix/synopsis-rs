@@ -24,7 +24,7 @@ Change: `fix-vectors-compaction-wait-timeout`
 - **Test-count invariant:** the workspace total stays **1,474** (no tests added
   or removed).
 
-- [ ] **1.1** — Raise the `wait_until` timeout to 60 s via a named constant.
+- [x] **1.1** — Raise the `wait_until` timeout to 60 s via a named constant.
 
   **Goal:** give the background-repack poll enough headroom to survive
   load-induced thread starvation, without changing any logic or predicate.
