@@ -19,6 +19,19 @@ serde_json = { workspace = true }
 # consumer of `vectors::synx` (vectors design D6). parity-harness sits outside the
 # product dependency graph (D1), so depending on `vectors` is fine.
 vectors = { workspace = true }
+# Legacy SSE client (add-legacy-sse-transport task 1.4): the harness drives the
+# oracle's HTTP+SSE wire contract (`GET /sse` + `POST /message`) directly with
+# reqwest. The `stream` feature enables `Response::bytes_stream()`; reqwest
+# 0.13.4 is already in the lock graph (rmcp's Streamable HTTP client transport
+# depends on it), and `stream` pulls only already-locked crates (futures-core /
+# futures-util / tokio-util + the tokio `fs` feature) — verified: no new
+# `[[package]]` entries in Cargo.lock. `tokio-stream` (already in the lock via
+# rmcp) provides `StreamExt` for driving the byte stream.
+reqwest = { workspace = true, features = ["stream"] }
+tokio-stream = { workspace = true }
+# The per-frame read deadline uses `tokio::time::timeout`; `tokio` (full,
+# already in the lock) is a direct dependency of the lib for that.
+tokio = { workspace = true }
 
 # Round-trip integration test (task 3.1 acceptance b): in-process rmcp
 # Streamable HTTP server from the same crates.io release as the client.

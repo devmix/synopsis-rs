@@ -2176,10 +2176,12 @@ dependencies = [
  "graph",
  "ingestion",
  "mcp",
+ "reqwest",
  "rmcp",
  "search",
  "serde_json",
  "tokio",
+ "tokio-stream",
  "vectors",
 ]
 

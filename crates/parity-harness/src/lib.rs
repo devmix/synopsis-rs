@@ -15,12 +15,15 @@
 //!   streamed via `vectors::synx`; `load_fixture_set_from_dir` reads the
 //!   committed `vectors.bin` dump into memory for the recall@k gate);
 //! - [`metrics`]: recall@k against provided ground truth;
-//! - [`diff`]: JSON/text diff utilities for parity reports.
+//! - [`diff`]: JSON/text diff utilities for parity reports;
+//! - [`sse_client`]: legacy HTTP+SSE client (mcp-go v0.57.0 wire contract) for
+//!   cross-transport parity — drives `GET /sse` + `POST /message` directly.
 
 pub mod diff;
 pub mod fixtures;
 pub mod mcp_client;
 pub mod metrics;
+pub mod sse_client;
 
 use std::path::PathBuf;
 
