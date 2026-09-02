@@ -23,7 +23,7 @@
 
 ## 1. CI coverage job
 
-- [ ] 1.1 Add a `coverage` job to `.github/workflows/ci.yml`
+- [x] 1.1 Add a `coverage` job to `.github/workflows/ci.yml`
 
 **Goal.** Add a `coverage` job that runs **in parallel** to the existing `checks` and
 `cross-builds` jobs (not a dependency of either) and produces an `lcov.info` artifact.

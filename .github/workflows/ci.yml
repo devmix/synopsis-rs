@@ -1,10 +1,13 @@
 # CI Pipeline — quality gates and cross-platform build matrix (Rust workspace).
-# Two independent jobs run in parallel: `checks` is fmt + clippy + test on
+# Three independent jobs run in parallel: `checks` is fmt + clippy + test on
 # Linux x64 (task 2.1); `cross-builds` compiles the release binary for every
-# supported target via cargo-zigbuild (task 2.2) — the Rust replacement for the
-# Go oracle's make build-all / scripts/build.sh, which needed CGO_CFLAGS and
-# darwin-stubs because FTS5 was a C compile flag. Here rusqlite bundles SQLite
-# with FTS5 compiled in-tree by zig cc, so no such flags are required.
+# supported target via cargo-zigbuild (task 2.2); `coverage` measures workspace
+# line coverage with cargo-llvm-cov and uploads an lcov artifact (change
+# coverage-rust-workspace, task 1.1) — measure-first, no gates. The cross-build
+# leg is the Rust replacement for the Go oracle's make build-all /
+# scripts/build.sh, which needed CGO_CFLAGS and darwin-stubs because FTS5 was a
+# C compile flag. Here rusqlite bundles SQLite with FTS5 compiled in-tree by
+# zig cc, so no such flags are required.
 name: CI
 
 on:
@@ -135,3 +138,52 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}:/io" -w /io \
             alpine:3.21 ./target/x86_64-unknown-linux-musl/release/synopsis --version
+
+  # ------------------------------------------------------------------
+  # Coverage — workspace line-coverage measurement via cargo-llvm-cov
+  # (change coverage-rust-workspace, task 1.1). Runs in parallel to
+  # `checks` and `cross-builds` (no `needs:`): coverage is measure-first,
+  # so a coverage failure must not block the core gate. The lcov trace
+  # file is kept as a run artifact; there is deliberately no
+  # --fail-under-* flag (gating is deferred to Phase 3).
+  # ------------------------------------------------------------------
+  coverage:
+    name: Coverage (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Same pinned toolchain as the other jobs (rust-toolchain.toml,
+      # 1.96.0); llvm-tools-preview provides the LLVM coverage tooling
+      # that cargo-llvm-cov drives.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: llvm-tools-preview
+
+      # Caches ~/.cargo (registry, git deps) and ./target; keyed by the
+      # installed rustc version, so it must run after the toolchain step
+      # — same rule as in the other jobs.
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Install cargo-llvm-cov v0.9.0 (pinned, per design D1) from
+      # prebuilt GitHub release binaries. Dev-only tool: the binary
+      # lands in CARGO_HOME and never enters Cargo.toml/Cargo.lock
+      # (frozen stack), the same precedent as cargo-zigbuild above.
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.0
+
+      # Measure workspace line coverage and write the lcov trace file.
+      - name: Measure coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      # Keep the lcov trace as a run artifact for inspection.
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
