@@ -38,7 +38,7 @@ Conventions for every task in this change:
 - [x] 1.4 Extract `mcp/src/tools/documents.rs` tests → `mcp/tests/documents.rs`
 - [x] 1.5 Extract `mcp/src/tools/graph_tools.rs` tests → `mcp/tests/graph_tools.rs`
 - [x] 1.6 Extract `graph/src/cel.rs` tests → `graph/tests/cel.rs` (no dev-dep — D6 corrected)
-- [ ] 1.7 Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs`
+- [x] 1.7 Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs` (12 moved / 3 inline)
 - [ ] 1.8 Extract `graph/src/linker.rs` tests → `graph/tests/linker_units.rs`
 - [ ] 1.9 Extract `llm/src/client.rs` tests → `llm/tests/client.rs` (+ `llm` test_support, new `tests/` dir)
 - [ ] 1.10 Extract `mcp/src/transport/sse.rs` tests → `mcp/tests/sse_units.rs` (+ `mcp` test_support)
@@ -236,8 +236,8 @@ and all 29 tests pass without it. Design D6's premise ("integration tests cannot
 
 ### Task 1.7 — Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs`
 
-**Goal.** Shrink `crates/search/src/hybrid.rs` (1,142 lines, 68% test) by moving 13 of its
-15 tests to a new integration test file; 2 stay inline.
+**Goal.** Shrink `crates/search/src/hybrid.rs` (1,142 lines, 68% test) by moving 12 of its
+15 tests to a new integration test file; 3 stay inline.
 
 **File scope.**
 - `crates/search/src/hybrid.rs` (source)
@@ -246,23 +246,39 @@ and all 29 tests pass without it. Design D6's premise ("integration tests cannot
 
 **Dependencies.** None.
 
-**Approach.** Move the 13 MOVABLE tests (all except the two below) to
-`crates/search/tests/hybrid_units.rs`, rewriting imports, carrying their exclusive
-private helpers, keeping names/assertions verbatim, `#![allow(clippy::unwrap_used)]`.
+**Approach.** Move the 12 MOVABLE tests (all except the three below) to
+`crates/search/tests/hybrid_units.rs`, rewriting `use crate::…`/`use super::*` →
+`use search::…` (the lib target is named `search`; `hybrid` is `pub mod hybrid;`, so
+`search::hybrid::…` is importable), carrying their EXCLUSIVE private helpers (helpers
+used only by a moved test move with it; a helper shared with a stay-inline test stays
+inline), keeping names/assertions verbatim, `#![allow(clippy::unwrap_used,
+clippy::expect_used)]` at the top of the new file (carry whichever of the two the moved
+tests actually use; the source module has both and uses `.expect()`).
 **Stay inline (do NOT move)** — they use private items (design D7):
-- `invert_score_reciprocal` (uses private `invert_score`)
-- `standalone_results_maps_hits` (uses private `standalone_results`)
-Leave those two tests (and the private fns they need) in `hybrid.rs` in a trimmed
-`#[cfg(test)] mod tests`. Overlap note (design D4): moved tests overlap
-`hybrid_integration.rs` coverage — MOVE them (do not remove); only if a moved test is a
-true name+body duplicate of an existing integration test, remove the inline copy and note
-it.
+- `invert_score_reciprocal` (uses private `invert_score`, `hybrid.rs:361`)
+- `standalone_results_maps_hits` (uses private `standalone_results`, `hybrid.rs:336`)
+- `hybrid_fusion_pool_is_max_of_leg_tops` (uses private `HybridSearcher::fusion_pool`,
+  `hybrid.rs:203` — Appendix A misclassified it MOVABLE; an integration test cannot reach
+  the private method, E0624)
+Leave those three tests (and the private fns they need, which are production items that
+stay in `hybrid.rs`) in `hybrid.rs` in a trimmed `#[cfg(test)] mod tests` (keep that
+module's `#![allow(clippy::unwrap_used, clippy::expect_used)]`). Overlap note (design D4): moved
+tests overlap `hybrid_integration.rs` coverage — MOVE them (do not remove); only if a
+moved test is a true name+body duplicate of an existing integration test, remove the
+inline copy and note it.
 
 **Acceptance criteria.**
-1. `hybrid.rs` retains exactly the 2 named stay-inline tests in its `#[cfg(test)]` block;
-   line count drops by the 13 moved tests' lines.
-2. `cargo test -p search` test count unchanged (13 relocated); all gates green.
+1. `hybrid.rs` retains exactly the 3 named stay-inline tests in its `#[cfg(test)]` block;
+   line count drops by the 12 moved tests' lines.
+2. `cargo test -p search` test count unchanged (12 relocated); all gates green.
 3. Names/assertions verbatim; scope-only diff; `../synopsis` untouched.
+
+**Revision 1 (2026-09-01, human chose option A).** Appendix A misclassified
+`hybrid_fusion_pool_is_max_of_leg_tops` as MOVABLE; it calls the private
+`HybridSearcher::fusion_pool` (`hybrid.rs:203`), which an integration test cannot reach
+(E0624, verified by the implementer). It STAYS inline with the other two, so the move is
+12 (not 13). No production-code change (no API widening, per D7). Design Appendix A
+corrected: 13→12 MOVABLE, 2→3 STAY_INLINE, Total 173→172 / 33→34.
 
 ---
 

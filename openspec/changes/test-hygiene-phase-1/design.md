@@ -141,7 +141,7 @@ helper: `test_platform_key` — `crates/cli/src/onnx_runtime.rs:212` ≡
 | `llm/src/client.rs` (34) | 24 | 2: `new_accepts_valid_config` (:651), `new_accepts_zero_max_retries` (:739) — read private `LlmClient.config` | 8: 7 via `with_sleeper` seam; `backoff_delay_stays_within_jitter_band_and_varies` (:1381) via private `backoff_delay` |
 | `db/src/fact.rs` (30) | 30 | — | — |
 | `ingestion/src/ingester/mod.rs` (23) | 0 | — | 23: all via `pub(crate) walk_matched_files` (`parsers/mod.rs:54`) reached through `TestSource`/`Harness` |
-| `search/src/hybrid.rs` (15) | 13 | 2: `invert_score_reciprocal` (:1067) → private `invert_score` (:361); `standalone_results_maps_hits` (:1076) → private `standalone_results` (:336) | — |
+| `search/src/hybrid.rs` (15) | 12 | 3: `invert_score_reciprocal` (:1067) → private `invert_score` (:361); `standalone_results_maps_hits` (:1076) → private `standalone_results` (:336); `hybrid_fusion_pool_is_max_of_leg_tops` → private `HybridSearcher::fusion_pool` (:203) | — |
 | `ingestion/src/runner/mod.rs` (13) | 1: `detect_source_type_matches_the_oracle_cases` (:1058) | — | 12: via `walk_matched_files` |
 | `cli/src/serve/bootstrap.rs` (22) | 22 | — | — |
 | `cli/src/serve/watcher.rs` (15) | 0 | 15: private `Debouncer` (3), `debounce_loop` (2), `relevant_kind`, `wanted_extension`/`normalize_extensions`, `watchable_sources` (3), `IngestChangeHandler::handle_changes` (4), `Watcher.task` (1) — **not extractable, out of scope** | — |
@@ -150,7 +150,7 @@ helper: `test_platform_key` — `crates/cli/src/onnx_runtime.rs:212` ≡
 | `mcp/src/tools/graph_tools.rs` (17) | 17 | — | — |
 | `graph/src/cel.rs` (29) | 29 (use `cel::…` directly via `[dependencies]`, no dev-dep — D6) | — | — |
 | `graph/src/linker.rs` (16) | 7: equals ×2, expression ×3, `method_order_from_config`, `self_link_never_created` | 9: `cross_domain_pairs` ×2 (private fn); `llm_*` ×7 (private `MockLlm` at :1283) | — |
-| **Total** | **173** | **33** | **50** (walk_matched_files 35, llm 8, sse 7) |
+| **Total** | **172** | **34** | **50** (walk_matched_files 35, llm 8, sse 7) |
 
 **Overlap warnings (move, per D4):** `graph/linker.rs` ↔ `graph/tests/linker_pipeline.rs`;
 `search/hybrid.rs` ↔ `search/tests/hybrid_integration.rs`; `mcp/sse.rs` ↔
