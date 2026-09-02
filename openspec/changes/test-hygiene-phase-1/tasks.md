@@ -42,7 +42,7 @@ Conventions for every task in this change:
 - [x] 1.8 Extract `graph/src/linker.rs` tests → `graph/tests/linker_units.rs` (7 moved / 9 inline)
 - [x] 1.9 Extract `llm/src/client.rs` tests → `llm/tests/client.rs` (+ `llm` test_support, new `tests/` dir) (32 moved / 2 inline)
 - [x] 1.10 Extract `mcp/src/transport/sse.rs` tests → `mcp/tests/sse_units.rs` (+ `mcp` test_support) (18 moved / 5 inline)
-- [ ] 1.11 Extract `ingestion/src/ingester/mod.rs` tests → `ingestion/tests/ingester.rs` (+ `ingestion` test_support)
+- [x] 1.11 Extract `ingestion/src/ingester/mod.rs` tests → `ingestion/tests/ingester.rs` (+ `ingestion` test_support) (23 moved)
 - [ ] 1.12 Extract `ingestion/src/runner/mod.rs` tests → `ingestion/tests/runner.rs` (reuses ingestion test_support)
 - [ ] 1.13 Final verification: before/after report + full gates
 
@@ -477,14 +477,19 @@ ALL 23 of its tests to a new integration test file.
 **Approach.**
 1. **test_support (design D3):** `walk_matched_files` is already `pub(crate)` in
    `crates/ingestion/src/parsers/mod.rs:54` — no visibility change. Create
-   `crates/ingestion/src/test_support.rs` with
-   `#[doc(hidden)] pub use crate::parsers::walk_matched_files;` and declare it in
-   `lib.rs` as `#[doc(hidden)] pub mod test_support;`.
+   `crates/ingestion/src/test_support.rs` exposing it and declare it in `lib.rs` as
+   `#[doc(hidden)] pub mod test_support;`. **A `pub use` cannot re-export a `pub(crate)`
+   item so it is visible to integration tests (E0364 — the same issue task 1.10 hit)**, so
+   define a thin `pub fn walk_matched_files(source_path, matches, visit, errors)` delegate
+   that calls `crate::parsers::walk_matched_files(…)` (same 4-arg signature). (The delegate
+   is public and calls a `pub(crate)` item in-crate, so no `dead_code` warnings in
+   production builds; verify with clippy.)
 2. **Move all 23 tests** to `crates/ingestion/tests/ingester.rs`: they reach
    `walk_matched_files` through the test-local `TestSource`/`Harness` fixtures — carry
    those fixtures (and any other exclusive private helpers) into the integration file and
    rewrite their one call path to `ingestion::test_support::walk_matched_files`. Keep
-   names/assertions verbatim, `#![allow(clippy::unwrap_used)]`.
+   names/assertions verbatim, `#![allow(clippy::unwrap_used, clippy::expect_used)]` at the
+   top of the new file (the source module has both).
 3. Overlap note (design D4): overlaps `pipeline_e2e.rs`/`parity_fixtures.rs` — MOVE;
    remove only on true name+body duplicate (note it).
 
