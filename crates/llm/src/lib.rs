@@ -18,5 +18,10 @@
 mod client;
 pub mod error;
 
+/// Test-only seams for integration tests (design D3, change
+/// test-hygiene-phase-1 task 1.9); docs-hidden, not part of the public API.
+#[doc(hidden)]
+pub mod test_support;
+
 pub use client::LlmClient;
 pub use error::LlmError;
