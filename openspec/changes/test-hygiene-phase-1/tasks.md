@@ -43,8 +43,8 @@ Conventions for every task in this change:
 - [x] 1.9 Extract `llm/src/client.rs` tests → `llm/tests/client.rs` (+ `llm` test_support, new `tests/` dir) (32 moved / 2 inline)
 - [x] 1.10 Extract `mcp/src/transport/sse.rs` tests → `mcp/tests/sse_units.rs` (+ `mcp` test_support) (18 moved / 5 inline)
 - [x] 1.11 Extract `ingestion/src/ingester/mod.rs` tests → `ingestion/tests/ingester.rs` (+ `ingestion` test_support) (23 moved)
-- [ ] 1.12 Extract `ingestion/src/runner/mod.rs` tests → `ingestion/tests/runner.rs` (reuses ingestion test_support)
-- [ ] 1.13 Final verification: before/after report + full gates
+- [x] 1.12 Extract `ingestion/src/runner/mod.rs` tests → `ingestion/tests/runner.rs` (reuses ingestion test_support)
+- [x] 1.13 Final verification: before/after report + full gates
 
 ---
 
