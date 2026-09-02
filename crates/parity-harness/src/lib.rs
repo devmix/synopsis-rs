@@ -17,8 +17,11 @@
 //! - [`metrics`]: recall@k against provided ground truth;
 //! - [`diff`]: JSON/text diff utilities for parity reports;
 //! - [`sse_client`]: legacy HTTP+SSE client (mcp-go v0.57.0 wire contract) for
-//!   cross-transport parity — drives `GET /sse` + `POST /message` directly.
+//!   cross-transport parity — drives `GET /sse` + `POST /message` directly;
+//! - [`content_parity`]: content-parity record/verify + per-tool normalization
+//!   of tool responses against committed JSON fixtures.
 
+pub mod content_parity;
 pub mod diff;
 pub mod fixtures;
 pub mod mcp_client;

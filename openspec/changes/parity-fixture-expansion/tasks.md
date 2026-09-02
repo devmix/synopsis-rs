@@ -27,7 +27,7 @@
 
 ## 1. Content-parity record/verify module
 
-- [ ] 1.1 Add a `content_parity` module to `parity-harness` (record/verify + normalization)
+- [x] 1.1 Add a `content_parity` module to `parity-harness` (record/verify + normalization)
 
 **Goal.** Add a reusable module that (a) **records** a tool response from a running MCP
 server into a committed JSON fixture, and (b) **verifies** a Rust tool response against a
