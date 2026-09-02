@@ -70,6 +70,11 @@ pub mod sources;
 pub mod types;
 pub mod worker;
 
+/// Test-only seams for integration tests (design D3, change
+/// test-hygiene-phase-1 task 1.11); docs-hidden, not part of the public API.
+#[doc(hidden)]
+pub mod test_support;
+
 pub use chunkers::json::JsonChunker;
 pub use chunkers::markdown::MarkdownChunker;
 pub use chunkers::mediawiki::MediawikiChunker;
