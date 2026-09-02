@@ -198,7 +198,13 @@ not modify any product crate, `Cargo.toml`, or `Cargo.lock`, and do not modify t
 
 ## 5. Search content-parity test
 
-- [ ] 1.5 Add a content-parity test for `search`
+- [x] 1.5 Add a content-parity test for `search`
+
+> **Note (2026-09-03):** the `search` assertion landed in commit `7c95ff8`
+> (task `search-text-embedding/4.1`), together with the deliberate re-pin of
+> `fixtures/content/search.json` to the Rust rank order `[18, 33, 25, 17, 23]`
+> (see `fixtures/content/README.md`). The test passes against the re-pinned
+> fixture.
 
 **Goal.** Assert the Rust `search` response matches the Go fixture (result count + top-
 result identity), after normalization.
@@ -229,7 +235,16 @@ result identity), after normalization.
 
 ## 6. Final verification
 
-- [ ] 1.6 Final verification: gates + fixture integrity + scope
+- [x] 1.6 Final verification: gates + fixture integrity + scope
+
+> **Verification (2026-09-03):** all four gates green (`fmt --check`,
+> `clippy --workspace --all-targets -- -D warnings`, `check --workspace`,
+> `test --workspace`); `parity_test.rs` / `sse_parity.rs` byte-for-byte
+> unchanged (last touched `54f0c71`, before this change); the four fixtures are
+> valid JSON with headers; the record driver is `examples/record_content.rs`
+> (not in the default gate); no product crate, `Cargo.toml`, or `Cargo.lock`
+> touched; the change's file scope is `crates/parity-harness/**` plus the
+> openspec artifact. `../synopsis` untouched by this session.
 
 **Goal.** Machine-verify the whole change before archive.
 
