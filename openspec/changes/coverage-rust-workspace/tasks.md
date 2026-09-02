@@ -131,7 +131,7 @@ task 1.2's `baseline.md`).
 
 ## 4. Final verification
 
-- [ ] 1.4 Final verification: gates + CI validity + docs consistency
+- [x] 1.4 Final verification: gates + CI validity + docs consistency
 
 **Goal.** Machine-verify the whole change before archive.
 
