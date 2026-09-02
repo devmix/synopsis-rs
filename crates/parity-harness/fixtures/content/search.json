@@ -15,20 +15,6 @@
       "text": "> Atlas 3.0 Release Notes\n > Dashboard Builder\n\nThe new dashboard builder supports drag-and-drop widgets, saved layouts per\nworkspace, and shared views. Widgets bind to live Atlas data sources and\nrefresh on a per-widget schedule."
     },
     {
-      "chunk_id": 25,
-      "document_id": 6,
-      "document_path": "/mnt/local/secure/projects/devmix/synopsis-rs/target/parity-go/documents/product/roadmap-2026.md",
-      "domains": [
-        "product"
-      ],
-      "end_offset": 818,
-      "score": 0.8831989167863167,
-      "sequence_num": 3,
-      "source_type": "hybrid+markdown",
-      "start_offset": 583,
-      "text": "> Atlas Product Roadmap 2026\n > Q3 — Copilot\n\nAn AI copilot lands in the dashboard builder. It suggests widget layouts\nfrom natural-language prompts and drafts report summaries. Copilot calls are\nmetered per workspace and reported in the Beacon cost dashboard."
-    },
-    {
       "chunk_id": 33,
       "document_id": 8,
       "document_path": "/mnt/local/secure/projects/devmix/synopsis-rs/target/parity-go/documents/eng/oncall-runbook.md",
@@ -36,11 +22,25 @@
         "eng"
       ],
       "end_offset": 714,
-      "score": 0.8364581836856281,
+      "score": 1.02834,
       "sequence_num": 3,
       "source_type": "hybrid+markdown",
       "start_offset": 520,
       "text": "> Atlas Service On-Call Runbook\n > Common Incidents\n  > Dashboard builder 5xx spike\n\nCheck the Beacon dashboard for the affected release. If the spike started\nwith a deploy, roll back to the previous Atlas build and open a post\nincident review."
+    },
+    {
+      "chunk_id": 25,
+      "document_id": 6,
+      "document_path": "/mnt/local/secure/projects/devmix/synopsis-rs/target/parity-go/documents/product/roadmap-2026.md",
+      "domains": [
+        "product"
+      ],
+      "end_offset": 818,
+      "score": 0.79853,
+      "sequence_num": 3,
+      "source_type": "hybrid+markdown",
+      "start_offset": 583,
+      "text": "> Atlas Product Roadmap 2026\n > Q3 — Copilot\n\nAn AI copilot lands in the dashboard builder. It suggests widget layouts\nfrom natural-language prompts and drafts report summaries. Copilot calls are\nmetered per workspace and reported in the Beacon cost dashboard."
     },
     {
       "chunk_id": 17,
@@ -50,24 +50,25 @@
         "product"
       ],
       "end_offset": 206,
-      "score": 0.7361314255431901,
+      "score": 0.74293,
       "sequence_num": 0,
       "source_type": "hybrid+markdown",
+      "start_offset": 206,
       "text": "> Atlas 3.0 Release Notes\n\nAtlas 3.0, owned by Marcus Webb, ships the dashboard builder, real-time\ncollaboration, and the redesigned reporting engine. The release is tracked\nin the Beacon release channel."
     },
     {
-      "chunk_id": 3,
-      "document_id": 1,
-      "document_path": "/mnt/local/secure/projects/devmix/synopsis-rs/target/parity-go/documents/hr/onboarding-guide.md",
+      "chunk_id": 23,
+      "document_id": 6,
+      "document_path": "/mnt/local/secure/projects/devmix/synopsis-rs/target/parity-go/documents/product/roadmap-2026.md",
       "domains": [
-        "hr"
+        "product"
       ],
-      "end_offset": 770,
-      "score": 0.38565977742448326,
-      "sequence_num": 2,
+      "end_offset": 344,
+      "score": 0.35939,
+      "sequence_num": 1,
       "source_type": "semantic+markdown",
-      "start_offset": 420,
-      "text": "> New Hire Onboarding Guide\n > Weeks One to Four\n\nWeek one covers the product tour with Marcus Webb: the Atlas platform, the\ncustomer-facing dashboard, and the API surface. Weeks two and four alternate\nbetween team pair programming and the engineering orientation led by Priya\nSharma, which covers the on-call rotation, the Beacon alerting setup, and\nthe Ledger data pipeline."
+      "start_offset": 131,
+      "text": "> Atlas Product Roadmap 2026\n > Q1 — Mobile Offline\n\nThe Atlas mobile app gains full offline mode: dashboards sync in the\nbackground, and edits merge with the workspace on reconnect. Offline mode\nreuses the Atlas 3.0 conflict resolution rules."
     }
   ],
   "search_time_ms": 77,

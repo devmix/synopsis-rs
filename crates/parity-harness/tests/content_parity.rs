@@ -106,13 +106,13 @@ use vectors::{UsearchEngine, VectorIndex, VectorIndexConfig};
 /// order, and the fixture's first page (ids 1-3) is the `hr` source.
 const SOURCES: [(&str, usize); 3] = [("hr", 3), ("product", 3), ("eng", 2)];
 
-/// Content parity for the three catalog tools: boot the product MCP server
-/// over the ingested content corpus, drive `catalog_overview`,
-/// `catalog_documents` (first page, `page_size` 3) and `catalog_entities`
-/// with the fixture's recording args, and compare each response against its
-/// committed Go-oracle fixture after normalization.
+/// Content parity for the catalog tools and `search`: boot the product MCP
+/// server over the ingested content corpus, drive `catalog_overview`,
+/// `catalog_documents` (first page, `page_size` 3), `catalog_entities` and
+/// `search` with the fixture's recording args, and compare each response
+/// against its committed Go-oracle fixture after normalization.
 #[test]
-fn catalog_content_parity_matches_go_fixtures() {
+fn content_parity_matches_go_fixtures() {
     let repo_root = repo_root();
 
     // 1. Embedding provider — the graceful-skip boundary.
@@ -188,9 +188,16 @@ fn catalog_content_parity_matches_go_fixtures() {
     let entities_fixture =
         load_fixture(&fixtures.join("catalog_entities.json")).expect("load the fixture");
     assert_content_parity(&entities_fixture, &responses.entities, "catalog_entities");
+
+    // `search`: recorded with `{"query": "Atlas dashboard builder", "top_k":
+    // 5}`; `normalize` strips the exact scores and the wall-clock duration, so
+    // the comparison is the result count plus the rank-ordered identity
+    // (`document_id` / `chunk_id`) of each result (module docs).
+    let search_fixture = load_fixture(&fixtures.join("search.json")).expect("load the fixture");
+    assert_content_parity(&search_fixture, &responses.search, "search");
 }
 
-/// The three tool payloads (oracle-shaped JSON).
+/// The four tool payloads (oracle-shaped JSON).
 struct Responses {
     /// The `catalog_overview` payload.
     overview: Value,
@@ -198,11 +205,14 @@ struct Responses {
     documents: Value,
     /// The `catalog_entities` payload.
     entities: Value,
+    /// The `search` payload (recorded with `{"query": "Atlas dashboard
+    /// builder", "top_k": 5}`).
+    search: Value,
 }
 
-/// Bind the product router to a random loopback port, drive the three catalog
-/// tools through the harness client with the fixture's recording args, then
-/// shut the server down gracefully.
+/// Bind the product router to a random loopback port, drive the catalog tools
+/// and `search` through the harness client with the fixture's recording args,
+/// then shut the server down gracefully.
 async fn serve_and_drive(server: Server) -> Result<Responses, String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -239,11 +249,22 @@ async fn serve_and_drive(server: Server) -> Result<Responses, String> {
         .call_tool("catalog_entities", Map::new())
         .await
         .map_err(|err| format!("catalog_entities: {err}"))?;
+    let mut search_args = Map::new();
+    search_args.insert(
+        "query".to_owned(),
+        Value::String("Atlas dashboard builder".to_owned()),
+    );
+    search_args.insert("top_k".to_owned(), Value::from(5));
+    let search = client
+        .call_tool("search", search_args)
+        .await
+        .map_err(|err| format!("search: {err}"))?;
 
     let responses = Responses {
         overview: payload(&overview),
         documents: payload(&documents),
         entities: payload(&entities),
+        search: payload(&search),
     };
 
     client
@@ -266,7 +287,7 @@ fn payload(result: &rmcp::model::CallToolResult) -> Value {
         .content
         .iter()
         .find_map(ContentBlock::as_text)
-        .expect("the catalog tools answer with a JSON text block");
+        .expect("the tools answer with a JSON text block");
     serde_json::from_str(&text.text).expect("the catalog payload is valid JSON")
 }
 

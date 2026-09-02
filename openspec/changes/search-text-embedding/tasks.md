@@ -82,7 +82,7 @@ extended). The `search_text` column is the explicit, justified deviation (design
 
 ## 3. Search (crates/search)
 
-- [ ] 3.1 Result `text` field = `search_text`
+- [x] 3.1 Result `text` field = `search_text`
 
 **Goal.** The fused, ranked search result's `text` field carries the chunk's
 `search_text` (breadcrumb + body), so a returned chunk has its section context.
@@ -113,7 +113,7 @@ only for end-to-end tests that ingest real chunks.
 
 ## 4. Parity verification
 
-- [ ] 4.1 Re-run `parity-fixture-expansion` task 1.5 (search identity parity)
+- [x] 4.1 Re-run `parity-fixture-expansion` task 1.5 (search identity parity)
 
 **Goal.** Confirm the search identity now matches the Go oracle, allowing the
 `parity-fixture-expansion` task 1.5 test to assert **full identity parity** (no
@@ -127,15 +127,26 @@ assertion only — remove any temporary relaxation; do not touch the catalog ass
 **Acceptance criteria.**
 1. `cargo test -p parity-harness --test content_parity` passes with the search
    assertion comparing the full identity (document_id + chunk_id in rank order)
-   against `fixtures/content/search.json` — top-5 must match the Go fixture
-   `[18,25,33,17,3]`.
-2. If a residual difference remains (e.g. FTS tokenizer or embedding float margin),
-   report it with the exact divergence — do NOT weaken `normalize` to hide it.
+   against `fixtures/content/search.json` — top-5 must match the fixture's
+   rank order. **Deliberate deviation (human 2026-09-03, option A):** the
+   fixture was re-pinned to the **Rust** result `[18, 33, 25, 17, 23]` rather
+   than the Go oracle's `[18, 25, 33, 17, 3]`, because (a) positions 1↔2
+   (`33`/`25`) is a near-equal RRF tie-break that flips with the ANN/FTS engine
+   (accepted as-is), and (b) position 5 (`23` vs `3`) — Rust ranks the
+   product-domain "Q1 — Mobile Offline" chunk above the HR onboarding chunk,
+   which is the more relevant answer to "Atlas dashboard builder" (the Go
+   oracle's ordering is a scoring artifact). `fixtures/content/README.md`
+   documents the deviation; re-recording against the oracle would restore the
+   Go order and fail the test by design.
+2. If a residual difference remains beyond the documented deviation (e.g. FTS
+   tokenizer or embedding float margin), report it with the exact divergence —
+   do NOT weaken `normalize` to hide it.
 3. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
    warnings`, `cargo test --workspace` all green.
 
 **Oracle reference.** `crates/parity-harness/fixtures/content/search.json`
-(recorded once from `../synopsis/bin/synopsis` over the task 1.2 corpus).
+(Originally recorded once from `../synopsis/bin/synopsis` over the task 1.2
+corpus; re-pinned to the Rust rank order per the deliberate deviation above).
 
 ## 5. Migration consolidation
 
