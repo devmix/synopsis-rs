@@ -8,9 +8,11 @@
 //!
 //! The module provides the mechanism (no product code, no frozen contract):
 //!
-//! - [`record_response`] — drive a running MCP server (the Go binary during the
-//!   one-time recording step) with one tool + args and commit the response to a
-//!   fixture file;
+//! - [`record_response`] — drive a running **Streamable-HTTP** MCP server (e.g.
+//!   the Rust product server) with one tool + args and commit the response to a
+//!   fixture file (the one-time Go-oracle recording instead uses the harness
+//!   [`SseClient`](crate::sse_client::SseClient) — see `examples/record_content.rs` —
+//!   because the Go oracle serves the legacy SSE transport only);
 //! - [`load_fixture`] — read a committed fixture back;
 //! - [`normalize`] — strip volatile fields per tool so `json_diff` focuses on
 //!   contract-relevant content;
@@ -35,13 +37,17 @@ use crate::mcp_client::McpClient;
 
 // ── record / load ───────────────────────────────────────────────────────────
 
-/// Record a tool response from a running MCP server into a committed JSON
-/// fixture (design D1, record step).
+/// Record a tool response from a running **Streamable-HTTP** MCP server into a
+/// committed JSON fixture (design D1, record step).
 ///
 /// Connects an [`McpClient`] to `url`, calls `tool` with `args`, and writes the
-/// oracle-shaped response payload (pretty-printed, keys sorted) to `out`,
-/// creating parent directories as needed. Used by the one-time recording step
-/// (task 1.3) against the **Go** server; the verify path never records.
+/// response payload (pretty-printed, keys sorted) to `out`, creating parent
+/// directories as needed. The client speaks the Streamable-HTTP wire contract,
+/// so this targets a Streamable-HTTP MCP server (e.g. the Rust product server).
+/// The one-time Go-oracle recording (task 1.3) cannot use it — the Go oracle
+/// (mcp-go v0.57.0) serves the legacy SSE transport only — and instead drives
+/// the oracle with the harness [`SseClient`](crate::sse_client::SseClient) (see
+/// `examples/record_content.rs`); the verify path never records.
 ///
 /// `args` must be a JSON object; a non-object value is treated as no arguments.
 /// Failures are typed: a transport/protocol problem, an unknown tool, or a

@@ -110,7 +110,7 @@ deterministic. Requirements:
 
 ## 3. Record golden fixtures from the Go oracle
 
-- [ ] 1.3 Record `search` + catalog fixtures from `../synopsis/bin/synopsis` (one-time)
+- [x] 1.3 Record `search` + catalog fixtures from `../synopsis/bin/synopsis` (one-time)
 
 **Goal.** Produce committed golden fixtures for `search`, `catalog_overview`,
 `catalog_documents`, and `catalog_entities` by driving the **Go** binary over the content

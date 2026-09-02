@@ -1,0 +1,19 @@
+{
+  "chunk_count": 35,
+  "document_count": 8,
+  "documents_by_type": {
+    "markdown": 8
+  },
+  "domains": [
+    "hr",
+    "product",
+    "eng"
+  ],
+  "entities_by_domain": {},
+  "entities_by_type": {},
+  "entity_count": 0,
+  "entity_types": [],
+  "fact_count": 0,
+  "graph_edge_count": 0,
+  "graph_node_count": 0
+}
