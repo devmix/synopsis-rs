@@ -39,7 +39,7 @@ Conventions for every task in this change:
 - [x] 1.5 Extract `mcp/src/tools/graph_tools.rs` tests → `mcp/tests/graph_tools.rs`
 - [x] 1.6 Extract `graph/src/cel.rs` tests → `graph/tests/cel.rs` (no dev-dep — D6 corrected)
 - [x] 1.7 Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs` (12 moved / 3 inline)
-- [ ] 1.8 Extract `graph/src/linker.rs` tests → `graph/tests/linker_units.rs`
+- [x] 1.8 Extract `graph/src/linker.rs` tests → `graph/tests/linker_units.rs` (7 moved / 9 inline)
 - [ ] 1.9 Extract `llm/src/client.rs` tests → `llm/tests/client.rs` (+ `llm` test_support, new `tests/` dir)
 - [ ] 1.10 Extract `mcp/src/transport/sse.rs` tests → `mcp/tests/sse_units.rs` (+ `mcp` test_support)
 - [ ] 1.11 Extract `ingestion/src/ingester/mod.rs` tests → `ingestion/tests/ingester.rs` (+ `ingestion` test_support)
@@ -294,10 +294,18 @@ corrected: 13→12 MOVABLE, 2→3 STAY_INLINE, Total 173→172 / 33→34.
 **Dependencies.** None.
 
 **Approach.** Move the 7 MOVABLE tests to `crates/graph/tests/linker_units.rs`:
-the two `equals` tests, the three `expression` tests, `method_order_from_config`,
-`self_link_never_created` (all use public `build_entity_links` + public config + local
-helpers). Rewrite imports, carry their exclusive private helpers, keep names/assertions
-verbatim, `#![allow(clippy::unwrap_used)]`.
+`equals_links_matching_names_and_skips_short_or_different_names`,
+`equals_respects_configured_min_words`,
+`expression_rule_creates_link_with_rule_attributes`,
+`expression_priority_order_and_first_true_wins`,
+`expression_errors_are_recorded_not_fatal`, `method_order_from_config_is_respected`,
+`self_link_never_created` (all use public `build_entity_links` (`linker.rs:819`) + public
+config + local helpers). Rewrite `use crate::…`/`use super::*` → `use graph::…` (the lib
+target is named `graph`; `linker` is `pub mod linker;`, so `graph::linker::…` is
+importable), carry their EXCLUSIVE private helpers (a helper used only by a moved test
+moves; one shared with a stay-inline test stays inline), keep names/assertions verbatim,
+`#![allow(clippy::unwrap_used, clippy::expect_used)]` at the top of the new file (carry
+whichever the moved tests actually use; the source module has both).
 **Stay inline (do NOT move)** — 9 tests using private items (design D7): the two
 `cross_domain_pairs` tests (private fn) and the seven `llm_*` tests (private `MockLlm`
 struct, defined at `linker.rs:1283`). Identify them by grepping the test module for
