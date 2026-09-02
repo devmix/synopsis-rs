@@ -14,8 +14,8 @@
 //!
 //! The fixture is the Go-oracle v5 shape: its `chunks` table has no
 //! `search_text` column and its `chunks_fts` indexes `chunk_text`, so the
-//! post-v5 [`ChunkDao`] queries (which read `search_text`, migration
-//! 5-search-text) cannot run against it. The tests therefore issue the
+//! [`ChunkDao`] queries (which read `search_text`, a column the Rust
+//! init migration adds) cannot run against it. The tests therefore issue the
 //! equivalent raw SQL — the same MATCH + bm25 join the DAO issues, minus
 //! the `search_text` column — to keep verifying FTS5 engine parity (Rust
 //! vs Go bm25 on identical data).
@@ -52,7 +52,7 @@ fn with_fixture(f: impl FnOnce(&Connection)) {
 
 /// The DAO's `FTS_QUERY` in its fixture-compatible form: FTS5 MATCH +
 /// `bm25()` ranking + `ORDER BY bm25` (the DAO's conscious deviation from
-/// the oracle's unranked `SearchFTS`), without the post-v5 `search_text`
+/// the oracle's unranked `SearchFTS`), without the Rust `search_text`
 /// column the Go fixture does not have.
 fn match_ranked(conn: &Connection, expr: &str, limit: i64) -> Vec<(i64, f64)> {
     conn.prepare(

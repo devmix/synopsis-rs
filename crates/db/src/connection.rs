@@ -340,11 +340,9 @@ mod tests {
         assert_eq!(read("mmap_size"), 268_435_456);
     }
 
-    // (a, 1.1) open a nonexistent file → fresh v5 schema + document_jobs
-    //     (migration 2-document-jobs) + usearch_vectors_log (migration
-    //     3-usearch-vectors-log + 4-usearch-vectors-log-segment-id) +
-    //     chunks.search_text (migration 5-search-text), user_version = 5,
-    //     no _schema_migrations table.
+    // (a, 1.1) open a nonexistent file → the full schema in one squashed init
+    //     migration (base tables + document_jobs + usearch_vectors_log +
+    //     chunks.search_text), user_version = 1, no _schema_migrations table.
     #[test]
     fn open_creates_fresh_v5_schema() {
         let (db, _temp) = open_temp_db();
@@ -354,10 +352,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 5,
-            "PRAGMA user_version must be 5 after init + 2-document-jobs \
-             + 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id \
-             + 5-search-text"
+            user_version, 1,
+            "PRAGMA user_version must be 1 after the single squashed init migration"
         );
 
         let tracking_rows: i64 = db
@@ -433,7 +429,7 @@ mod tests {
             vec!["chunks_fts_ad", "chunks_fts_ai", "chunks_fts_au"]
         );
 
-        // Migration 5-search-text: `chunks` has the `search_text` column
+        // The squashed init migration: `chunks` has the `search_text` column
         // (NOT NULL) and `chunks_fts` indexes it, not `chunk_text`.
         let chunk_columns: Vec<(String, i64)> = db
             .with_conn(|conn| {
@@ -474,10 +470,10 @@ mod tests {
         );
     }
 
-    // Migrations 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id
-    // (usearch-wal-persistence tasks 2.1/2.4): the WAL table with the
-    // composite (segment_id, chunk_id) PK and both indexes exist, and the
-    // table is writable with the documented columns.
+    // The squashed init migration (usearch-wal-persistence tasks 2.1/2.4,
+    // folded in): the WAL table with the composite (segment_id, chunk_id) PK
+    // and both indexes exist, and the table is writable with the documented
+    // columns.
     #[test]
     fn usearch_vectors_log_table_and_index_exist() {
         let (db, _temp) = open_temp_db();
@@ -740,7 +736,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 1);
         let hash: String = db
             .with_conn(|conn| {
                 conn.query_row(
@@ -943,7 +939,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 1);
 
         db.exec_tx(|tx| {
             tx.execute(

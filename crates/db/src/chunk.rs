@@ -5,9 +5,9 @@
 //! not a code copy).
 //!
 //! FTS5: `chunks_fts` is an external-content table (`content='chunks'`)
-//! indexing `search_text` (re-pointed by migration 5-search-text) and kept
-//! in sync by the `chunks_fts_ai/ad/au` triggers, so plain CRUD
-//! automatically keeps the search index correct.
+//! indexing `search_text` (the re-point folded into the squashed init
+//! migration) and kept in sync by the `chunks_fts_ai/ad/au` triggers, so
+//! plain CRUD automatically keeps the search index correct.
 //!
 //! **Conscious deviations from the oracle:**
 //! - `search_text` column + FTS over it (search-text-embedding design
@@ -147,7 +147,7 @@ impl<'conn> ChunkDao<'conn> {
     /// trigger indexes the text automatically. `start_offset`/`end_offset`
     /// are stored as `NULL` when `None`.
     ///
-    /// `search_text` defaults to `chunk_text` (the migration 5 backfill
+    /// `search_text` defaults to `chunk_text` (the init-migration backfill
     /// semantics); use [`Self::create_with_search_text`] to store a distinct
     /// search text (breadcrumb + body).
     pub fn create(
@@ -384,7 +384,7 @@ mod tests {
             assert_eq!(chunk.id, id);
             assert_eq!(chunk.doc_id, doc);
             assert_eq!(chunk.chunk_text, "the quick brown fox");
-            // `create` defaults search_text to chunk_text (migration 5
+            // `create` defaults search_text to chunk_text (init-migration
             // backfill semantics).
             assert_eq!(chunk.search_text, "the quick brown fox");
             assert_eq!(chunk.sequence_num, 0);

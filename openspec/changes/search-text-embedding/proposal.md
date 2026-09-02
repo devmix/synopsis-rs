@@ -32,7 +32,7 @@ Introduce a per-chunk `search_text = breadcrumb + "\n\n" + body` (or just `body`
 
 ## Impact
 
-- **Code:** `crates/ingestion` (chunker + ingester), `crates/db` (`Chunk`/`ChunkDao`/FTS), `crates/search` (result `text`), one new forward-only migration (`migrations/knowledge/5-search-text/up.sql`, `user_version` 4→5).
+- **Code:** `crates/ingestion` (chunker + ingester), `crates/db` (`Chunk`/`ChunkDao`/FTS), `crates/search` (result `text`), the `search_text` re-point folded into the consolidated init migration (`migrations/knowledge/1-init/up.sql`; task 5.1 squashed the five forward-only migrations into one, so `rusqlite_migration` sets `user_version` to the migration count = 1).
 - **Frozen contracts:** data schema is the one explicit change (justified retrieval improvement). No MCP tool, CLI, or config-format contract changes. The `search` tool's response shape is unchanged (same fields; the `text` value now carries section context).
 - **Parity:** after this change the `parity-fixture-expansion` task 1.5 search identity is expected to match the Go oracle (both legs see the same breadcrumb-prefixed text), allowing the test to assert **full identity parity** without weakening `normalize`. Catalog parity (task 1.4, `chunk_count`) is unaffected (chunk boundaries do not depend on text).
 - **No new dependencies.**

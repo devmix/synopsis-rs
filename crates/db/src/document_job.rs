@@ -1,5 +1,5 @@
-//! Document job queue over the `document_jobs` table (migration
-//! `2-document-jobs`).
+//! Document job queue over the `document_jobs` table (created by the squashed
+//! init migration).
 //!
 //! A persistent state machine for document operations: producers (file
 //! watcher, startup reconcile, CLI) enqueue one row per document path via
@@ -319,9 +319,8 @@ mod tests {
         }
     }
 
-    // Migration 2-document-jobs: user_version is 5 (init + 2-document-jobs
-    // + 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id
-    // + 5-search-text), the table and the due index exist.
+    // The squashed init migration: user_version is 1, the document_jobs
+    // table and the due index exist.
     #[test]
     fn fresh_db_is_migrated_to_v2_with_document_jobs() {
         let db = in_memory_db();
@@ -330,8 +329,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 5,
-            "migrations must advance user_version past 2-document-jobs"
+            user_version, 1,
+            "the squashed init migration must set user_version to 1"
         );
 
         let (table, index): (i64, i64) = db

@@ -23,8 +23,8 @@ See proposal.md for the motivation. The current state that shapes the approach:
 
 ## Decisions
 
-### D1 — New `search_text` column (forward-only migration `5-search-text`)
-Add `search_text TEXT NOT NULL` (default = `chunk_text`) to `chunks`. The Markdown chunker builds it as `breadcrumb + "\n\n" + body`, or `body` when there is no breadcrumb.
+### D1 — New `search_text` column (the consolidated init migration)
+Add `search_text TEXT NOT NULL` (default = `chunk_text`) to `chunks`. The Markdown chunker builds it as `breadcrumb + "\n\n" + body`, or `body` when there is no breadcrumb. The column (and the FTS re-point, D2) is folded into the single squashed init migration `migrations/knowledge/1-init/up.sql` (task 5.1 consolidated the former five forward-only migrations into one).
 
 - **Why a stored column vs. computing on the fly:** the FTS5 index is an external-content table that indexes a *column* of `chunks`; re-pointing it to `search_text` requires the column to exist. The embedding (computed at ingestion) and the result `text` field also need it, so storing it once is the natural home.
 - **Alternatives considered:** (a) compute `search_text` on the fly in the search pipeline only — rejected, the FTS index cannot index a non-column and the embedding is computed at ingestion; (b) overwrite `chunk_text` with the breadcrumb-prefixed text (the oracle's approach) — rejected, it breaks the byte-offset invariant, which is a deliberate Rust correctness fix.
@@ -59,18 +59,21 @@ Entity extraction continues to run on `chunk.text` + `metadata.extra` (breadcrum
 
 ## Migration Plan
 
-1. New forward-only migration `migrations/knowledge/5-search-text/up.sql`:
-   - `ALTER TABLE chunks ADD COLUMN search_text TEXT NOT NULL DEFAULT '';`
-   - Backfill: `UPDATE chunks SET search_text = chunk_text WHERE search_text = '';` (no-ops on a from-scratch build; keeps the migration self-contained).
-   - `DROP TABLE chunks_fts;` then re-create it indexing `search_text` (`content='chunks'`, `content_rowid='id'`).
-   - Re-create the `chunks_fts_ai/ad/au` triggers referencing `new.search_text` / `old.search_text`.
-   - `PRAGMA user_version = 5;`
+1. The `search_text` re-point is folded into the single consolidated init
+   migration `migrations/knowledge/1-init/up.sql` (task 5.1 squashed the former
+   five forward-only migrations into one): `chunks` carries `search_text TEXT
+   NOT NULL DEFAULT ''` (default = `chunk_text`), `chunks_fts` is created
+   indexing `search_text` (`content='chunks'`, `content_rowid='id'`), and the
+   `chunks_fts_ai/ad/au` triggers reference `search_text`. `rusqlite_migration`
+   sets `PRAGMA user_version` to the migration count — one migration →
+   `user_version = 1` (human decision 2026-09-02, option B: re-number to 1; the
+   schema SHAPE is still the full v5 shape).
 2. `crates/db`: `Chunk` + `ChunkDao` + FTS query/`SELECT_CHUNK` updated to the new column.
 3. `crates/ingestion`: chunker emits `search_text`; ingester embeds + persists it.
 4. `crates/search`: result `text` = `search_text`.
 5. Re-run `parity-fixture-expansion` task 1.5 to confirm full identity parity.
 
-**Rollback:** none (forward-only, per the project's migration discipline; the DB is built from scratch, so there is no rollback target).
+**Rollback:** none (the DB is built from scratch, so there is no rollback target).
 
 ## Open Questions
 

@@ -7,7 +7,7 @@ reference. Final diff per task ≤ ~500 lines of code + tests. The Go original i
 
 ## 1. Schema + storage (crates/db)
 
-- [ ] 1.1 Add the `search_text` column + re-point the FTS index (migration `5-search-text`) and update `Chunk`/`ChunkDao`
+- [x] 1.1 Add the `search_text` column + re-point the FTS index (migration `5-search-text`) and update `Chunk`/`ChunkDao`
 
 **Goal.** Introduce `search_text` on the `chunks` table and make the FTS5 index
 operate on it, so the lexical leg can match heading terms. `chunk_text` and the
@@ -136,3 +136,66 @@ assertion only — remove any temporary relaxation; do not touch the catalog ass
 
 **Oracle reference.** `crates/parity-harness/fixtures/content/search.json`
 (recorded once from `../synopsis/bin/synopsis` over the task 1.2 corpus).
+
+## 5. Migration consolidation
+
+- [ ] 5.1 Squash the five knowledge migrations into one init migration
+
+**Goal.** Restore the "one squashed init migration" design intent (AGENTS.md,
+`connection.rs`): replace the five forward-only migrations with a single
+`1-init/up.sql` that builds the full schema (final v5 shape + `search_text`) in
+one step. Safe because there is no deployed database to upgrade.
+
+**`user_version` decision (human 2026-09-02, option B):** re-number to
+**`user_version = 1`**. `rusqlite_migration::to_latest` sets `user_version` to
+the migration *count* (`ms.len()`), and the `M` version field is private — there
+is no public API to pin a single migration to version 5, and a custom runner that
+re-asserts 5 breaks re-open (`DatabaseTooFarAhead`, current 5 > count 1). One
+migration = version 1 is the honest consequence; the schema *shape* is unchanged
+(still the full v5 tables/indexes/triggers), only the internal counter changes.
+Future migrations continue from 2. The `_schema_migrations` table is still NOT
+created.
+
+**File scope.**
+- Rewrite `migrations/knowledge/1-init/up.sql` to contain the full schema: the
+  base tables/indexes/FTS triggers (with the `search_text` re-point folded in),
+  `document_jobs` + index, `usearch_vectors_log` + index + `segment_id` composite
+  PK + segment index. Drop the `PRAGMA user_version` line from the SQL (it is
+  overwritten by `to_latest` anyway); `to_latest` will set it to 1. Preserve the
+  header/oracle-reference comments.
+- DELETE the directories `migrations/knowledge/2-document-jobs/`,
+  `3-usearch-vectors-log/`, `4-usearch-vectors-log-segment-id/`,
+  `5-search-text/`.
+- Update the five test assertions that expect `user_version = 5` to expect `1`:
+  `crates/db/src/connection.rs` (`open_creates_fresh_v5_schema`,
+  `reopen_is_noop_migration_and_data_survives`,
+  `in_memory_db_is_migrated_and_writable`), `crates/db/src/test_util.rs`,
+  `crates/db/src/document_job.rs`.
+- Update stale migration-number references (comments/doc) in
+  `crates/db/src/connection.rs` and `crates/db/src/lib.rs`.
+- Update the change's own planning artifacts to reflect the consolidation:
+  `design.md` (D1 + Migration Plan) and `proposal.md` (Impact) — replace
+  "forward-only migration `5-search-text`" with "the consolidated init
+  migration" and note the `user_version` re-number to 1.
+- Do not touch any other crate, `Cargo.toml`, or `Cargo.lock`.
+
+**Dependencies.** Task 1.1 (which added the `search_text` re-point now being folded
+into the init migration).
+
+**Acceptance criteria.**
+1. `migrations/knowledge/` contains only `1-init/up.sql` (no other numbered
+   directories).
+2. A fresh knowledge DB reports `PRAGMA user_version` = 1 and has the full schema:
+   every table, index, and trigger from the previous five-migration sequence is
+   present and identical (including the `search_text` column and the FTS5 index
+   over `search_text`).
+3. No `_schema_migrations` table exists.
+4. No remaining references to migration numbers 2–5 or `user_version = 5` in
+   `crates/db` comments, doc text, or test assertions.
+5. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+   warnings`, `cargo test --workspace` all green (the pre-existing
+   `content_parity` search divergence remains, owned by tasks 2.1/3.1/4.1).
+
+**Oracle reference.** The five existing migration files (themselves derived from
+`../synopsis/migrations/*.sql`) are the source of truth for the consolidated
+schema — the final shape must be byte-for-byte the same tables/indexes/triggers.
