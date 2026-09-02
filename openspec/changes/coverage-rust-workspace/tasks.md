@@ -61,7 +61,7 @@
 
 ## 2. Baseline coverage report
 
-- [ ] 1.2 Generate the per-crate baseline coverage report → `baseline.md`
+- [x] 1.2 Generate the per-crate baseline coverage report → `baseline.md`
 
 **Goal.** Record the per-crate line-coverage baseline in
 `openspec/changes/coverage-rust-workspace/baseline.md`.
