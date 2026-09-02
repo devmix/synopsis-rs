@@ -342,8 +342,9 @@ mod tests {
 
     // (a, 1.1) open a nonexistent file → fresh v5 schema + document_jobs
     //     (migration 2-document-jobs) + usearch_vectors_log (migration
-    //     3-usearch-vectors-log + 4-usearch-vectors-log-segment-id),
-    //     user_version = 4, no _schema_migrations table.
+    //     3-usearch-vectors-log + 4-usearch-vectors-log-segment-id) +
+    //     chunks.search_text (migration 5-search-text), user_version = 5,
+    //     no _schema_migrations table.
     #[test]
     fn open_creates_fresh_v5_schema() {
         let (db, _temp) = open_temp_db();
@@ -353,9 +354,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 4,
-            "PRAGMA user_version must be 4 after init + 2-document-jobs \
-             + 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id"
+            user_version, 5,
+            "PRAGMA user_version must be 5 after init + 2-document-jobs \
+             + 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id \
+             + 5-search-text"
         );
 
         let tracking_rows: i64 = db
@@ -429,6 +431,46 @@ mod tests {
         assert_eq!(
             triggers,
             vec!["chunks_fts_ad", "chunks_fts_ai", "chunks_fts_au"]
+        );
+
+        // Migration 5-search-text: `chunks` has the `search_text` column
+        // (NOT NULL) and `chunks_fts` indexes it, not `chunk_text`.
+        let chunk_columns: Vec<(String, i64)> = db
+            .with_conn(|conn| {
+                conn.prepare("PRAGMA table_info(chunks)")
+                    .unwrap()
+                    .query_map([], |r| Ok((r.get(1)?, r.get(3)?)))
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect()
+            })
+            .unwrap();
+        assert!(
+            chunk_columns
+                .iter()
+                .any(|(name, notnull)| { name == "search_text" && *notnull == 1 }),
+            "chunks must have a NOT NULL search_text column: {chunk_columns:?}"
+        );
+
+        // The FTS5 external-content table stores its CREATE statement in
+        // sqlite_master; the indexed column is the first fts5 argument.
+        let fts_sql: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert!(
+            fts_sql.contains("search_text"),
+            "chunks_fts must index search_text: {fts_sql}"
+        );
+        assert!(
+            !fts_sql.contains("chunk_text"),
+            "chunks_fts must no longer index chunk_text: {fts_sql}"
         );
     }
 
@@ -698,7 +740,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
         let hash: String = db
             .with_conn(|conn| {
                 conn.query_row(
@@ -901,7 +943,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         db.exec_tx(|tx| {
             tx.execute(

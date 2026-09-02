@@ -319,9 +319,9 @@ mod tests {
         }
     }
 
-    // Migration 2-document-jobs: user_version is 4 (init + 2-document-jobs
-    // + 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id), the
-    // table and the due index exist.
+    // Migration 2-document-jobs: user_version is 5 (init + 2-document-jobs
+    // + 3-usearch-vectors-log + 4-usearch-vectors-log-segment-id
+    // + 5-search-text), the table and the due index exist.
     #[test]
     fn fresh_db_is_migrated_to_v2_with_document_jobs() {
         let db = in_memory_db();
@@ -330,7 +330,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 4,
+            user_version, 5,
             "migrations must advance user_version past 2-document-jobs"
         );
 

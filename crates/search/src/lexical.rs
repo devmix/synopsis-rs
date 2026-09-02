@@ -260,6 +260,7 @@ mod tests {
             id: 42,
             doc_id: 7,
             chunk_text: "text".to_string(),
+            search_text: "text".to_string(),
             sequence_num: 3,
             start_offset: Some(1),
             end_offset: Some(4),
