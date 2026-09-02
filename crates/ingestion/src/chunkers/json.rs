@@ -380,6 +380,10 @@ fn skip_ws(bytes: &[u8], i: usize) -> usize {
 
 /// Appends one chunk for `content[start..end]`; `sequence_num` is the chunk's
 /// position in the returned slice (see the module docs).
+///
+/// `search_text` (search-text-embedding design D1) defaults to `text`: the
+/// JSON chunker has no section/breadcrumb context, so the search text is the
+/// pure-slice text itself.
 fn push_chunk(
     chunks: &mut Vec<DocumentChunk>,
     content: &str,
@@ -387,9 +391,11 @@ fn push_chunk(
     end: usize,
     metadata: &DocumentMetadata,
 ) {
+    let text = content[start..end].to_owned();
     chunks.push(DocumentChunk {
         doc_id: None,
-        text: content[start..end].to_owned(),
+        text: text.clone(),
+        search_text: text,
         sequence_num: chunks.len(),
         start_offset: start,
         end_offset: end,

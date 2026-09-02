@@ -299,6 +299,10 @@ fn fixed_spans(content: &str, max: usize, overlap: usize) -> Vec<(usize, usize)>
 
 /// Appends one chunk for `content[start..end]`; `sequence_num` is the chunk's
 /// position in the returned slice (see the module docs).
+///
+/// `search_text` (search-text-embedding design D1) defaults to `text`: this
+/// task scopes the breadcrumb-context `search_text` to the Markdown chunker,
+/// so the mediawiki chunker sets the pure-slice text as its search text.
 fn push_chunk(
     chunks: &mut Vec<DocumentChunk>,
     content: &str,
@@ -306,9 +310,11 @@ fn push_chunk(
     end: usize,
     metadata: &DocumentMetadata,
 ) {
+    let text = content[start..end].to_owned();
     chunks.push(DocumentChunk {
         doc_id: None,
-        text: content[start..end].to_owned(),
+        text: text.clone(),
+        search_text: text,
         sequence_num: chunks.len(),
         start_offset: start,
         end_offset: end,

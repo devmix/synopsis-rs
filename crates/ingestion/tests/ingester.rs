@@ -111,9 +111,13 @@ impl Chunker for TestSource {
         let mut offset = 0;
         for line in content.lines() {
             if !line.trim().is_empty() {
+                let text = line.to_owned();
                 chunks.push(DocumentChunk {
                     doc_id: None,
-                    text: line.to_owned(),
+                    text: text.clone(),
+                    // No section context in this test source: search_text is
+                    // the text itself.
+                    search_text: text,
                     sequence_num: chunks.len(),
                     start_offset: offset,
                     end_offset: offset + line.len(),
@@ -128,16 +132,124 @@ impl Chunker for TestSource {
 
 impl Source for TestSource {}
 
+/// A source that produces a single chunk whose `search_text` carries a
+/// breadcrumb context the pure-slice `text` does not (search-text-embedding
+/// task 2.1): lets a test distinguish the embedding input (`search_text`)
+/// from the NER input (`text`).
+struct BreadCrumbSource;
+
+impl Parser for BreadCrumbSource {
+    fn parse(&self, source_path: &Path) -> ParseResult {
+        let mut documents = Vec::new();
+        let mut errors = Vec::new();
+        // Per-file read failures are collected here and folded in after the
+        // walk (the visit closure may not touch the `errors` the walk owns).
+        let mut broken = Vec::new();
+        ingestion::test_support::walk_matched_files(
+            source_path,
+            |path| path.extension().is_some_and(|ext| ext == "txt"),
+            |path| {
+                match std::fs::read_to_string(path) {
+                    Ok(content) => documents.push(Document {
+                        source_path: path.to_path_buf(),
+                        content,
+                        metadata: DocumentMetadata {
+                            source_type: "test".to_owned(),
+                            ..Default::default()
+                        },
+                    }),
+                    Err(source) => broken.push(IngestionError::Io {
+                        path: path.to_path_buf(),
+                        source,
+                    }),
+                }
+                Ok(())
+            },
+            &mut errors,
+        );
+        errors.extend(broken);
+        ParseResult { documents, errors }
+    }
+
+    fn parse_file(&self, path: &Path, _root: &Path) -> Result<Document, IngestionError> {
+        let content = std::fs::read_to_string(path).map_err(|source| IngestionError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(Document {
+            source_path: path.to_path_buf(),
+            content,
+            metadata: DocumentMetadata {
+                source_type: "test".to_owned(),
+                ..Default::default()
+            },
+        })
+    }
+
+    fn supported_extensions(&self) -> &[&str] {
+        &[".txt"]
+    }
+}
+
+impl Chunker for BreadCrumbSource {
+    fn chunk(
+        &self,
+        content: &str,
+        metadata: &DocumentMetadata,
+    ) -> Result<Vec<DocumentChunk>, IngestionError> {
+        if content.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let text = content.to_owned();
+        Ok(vec![DocumentChunk {
+            doc_id: None,
+            text: text.clone(),
+            // The synthetic search text: a breadcrumb context the pure
+            // `text` does not carry.
+            search_text: format!("Breadcrumb Context\n\n{text}"),
+            sequence_num: 0,
+            start_offset: 0,
+            end_offset: content.len(),
+            metadata: metadata.clone(),
+        }])
+    }
+}
+
+impl Source for BreadCrumbSource {}
+
+/// A NER provider that records the content it receives (to verify the NER
+/// stage runs on the pure `text`, not `search_text`; task 2.1 criterion 5).
+struct RecordingNer {
+    contents: Mutex<Vec<String>>,
+}
+
+impl NerProvider for RecordingNer {
+    fn name(&self) -> &'static str {
+        "recording"
+    }
+
+    fn extract_entities(
+        &self,
+        content: &str,
+        _metadata: &Map<String, serde_json::Value>,
+    ) -> Result<Option<NerResult>, IngestionError> {
+        self.contents.lock().unwrap().push(content.to_owned());
+        Ok(None)
+    }
+}
+
 /// A deterministic embedding provider: the i-th vector of a batch is
 /// all `(i + 1)`. `mismatch` makes it return one vector short (the
 /// count-mismatch error path); `fail_marker` makes it error on any batch
 /// containing a text with that substring (per-document failure path).
-/// `calls` records each batch size.
+/// `calls` records each batch size; `texts` records the exact texts handed to
+/// the provider (in order) so a test can assert the embedding input.
 struct MockEmbedding {
     dim: usize,
     mismatch: Mutex<bool>,
     fail_marker: Mutex<Option<String>>,
     calls: Mutex<Vec<usize>>,
+    texts: Mutex<Vec<String>>,
 }
 
 impl MockEmbedding {
@@ -147,6 +259,7 @@ impl MockEmbedding {
             mismatch: Mutex::new(false),
             fail_marker: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
+            texts: Mutex::new(Vec::new()),
         }
     }
 }
@@ -159,6 +272,7 @@ impl EmbeddingProvider for MockEmbedding {
             return Err(EmbeddingError::Ort("simulated engine failure".to_owned()));
         }
         self.calls.lock().unwrap().push(texts.len());
+        self.texts.lock().unwrap().extend(texts.iter().cloned());
         let count = if *self.mismatch.lock().unwrap() {
             texts.len().saturating_sub(1)
         } else {
@@ -687,6 +801,61 @@ fn ner_absent_skips_the_ner_stage() {
     let stats = h.run_with(&root, None, h.sink.as_ref(), false).unwrap();
     assert_eq!(stats.documents_created, 1, "{stats:?}");
     assert_eq!(stats.entities_extracted, 0, "{stats:?}");
+}
+
+// (search-text-embedding task 2.1, criteria 3 + 4 + 5) with a chunk whose
+// `search_text` differs from `text`: the embedding leg receives
+// `search_text`, the NER stage receives the pure `text`, and the chunk row
+// persists both.
+#[test]
+fn embedding_input_is_search_text_and_ner_input_is_text() {
+    let dir = TempDir::new();
+    let root = dir.0.clone();
+    write_file(&root, "a.txt", "body line");
+    let h = Harness::new();
+    let ner = RecordingNer {
+        contents: Mutex::new(Vec::new()),
+    };
+
+    let ingester = Ingester::new(
+        &h.db,
+        &h.cfg,
+        &BreadCrumbSource,
+        h.embed.as_ref(),
+        Some(&ner),
+        &h.resolver,
+        h.sink.as_ref(),
+    );
+    let stats = ingester.ingest(&root, false).unwrap();
+    assert_eq!(stats.documents_created, 1, "{stats:?}");
+    assert_eq!(stats.chunks_created, 1, "{stats:?}");
+    assert_eq!(stats.embeddings_created, 1, "{stats:?}");
+    assert_eq!(stats.errors, 0, "{stats:?}");
+
+    // The embedding leg received the search_text (the breadcrumb context).
+    let embedded = h.embed.texts.lock().unwrap().clone();
+    assert_eq!(embedded, vec!["Breadcrumb Context\n\nbody line".to_owned()]);
+
+    // The NER stage received the pure text, not the search_text.
+    let ner_inputs = ner.contents.lock().unwrap().clone();
+    assert_eq!(ner_inputs, vec!["body line".to_owned()]);
+
+    // The chunk row persists both texts (criterion 4).
+    let (chunk_text, search_text) =
+        h.db.with_conn(|conn| {
+            let exec = ConnectionOrTx::Connection(conn);
+            let docs = DocumentDao::new(exec);
+            let doc = docs.list().unwrap().pop().expect("one document");
+            let chunk = ChunkDao::new(exec)
+                .list_by_doc_id(doc.id)
+                .unwrap()
+                .pop()
+                .expect("one chunk");
+            (chunk.chunk_text, chunk.search_text)
+        })
+        .unwrap();
+    assert_eq!(chunk_text, "body line");
+    assert_eq!(search_text, "Breadcrumb Context\n\nbody line");
 }
 
 #[test]

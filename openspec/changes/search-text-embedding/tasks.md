@@ -139,7 +139,7 @@ assertion only — remove any temporary relaxation; do not touch the catalog ass
 
 ## 5. Migration consolidation
 
-- [ ] 5.1 Squash the five knowledge migrations into one init migration
+- [x] 5.1 Squash the five knowledge migrations into one init migration
 
 **Goal.** Restore the "one squashed init migration" design intent (AGENTS.md,
 `connection.rs`): replace the five forward-only migrations with a single

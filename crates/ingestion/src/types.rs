@@ -87,6 +87,12 @@ pub struct DocumentMetadata {
 /// into `Text` while keeping offsets pointing at the original span; that is a
 /// deliberate fix — decorative context lives in the
 /// [`metadata`](Self::metadata) extras, never in `text`.
+///
+/// [`search_text`](Self::search_text) is the **only synthetic field** on the
+/// chunk: it may carry the section's heading breadcrumb prefixed to `text`
+/// (the context the FTS5 index and the embedding leg operate on), and is
+/// therefore NOT bound by the byte-offset invariant. Chunkers with no section
+/// context set it equal to `text`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DocumentChunk {
     /// Database id of the parent document; `None` until the write stage
@@ -94,6 +100,11 @@ pub struct DocumentChunk {
     pub doc_id: Option<i64>,
     /// Chunk content — a pure slice of the source (see the invariant above).
     pub text: String,
+    /// The text the FTS5 index and the embedding leg operate on:
+    /// `breadcrumb + "\n\n" + text` for sectioned chunks, equal to `text`
+    /// otherwise (search-text-embedding design D1). The only synthetic field
+    /// — not bound by the byte-offset invariant (see the type docs).
+    pub search_text: String,
     /// Position of this chunk within its document (0-based).
     pub sequence_num: usize,
     /// Byte offset of the chunk's first byte in the original content.
@@ -200,6 +211,8 @@ mod tests {
         ) -> Result<Vec<DocumentChunk>, IngestionError> {
             Ok(vec![DocumentChunk {
                 text: content.to_owned(),
+                // No section context: search_text defaults to the text.
+                search_text: content.to_owned(),
                 sequence_num: 0,
                 start_offset: 0,
                 end_offset: content.len(),
@@ -299,6 +312,8 @@ mod tests {
         let chunk = DocumentChunk {
             doc_id: None, // assigned by the write stage (series change 3)
             text: "Title".to_owned(),
+            // No section context in this fixture: search_text equals text.
+            search_text: "Title".to_owned(),
             sequence_num: 0,
             start_offset: 2,
             end_offset: 7,

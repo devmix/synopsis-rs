@@ -16,6 +16,13 @@
 //!   keeping offsets at the original span; here the breadcrumb, section title
 //!   and file name live in the chunk [`metadata`](DocumentMetadata::extra)
 //!   (`section_title`, `breadcrumb`, `image_paths`), never in `text`.
+//! * **`search_text` (search-text-embedding design D1).** The chunk also
+//!   carries `search_text` — the only synthetic field — built from the
+//!   breadcrumb already computed for the metadata plus the body:
+//!   `breadcrumb + "\n\n" + text` for sectioned chunks, or `text` when there
+//!   is no breadcrumb (preamble / headingless). This is the exact
+//!   breadcrumb-prefixed text the oracle fed both search legs; here it lives
+//!   in a dedicated field so `text` keeps the byte-offset invariant.
 //! * **Strategy collapse.** The oracle's `"headers"` strategy had no size cap
 //!   (unbounded chunks overflow the embedding context); Rust `"headers"` and
 //!   `"hybrid"` both produce structure-aware chunks with oversized sections
@@ -323,6 +330,12 @@ fn fixed_spans(content: &str, max: usize, overlap: usize) -> Vec<(usize, usize)>
 
 /// Appends one chunk for `content[start..end]`; `sequence_num` is the chunk's
 /// position in the returned slice (see the module docs).
+///
+/// `search_text` (search-text-embedding design D1) is the breadcrumb context
+/// the FTS5 index and the embedding leg operate on: `breadcrumb + "\n\n" +
+/// text` when the chunk carries a section breadcrumb (already in the
+/// metadata), or `text` otherwise (preamble / headingless). The `text` itself
+/// stays a pure source slice — the byte-offset invariant is untouched.
 fn push_chunk(
     chunks: &mut Vec<DocumentChunk>,
     content: &str,
@@ -330,9 +343,15 @@ fn push_chunk(
     end: usize,
     metadata: &DocumentMetadata,
 ) {
+    let text = content[start..end].to_owned();
+    let search_text = match metadata.extra.get("breadcrumb").and_then(Value::as_str) {
+        Some(breadcrumb) => format!("{breadcrumb}\n\n{text}"),
+        None => text.clone(),
+    };
     chunks.push(DocumentChunk {
         doc_id: None,
-        text: content[start..end].to_owned(),
+        text,
+        search_text,
         sequence_num: chunks.len(),
         start_offset: start,
         end_offset: end,
@@ -453,6 +472,62 @@ mod tests {
         // breadcrumb lives in the metadata instead of prefixing the text.
         assert_eq!(chunks[0].text, "## A.1\ntext under a1\n\n");
         assert_eq!(chunks[1].text, "## A.2\ntext under a2");
+    }
+
+    // (search-text-embedding task 2.1, criterion 1) sectioned chunks carry
+    // `search_text = breadcrumb + "\n\n" + text`; the pure-slice `text` and
+    // the byte-offset invariant are untouched.
+    #[test]
+    fn search_text_is_breadcrumb_plus_text_for_sectioned_chunks() {
+        let content = "# A\n\n## A.1\ntext under a1\n\n## A.2\ntext under a2";
+        let chunks = chunker(1000, 100)
+            .chunk(content, &DocumentMetadata::default())
+            .unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_invariant(content, &chunks);
+        // Both chunks are under a heading hierarchy: search_text is the
+        // breadcrumb context prefixed to the (pure-slice) text.
+        for chunk in &chunks {
+            let breadcrumb = breadcrumb(chunk).expect("sectioned chunk has a breadcrumb");
+            assert_eq!(
+                chunk.search_text,
+                format!("{breadcrumb}\n\n{}", chunk.text),
+                "search_text = breadcrumb + \"\\n\\n\" + text"
+            );
+        }
+        assert_eq!(
+            chunks[0].search_text,
+            "> A\n > A.1\n\n## A.1\ntext under a1\n\n"
+        );
+        assert_eq!(
+            chunks[1].search_text,
+            "> A\n > A.2\n\n## A.2\ntext under a2"
+        );
+    }
+
+    // (search-text-embedding task 2.1, criterion 1) a chunk with no
+    // breadcrumb (preamble / headingless) has `search_text == text`.
+    #[test]
+    fn search_text_equals_text_without_a_breadcrumb() {
+        let content = "This is intro text before any heading.\n\n## Section\nbody";
+        let chunks = chunker(1000, 100)
+            .chunk(content, &DocumentMetadata::default())
+            .unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_invariant(content, &chunks);
+        // The preamble has no breadcrumb: search_text == text.
+        assert!(chunks[0].metadata.extra.get("breadcrumb").is_none());
+        assert_eq!(chunks[0].search_text, chunks[0].text);
+        // The sectioned chunk carries the breadcrumb context.
+        assert_eq!(chunks[1].search_text, "> Section\n\n## Section\nbody");
+
+        // A headingless document: the single chunk has no breadcrumb.
+        let plain = "Just plain text without headers.";
+        let chunks = chunker(1000, 100)
+            .chunk(plain, &DocumentMetadata::default())
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].search_text, chunks[0].text);
     }
 
     #[test]

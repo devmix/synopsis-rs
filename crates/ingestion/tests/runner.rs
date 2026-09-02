@@ -97,6 +97,8 @@ impl Chunker for TestSource {
                 chunks.push(DocumentChunk {
                     doc_id: None,
                     text: line.to_owned(),
+                    // No section context in this test source.
+                    search_text: line.to_owned(),
                     sequence_num: seq,
                     start_offset: start,
                     end_offset: end,

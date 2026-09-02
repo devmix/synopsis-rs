@@ -248,7 +248,13 @@ impl<'a> Ingester<'a> {
             return Ok(());
         }
 
-        let texts: Vec<String> = chunks.iter().map(|chunk| chunk.text.clone()).collect();
+        // The embedding leg operates on `search_text` (breadcrumb + body for
+        // sectioned chunks, the text otherwise) — search-text-embedding design
+        // D3. NER below still runs on the pure `text`.
+        let texts: Vec<String> = chunks
+            .iter()
+            .map(|chunk| chunk.search_text.clone())
+            .collect();
         let vectors = self.generate_embeddings(&texts, tracker)?;
         let ner_results = self.extract_ner(&chunks)?;
 
@@ -294,9 +300,13 @@ impl<'a> Ingester<'a> {
 
             let mut chunk_ids = Vec::with_capacity(chunks.len());
             for (chunk, ner_result) in chunks.iter().zip(ner_results.iter()) {
-                let chunk_id = chunk_dao.create(
+                // Persist both texts (search-text-embedding task 2.1): the
+                // pure-slice `chunk_text` (byte-offset invariant) and the
+                // `search_text` the FTS5 index and the embedding leg used.
+                let chunk_id = chunk_dao.create_with_search_text(
                     doc_id,
                     &chunk.text,
+                    &chunk.search_text,
                     chunk.sequence_num as i64,
                     // Byte offsets of a file-sized document cannot reach the
                     // i64 boundary; the truncation is unreachable.
