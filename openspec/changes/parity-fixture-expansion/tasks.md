@@ -73,7 +73,7 @@ harness file, any product crate, or any `Cargo.toml`.
 
 ## 2. Expanded content-parity corpus
 
-- [ ] 1.2 Add a `write_content_corpus` writer (8 markdown docs, 3 domains)
+- [x] 1.2 Add a `write_content_corpus` writer (8 markdown docs, 3 domains)
 
 **Goal.** Add a deterministic, expanded corpus for the content-parity tests, separate from
 the latency test's 2-doc corpus.

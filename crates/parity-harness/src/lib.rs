@@ -19,9 +19,12 @@
 //! - [`sse_client`]: legacy HTTP+SSE client (mcp-go v0.57.0 wire contract) for
 //!   cross-transport parity — drives `GET /sse` + `POST /message` directly;
 //! - [`content_parity`]: content-parity record/verify + per-tool normalization
-//!   of tool responses against committed JSON fixtures.
+//!   of tool responses against committed JSON fixtures;
+//! - [`corpus`]: the deterministic 8-doc / 3-domain content corpus the
+//!   content-parity fixtures are recorded against (design D2).
 
 pub mod content_parity;
+pub mod corpus;
 pub mod diff;
 pub mod fixtures;
 pub mod mcp_client;
