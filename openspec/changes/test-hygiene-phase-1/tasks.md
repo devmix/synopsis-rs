@@ -41,7 +41,7 @@ Conventions for every task in this change:
 - [x] 1.7 Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs` (12 moved / 3 inline)
 - [x] 1.8 Extract `graph/src/linker.rs` tests → `graph/tests/linker_units.rs` (7 moved / 9 inline)
 - [x] 1.9 Extract `llm/src/client.rs` tests → `llm/tests/client.rs` (+ `llm` test_support, new `tests/` dir) (32 moved / 2 inline)
-- [ ] 1.10 Extract `mcp/src/transport/sse.rs` tests → `mcp/tests/sse_units.rs` (+ `mcp` test_support)
+- [x] 1.10 Extract `mcp/src/transport/sse.rs` tests → `mcp/tests/sse_units.rs` (+ `mcp` test_support) (18 moved / 5 inline)
 - [ ] 1.11 Extract `ingestion/src/ingester/mod.rs` tests → `ingestion/tests/ingester.rs` (+ `ingestion` test_support)
 - [ ] 1.12 Extract `ingestion/src/runner/mod.rs` tests → `ingestion/tests/runner.rs` (reuses ingestion test_support)
 - [ ] 1.13 Final verification: before/after report + full gates
@@ -397,10 +397,15 @@ conflict; none of them touch `lib.rs`.)
 **Approach.**
 1. **test_support (design D3):** widen private `endpoint_url`, `encode_sse_frame` (fns)
    and `CHANNEL_CAPACITY` (const) in `sse.rs` to `pub(crate)`. Create
-   `crates/mcp/src/test_support.rs` re-exporting the three via
-   `#[doc(hidden)] pub use crate::transport::sse::{…};` (adjust the path to how
-   `transport/sse` is declared — check `crates/mcp/src/transport/mod.rs`), and declare the
-   module in `lib.rs` as `#[doc(hidden)] pub mod test_support;`.
+   `crates/mcp/src/test_support.rs` exposing the three and declare the module in `lib.rs`
+   as `#[doc(hidden)] pub mod test_support;`. **A `pub use` cannot re-export a
+   `pub(crate)` item so it is visible to integration tests (E0364 — verified in a scratch
+   crate)**, so instead define thin delegates: `pub fn endpoint_url(…)` /
+   `pub fn encode_sse_frame(…)` calling the `pub(crate)` fns, and
+   `pub const CHANNEL_CAPACITY: usize = crate::transport::sse::CHANNEL_CAPACITY;` (a
+   compile-time REFERENCE to the production const, so it stays in sync — not a literal
+   copy). (The delegates are public and call `pub(crate)` items in-crate, so no
+   `dead_code` warnings in production builds; verify with clippy.)
 2. **Move 18 tests** (all except the 5 stay-inline below) to
    `crates/mcp/tests/sse_units.rs`. **11 use only the public `SseSessionMap` /
    `handle_sse`:** `session_map_create_get_remove_touch_round_trip`,
@@ -416,11 +421,15 @@ conflict; none of them touch `lib.rs`.)
    `endpoint_url_comma_list_proto_first_value_wins` (→ `endpoint_url`);
    `endpoint_frame_bytes_match_wire_contract`, `message_frame_bytes_match_wire_contract`,
    `multiline_data_is_split_into_data_fields` (→ `encode_sse_frame`);
-   `backpressure_channel_is_bounded` (→ `CHANNEL_CAPACITY`).
-   Rewrite imports, carry exclusive private helpers, keep names/assertions verbatim,
-   `#![allow(clippy::unwrap_used)]`.
-3. **Stay inline (do NOT move)** — need the `#[cfg(test)] test_server()` helper because
-   `handle_message` takes `State<SseState { sessions, server: Arc<Server> }>` (design D7):
+    `backpressure_channel_is_bounded` (→ `CHANNEL_CAPACITY`).
+    Rewrite imports (`crate::…` → `mcp::…`; the lib target is `mcp` and `sse` is
+    `pub mod sse`), carry exclusive private helpers, keep names/assertions verbatim,
+    `#![allow(clippy::unwrap_used, clippy::expect_used)]` at the top of the new file
+    (the source module has both).
+3. **Stay inline (do NOT move)** — need `test_server`, which is `#[cfg(test)]` inside the
+   PRIVATE module `crate::transport::test_util` (`transport/mod.rs:65`), so it is not
+   reachable from an integration test (which links the non-test lib build); `handle_message`
+   takes `State<SseState { sessions, server: Arc<Server> }>` (design D7):
    `message_without_session_id`, `message_with_unknown_session_id`,
    `message_with_malformed_body`, `message_round_trip`, `touched_sse_stream`. Leave them
    (plus `test_server`) in a trimmed `#[cfg(test)] mod tests`. Overlap note (design D4):
@@ -434,6 +443,19 @@ conflict; none of them touch `lib.rs`.)
 3. `test_support` exposes exactly the 3 named items, `#[doc(hidden)]`; no other
    visibility changes. Names/assertions verbatim; scope-only diff; `../synopsis`
    untouched.
+
+**Revision 1 (2026-09-01, implementer correction, reviewer-approved).** The original
+step 1 prescribed `#[doc(hidden)] pub use crate::transport::sse::{…}`, but a `pub use`
+cannot re-export a `pub(crate)` item so it is visible to integration tests (E0364 — the
+implementer verified this in a scratch crate before editing). Step 1 now prescribes thin
+delegates: two `pub fn` wrappers calling the `pub(crate)` fns, and a `pub const
+CHANNEL_CAPACITY` that is a compile-time REFERENCE to the production const (stays in
+sync, not a copy). The moved tests call `mcp::test_support::…` exactly as step 2
+prescribed. Separately, the 3 moved endpoint_url tests reference the private production
+consts `X_FORWARDED_PROTO`/`X_FORWARDED_HOST`; since only the 3 D3 items may be widened,
+the integration file defines local `const`s with the identical `HeaderName::from_static`
+values (byte-identical, reviewer-verified) and the test bodies remain verbatim. No
+production logic changed.
 
 ---
 
