@@ -506,31 +506,60 @@ ALL 23 of its tests to a new integration test file.
 ### Task 1.12 — Extract `ingestion/src/runner/mod.rs` tests → `ingestion/tests/runner.rs`
 
 **Goal.** Shrink `crates/ingestion/src/runner/mod.rs` (1,454 lines, 58% test) by moving
-ALL 13 of its tests to a new integration test file.
+ALL 13 of its TESTS to a new integration test file. (Revision 1: the shared test
+FIXTURES stay inline — see below.)
 
 **File scope.**
 - `crates/ingestion/src/runner/mod.rs` (source)
-- `crates/ingestion/tests/runner.rs` (new; do not modify other `ingestion/tests/` files)
+- `crates/ingestion/tests/runner.rs` (new; do not modify other `ingestion/tests/` files,
+  and do NOT modify `runner/cleanup.rs` — it is out of scope)
 
 **Dependencies.** **Task 1.11 must be complete** — it created
 `crates/ingestion/src/test_support.rs` exposing `walk_matched_files`. Reuse it; do NOT
 create or modify the test_support module or `ingestion/src/lib.rs`.
 
-**Approach.** Move all 13 tests to `crates/ingestion/tests/runner.rs`: 12 reach
-`walk_matched_files` through test-local fixtures (carry them, rewrite the call path to
-`ingestion::test_support::walk_matched_files`); the 13th,
-`detect_source_type_matches_the_oracle_cases` (:1058), uses a public fn directly. Keep
-names/assertions verbatim, `#![allow(clippy::unwrap_used)]`. Overlap note (design D4):
-overlaps `pipeline_e2e.rs`/`parity_fixtures.rs` — MOVE; remove only on true name+body
-duplicate (note it).
+**Approach (Option A — human decision 2026-09-01).** Move all 13 tests to
+`crates/ingestion/tests/runner.rs`: 12 reach `walk_matched_files` through test-local
+fixtures; the 13th, `detect_source_type_matches_the_oracle_cases` (:1058), uses the public
+fn `detect_source_type` (runner/mod.rs:530) directly — reference it as
+`ingestion::runner::detect_source_type` (the `runner` module is `pub`). Rewrite the
+fixture's `walk_matched_files` call path to `ingestion::test_support::walk_matched_files`.
+Keep names/assertions verbatim, `#![allow(clippy::unwrap_used, clippy::expect_used)]` at
+the top of the new file (the source module has both). Overlap note (design D4): overlaps
+`pipeline_e2e.rs`/`parity_fixtures.rs` — MOVE; remove only on true name+body duplicate
+(note it).
+
+**Shared fixtures stay inline (the Revision 1 constraint).** The 13 tests share their
+fixtures — `TestSource`, `MockEmbedding`, `MemoryIndex`, `Harness`, `TempDir`,
+`source_config`, `TEMP_COUNTER` — with the 6 tests in `runner/cleanup.rs`, which imports
+them at `cleanup.rs:216` (`use crate::runner::tests::{Harness, TempDir, source_config};`).
+Those fixtures are `#[cfg(test)]` mocks, so they cannot move to `test_support` (which is
+in the non-test build) and `cleanup.rs` is out of scope. Therefore:
+- KEEP the shared fixtures in a reduced `#[cfg(test)] mod tests` in `runner/mod.rs` (so
+  `cleanup.rs` keeps compiling unchanged).
+- Give the 13 moved tests in `tests/runner.rs` LOCAL COPIES of the fixtures (the D4
+  shared-helper convention: shared helper stays inline + local copy in the integration
+  file). The `domain_config` helper (used only by
+  `ner_skips_missing_domains_and_keeps_known_ones`) moves with its test (no inline copy
+  needed).
 
 **Acceptance criteria.**
-1. `runner/mod.rs` has no `#[cfg(test)]` block; line count drops by the 13 moved tests'
-   lines.
+1. `runner/mod.rs` retains a reduced `#[cfg(test)]` block holding ONLY the shared fixtures
+   (no test fns); line count drops by the 13 moved tests' lines. (The original "no
+   `#[cfg(test)]` block" goal is superseded by Revision 1 — the fixtures must stay for
+   `cleanup.rs`.)
 2. `cargo test -p ingestion` test count unchanged (13 relocated on top of task 1.11's 23);
    all gates green.
-3. No changes to `test_support.rs` or `lib.rs` (reuse only). Names/assertions verbatim;
-   scope-only diff; `../synopsis` untouched.
+3. No changes to `test_support.rs`, `lib.rs`, or `cleanup.rs` (reuse only). Names/assertions
+   verbatim; scope-only diff; `../synopsis` untouched.
+
+**Revision 1 (2026-09-01, human chose Option A).** Appendix A classified all 13 runner
+tests as movable / 0 stay-inline, but missed that the shared fixtures are also imported by
+the 6 out-of-scope `cleanup.rs` tests (cleanup.rs:216). A "full move" (no `#[cfg(test)]`
+block) would break `cleanup.rs`. Option A keeps the fixtures inline (reduced `#[cfg(test)]`
+block) and gives the moved tests local copies (D4 convention); `cleanup.rs` is untouched
+and the task's file scope is respected. Acceptance criterion #1 is superseded (runner/mod.rs
+keeps the fixtures, so it is not fully shrunk). No production logic changed.
 
 ---
 
