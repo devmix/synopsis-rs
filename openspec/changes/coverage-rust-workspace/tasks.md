@@ -96,7 +96,7 @@ path contains `rustlib` or `toolchain`). Record the overall total too.
 
 ## 3. Coverage developer guide
 
-- [ ] 1.3 Write `COVERAGE.md` (local command + per-crate targets)
+- [x] 1.3 Write `COVERAGE.md` (local command + per-crate targets)
 
 **Goal.** Document the coverage workflow for developers in a `COVERAGE.md` at the repo
 root.
