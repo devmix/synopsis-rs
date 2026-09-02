@@ -37,6 +37,11 @@ pub mod server;
 pub mod tools;
 pub mod transport;
 
+/// Test-only seams for integration tests (design D3, change
+/// test-hygiene-phase-1 task 1.10); docs-hidden, not part of the public API.
+#[doc(hidden)]
+pub mod test_support;
+
 pub use error::McpError;
 pub use health::{HealthStatus, KbCounters};
 pub use server::Server;
