@@ -40,7 +40,7 @@ Conventions for every task in this change:
 - [x] 1.6 Extract `graph/src/cel.rs` tests → `graph/tests/cel.rs` (no dev-dep — D6 corrected)
 - [x] 1.7 Extract `search/src/hybrid.rs` tests → `search/tests/hybrid_units.rs` (12 moved / 3 inline)
 - [x] 1.8 Extract `graph/src/linker.rs` tests → `graph/tests/linker_units.rs` (7 moved / 9 inline)
-- [ ] 1.9 Extract `llm/src/client.rs` tests → `llm/tests/client.rs` (+ `llm` test_support, new `tests/` dir)
+- [x] 1.9 Extract `llm/src/client.rs` tests → `llm/tests/client.rs` (+ `llm` test_support, new `tests/` dir) (32 moved / 2 inline)
 - [ ] 1.10 Extract `mcp/src/transport/sse.rs` tests → `mcp/tests/sse_units.rs` (+ `mcp` test_support)
 - [ ] 1.11 Extract `ingestion/src/ingester/mod.rs` tests → `ingestion/tests/ingester.rs` (+ `ingestion` test_support)
 - [ ] 1.12 Extract `ingestion/src/runner/mod.rs` tests → `ingestion/tests/runner.rs` (reuses ingestion test_support)
@@ -340,15 +340,22 @@ This crate has no `tests/` directory yet — create it.
 **Approach.**
 1. **test_support (design D3):** in `client.rs`, drop the `#[cfg(test)]` gate from
    `with_sleeper` (keep `pub(crate)`) and widen private `backoff_delay` to `pub(crate)`.
-   Create `crates/llm/src/test_support.rs`:
-   `#[doc(hidden)] pub use crate::client::{backoff_delay, with_sleeper};` and declare it
-   in `lib.rs` as `#[doc(hidden)] pub mod test_support;`. (Re-export counts as a use —
-   no `dead_code` warnings in production builds; verify with clippy.)
-2. **Move 32 tests** (all except the 2 below) to `crates/llm/tests/client.rs`: rewrite
-   `crate::…` → `llm::…` (check the lib name in `crates/llm/Cargo.toml`), carry exclusive
-   private helpers, keep names/assertions verbatim, `#![allow(clippy::unwrap_used)]`.
-   The 7 seam-based tests now call `llm::test_support::with_sleeper(…)`; the backoff test
-   calls `llm::test_support::backoff_delay(…)`.
+   Create `crates/llm/src/test_support.rs` exposing exactly `with_sleeper` +
+   `backoff_delay` and declare it in `lib.rs` as `#[doc(hidden)] pub mod test_support;`.
+   **Both items are inherent methods on `LlmClient`**, so `pub use` cannot re-export them
+   (E0432 — verified in a scratch crate); instead define two thin `pub fn` wrappers that
+   delegate to the `pub(crate)` methods: `with_sleeper(client, sleeper) -> LlmClient` and
+   `backoff_delay(&client, retry) -> Duration`. (The wrappers are public and call the
+   `pub(crate)` methods, so no `dead_code` warnings in production builds; verify with
+   clippy.)
+2. **Move 32 tests** (all except the 2 below) to `crates/llm/tests/client.rs`: the lib
+   target is `llm`; `mod client;` is PRIVATE, so reference the lib-root re-exports —
+   `llm::LlmClient`, `llm::LlmError` (NOT `llm::client::…`, which won't resolve) — plus
+   `config::preset::{LlmConfig, ResponseFormat}`. Carry exclusive private helpers, keep
+   names/assertions verbatim, `#![allow(clippy::unwrap_used, clippy::expect_used)]` at the
+   top of the new file (the source module has both). The seam-based tests now call
+   `llm::test_support::with_sleeper(…)`; the backoff test calls
+   `llm::test_support::backoff_delay(…)`.
 3. **Stay inline (do NOT move)** — read the private field `LlmClient.config` (design D7):
    `new_accepts_valid_config` (:651), `new_accepts_zero_max_retries` (:739). Leave them in
    a trimmed `#[cfg(test)] mod tests`.
@@ -360,6 +367,16 @@ This crate has no `tests/` directory yet — create it.
 3. `test_support` exposes exactly `with_sleeper` + `backoff_delay`, both `#[doc(hidden)]`
    at module level; no other visibility changes. Names/assertions verbatim; scope-only
    diff; `../synopsis` untouched.
+
+**Revision 1 (2026-09-01, implementer correction, reviewer-approved).** The original
+step 1 prescribed `#[doc(hidden)] pub use crate::client::{backoff_delay, with_sleeper};`,
+but both items are inherent methods on `LlmClient`, and `pub use` cannot re-export
+inherent methods (E0432 — the implementer verified this in a scratch crate before
+editing). Step 1 now prescribes two thin `pub fn` wrappers delegating to the
+`pub(crate)` methods; the moved tests call `llm::test_support::with_sleeper(…)` /
+`llm::test_support::backoff_delay(…)` exactly as step 3 already prescribed. No production
+logic changed. `client.rs` lands at 642 lines (the "≤ ~500" target is a soft "toward";
+the ~592-line production body is the floor and cannot shrink without production changes).
 
 ---
 
