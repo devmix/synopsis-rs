@@ -163,7 +163,7 @@ error — do NOT fabricate fixtures.
 
 ## 4. Catalog content-parity tests
 
-- [ ] 1.4 Add content-parity tests for `catalog_overview`, `catalog_documents`,
+- [x] 1.4 Add content-parity tests for `catalog_overview`, `catalog_documents`,
       `catalog_entities`
 
 **Goal.** Assert the Rust catalog tool responses match the Go fixtures (after
