@@ -147,7 +147,9 @@ impl<'conn> SemanticSearcher<'conn> {
             .into_iter()
             .map(|(chunk, distance)| SemanticHit {
                 chunk_id: chunk.id,
-                chunk_text: chunk.chunk_text,
+                // The hit carries the chunk's search_text (breadcrumb + body),
+                // not the raw chunk_text (search-text-embedding D4).
+                chunk_text: chunk.search_text,
                 document_id: chunk.doc_id,
                 sequence_num: chunk.sequence_num,
                 start_offset: chunk.start_offset,
@@ -358,6 +360,39 @@ mod tests {
                 index.last_k.load(Ordering::Relaxed),
                 20 * OVERFETCH_FACTOR,
                 "the index must be asked for topK × OVERFETCH_FACTOR"
+            );
+        });
+    }
+
+    // The hit carries the chunk's search_text (breadcrumb + body), not the
+    // raw chunk_text (search-text-embedding D4): a seeded chunk with distinct
+    // texts returns search_text in the hit's text field.
+    #[test]
+    fn search_hit_carries_search_text() {
+        let db = in_memory_db();
+        let doc = seed_doc(&db, "/docs/a.md", None);
+        let chunk_id = db
+            .exec_tx(|tx| {
+                let chunks = ChunkDao::new(ConnectionOrTx::Transaction(&*tx));
+                chunks.create_with_search_text(
+                    doc,
+                    "zebra stripes",
+                    "Atlas Guide\n\nzebra stripes",
+                    0,
+                    None,
+                    None,
+                )
+            })
+            .expect("seed chunk commits");
+        let provider = provider_with(vec![1.0]);
+        let index = index_with(vec![(chunk_id as u32, 0.1)]);
+
+        with_semantic(&db, &provider, &index, |semantic| {
+            let hits = semantic.search("query", 20, None).unwrap();
+            assert_eq!(hits.len(), 1);
+            assert_eq!(
+                hits[0].chunk_text, "Atlas Guide\n\nzebra stripes",
+                "the hit carries search_text, not chunk_text"
             );
         });
     }

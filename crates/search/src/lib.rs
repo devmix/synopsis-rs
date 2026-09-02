@@ -136,7 +136,9 @@ impl SourceType {
 pub struct LexicalHit {
     /// Chunk row id.
     pub chunk_id: i64,
-    /// The chunk text.
+    /// The chunk search text (`search_text`: breadcrumb + body) — the text the
+    /// FTS5 index matched on and the one the result `text` field carries
+    /// (search-text-embedding D4).
     pub chunk_text: String,
     /// Owning document id.
     pub document_id: i64,
@@ -155,7 +157,9 @@ pub struct LexicalHit {
 pub struct SemanticHit {
     /// Chunk row id.
     pub chunk_id: i64,
-    /// The chunk text.
+    /// The chunk search text (`search_text`: breadcrumb + body) — the text the
+    /// embedding leg matched on and the one the result `text` field carries
+    /// (search-text-embedding D4).
     pub chunk_text: String,
     /// Owning document id.
     pub document_id: i64,
@@ -174,7 +178,8 @@ pub struct SemanticHit {
 pub struct SearchResult {
     /// Chunk row id.
     pub chunk_id: i64,
-    /// The chunk text.
+    /// The chunk search text (`search_text`: breadcrumb + body): the section
+    /// context carried by the result's `text` field (search-text-embedding D4).
     pub chunk_text: String,
     /// Owning document id.
     pub document_id: i64,

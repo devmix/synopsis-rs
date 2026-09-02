@@ -637,4 +637,39 @@ mod tests {
         assert!(results[0].entities.is_empty());
         assert!(results[0].document_path.is_empty());
     }
+
+    // The result `text` field (chunk_text) carries the chunk's search_text
+    // (breadcrumb + body), not the raw chunk_text (search-text-embedding D4):
+    // a seeded chunk with distinct texts returns search_text in the result's
+    // text field.
+    #[test]
+    fn result_text_carries_search_text() {
+        let db = in_memory_db();
+        let doc = seed_doc(&db, "markdown", "/docs/a.md", None);
+        let chunk_id = db
+            .exec_tx(|tx| {
+                let chunks = ChunkDao::new(ConnectionOrTx::Transaction(&*tx));
+                chunks.create_with_search_text(
+                    doc,
+                    "zebra stripes",
+                    "Atlas Guide\n\nzebra stripes",
+                    0,
+                    None,
+                    None,
+                )
+            })
+            .expect("seed chunk commits");
+        let provider = mock_provider(vec![1.0], false);
+        let index = mock_index(Vec::new());
+
+        with_searcher(&db, search_config(), &provider, &index, None, |searcher| {
+            let results = searcher.lexical_search("atlas", 10, None).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].chunk_id, chunk_id);
+            assert_eq!(
+                results[0].chunk_text, "Atlas Guide\n\nzebra stripes",
+                "the result text field carries search_text, not chunk_text"
+            );
+        });
+    }
 }

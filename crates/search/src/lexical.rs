@@ -58,13 +58,14 @@ impl<'conn> LexicalSearcher<'conn> {
 }
 
 /// Map a DAO hit to a sub-search hit (chunk fields + raw bm25 score, where
-/// lower is better).
+/// lower is better). The `chunk_text` field carries the chunk's `search_text`
+/// (breadcrumb + body), not the raw `chunk_text` (search-text-embedding D4).
 impl From<FtsHit> for LexicalHit {
     fn from(hit: FtsHit) -> Self {
         let db::Chunk {
             id,
             doc_id,
-            chunk_text,
+            search_text,
             sequence_num,
             start_offset,
             end_offset,
@@ -72,7 +73,7 @@ impl From<FtsHit> for LexicalHit {
         } = hit.chunk;
         Self {
             chunk_id: id,
-            chunk_text,
+            chunk_text: search_text,
             document_id: doc_id,
             sequence_num,
             start_offset,
@@ -253,14 +254,16 @@ mod tests {
         });
     }
 
-    // FtsHit → LexicalHit maps every field (created_at is not a hit field).
+    // FtsHit → LexicalHit maps every field (created_at is not a hit field),
+    // and the chunk_text field carries search_text (not the raw chunk_text,
+    // search-text-embedding D4).
     #[test]
     fn from_fts_hit_maps_all_fields() {
         let chunk = db::Chunk {
             id: 42,
             doc_id: 7,
-            chunk_text: "text".to_string(),
-            search_text: "text".to_string(),
+            chunk_text: "raw body".to_string(),
+            search_text: "Breadcrumb\n\nraw body".to_string(),
             sequence_num: 3,
             start_offset: Some(1),
             end_offset: Some(4),
@@ -268,11 +271,41 @@ mod tests {
         };
         let hit = LexicalHit::from(FtsHit { chunk, score: -1.5 });
         assert_eq!(hit.chunk_id, 42);
-        assert_eq!(hit.chunk_text, "text");
+        assert_eq!(hit.chunk_text, "Breadcrumb\n\nraw body");
         assert_eq!(hit.document_id, 7);
         assert_eq!(hit.sequence_num, 3);
         assert_eq!(hit.start_offset, Some(1));
         assert_eq!(hit.end_offset, Some(4));
         assert_eq!(hit.score, -1.5);
+    }
+
+    // The hit carries the chunk's search_text (breadcrumb + body), not the
+    // raw chunk_text (search-text-embedding D4): a seeded chunk with distinct
+    // texts returns search_text in the hit's text field.
+    #[test]
+    fn search_hit_carries_search_text() {
+        let db = in_memory_db();
+        let doc = seed_doc(&db, "/docs/a.md", None);
+        db.exec_tx(|tx| {
+            let chunks = ChunkDao::new(ConnectionOrTx::Transaction(&*tx));
+            chunks.create_with_search_text(
+                doc,
+                "zebra stripes",
+                "Atlas Guide\n\nzebra stripes",
+                0,
+                None,
+                None,
+            )
+        })
+        .expect("seed chunk commits");
+
+        with_lexical(&db, |lexical| {
+            let hits = lexical.search("atlas", 20, None).unwrap();
+            assert_eq!(hits.len(), 1, "the breadcrumb term matches via search_text");
+            assert_eq!(
+                hits[0].chunk_text, "Atlas Guide\n\nzebra stripes",
+                "the hit carries search_text, not chunk_text"
+            );
+        });
     }
 }

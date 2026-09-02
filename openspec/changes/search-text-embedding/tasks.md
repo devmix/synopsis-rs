@@ -44,7 +44,7 @@ extended). The `search_text` column is the explicit, justified deviation (design
 
 ## 2. Ingestion (crates/ingestion)
 
-- [ ] 2.1 Chunker emits `search_text`; ingester embeds + persists it
+- [x] 2.1 Chunker emits `search_text`; ingester embeds + persists it
 
 **Goal.** The Markdown chunker produces `search_text = breadcrumb + "\n\n" + body`
 (or `body` when there is no breadcrumb); the per-document pipeline embeds
