@@ -55,7 +55,7 @@ test` green. No code changed (doc comments only).
 **Acceptance.** `rg '\.\./synopsis' crates/config/src/ crates/llm/src/` → **0**.
 `cargo fmt/clippy/test` green. Deviation notes preserved.
 
-- [ ] 1.3 Clean `embedding` crate + its Cargo.toml (7 files, 8 refs + 1)
+- [x] 1.3 Clean `embedding` crate + its Cargo.toml (7 files, 8 refs + 1)
 
 **Scope.** `crates/embedding/src/{cache,downloader,library,lib,model,provider,
 tokenizer}.rs` (`tokenizer.rs` has 2 refs) and `crates/embedding/Cargo.toml`.
