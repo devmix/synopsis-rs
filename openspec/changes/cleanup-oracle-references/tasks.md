@@ -26,14 +26,27 @@ NOT touched (historical audit trail).
 - **DO NOT remove** the legitimate **DB-migration** concept (`migrations`,
   `PRAGMA user_version`, "the v5 migration shape", "not in the migrations") —
   that is a real Rust/SQLite concept, not the Go-project migration.
-- Crate edits are comment-only → `cargo fmt/clippy/test` stay green.
+- **DO NOT remove** the Rust code's **own** `.tmpl` template files (e.g.
+  `crates/ingestion/src/ner/templates/{system,user}.tmpl`, loaded via
+  `include_str!`) — those are legitimate minijinja assets, not Go files. Only
+  remove the *framing* that presents them as a Go origin ("the functional
+  rewrite of the `.tmpl` template" → "the embedded `system.tmpl` template").
+- **Code-level oracle references are ALSO removed** (human decision 2026-09-03,
+  option A): test function names (e.g. `matches_oracle_cases` →
+  `matches_recorded_cases`, `like_the_oracle` → `normalizes_to_defaults`) and
+  test string literals (assert/`expect` messages, e.g. `"the oracle's
+  TestGraphStats"` → drop the oracle clause). These are low-risk, **no behavior
+  change** — only identifiers and message text. `cargo fmt/clippy/test` stay
+  green.
 - **Acceptance pattern** (per scope): `rg -i '\.\./synopsis|oracle|Go
   (original|code|binary|service|project)|\bported\b|re-architected|not
-  transcribed|functional copy|\.go\b|\.tmpl' <scope>` → **0**. NOTE: `\bported\b`
-  is word-bounded on purpose — the substring `ported` inside legitimate
-  identifiers (`supported_extensions`, `UnsupportedExtension`, `reported`,
-  `supported`) is a false positive and must NOT be "fixed" by renaming public
-  API (that is a code change, out of scope).
+  transcribed|functional (copy|rewrite)|\.go\b' <scope>` → **0**. (No `.tmpl`
+  term: the Rust code's own `*.tmpl` templates are legitimate.) NOTES:
+  `\bported\b` is word-bounded on purpose — the substring `ported` inside
+  legitimate identifiers (`supported_extensions`, `UnsupportedExtension`,
+  `reported`, `supported`) is a false positive and must NOT be "fixed" by
+  renaming public API. `oracle` is targeted everywhere (doc comments, inline
+  comments, test fn names, test string literals) per option A.
 
 ## 1 — Crates (whole-crate scope; the narrative is in more files than just the
 path-ref files)
@@ -95,7 +108,7 @@ design. (Paths and most of the crate were already cleaned in a prior partial
 pass — clean only what remains; the crate still compiles and is fmt-clean.)
 
 **Acceptance.** the pattern above over `crates/ingestion/src/parsers/
-crates/ingestion/src/chunkers/` → **0**. Gates green. No code changed.
+crates/ingestion/src/chunkers/` → **0**. Gates green. No behavior change.
 
 - [ ] 1.6b Clean `ingestion` top-level files (~53 mentions)
 
