@@ -99,7 +99,7 @@ test lines) by relocating its movable tests to
 
 **Acceptance.** Shared per-task acceptance for crate `cli`.
 
-- [ ] 2.5 Extract `mcp/src/tools/dossier.rs` tests → `mcp/tests/dossier.rs`
+- [x] 2.5 Extract `mcp/src/tools/dossier.rs` tests → `mcp/tests/dossier.rs`
 
 **Goal.** Shrink `crates/mcp/src/tools/dossier.rs` (1,287 lines; ~645 inline
 test lines) by relocating its movable tests to `crates/mcp/tests/dossier.rs`.

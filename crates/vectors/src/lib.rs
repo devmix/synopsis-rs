@@ -42,6 +42,11 @@ pub mod error;
 pub mod synx;
 pub mod usearch;
 
+/// Test-only seams for integration tests (change test-hygiene-phase-2
+/// task 2.6); docs-hidden, not part of the public API.
+#[doc(hidden)]
+pub mod test_support;
+
 pub use error::VectorsError;
 pub use usearch::UsearchEngine;
 
