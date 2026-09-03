@@ -99,7 +99,7 @@ expansion). Cargo.toml clean.
 
 **Acceptance.** the pattern above over `crates/search/src/` → **0**. Gates green.
 
-- [ ] 1.6a Clean `ingestion` `parsers/` + `chunkers/` (~42 mentions)
+- [x] 1.6a Clean `ingestion` `parsers/` + `chunkers/` (~42 mentions)
 
 **Scope.** `crates/ingestion/src/parsers/` (json, markdown, mediawiki, mod,
 unstructured, webpage) and `crates/ingestion/src/chunkers/` (mediawiki). Strip
@@ -110,7 +110,7 @@ pass — clean only what remains; the crate still compiles and is fmt-clean.)
 **Acceptance.** the pattern above over `crates/ingestion/src/parsers/
 crates/ingestion/src/chunkers/` → **0**. Gates green. No behavior change.
 
-- [ ] 1.6b Clean `ingestion` top-level files (~53 mentions)
+- [x] 1.6b Clean `ingestion` top-level files (~53 mentions)
 
 **Scope.** `crates/ingestion/src/{sources.rs, error.rs, job_queue.rs, types.rs,
 progress.rs, lib.rs, worker.rs}`. Strip the remaining oracle/Go/ported
@@ -119,7 +119,7 @@ narrative; reframe the rationale.
 **Acceptance.** the pattern above over those 7 files → **0**. Gates green. No
 code changed.
 
-- [ ] 1.6c Clean `ingestion` `ner/` + `entities/` + `ingester/` + `runner/`
+- [x] 1.6c Clean `ingestion` `ner/` + `entities/` + `ingester/` + `runner/`
 (~30 mentions)
 
 **Scope.** `crates/ingestion/src/{ner/, entities/, ingester/, runner/}`. Strip
