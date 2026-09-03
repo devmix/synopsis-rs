@@ -82,21 +82,35 @@ expansion). Cargo.toml clean.
 
 **Acceptance.** the pattern above over `crates/search/src/` → **0**. Gates green.
 
-- [ ] 1.6 Clean `ingestion` crate (~423 mentions — largest)
+- [ ] 1.6a Clean `ingestion` `parsers/` + `chunkers/` (~42 mentions)
 
-**Scope.** all of `crates/ingestion/src/` (25+ files: `runner/`, `ingester/`,
-`parsers/`, `chunkers/`, `ner/`, `entities/`, plus `types.rs`, `sources.rs`,
-`lib.rs`, `error.rs`, `job_queue.rs`, `progress.rs`, `worker.rs`). Strip every
-`oracle` / `oracle's X` / `(oracle \`sym\`)` / Go file+symbol name /
-"deviations from the oracle" / "ported" reference; reframe the rationale as
-native design decisions. The `../synopsis` paths are already removed (in the
-working tree); this removes the remaining narrative. If the diff is very large,
-it may be split into two ordered sub-passes (e.g. `ner/`+`entities/` first,
-then `parsers/`+`chunkers/`+`ingester/`+`runner/`+top-level) — but the
-acceptance is the whole crate → 0.
+**Scope.** `crates/ingestion/src/parsers/` (json, markdown, mediawiki, mod,
+unstructured, webpage) and `crates/ingestion/src/chunkers/` (mediawiki). Strip
+the remaining oracle/Go/ported narrative; reframe the rationale as native
+design. (Paths and most of the crate were already cleaned in a prior partial
+pass — clean only what remains; the crate still compiles and is fmt-clean.)
 
-**Acceptance.** the pattern above over `crates/ingestion/src/` → **0**. Gates
-green. No code changed.
+**Acceptance.** the pattern above over `crates/ingestion/src/parsers/
+crates/ingestion/src/chunkers/` → **0**. Gates green. No code changed.
+
+- [ ] 1.6b Clean `ingestion` top-level files (~53 mentions)
+
+**Scope.** `crates/ingestion/src/{sources.rs, error.rs, job_queue.rs, types.rs,
+progress.rs, lib.rs, worker.rs}`. Strip the remaining oracle/Go/ported
+narrative; reframe the rationale.
+
+**Acceptance.** the pattern above over those 7 files → **0**. Gates green. No
+code changed.
+
+- [ ] 1.6c Clean `ingestion` `ner/` + `entities/` + `ingester/` + `runner/`
+(~30 mentions)
+
+**Scope.** `crates/ingestion/src/{ner/, entities/, ingester/, runner/}`. Strip
+the remaining oracle/Go/ported narrative; reframe the rationale.
+
+**Acceptance.** the pattern above over those 4 dirs → **0**, **and** the whole
+crate `crates/ingestion/src/` → **0** (final verify). Gates green. No code
+changed.
 
 - [ ] 1.7 Clean `mcp` crate + Cargo.toml (~399 mentions)
 
