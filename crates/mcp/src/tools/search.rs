@@ -98,6 +98,13 @@ struct ResultItem {
     /// Entities attached to the chunk, if the enricher filled them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     entities: Vec<EntityRef>,
+    /// The owning document's `updated_at` normalized to RFC3339 (the
+    /// enricher's bag); omitted when the document has no parseable
+    /// timestamp. A deliberate additive divergence from the Go wire item,
+    /// which does not expose it (mcp-contract: "search result carries
+    /// document freshness").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated_at: Option<String>,
 }
 
 /// A lightweight entity reference (oracle `EntityRef`).
@@ -212,9 +219,10 @@ fn is_known_domain(db: &db::Db, domain: &str) -> Result<bool, McpError> {
 }
 
 /// Map a fused search result to the wire item (oracle field mapping in
-/// `handlers/search.go`, including the `metadata["domains"]` extraction).
-/// The `text` field carries the chunk's pure `chunk_text` (the section
-/// context lives in the item's `metadata` field, the chunk's own bag).
+/// `handlers/search.go`, including the `metadata["domains"]` extraction and
+/// the Rust-only `metadata["updated_at"]` freshness field). The `text`
+/// field carries the chunk's pure `chunk_text` (the section context lives in
+/// the item's `metadata` field, the chunk's own bag).
 fn result_item(result: &search::SearchResult) -> ResultItem {
     ResultItem {
         document_id: result.document_id,
@@ -248,6 +256,11 @@ fn result_item(result: &search::SearchResult) -> ResultItem {
                 r#type: entity.entity_type.clone(),
             })
             .collect(),
+        updated_at: result
+            .metadata
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     }
 }
 
@@ -339,10 +352,15 @@ mod tests {
     }
 
     /// A canned fused result (oracle `TestHandleSearch_ResponseFields`
-    /// shape) with a non-empty chunk metadata bag.
+    /// shape) with a non-empty chunk metadata bag and an RFC3339
+    /// `updated_at` in the enrichment bag (the enricher's normalized form).
     fn canned_result(chunk_id: i64) -> SearchResult {
         let mut metadata = serde_json::Map::new();
         metadata.insert("domains".to_owned(), serde_json::json!(["hr", "policy"]));
+        metadata.insert(
+            "updated_at".to_owned(),
+            serde_json::json!("2026-01-15T12:00:00Z"),
+        );
         let mut chunk_metadata = serde_json::Map::new();
         chunk_metadata.insert("section_title".to_owned(), serde_json::json!("Guide"));
         chunk_metadata.insert("breadcrumb".to_owned(), serde_json::json!("Atlas Guide"));
@@ -514,6 +532,9 @@ mod tests {
         assert_eq!(item["entities"][0]["id"], serde_json::json!(100));
         assert_eq!(item["entities"][0]["name"], "Alice");
         assert_eq!(item["entities"][0]["type"], "employee");
+        // The document freshness field: the enricher's RFC3339 value,
+        // surfaced on the wire (Rust-only additive divergence).
+        assert_eq!(item["updated_at"], "2026-01-15T12:00:00Z");
     }
 
     #[test]
@@ -533,6 +554,8 @@ mod tests {
         assert!(item.get("metadata").is_none(), "empty chunk bag → omitted");
         assert!(item.get("domains").is_none());
         assert!(item.get("entities").is_none());
+        // No `updated_at` in the (cleared) enrichment bag → omitted, not null.
+        assert!(item.get("updated_at").is_none());
         // Always-present fields stay present even when empty.
         assert!(item.get("document_path").is_some());
         assert!(item.get("source_type").is_some());

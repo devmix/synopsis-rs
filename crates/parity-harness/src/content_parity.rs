@@ -110,10 +110,12 @@ pub fn load_fixture(path: &Path) -> Result<Value, HarnessError> {
 /// - **`search`** — stripped: top-level `search_time_ms` (wall-clock duration);
 ///   per result, `score` (implementation-defined float) and every non-identity
 ///   field (`text`, `sequence_num`, `start_offset`, `end_offset`,
-///   `document_path`, `source_type`, `domains`, `entities`). Kept: `total_count`,
-///   `warning`, and the per-result identity (`document_id`, `chunk_id`) in rank
-///   order. Rank order IS contract-relevant, so the `results` array is NOT
-///   re-sorted — only its non-identity fields are dropped.
+///   `document_path`, `source_type`, `domains`, `entities`, and the Rust-only
+///   `updated_at` timestamp — non-deterministic, stripped like the
+///   `catalog_documents` timestamps). Kept: `total_count`, `warning`, and the
+///   per-result identity (`document_id`, `chunk_id`) in rank order. Rank order
+///   IS contract-relevant, so the `results` array is NOT re-sorted — only its
+///   non-identity fields are dropped.
 /// - **`catalog_overview`** — stripped: none (all fields are deterministic
 ///   counts/maps). Sorted: `domains` and `entity_types` (both sets; order is not
 ///   contract-relevant). Kept: every count and the `*_by_type` / `*_by_domain`
@@ -340,6 +342,45 @@ mod tests {
             results[0].get("text").is_none(),
             "non-identity fields must be stripped"
         );
+        assert_eq!(results[1]["document_id"], json!(20));
+        assert_eq!(results[1]["chunk_id"], json!(2));
+    }
+
+    #[test]
+    fn search_strips_updated_at_timestamp() {
+        // The Rust wire exposes the document `updated_at` (additive
+        // divergence from the Go item); it is non-deterministic, so
+        // normalization must strip it — the same treatment
+        // `catalog_documents` gives its timestamps.
+        let value = json!({
+            "results": [
+                {
+                    "document_id": 10,
+                    "chunk_id": 1,
+                    "text": "a",
+                    "score": 0.9,
+                    "updated_at": "2026-01-15T12:00:00Z"
+                },
+                {
+                    "document_id": 20,
+                    "chunk_id": 2,
+                    "text": "b",
+                    "score": 0.5
+                }
+            ],
+            "total_count": 2,
+            "search_time_ms": 42
+        });
+        let normalized = normalize(value, "search");
+
+        let results = normalized["results"].as_array().unwrap();
+        assert!(
+            results[0].get("updated_at").is_none(),
+            "updated_at must be stripped"
+        );
+        // The strip leaves the identity fields intact.
+        assert_eq!(results[0]["document_id"], json!(10));
+        assert_eq!(results[0]["chunk_id"], json!(1));
         assert_eq!(results[1]["document_id"], json!(20));
         assert_eq!(results[1]["chunk_id"], json!(2));
     }
