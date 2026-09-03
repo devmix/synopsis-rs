@@ -38,7 +38,7 @@ dangling continuation if any).
 **Acceptance.** `rg '\.\./synopsis' crates/db/src/` → **0**. `cargo fmt/clippy/
 test` green. No code changed (doc comments only).
 
-- [ ] 1.2 Clean `config` + `llm` crates (3 files, 3 refs)
+- [x] 1.2 Clean `config` + `llm` crates (3 files, 3 refs)
 
 **Scope.**
 - `crates/config/src/lib.rs` (1 ref): line ends
