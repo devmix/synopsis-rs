@@ -1,10 +1,6 @@
 //! Fact provenance storage over the `fact_sources` table (fact →
 //! source document + quote links).
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/fact_source_dao.go`,
-//! re-architected per the 2026-08-19 migration principles (functional copy,
-//! not a code copy).
-//!
 //! **Go bug fixes / conscious deviations:**
 //! - `document_id` is an `i64` end to end (human decision 2026-08-20, task
 //!   1.14 revision 2): the oracle is self-inconsistent — its schema

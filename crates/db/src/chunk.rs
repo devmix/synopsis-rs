@@ -1,9 +1,5 @@
 //! Chunk storage and FTS5 full-text search over the `chunks` table.
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/chunk_dao.go`,
-//! re-architected per the 2026-08-19 migration principles (functional copy,
-//! not a code copy).
-//!
 //! FTS5: `chunks_fts` is an external-content table (`content='chunks'`)
 //! indexing `search_text` (the re-point folded into the squashed init
 //! migration) and kept in sync by the `chunks_fts_ai/ad/au` triggers, so

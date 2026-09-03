@@ -1,10 +1,6 @@
 //! Connection pool (design D1, re-decided 2026-08-20), PRAGMA parity (D8)
 //! and the embedded squashed v5 init migration (D3).
 //!
-//! Oracle mapping: `../synopsis/internal/database/database.go` (Open /
-//! applyPRAGMAs / Close and the `database/sql` pool semantics), re-anchored
-//! on `PRAGMA user_version` per ADR 0001.
-//!
 //! The handle is an `r2d2` pool of `rusqlite::Connection`s: WAL + several
 //! connections give concurrent readers, and a write transaction never
 //! blocks readers (the application is read-heavy — human decision

@@ -1,9 +1,5 @@
 //! Entity storage over the `entities` table.
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/entity_dao.go`,
-//! re-architected per the 2026-08-19 migration principles (functional copy,
-//! not a code copy).
-//!
 //! **Go bug fixes (conscious deviations):**
 //! - `get_or_create` is atomic: `INSERT ... ON CONFLICT (type, name, domain)
 //!   DO NOTHING` + `RETURNING id` (design D5). The oracle did

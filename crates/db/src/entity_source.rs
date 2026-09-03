@@ -1,10 +1,6 @@
 //! Entity provenance storage over the `entity_sources` table (entity →
 //! document links).
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/entity_source_dao.go`,
-//! re-architected per the 2026-08-19 migration principles (functional copy,
-//! not a code copy).
-//!
 //! **Go bug fixes / conscious deviations:**
 //! - `link_batch` keeps the oracle's single multi-row `INSERT OR IGNORE`
 //!   shape, batched in rows of [`config::LINK_BATCH_SIZE`]: 500 × 2 = 1000

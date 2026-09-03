@@ -1,9 +1,7 @@
 //! Unified command surface for DAOs: the same method runs over a plain
 //! connection or an in-flight transaction.
 //!
-//! Rust analogue of the Go oracle's `DBTX` interface
-//! (`../synopsis/internal/database/dao/dbtx.go`), satisfied by both
-//! `*sql.DB` and `*sql.Tx`. Per design decision D2 the unified handle is an
+//! Per design decision D2 the unified handle is an
 //! enum (`ConnectionOrTx`) rather than a trait object — dispatch is cheap and
 //! type-safe; the trait itself is sealed so only the executor types below can
 //! implement it.

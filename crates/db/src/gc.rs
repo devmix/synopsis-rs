@@ -1,9 +1,7 @@
 //! Document garbage collection: cascading per-document cleanup and orphan
 //! document removal.
 //!
-//! Oracle mapping: `../synopsis/internal/gc/documents_gc.go`, re-architected
-//! per the 2026-08-19 migration principles (functional copy, not a code
-//! copy). `GcDao` composes the existing DAOs (entity sources, fact sources,
+//! `GcDao` composes the existing DAOs (entity sources, fact sources,
 //! chunks, facts, entities) instead of re-stating their SQL (DRY); the
 //! oracle's `DocumentGC` wrapper did the same.
 //!

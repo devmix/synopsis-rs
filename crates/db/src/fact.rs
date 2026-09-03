@@ -1,9 +1,5 @@
 //! Fact storage over the `facts` table.
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/fact_dao.go`,
-//! re-architected per the 2026-08-19 migration principles (functional copy,
-//! not a code copy).
-//!
 //! **Go bug fixes / conscious deviations:**
 //! - `create_or_ignore` is atomic via
 //!   `INSERT ... ON CONFLICT (subject_entity_id, object_entity_id, predicate)

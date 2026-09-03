@@ -1,9 +1,5 @@
 //! Chunk↔entity link storage over the `chunk_entities` junction table.
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/chunk_entity_dao.go`,
-//! re-architected per the 2026-08-19 migration principles (functional copy,
-//! not a code copy).
-//!
 //! **Go bug fixes / conscious deviations:**
 //! - `get_entities_by_chunks` batches the `IN` list in chunks of
 //!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded

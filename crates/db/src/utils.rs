@@ -1,8 +1,6 @@
 //! Small text helpers shared by the DAOs (design D6: local `db::utils`
 //! module — a shared `utils` crate would be premature abstraction; extract
 //! only if a second consumer appears).
-//!
-//! Oracle mapping: `../synopsis/internal/utils` (`normalize.go`, `utils.go`).
 
 /// Prepare arbitrary text for matching: trim surrounding whitespace,
 /// collapse internal whitespace runs to single spaces, lowercase

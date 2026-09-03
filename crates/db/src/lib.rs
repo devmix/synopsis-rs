@@ -1,14 +1,14 @@
 //! SQLite storage layer: connection, migrations, transactions, DAOs and FTS5
 //! queries.
 //!
-//! Oracle mapping: `../synopsis/internal/database` (design.md D1). The module
-//! is re-architected for Rust per the migration principles of 2026-08-19: a
-//! `r2d2` connection pool over the sync SQLite driver (db-module D1,
-//! re-decided 2026-08-20: read-heavy workload — WAL + concurrent readers,
-//! a write transaction never blocks readers), native transaction semantics
-//! (D2), one squashed v5 init migration with `PRAGMA user_version` as the
-//! sole schema-state authority (D3, ADR 0001), and D8 PRAGMA parity with
-//! the Go oracle applied to every pooled connection.
+//! The module is re-architected for Rust per the migration principles of
+//! 2026-08-19: a `r2d2` connection pool over the sync SQLite driver
+//! (db-module D1, re-decided 2026-08-20: read-heavy workload — WAL +
+//! concurrent readers, a write transaction never blocks readers), native
+//! transaction semantics (D2), one squashed v5 init migration with
+//! `PRAGMA user_version` as the sole schema-state authority (D3, ADR 0001),
+//! and D8 PRAGMA parity with the Go oracle applied to every pooled
+//! connection.
 //!
 //! Entry points:
 //! - [`Db::open`] — open/create the database, apply the D8 PRAGMAs to every

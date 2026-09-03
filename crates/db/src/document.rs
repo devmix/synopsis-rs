@@ -1,9 +1,5 @@
 //! Document storage over the `documents` table.
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/document_dao.go`,
-//! re-architected per the 2026-08-19 migration principles (functional copy,
-//! not a code copy).
-//!
 //! The v5 schema has NO `domain` column on `documents` (dropped by Go
 //! migration 003): a document's domain(s) live in `metadata_json` under
 //! `$.domain` as a string or an array of strings, and are filtered/counted

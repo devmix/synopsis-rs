@@ -1,9 +1,5 @@
 //! Cross-domain entity link storage over the `entity_links` table.
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/entity_link_dao.go`,
-//! re-architected per the 2026-08-19 migration principles (functional copy,
-//! not a code copy).
-//!
 //! **Go bug fixes / conscious deviations:**
 //! - `delete_by_entity_ids` batches its `IN` lists in chunks of
 //!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded

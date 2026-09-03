@@ -1,8 +1,5 @@
 //! Key-value storage over the `app_kv` table.
 //!
-//! Oracle mapping: `../synopsis/internal/database/dao/app_kv.go` (Get/Set
-//! semantics), re-architected per the 2026-08-19 migration principles.
-//!
 //! The table holds small pieces of application state (e.g.
 //! `last_linking_run`, the ingestion runner's linking bookkeeping marker).
 //! `set` is an upsert that refreshes `updated_at` on every write; `get`
