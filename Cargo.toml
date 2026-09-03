@@ -28,8 +28,6 @@ members = [
     "crates/search",
     "crates/mcp",
     "crates/cli",
-    # Dev-tooling (design D6): not part of the product dependency graph.
-    "crates/parity-harness",
 ]
 
 [workspace.package]
