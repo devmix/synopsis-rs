@@ -1,166 +1,205 @@
 # Tasks: cleanup-oracle-references
 
-Read first: `proposal.md`, `design.md`, and `openspec/config.yaml` (binding
-context). This change **removes all `../synopsis/...` path references from
-production crate source and crate `Cargo.toml` comments**, preserving meaningful
-behavioral/design/wire text. **No spec, contract, code-logic, or dependency
-changes. `../synopsis`, `openspec/specs/**`, `openspec/changes/archive/**`,
-test-fixture READMEs, migration SQL, and `docs/adr/**` stay untouched.**
+Read first: `proposal.md`, `design.md`, and `openspec/config.yaml`. The Go
+project at `../synopsis` will be deleted, so the Rust docs must no longer
+reference it or frame the code as a port. **Remove all migration-provenance
+(oracle / Go / ported narrative + any remaining `../synopsis` paths) from all
+living docs, keeping the design rationale reframed as native Rust decisions.**
 
-## Rule (applies to every task below — see design.md for the full rationale)
+**`openspec/changes/archive/**` is NOT touched** (historical audit trail).
 
-For each `../synopsis/...` reference:
-1. **Pure provenance tag** (`//! Oracle mapping: …`, `//! Oracle: …`,
-   `//! Oracle reference: …`) → delete the whole line (drop dangling
-   continuation lines that only elaborated the mapping).
-2. **Meaningful text + path** (deviation notes, wire contracts, config rules,
-   binary-naming notes) → remove the path, keep the text (reword so it reads).
-3. **Stale parity-harness clause** (cites the removed harness as an acceptance
-   criterion) → drop the clause.
-4. **Cargo.toml** (`# D1 edges; oracle imports: …`) → keep `# D1 edges`, drop
-   the `oracle imports:` clause; (`# Binary name … (../synopsis/bin/synopsis)`)
-   → keep the note, drop the path.
+## Rule (applies to every task — full detail + examples in design.md)
 
-All refs are `//!`/`///` doc comments or `#` Cargo comments — no code. After
-each task, `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
-`cargo test` must stay green.
+- **REMOVE:** references to the Go project/oracle (`the oracle`, `Go original`,
+  `Go code`, `the original`, `../synopsis/...`), Go source file names
+  (`*.go`, `*.tmpl`), and port/migration language (`ported`, `faithful port`,
+  `re-architected`, `not transcribed`, `functional copy`, `migration`,
+  `deviations from the oracle`, `verified against the oracle`, `parity with the
+  oracle`, `parity-checked`). Also the AGENTS.md `## Oracle` and
+  `## Migration principles` sections.
+- **KEEP (reframe):** the design rationale / WHY (as a native decision, e.g.
+  "Design: silent defaults are replaced by fail-fast validation"), behavioral
+  and algorithm descriptions, the project's own `D1…D8` / `ADR 0001…0005`
+  references, and wire-format versions (`mcp-go v0.57.0`, minus "the oracle's").
+- Crate edits are comment-only → `cargo fmt/clippy/test` stay green.
+- Note: tasks 1.1–1.6 already had the `../synopsis` **paths** removed in a first
+  pass (committed for 1.1–1.5, uncommitted for 1.6). This pass removes the
+  **remaining narrative** in those files; 1.7–1.8 do the full cleanup.
 
-## 1
+## 1 — Crates
 
-- [x] 1.1 Clean `db` crate (14 files, 14 refs)
+- [ ] 1.1 Clean `db` crate narrative (14 files)
 
 **Scope.** `crates/db/src/{app_kv,chunk_entity,chunk,connection,document,
 entity_link,entity,entity_source,executor,fact,fact_source,gc,lib,utils}.rs`.
-Every ref is a module-level `//! Oracle mapping: \`../synopsis/internal/
-database/...\`` (or similar) tag → **rule 1: delete the whole tag line** (and a
-dangling continuation if any).
+Paths are already removed; strip the remaining migration narrative (e.g.
+"re-architected for Rust per the migration principles of 2026-08-19", "Go
+oracle", "Go bug fixes", "deliberate deviation from the oracle") → reframe as
+native design decisions, keeping the rationale (D1/D2/D3/ADR 0001/D8 rationale
+in lib.rs, sealed-enum in executor.rs, DRY-composition in gc.rs).
 
-**Acceptance.** `rg '\.\./synopsis' crates/db/src/` → **0**. `cargo fmt/clippy/
-test` green. No code changed (doc comments only).
+**Acceptance.** `rg -i '\.\./synopsis|oracle|Go (oracle|original|code|binary)|
+ported|re-architected|not transcribed|migration|deviation from the oracle'
+crates/db/src/` → **0**. `cargo fmt/clippy/test` green. No code changed.
 
-- [x] 1.2 Clean `config` + `llm` crates (3 files, 3 refs)
+- [ ] 1.2 Clean `config` + `llm` narrative (3 files)
 
-**Scope.**
-- `crates/config/src/lib.rs` (1 ref): line ends
-  `… the XML ontologies (task 3.x). Oracle mapping: \`../synopsis/internal/config\`.`
-  → **rule 2:** drop the trailing `Oracle mapping: …` clause, keep
-  `… the XML ontologies (task 3.x).`
-- `crates/llm/src/lib.rs` (1 ref): `//! Deliberate deviation from the oracle
-  (\`../synopsis/internal/llm/client.go\`):` → **rule 2:** `//! Deliberate
-  deviation from the oracle:` (drop the path, keep the deviation).
-- `crates/llm/src/client.rs` (1 ref): `//! Deliberate deviations from the oracle
-  (\`../synopsis/internal/llm/client.go\`),` → **rule 2:** `//! Deliberate
-  deviations from the oracle,` (keep the deviation list that follows).
+**Scope.** `crates/config/src/lib.rs`, `crates/llm/src/lib.rs`,
+`crates/llm/src/client.rs`. Strip "ports the Go oracle's `internal/config`
+package", "Deliberate deviation(s) from the oracle" → "Design:" (keep the
+deviation rationale: fail-fast validation, plain-string content, injectable
+sleeper).
 
-**Acceptance.** `rg '\.\./synopsis' crates/config/src/ crates/llm/src/` → **0**.
-`cargo fmt/clippy/test` green. Deviation notes preserved.
+**Acceptance.** `rg -i` (same pattern as 1.1) over `crates/config/src/
+crates/llm/src/` → **0**. Gates green. Design rationale preserved.
 
-- [x] 1.3 Clean `embedding` crate + its Cargo.toml (7 files, 8 refs + 1)
+- [ ] 1.3 Clean `embedding` narrative (7 files)
 
 **Scope.** `crates/embedding/src/{cache,downloader,library,lib,model,provider,
-tokenizer}.rs` (`tokenizer.rs` has 2 refs) and `crates/embedding/Cargo.toml`.
-Source refs are `//! Oracle mapping/reference: \`../synopsis/internal/
-{embedding,onnx}/...\`` tags → **rule 1** (delete). `Cargo.toml` line
-`# D1 edges; oracle imports: ../synopsis/internal/embedding + internal/onnx.` →
-**rule 4:** `# D1 edges.`
+tokenizer}.rs`. Strip "re-architected, not transcribed", "the oracle's
+`CacheKey`", "mirroring the oracle's `DefaultMaxLength`", Go file names
+(`library.go`, `model-manager.go`, …), "Deliberate deviations from the oracle"
+→ "Design decisions:". Keep the rationale (retry/SSRF/timeout behavior, CLS
+pooling, tokenizer pad/attention_mask handling).
 
-**Acceptance.** `rg '\.\./synopsis' crates/embedding/src/ crates/embedding/
-Cargo.toml` → **0**. `cargo fmt/clippy/test` green.
+**Acceptance.** `rg -i` (pattern 1.1) over `crates/embedding/src/` → **0**.
+Gates green. Cargo.toml already clean (`# D1 edges.`).
 
-- [x] 1.4 Clean `graph` crate (7 files, 10 refs)
+- [ ] 1.4 Clean `graph` narrative (7 files)
 
-**Scope.** `crates/graph/src/{cel,graph,lib,linker,metrics,prompts,traverser}.rs`
-(`cel.rs`, `graph.rs`, `prompts.rs` have 2 refs each). Module-level
-`//! Oracle mapping/reference: \`../synopsis/internal/{graph,relations}/...\``
-tags → **rule 1** (delete). If any line carries meaningful CEL/linker design
-text plus a path → **rule 2** (keep text, drop path).
+**Scope.** `crates/graph/src/{cel,graph,lib,linker,metrics,prompts,traverser}.rs`.
+Strip "The Go code is a reference for behavior and contracts only, not a code
+blueprint", "Verified against the oracle", "functional copy, re-architected for
+Rust", "ported verbatim" → keep the design (hybrid storage, CEL compile-once,
+BFS contract, petgraph `DiGraph`).
 
-**Acceptance.** `rg '\.\./synopsis' crates/graph/src/` → **0**. `cargo
-fmt/clippy/test` green.
+**Acceptance.** `rg -i` (pattern 1.1) over `crates/graph/src/` → **0**. Gates
+green.
 
-- [ ] 1.5 Clean `search` crate + its Cargo.toml (8 files, 8 refs + 1)
+- [ ] 1.5 Clean `search` narrative (8 files)
 
 **Scope.** `crates/search/src/{enrich,expand,hybrid,lexical,lib,rerank,rrf,
-semantic}.rs` and `crates/search/Cargo.toml`. Most are `//! Oracle mapping:
-\`../synopsis/internal/search/...\`` tags → **rule 1**. **Special —
-`rrf.rs`:** the line "differential parity with `../synopsis/internal/search/
-rrf_test.go` is an acceptance criterion" → **rule 3: drop that clause** (the
-parity harness is removed); keep "Faithful port of the oracle's `rrf.go` — every
-numeric behavior is preserved" and the internal-simplification note.
-`Cargo.toml` `# D1 edges; oracle imports: ../synopsis/internal/search (…)` →
-**rule 4:** `# D1 edges.`
+semantic}.rs`. Strip "Faithful port of the oracle's `rrf.go`", "The Go code is a
+reference…", "ported", Go file names → describe the algorithms natively (RRF
+`score += 1/(k+rank)`, hybrid fusion, rerank, expansion). Cargo.toml is clean.
 
-**Acceptance.** `rg '\.\./synopsis' crates/search/src/ crates/search/Cargo.toml`
-→ **0**. `cargo fmt/clippy/test` green.
+**Acceptance.** `rg -i` (pattern 1.1) over `crates/search/src/` → **0**. Gates
+green.
 
-- [ ] 1.6 Clean `ingestion` crate (17 files, 18 refs)
+- [ ] 1.6 Clean `ingestion` narrative (17 files)
 
 **Scope.** `crates/ingestion/src/`: `chunkers/{json,markdown}.rs`,
 `entities/{cluster,mod,resolver,similarity}.rs`, `ner/{composite,llm_cache,llm,
-llm_schema,mod,parse,prompts}.rs` (`llm_cache.rs` has 2 refs),
-`parsers/{mediawiki,unstructured,webpage}.rs`, `types.rs`. Module-level
-`//! Oracle mapping/reference: \`../synopsis/internal/ingestion/...\`` tags →
-**rule 1**. Test-module refs to `..._test.go` (e.g. `chunkers/json.rs`,
-`chunkers/markdown.rs`, `parsers/*.rs`) are also `../synopsis` paths → remove
-the path (rule 1/2). Meaningful design text (e.g. `ner/mod.rs` describing the
-NER result shape) is kept with the path removed.
+llm_schema,mod,parse,prompts}.rs`, `parsers/{mediawiki,unstructured,webpage}.rs`,
+`types.rs`. Paths already removed (uncommitted); strip the remaining narrative
+("Oracle reference/mapping", "the oracle's NER result", Go `_test.go` names,
+"ported") → describe the parsers/chunkers/NER natively.
 
-**Acceptance.** `rg '\.\./synopsis' crates/ingestion/src/` → **0**. `cargo
-fmt/clippy/test` green.
+**Acceptance.** `rg -i` (pattern 1.1) over `crates/ingestion/src/` → **0**.
+Gates green.
 
-- [ ] 1.7 Clean `mcp` crate + its Cargo.toml (13 files, 20 refs + 1)
+- [ ] 1.7 Clean `mcp` crate + Cargo.toml (13 files, full)
 
-**Scope.** `crates/mcp/src/`: `health.rs`, `lib.rs` (2 refs), `pagination.rs`,
-`server.rs` (3 refs), `tools/{catalog,documents,dossier,entities_catalog,entity,
-facts,graph_tools,search}.rs` (`catalog.rs`, `entities_catalog.rs`, `facts.rs`,
-`search.rs` have 2 refs), `transport/jsonrpc.rs`, and `crates/mcp/Cargo.toml`.
-Most are `//! Oracle mapping: \`../synopsis/internal/mcp/...\`` tags →
-**rule 1**. **Special — `transport/jsonrpc.rs`:** `//! Wire reference: mcp-go
-v0.57.0 (pinned in \`../synopsis/go.mod\`)` → **rule 2:** keep `//! Wire
-reference: mcp-go v0.57.0` and the handler references, drop the
-`(pinned in \`../synopsis/go.mod\`)` clause. **Special — `server.rs`:** the
-inline `/// \`../synopsis/internal/mcp/tools.go\` (\`mcp-contract\`)` refs →
-keep the `(\`mcp-contract\`)` pointer, drop the path. `Cargo.toml`
-`# D1 edges; oracle imports: ../synopsis/internal/mcp + internal/mcp/handlers` →
-**rule 4:** `# D1 edges.`
+**Scope.** `crates/mcp/src/`: `health.rs`, `lib.rs`, `pagination.rs`,
+`server.rs`, `tools/{catalog,documents,dossier,entities_catalog,entity,facts,
+graph_tools,search}.rs`, `transport/jsonrpc.rs`, and `crates/mcp/Cargo.toml`.
+Full cleanup (paths + narrative): strip `//! Oracle mapping: ../synopsis/...`,
+"the oracle's legacy SSE", `/// `../synopsis/internal/mcp/tools.go`
+(`mcp-contract`)` → keep the `mcp-contract` pointer; `jsonrpc.rs` keep
+"Wire reference: mcp-go v0.57.0" + handler refs, drop the path and "the
+oracle's server". Cargo.toml → `# D1 edges.`.
 
-**Acceptance.** `rg '\.\./synopsis' crates/mcp/src/ crates/mcp/Cargo.toml` →
-**0**. `cargo fmt/clippy/test` green. Wire reference (mcp-go v0.57.0) and
-`mcp-contract` pointers preserved.
+**Acceptance.** `rg -i` (pattern 1.1) over `crates/mcp/src/ crates/mcp/
+Cargo.toml` → **0**. Gates green. `mcp-contract` pointer + `mcp-go v0.57.0`
+kept.
 
-- [ ] 1.8 Clean `cli` crate + its Cargo.toml (14 files, 15 refs + 2)
+- [ ] 1.8 Clean `cli` crate + Cargo.toml (14 files, full)
 
 **Scope.** `crates/cli/src/`: `cli.rs`, `config_resolver.rs`, `lib.rs`,
-`loadtest/{filler,generator,mod,report,runner}.rs`, `model.rs` (2 refs),
+`loadtest/{filler,generator,mod,report,runner}.rs`, `model.rs`,
 `onnx_runtime.rs`, `serve/{bootstrap,health,server,watcher}.rs`, and
-`crates/cli/Cargo.toml`. Module-level `//! Oracle mapping: \`../synopsis/cmd/
-app/...\`` and `//! Oracle: \`../synopsis/internal/benchmark/...\`` tags →
-**rule 1**. **Special — `config_resolver.rs`:** `//! (\`../synopsis/cmd/app/
-main.go\`): an explicit \`--config\` path wins outright; …` → **rule 2:** keep
-the config-resolution rule text, drop the path. **Special — `model.rs`:** the
-inline `/// (\`../synopsis/internal/utils/human_size_test.go\`).` → drop the
-path, keep the surrounding note. `Cargo.toml`: line 9 `# Binary name matches the
-Go oracle artifact (../synopsis/bin/synopsis).` → **rule 4:** keep the note,
-drop the path; line 14 `# D1 edges; oracle imports: ../synopsis/cmd/app (…)` →
-**rule 4:** `# D1 edges.`
+`crates/cli/Cargo.toml`. Full cleanup: strip `//! Oracle mapping: ../synopsis/
+cmd/app/...`, `//! Oracle: ../synopsis/internal/benchmark/...`, "the oracle",
+Go file names → describe the subcommands/loadtest/serve natively (keep the
+config-resolution rule, binary-name note). Cargo.toml → `# D1 edges.` (keep the
+binary-name note without "Go oracle artifact").
 
-**Acceptance.** `rg '\.\./synopsis' crates/cli/src/ crates/cli/Cargo.toml` →
-**0**. `cargo fmt/clippy/test` green. Config-resolution and binary-naming notes
-preserved.
+**Acceptance.** `rg -i` (pattern 1.1) over `crates/cli/src/ crates/cli/
+Cargo.toml` → **0**. Gates green.
 
-- [ ] 1.9 Final whole-workspace verification
+## 2 — Top-level living docs
 
-**Goal.** Confirm the entire production tree is clean and nothing out of scope
-was touched.
+- [ ] 2.1 Clean `AGENTS.md` + `README.md`
+
+**Scope.** `AGENTS.md` and `README.md` (English).
+- **AGENTS.md:** remove the `## Oracle` section and the `## Migration
+  principles` section entirely; rewrite the intro line ("Rust rewrite of the Go
+  service … bugs from the oracle does not exist") to describe a standalone Rust
+  MCP server; strip "oracle reference paths", "fixtures recorded once from the
+  Go binary", "ported from the oracle", "the oracle's legacy HTTP+SSE" → "the
+  legacy HTTP+SSE transport", "mirrors the oracle's build-all platforms" →
+  "the cross-build matrix", "parity testing against the Go oracle", "unlike the
+  oracle", and the "transcribed from the Go oracle … until synced to main specs"
+  sentence (the specs are now the reference). The Layout table header "Oracle
+  mapping" → drop or replace with a neutral column. Keep: the frozen stack, hard
+  constraints, commands, gotchas (reworded), the double-transport fact,
+  D/ADR references.
+- **README.md:** remove the "Migration status" oracle framing ("The Go original
+  … is the oracle … throughout the migration", "all modules ported and
+  parity-checked", "Parity was machine-checked during the migration … the port
+  is complete") → describe a complete, standalone Rust service; reword "the
+  oracle's legacy HTTP+SSE" → "the legacy HTTP+SSE transport".
+
+**Acceptance.** `rg -i '\.\./synopsis|oracle|Go original|Go code|Go binary|
+ported|re-architected|not transcribed|migration|deviation from the oracle'
+AGENTS.md README.md` → **0**. Markdown still well-formed (headings/tables
+intact).
+
+- [ ] 2.2 Clean `config.yaml` + `docs/adr/**` (Russian)
+
+**Scope.** `openspec/config.yaml` and all `docs/adr/*.md` (Russian; refs found
+in `0001-sqlite-fts5`, `0002-onnx-runtime`, `0003-ann-engine` — verify the rest
+have none). Strip the oracle/Go/
+ported narrative **in Russian** (e.g. "Go-оригинал живёт в соседнем
+репозитории ../synopsis и является ОРАКУЛОМ", "Оракул — референс по ПОВЕДЕНИЮ
+и КОНТРАКТАМ", "НЕ копировать Go-оригинал 1:1", "ошибки оригинала не
+повторяются", "parity-чек против оракула", "референс в Go-оригинале", Go file
+names) → reframe as native design rationale. **Do NOT translate** (that is
+change `translate-to-english`). Keep the design decisions, hard constraints,
+and D/ADR references.
+
+**Acceptance.** `rg -i '\.\./synopsis|оракул|оригинал|портирован|перенос.*из
+Go|\.go\b|\.tmpl' openspec/config.yaml docs/adr/` → **0** (except legitimate
+non-Go uses). `config.yaml` still valid YAML.
+
+- [ ] 2.3 Clean `openspec/specs/**` (Russian)
+
+**Scope.** all `openspec/specs/*/spec.md` (Russian; refs found in
+`config-format`, `cli-surface`, `data-schema`, `db-storage`, `mcp-contract`,
+`vector-index` — verify the rest have none). Strip the
+oracle/Go/ported provenance **in Russian** (e.g. "зафиксированы из Go
+оригинала", "источник истины — ../synopsis/...", "портировано из", Go file
+names) → the specs describe the contract directly. **Do NOT translate.** Keep
+the contract content and D/ADR references.
+
+**Acceptance.** `rg -i '\.\./synopsis|оракул|оригинал|портирован|\.go\b|\.tmpl'
+openspec/specs/` → **0**. Spec files still valid (headings/requirement blocks
+intact).
+
+## 3 — Verification
+
+- [ ] 3.1 Final whole-repo verification
 
 **Acceptance.**
-1. `rg '\.\./synopsis' crates/*/src/ crates/*/Cargo.toml` → **0** matches.
-2. KEEP-set provenance is **untouched** — baseline counts must hold exactly:
-   `openspec/specs/` = 8, `openspec/changes/archive/` = 281, `docs/adr/` = 6,
-   `crates/config/tests/data/README.md` + `fixtures/README.md` = 19
-   (check each with `rg -c '\.\./synopsis' <path>`).
-3. `git diff --name-only` shows only files under `crates/*/src/` and
-   `crates/*/Cargo.toml` (no spec, archive, ADR, fixture, migration, or code
-   file).
-4. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-   all green.
+1. `rg -i '\.\./synopsis' crates/ AGENTS.md README.md openspec/config.yaml
+   docs/adr/ openspec/specs/` → **0**.
+2. `rg -i 'oracle|Go original|Go code|Go binary|re-architected|not transcribed|
+   deviations from the oracle|функциональная копия' crates/*/src/ AGENTS.md
+   README.md` → **0** (crate + top-level English living docs).
+3. `rg '\.\./synopsis|оракул|Go-оригинал' openspec/config.yaml docs/adr/
+   openspec/specs/` → **0** (Russian living docs).
+4. **Archive untouched:** `git diff --name-only HEAD -- openspec/changes/
+   archive/` → empty; `rg -c '\.\./synopsis' openspec/changes/archive/`
+   unchanged from baseline (281).
+5. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo
+   test` all green. No code (non-comment) files changed.

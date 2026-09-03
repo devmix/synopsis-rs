@@ -2,61 +2,92 @@
 
 ## Context note
 
-All 101 references are `//!`/`///` doc comments (96) or `#` Cargo.toml comments
-(5). There is **no code-level** `../synopsis` usage (verified: no `Path::new`,
-no `include_str!`, no string literal). So this is pure comment editing — code
-logic, public API, and dependencies are untouched, and `cargo fmt/clippy/test`
-stay green by construction.
+The Go project at `../synopsis` **will be deleted**. The user therefore decided
+(2026-09-03) that the Rust project's documentation should no longer reference it
+or frame itself as a port of it: the docs should describe a **standalone native
+Rust codebase**. This is broader than the original "remove `../synopsis` paths"
+scope — it also removes the *migration narrative* (oracle / Go / ported).
+
+Scope: all **living** documentation — crate doc comments (`crates/*/src/**`),
+crate `Cargo.toml` comments, `AGENTS.md`, `README.md`, `openspec/config.yaml`,
+`docs/adr/**`, and `openspec/specs/**`. **`openspec/changes/archive/**` is NOT
+touched** — it is the historical audit trail and must not be rewritten.
+
+All crate references are `//!`/`///` doc comments or `#` Cargo.toml comments —
+no code-level usage (verified: no `Path::new`, no `include_str!`, no string
+literal). So crate edits are comment-only; `cargo fmt/clippy/test` stay green by
+construction.
 
 ## The rule (uniform across all tasks)
 
-For each `../synopsis/...` reference:
+Remove **all migration-provenance** from living docs. Concretely:
 
-1. **Pure provenance tag** — a doc-comment line whose only purpose is the
-   oracle mapping (e.g. `//! Oracle mapping: \`../synopsis/...\``,
-   `//! Oracle: \`../synopsis/...\``, `//! Oracle reference: \`../synopsis/...\``)
-   → **delete the whole line** (and drop any continuation line that only
-   elaborates the mapping and becomes dangling).
-2. **Meaningful text + path** — a line that carries real behavioral/design
-   content plus a path (e.g. `//! Wire reference: mcp-go v0.57.0 (pinned in
-   \`../synopsis/go.mod\`)`, `//! Deliberate deviation from the oracle
-   (\`../synopsis/internal/llm/client.go\`)`) → **remove the path, keep the
-   meaningful text** (reword so the sentence still reads cleanly).
-3. **Stale parity-harness clause** — a clause that cites the (now-removed)
-   parity harness as an acceptance criterion (e.g. `rrf.rs`: "differential
-   parity with `../synopsis/internal/search/rrf_test.go` is an acceptance
-   criterion") → **drop the clause** (the mechanism no longer exists; keeping
-   the path would leave a dangling reference).
-4. **Cargo.toml** — a `# D1 edges; oracle imports: ../synopsis/...` comment →
-   **keep the design note (`# D1 edges`), drop the `oracle imports: ...`
-   clause**. A `# Binary name matches the Go oracle artifact
-   (../synopsis/bin/synopsis).` → keep the note, drop the path.
+**REMOVE:**
+- Any reference to the Go project / oracle: `the oracle`, `Go oracle`,
+  `Go original`, `Go code`, `Go service`, `Go project`, `Go binary`,
+  `the original`, and any `../synopsis/...` path.
+- Go source file names: `*.go`, `*.tmpl` (e.g. `rrf.go`, `tools.go`,
+  `library.go`, `ner.go`) when they reference the Go source.
+- Port/migration language: `ported`, `port of`, `faithful port`,
+  `re-architected`, `not transcribed`, `functional copy`, `migration`,
+  `migration principle(s)`, `transcribed from`, `verified against the oracle`,
+  `deviations from the oracle`, `parity with the oracle`, `parity-checked`.
+- Whole sections that only exist for the migration: AGENTS.md `## Oracle` and
+  `## Migration principles`.
+
+**KEEP (reframe where needed):**
+- The design rationale / WHY, reframed as a native Rust decision (drop the
+  "from the oracle" framing): e.g. "silent defaults are replaced by fail-fast
+  validation"; "CLS pooling takes the first hidden state"; "downloads go
+  through a retrying, SSRF-protected client"; "the index is disk-backed and
+  quantized for the 16 GB laptop constraint".
+- Behavioral and algorithm descriptions (`score += 1 / (k + rank)`, retry
+  counts, timeouts, PRAGMA lists).
+- The project's own design-decision references: `D1…D8`, `ADR 0001…0005`
+  (these point at the Rust repo's `docs/adr/**` and the archive's design docs —
+  both kept).
+- Wire-format version identifiers such as `mcp-go v0.57.0` (a protocol version,
+  not a reference to the deleted project) — but drop "the oracle's" around it.
+
+**Reframe example:**
+- before: `//! Deliberate deviations from the oracle: silent defaults are
+  replaced by fail-fast validation`
+- after:  `//! Design: silent defaults are replaced by fail-fast validation`
+- before: `//! Faithful port of the oracle's `rrf.go` — every numeric behavior is
+  preserved`
+- after:  `//! Reciprocal Rank Fusion; every numeric behavior is preserved`
 
 ## Decisions
 
-### D1 — Preserve meaningful text; the goal is path removal, not doc deletion
+### D1 — Strip the narrative, keep the rationale
 
-The point is to strip the migration-provenance *path*, not to delete useful
-documentation. Deviation notes ("Deliberate deviation from the oracle"), wire
-contracts ("mcp-go v0.57.0"), config-resolution rules, and binary-naming notes
-all stay; only the `../synopsis/...` path (and pure mapping tags) go. The
-reviewer checks that no meaningful text is lost.
+The goal is to delete the *provenance* (that this is a port of a Go project),
+not the *design rationale* (why the code behaves as it does). Deviation notes
+become plain design decisions; "faithful port of X.go" becomes a description of
+the algorithm/behavior. The reviewer checks that no design rationale is lost and
+that no oracle/Go/ported language remains.
 
-### D2 — Drop now-stale parity-harness clauses
+### D2 — The archive is history, not living docs
 
-Change `remove-parity-harness` deleted the differential-harness crate. Any
-doc line asserting "differential parity with `../synopsis/...` is an acceptance
-criterion" is now false. Those clauses are removed together with the path.
+`openspec/changes/archive/**` records the decisions as they were made (including
+the migration framing). Rewriting it would falsify the audit trail, so it is
+explicitly out of scope even though it is full of oracle references.
 
-### D3 — Keep provenance where it belongs
+### D3 — Russian docs: strip narrative now, translate later
 
-`openspec/specs/**` (authoritative contract provenance), `openspec/changes/
-archive/**` (history), test-fixture READMEs, migration SQL, and ADRs are
-**out of scope** and keep their references. Only production crate source and
-crate `Cargo.toml` are cleaned.
+`openspec/config.yaml`, `docs/adr/**`, and `openspec/specs/**` are currently
+Russian and will be translated to English by change `translate-to-english`.
+This change removes the oracle/Go/ported narrative **in Russian** (content
+decision); the translation (language change) is a separate concern and stays in
+`translate-to-english`.
+
+### D4 — Drop now-stale parity-harness clauses
+
+Change `remove-parity-harness` deleted the differential-harness crate. Any line
+asserting "differential parity with the oracle is an acceptance criterion" (or
+"parity was machine-checked during the migration") is now false and is removed.
 
 ## Oracle references
 
-None. `../synopsis` is not read or modified; the references being removed are
-the only connection, and their provenance value is already captured in
-`openspec/specs/` and the archive.
+None. `../synopsis` is not read or modified; its references are being removed
+from all living docs, and the historical record in the archive is preserved.
