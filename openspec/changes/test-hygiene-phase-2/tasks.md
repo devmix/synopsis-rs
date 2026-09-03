@@ -128,7 +128,7 @@ present.
 
 **Acceptance.** Shared per-task acceptance for crate `vectors`.
 
-- [ ] 2.7 Extract `config/src/ontology.rs` tests → `config/tests/ontology.rs`
+- [x] 2.7 Extract `config/src/ontology.rs` tests → `config/tests/ontology.rs`
 
 **Goal.** Shrink `crates/config/src/ontology.rs` (1,320 lines; ~318 inline
 test lines) by relocating its movable tests to
