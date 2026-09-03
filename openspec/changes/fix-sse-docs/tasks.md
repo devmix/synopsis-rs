@@ -9,7 +9,7 @@ must stay untouched.**
 
 ## 1
 
-- [ ] 1.1 Correct the four stale SSE statements (AGENTS.md, README.md, config.yaml)
+- [x] 1.1 Correct the four stale SSE statements (AGENTS.md, README.md, config.yaml)
 
 **Goal.** Replace the false "legacy SSE deliberately not preserved / not
 reproduced" claims with the true **double-transport** state, citing real
