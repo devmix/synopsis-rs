@@ -378,6 +378,7 @@ mod tests {
                     doc,
                     "zebra stripes",
                     "Atlas Guide\n\nzebra stripes",
+                    None,
                     0,
                     None,
                     None,

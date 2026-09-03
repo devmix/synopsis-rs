@@ -307,6 +307,10 @@ impl<'a> Ingester<'a> {
                     doc_id,
                     &chunk.text,
                     &chunk.search_text,
+                    // The per-chunk metadata bag is persisted here from
+                    // task 3.1 (chunk-metadata-persistence); until then the
+                    // column stays NULL.
+                    None,
                     chunk.sequence_num as i64,
                     // Byte offsets of a file-sized document cannot reach the
                     // i64 boundary; the truncation is unreachable.

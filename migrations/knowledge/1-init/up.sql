@@ -55,6 +55,14 @@
 -- breadcrumb-prefixed text, which breaks the offset semantics; Rust keeps both
 -- columns instead.
 --
+-- Folded-in `metadata_json` (chunk-metadata-persistence design D1): the
+-- per-chunk metadata bag as raw JSON (nullable, no default — a chunk without
+-- chunk-specific metadata stores NULL). Rust stores it as `Option<String>`,
+-- parsed on demand (the `documents.metadata_json` pattern). Restores the
+-- field from the original Rust design, dropped earlier to match the frozen
+-- v5 shape; explicit, justified deviation from the oracle v5 schema (the Go
+-- `chunks` table has no metadata column).
+--
 -- Folded-in Rust operational tables (formerly the forward-only document-jobs and
 -- usearch-WAL migrations):
 --   document_jobs            -- persistent state machine for document operations
@@ -82,14 +90,17 @@ CREATE TABLE documents (
 );
 
 CREATE TABLE chunks (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_id       INTEGER NOT NULL,
-    chunk_text   TEXT NOT NULL,
-    sequence_num INTEGER NOT NULL,
-    start_offset INTEGER,
-    end_offset   INTEGER,
-    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-    search_text  TEXT NOT NULL DEFAULT '',
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id        INTEGER NOT NULL,
+    chunk_text    TEXT NOT NULL,
+    sequence_num  INTEGER NOT NULL,
+    start_offset  INTEGER,
+    end_offset    INTEGER,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    search_text   TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT, -- per-chunk metadata bag as raw JSON (nullable; no
+                        -- default — an empty bag stores NULL).
+                        -- chunk-metadata-persistence design D1.
     FOREIGN KEY (doc_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 

@@ -36,11 +36,16 @@
 //! - the legacy vector-store operations of the oracle (`SearchVector`,
 //!   `UpsertVector`, `FormatVector`, `DeleteVectorsByChunkIDs`,
 //!   `DeleteOrphanedVectors`) are deliberately NOT ported — vector search
-//!   moves to the `vectors` change (design D7).
+//!   moves to the `vectors` change (design D7);
+//! - `metadata_json` column (chunk-metadata-persistence design D1): the
+//!   chunk's own metadata bag as raw JSON (`Option<String>`, parsed on
+//!   demand — the `documents.metadata_json` pattern; `NULL` = no metadata).
+//!   The oracle v5 `chunks` table has no such column; this restores the
+//!   field from the original Rust design.
 //!
-//! Note: the task body's `Chunk` field list (token_count, metadata_json,
-//! updated_at) does not match the frozen v5 schema, which has exactly the
-//! columns of [`Chunk`]; the schema is the contract.
+//! Note: the task body's `Chunk` field list (token_count, updated_at) does
+//! not match the frozen v5 schema, which has exactly the columns of
+//! [`Chunk`]; the schema is the contract.
 
 use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
@@ -57,7 +62,8 @@ const FTS_MAX_LIMIT: i64 = 100;
 
 /// Shared `SELECT` list for the `chunks` row queries (column order is the
 /// contract of [`row_to_chunk`]).
-const SELECT_CHUNK: &str = "SELECT id, doc_id, chunk_text, search_text, sequence_num, start_offset, end_offset, \
+const SELECT_CHUNK: &str = "SELECT id, doc_id, chunk_text, search_text, metadata_json, sequence_num, \
+     start_offset, end_offset, \
      created_at \
      FROM chunks";
 
@@ -66,8 +72,8 @@ const SELECT_CHUNK: &str = "SELECT id, doc_id, chunk_text, search_text, sequence
 /// same statement serves both cases (DRY, as `document.rs` `FILTER_WHERE`);
 /// the `json_valid` guard sits in the outer `WHERE` so a malformed
 /// `metadata_json` can never fail the query.
-const FTS_QUERY: &str = "SELECT c.id, c.doc_id, c.chunk_text, c.search_text, c.sequence_num, c.start_offset, \
-     c.end_offset, \
+const FTS_QUERY: &str = "SELECT c.id, c.doc_id, c.chunk_text, c.search_text, c.metadata_json, c.sequence_num, \
+     c.start_offset, c.end_offset, \
      c.created_at, bm25(chunks_fts) \
      FROM chunks c \
      INNER JOIN chunks_fts ON chunks_fts.rowid = c.id \
@@ -93,6 +99,11 @@ pub struct Chunk {
     /// `breadcrumb + "\n\n" + body` for sectioned chunks, equal to
     /// `chunk_text` otherwise (search-text-embedding design D1).
     pub search_text: String,
+    /// The chunk's own metadata bag as raw JSON, if any (per-chunk keys such
+    /// as `section_title`/`breadcrumb`; `None` = no metadata). Parsed on
+    /// demand by the reader (the `documents.metadata_json` pattern;
+    /// chunk-metadata-persistence design D1).
+    pub metadata_json: Option<String>,
     /// Position of the chunk within its document.
     pub sequence_num: i64,
     /// Start offset in the original text, if any.
@@ -145,11 +156,11 @@ impl<'conn> ChunkDao<'conn> {
 
     /// Insert a new chunk and return its generated id. The `chunks_fts_ai`
     /// trigger indexes the text automatically. `start_offset`/`end_offset`
-    /// are stored as `NULL` when `None`.
+    /// are stored as `NULL` when `None`, and `metadata_json` as `NULL`.
     ///
     /// `search_text` defaults to `chunk_text` (the init-migration backfill
     /// semantics); use [`Self::create_with_search_text`] to store a distinct
-    /// search text (breadcrumb + body).
+    /// search text (breadcrumb + body) and a per-chunk metadata bag.
     pub fn create(
         &self,
         doc_id: i64,
@@ -162,6 +173,7 @@ impl<'conn> ChunkDao<'conn> {
             doc_id,
             chunk_text,
             chunk_text,
+            None,
             sequence_num,
             start_offset,
             end_offset,
@@ -170,24 +182,31 @@ impl<'conn> ChunkDao<'conn> {
 
     /// Insert a new chunk with an explicit `search_text` (the text the FTS5
     /// index and the embedding leg operate on; search-text-embedding design
-    /// D1/D2) and return its generated id.
+    /// D1/D2) and, optionally, the chunk's own metadata bag as raw JSON
+    /// (`metadata_json`, `NULL` when `None`; chunk-metadata-persistence
+    /// design D1), and return its generated id.
+    // The seven data parameters mirror the `chunks` write column set (house
+    // style: plain parameters, as in the sibling DAOs).
+    #[allow(clippy::too_many_arguments)]
     pub fn create_with_search_text(
         &self,
         doc_id: i64,
         chunk_text: &str,
         search_text: &str,
+        metadata_json: Option<&str>,
         sequence_num: i64,
         start_offset: Option<i64>,
         end_offset: Option<i64>,
     ) -> Result<i64, DbError> {
         self.exec.query_row(
-            "INSERT INTO chunks (doc_id, chunk_text, search_text, sequence_num, start_offset, \
-             end_offset) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
+            "INSERT INTO chunks (doc_id, chunk_text, search_text, metadata_json, sequence_num, \
+             start_offset, end_offset) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
             params![
                 doc_id,
                 chunk_text,
                 search_text,
+                metadata_json,
                 sequence_num,
                 start_offset,
                 end_offset
@@ -220,26 +239,32 @@ impl<'conn> ChunkDao<'conn> {
             .query(&format!("{SELECT_CHUNK} ORDER BY id"), [], row_to_chunk)
     }
 
-    /// Update text, position and offsets of an existing chunk, refreshing the
-    /// FTS index via the `chunks_fts_au` trigger. `search_text` is the new
-    /// value of the indexed column (pass `chunk_text` when they coincide).
-    /// Returns `true` if a row was updated, `false` if no chunk has `id`.
+    /// Update text, position, offsets and the metadata bag of an existing
+    /// chunk, refreshing the FTS index via the `chunks_fts_au` trigger.
+    /// `search_text` is the new value of the indexed column (pass
+    /// `chunk_text` when they coincide); `metadata_json` is the new raw-JSON
+    /// bag (`NULL` when `None`). Returns `true` if a row was updated,
+    /// `false` if no chunk has `id`.
+    // Same seven data parameters as [`Self::create_with_search_text`].
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
         id: i64,
         chunk_text: &str,
         search_text: &str,
+        metadata_json: Option<&str>,
         sequence_num: i64,
         start_offset: Option<i64>,
         end_offset: Option<i64>,
     ) -> Result<bool, DbError> {
         let changed = self.exec.execute(
-            "UPDATE chunks SET chunk_text = ?1, search_text = ?2, sequence_num = ?3, \
-             start_offset = ?4, end_offset = ?5 \
-             WHERE id = ?6",
+            "UPDATE chunks SET chunk_text = ?1, search_text = ?2, metadata_json = ?3, \
+             sequence_num = ?4, start_offset = ?5, end_offset = ?6 \
+             WHERE id = ?7",
             params![
                 chunk_text,
                 search_text,
+                metadata_json,
                 sequence_num,
                 start_offset,
                 end_offset,
@@ -328,10 +353,11 @@ fn row_to_chunk(row: &Row<'_>) -> rusqlite::Result<Chunk> {
         doc_id: row.get(1)?,
         chunk_text: row.get(2)?,
         search_text: row.get(3)?,
-        sequence_num: row.get(4)?,
-        start_offset: row.get(5)?,
-        end_offset: row.get(6)?,
-        created_at: row.get(7)?,
+        metadata_json: row.get(4)?,
+        sequence_num: row.get(5)?,
+        start_offset: row.get(6)?,
+        end_offset: row.get(7)?,
+        created_at: row.get(8)?,
     })
 }
 
@@ -339,7 +365,7 @@ fn row_to_chunk(row: &Row<'_>) -> rusqlite::Result<Chunk> {
 fn row_to_hit(row: &Row<'_>) -> rusqlite::Result<FtsHit> {
     Ok(FtsHit {
         chunk: row_to_chunk(row)?,
-        score: row.get(8)?,
+        score: row.get(9)?,
     })
 }
 
@@ -416,6 +442,7 @@ mod tests {
                     doc,
                     "zebra stripes gallop",
                     "Atlas Guide\n\nzebra stripes gallop",
+                    None,
                     0,
                     Some(0),
                     Some(20),
@@ -439,6 +466,136 @@ mod tests {
         });
     }
 
+    // (criterion 1) the squashed init migration gives `chunks` a nullable
+    // `metadata_json` column; `user_version` stays 1.
+    #[test]
+    fn schema_has_nullable_metadata_json_column() {
+        let db = in_memory_db();
+        let user_version: i64 = db
+            .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(user_version, 1, "user_version must stay 1");
+        // PRAGMA table_info columns: (name, notnull).
+        let columns: Vec<(String, i64)> = db
+            .with_conn(|conn| {
+                conn.prepare("PRAGMA table_info(chunks)")
+                    .unwrap()
+                    .query_map([], |r| Ok((r.get(1)?, r.get(3)?)))
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect()
+            })
+            .unwrap();
+        assert!(
+            columns
+                .iter()
+                .any(|(name, notnull)| name == "metadata_json" && *notnull == 0),
+            "chunks must have a nullable metadata_json column: {columns:?}"
+        );
+    }
+
+    // (criterion 3) metadata_json round-trip: a chunk created with a bag
+    // returns it on every read path; a chunk created without one returns
+    // None.
+    #[test]
+    fn metadata_json_round_trip() {
+        let db = in_memory_db();
+        let doc = seed_doc(&db, "/docs/a.md", None);
+        with_chunks(&db, |chunks| {
+            let bag = r#"{"section_title":"Intro","breadcrumb":["Guide","Intro"]}"#;
+            let with_meta = chunks
+                .create_with_search_text(
+                    doc,
+                    "intro body",
+                    "Guide > Intro\n\nintro body",
+                    Some(bag),
+                    0,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let without_meta = chunks
+                .create_with_search_text(doc, "plain body", "plain body", None, 1, None, None)
+                .unwrap();
+
+            // get_by_id returns the stored bag (and None when absent).
+            let c1 = chunks.get_by_id(with_meta).unwrap().expect("exists");
+            assert_eq!(c1.metadata_json.as_deref(), Some(bag));
+            let c2 = chunks.get_by_id(without_meta).unwrap().expect("exists");
+            assert_eq!(c2.metadata_json, None, "absent metadata reads back as None");
+
+            // list_by_doc_id / list_all carry it as well.
+            let listed = chunks.list_by_doc_id(doc).unwrap();
+            assert_eq!(
+                listed
+                    .iter()
+                    .find(|c| c.id == with_meta)
+                    .unwrap()
+                    .metadata_json
+                    .as_deref(),
+                Some(bag)
+            );
+            assert_eq!(
+                chunks
+                    .list_all()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c.id == without_meta)
+                    .unwrap()
+                    .metadata_json,
+                None
+            );
+
+            // search_fts carries it (criterion 2).
+            let hits = chunks.search_fts("intro", 20, None).unwrap();
+            assert_eq!(hits.len(), 1, "the sectioned chunk must match");
+            assert_eq!(hits[0].chunk.id, with_meta);
+            assert_eq!(hits[0].chunk.metadata_json.as_deref(), Some(bag));
+        });
+    }
+
+    // (criterion 3, write half) update accepts metadata_json: sets a bag,
+    // then clears it back to NULL.
+    #[test]
+    fn update_metadata_json_set_and_clear() {
+        let db = in_memory_db();
+        let doc = seed_doc(&db, "/docs/a.md", None);
+        with_chunks(&db, |chunks| {
+            let id = chunks.create(doc, "old text", 0, None, None).unwrap();
+            assert_eq!(
+                chunks.get_by_id(id).unwrap().unwrap().metadata_json,
+                None,
+                "create stores NULL metadata"
+            );
+            let bag = r#"{"section_title":"Section"}"#;
+            assert!(
+                chunks
+                    .update(id, "new text", "new search text", Some(bag), 1, None, None)
+                    .unwrap()
+            );
+            assert_eq!(
+                chunks
+                    .get_by_id(id)
+                    .unwrap()
+                    .unwrap()
+                    .metadata_json
+                    .as_deref(),
+                Some(bag)
+            );
+            assert!(
+                chunks
+                    .update(id, "new text", "new search text", None, 1, None, None)
+                    .unwrap()
+            );
+            assert_eq!(
+                chunks.get_by_id(id).unwrap().unwrap().metadata_json,
+                None,
+                "update with None must clear the bag back to NULL"
+            );
+        });
+    }
+
     // (criterion 4) the FTS index is over search_text: a term present only
     // in search_text is found, a term only in chunk_text is not.
     #[test]
@@ -453,6 +610,7 @@ mod tests {
                     doc,
                     "quokka stripes gallop",
                     "Atlas Guide\n\nfox trot",
+                    None,
                     0,
                     None,
                     None,
@@ -510,17 +668,28 @@ mod tests {
             let id = chunks.create(doc, "old text", 0, None, None).unwrap();
             assert!(
                 chunks
-                    .update(id, "new text", "new search text", 5, Some(3), Some(11))
+                    .update(
+                        id,
+                        "new text",
+                        "new search text",
+                        None,
+                        5,
+                        Some(3),
+                        Some(11)
+                    )
                     .unwrap()
             );
             let c = chunks.get_by_id(id).unwrap().unwrap();
             assert_eq!(c.chunk_text, "new text");
             assert_eq!(c.search_text, "new search text");
+            assert_eq!(c.metadata_json, None, "update with None must store NULL");
             assert_eq!(c.sequence_num, 5);
             assert_eq!(c.start_offset, Some(3));
             assert_eq!(c.end_offset, Some(11));
             assert!(
-                !chunks.update(999_999, "x", "x", 0, None, None).unwrap(),
+                !chunks
+                    .update(999_999, "x", "x", None, 0, None, None)
+                    .unwrap(),
                 "missing id must report false, not error"
             );
         });
@@ -756,7 +925,7 @@ mod tests {
             // index (chunk_text may stay untouched).
             assert!(
                 chunks
-                    .update(id, "zebra stripes", "zebra and quokka", 0, None, None)
+                    .update(id, "zebra stripes", "zebra and quokka", None, 0, None, None)
                     .unwrap()
             );
             assert_eq!(chunks.search_fts("quokka", 20, None).unwrap().len(), 1);
