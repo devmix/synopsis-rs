@@ -20,7 +20,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use config::preset::IngestionConfig;
+use config::preset::{ChunkingStrategy, IngestionConfig, MarkdownChunkerConfig};
 use db::test_util::in_memory_db;
 use db::{
     ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, FactSourceDao,
@@ -29,9 +29,9 @@ use embedding::{EmbeddingError, EmbeddingProvider};
 use serde_json::Map;
 
 use ingestion::{
-    Chunker, Document, DocumentChunk, DocumentMetadata, Ingester, IngestionError, NerEntity,
-    NerFact, NerProvider, NerResult, ParseResult, Parser, ProgressStats, Resolver, Source,
-    VectorSink,
+    Chunker, Document, DocumentChunk, DocumentMetadata, Ingester, IngestionError, MarkdownChunker,
+    MarkdownSource, NerEntity, NerFact, NerProvider, NerResult, ParseResult, Parser, ProgressStats,
+    Resolver, Source, VectorSink,
 };
 
 /// An in-memory test source: `parse` reads every `.txt` file of the
@@ -860,6 +860,90 @@ fn embedding_input_is_search_text_and_ner_input_is_text() {
         .unwrap();
     assert_eq!(chunk_text, "body line");
     assert_eq!(search_text, "Breadcrumb Context\n\nbody line");
+}
+
+// (chunk-metadata-persistence task 3.1) end to end: the ingester
+// serializes each chunk's metadata bag to `chunks.metadata_json`. A
+// sectioned Markdown chunk carries the `breadcrumb`/`section_title` keys;
+// a chunk with an empty bag stores `NULL`.
+#[test]
+fn chunk_metadata_bag_is_persisted_to_metadata_json() {
+    let dir = TempDir::new();
+    let root = dir.0.clone();
+    write_file(
+        &root,
+        "guide.md",
+        "# A\n\n## A.1\ntext under a1\n\n## A.2\ntext under a2",
+    );
+    write_file(&root, "plain.md", "Just plain text without headers.");
+    let h = Harness::new();
+    let source = MarkdownSource::new(Box::new(MarkdownChunker::new(MarkdownChunkerConfig {
+        strategy: ChunkingStrategy::Headers,
+        max_chunk_size: 1000,
+        overlap_size: 0,
+        ..Default::default()
+    })));
+
+    let ingester = Ingester::new(
+        &h.db,
+        &h.cfg,
+        &source,
+        h.embed.as_ref(),
+        Some(&h.ner),
+        &h.resolver,
+        h.sink.as_ref(),
+    );
+    let stats = ingester.ingest(&root, false).unwrap();
+    assert_eq!(stats.documents_created, 2, "{stats:?}");
+    assert_eq!(stats.chunks_created, 3, "{stats:?}");
+    assert_eq!(stats.errors, 0, "{stats:?}");
+
+    // `list` orders by created_at (second resolution), so the documents are
+    // matched by path, not position.
+    let (guide_chunks, plain_chunks) =
+        h.db.with_conn(|conn| {
+            let exec = ConnectionOrTx::Connection(conn);
+            let docs = DocumentDao::new(exec);
+            let chunk_dao = ChunkDao::new(exec);
+            let mut guide = Vec::new();
+            let mut plain = Vec::new();
+            for doc in docs.list().unwrap() {
+                if doc.original_path.ends_with("guide.md") {
+                    guide = chunk_dao.list_by_doc_id(doc.id).unwrap();
+                } else if doc.original_path.ends_with("plain.md") {
+                    plain = chunk_dao.list_by_doc_id(doc.id).unwrap();
+                }
+            }
+            (guide, plain)
+        })
+        .unwrap();
+
+    // The sectioned document: both chunks persist the bag with the
+    // breadcrumb and section_title keys (criterion 2).
+    assert_eq!(guide_chunks.len(), 2);
+    for (index, chunk) in guide_chunks.iter().enumerate() {
+        let bag: serde_json::Value =
+            serde_json::from_str(chunk.metadata_json.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            bag["section_title"],
+            serde_json::Value::String(["A.1", "A.2"][index].to_owned()),
+            "chunk {index}: section_title key"
+        );
+        assert_eq!(bag["heading_level"], serde_json::Value::from(2));
+        assert_eq!(
+            bag["breadcrumb"].as_str(),
+            Some(format!("> A\n > {}", ["A.1", "A.2"][index]).as_str()),
+            "chunk {index}: breadcrumb key"
+        );
+    }
+
+    // The headingless document: the single chunk's bag is empty → NULL
+    // (criterion 3).
+    assert_eq!(plain_chunks.len(), 1);
+    assert_eq!(
+        plain_chunks[0].metadata_json, None,
+        "an empty bag must store NULL"
+    );
 }
 
 #[test]

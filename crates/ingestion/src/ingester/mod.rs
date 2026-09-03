@@ -46,6 +46,7 @@ use std::path::Path;
 use config::preset::IngestionConfig;
 use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, GcDao};
 use embedding::EmbeddingProvider;
+use serde_json::{Map, Value};
 use vectors::VectorIndex;
 
 use crate::entities::Resolver;
@@ -302,15 +303,16 @@ impl<'a> Ingester<'a> {
             for (chunk, ner_result) in chunks.iter().zip(ner_results.iter()) {
                 // Persist both texts (search-text-embedding task 2.1): the
                 // pure-slice `chunk_text` (byte-offset invariant) and the
-                // `search_text` the FTS5 index and the embedding leg used.
+                // `search_text` the FTS5 index and the embedding leg used,
+                // plus the chunk's own metadata bag as raw JSON
+                // (chunk-metadata-persistence task 3.1; `NULL` when the bag
+                // is empty).
+                let chunk_metadata = Self::chunk_metadata_json(&chunk.metadata)?;
                 let chunk_id = chunk_dao.create_with_search_text(
                     doc_id,
                     &chunk.text,
                     &chunk.search_text,
-                    // The per-chunk metadata bag is persisted here from
-                    // task 3.1 (chunk-metadata-persistence); until then the
-                    // column stays NULL.
-                    None,
+                    chunk_metadata.as_deref(),
                     chunk.sequence_num as i64,
                     // Byte offsets of a file-sized document cannot reach the
                     // i64 boundary; the truncation is unreachable.
@@ -419,6 +421,22 @@ impl<'a> Ingester<'a> {
             .iter()
             .map(|chunk| ner.extract_entities(&chunk.text, &chunk.metadata))
             .collect()
+    }
+
+    /// The raw-JSON form of a chunk's metadata bag for the
+    /// `chunks.metadata_json` column (chunk-metadata-persistence task 3.1):
+    /// the bag serialized as a JSON object, or `NULL` when the bag is empty
+    /// (design D1: `NULL` reads as "no metadata" and is the common case for
+    /// chunks without chunk-specific keys).
+    fn chunk_metadata_json(
+        metadata: &Map<String, Value>,
+    ) -> Result<Option<String>, IngestionError> {
+        if metadata.is_empty() {
+            return Ok(None);
+        }
+        let json = serde_json::to_string(metadata)
+            .map_err(|source| IngestionError::MetadataJson { source })?;
+        Ok(Some(json))
     }
 
     /// The `source_type` column value for a document: the typed
