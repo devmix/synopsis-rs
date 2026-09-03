@@ -44,7 +44,6 @@ Targets are documented ranges, **not gates** (see [Status](#status-measure-first
 | `llm` | 60–70% | LLM client, retry/backoff |
 | `cli` | 50–60% | subcommand dispatch, flags (integration-heavy) |
 | `embedding` | 50–60% | ONNX runtime lifecycle (complex FFI) |
-| `parity-harness` | excluded | test infrastructure, not product code |
 
 ## Status: measure-first
 

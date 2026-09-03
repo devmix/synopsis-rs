@@ -11,7 +11,6 @@
 | `cargo fmt --check` | PASS |
 | `cargo clippy --all-targets -- -D warnings` | PASS |
 | `cargo test` (full workspace) | PASS — 1444 passed, 0 failed, 8 ignored (44 test binaries) |
-| Parity harness (`crates/parity-harness`) | Included in `cargo test`; fixture-based tool-response parity + recall/percentile unit tests green |
 
 ## 2. MCP tools — 12/12 present
 

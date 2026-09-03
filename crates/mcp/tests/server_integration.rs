@@ -1,9 +1,8 @@
 //! End-to-end integration test (task 5.10): the full transport round-trip.
 //!
 //! Boots [`mcp::Server`] on an ephemeral localhost port (axum + rmcp
-//! Streamable HTTP, design D1/D8), connects with the same rmcp SDK the
-//! parity-harness uses (client role + reqwest-backed streamable-HTTP
-//! transport), and drives the real wire path:
+//! Streamable HTTP, design D1/D8), connects with the rmcp SDK client role
+//! (reqwest-backed streamable-HTTP transport), and drives the real wire path:
 //! `initialize` → `tools/list` (exactly the 12 frozen tools) →
 //! `tools/call` for `search` and `catalog_overview` against a seeded
 //! in-memory KB → `GET /health` over plain HTTP on the same listener.
@@ -158,8 +157,7 @@ async fn spawn_server(server: mcp::Server) -> (String, tokio::sync::oneshot::Sen
 }
 
 /// Connect and complete the `initialize` handshake against the Streamable
-/// HTTP endpoint (the parity-harness pattern, inlined: the test needs plain
-/// rmcp, no timing instrumentation).
+/// HTTP endpoint (plain rmcp, no timing instrumentation).
 async fn connect(url: &str) -> RunningService<RoleClient, ClientInfo> {
     let transport = StreamableHttpClientTransport::from_uri(url);
     ClientInfo::new(

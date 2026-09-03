@@ -8,7 +8,7 @@ workspace = true
 
 # D1 edges; oracle imports: ../synopsis/internal/mcp + internal/mcp/handlers
 # (config, database, graph, search). rmcp features: server role + Streamable
-# HTTP transport (design D8) — the same set the parity-harness dev-deps pin.
+# HTTP transport (design D8).
 [dependencies]
 # Opaque cursor base64 for the paginated catalog tools (task 5.2); the wire
 # format is byte-compatible with the Go oracle's pagination.go.
@@ -36,9 +36,9 @@ tokio = { workspace = true }
 
 # Test-only. `ServiceExt::oneshot` drives the composed axum router in the
 # unit tests (no live listener). Task 5.10 adds the full wire round-trip:
-# rmcp's client role + reqwest-backed Streamable HTTP client transport (the
-# same feature set the parity-harness pins), and reqwest for the plain-HTTP
-# GET /health assertion (workspace palette entry, `json` only).
+# rmcp's client role + reqwest-backed Streamable HTTP client transport, and
+# reqwest for the plain-HTTP GET /health assertion (workspace palette entry,
+# `json` only).
 # tokio `test-util` (task 1.5): the idle-reaper tests use the paused clock
 # (`#[tokio::test(start_paused = true)]`, which auto-advances virtual time as
 # the tests sleep) — tokio's `full` feature does not include `test-util`, so
