@@ -24,7 +24,7 @@ Rust rewrite of the Go service "Synopsis" (`../synopsis`): a local RAG + knowled
 - rusqlite (`bundled` + `fts5`) — FTS5 always available, no cgo flags; sync driver behind `spawn_blocking`/connection pool. Migrations via `rusqlite_migration` 2.x (`from-directory`) with `PRAGMA user_version` as sole schema-state authority (design D6)
 - ONNX runtime as external `.so`/`.dylib` (bge-m3 int8, 1024-dim embeddings + NER); the download/verify mechanism per `onnx.yaml` is ported from the oracle. **Bindings crate deferred:** the frozen-stack entry "onnxruntime-rs" no longer exists on crates.io and its successor `ort` has no stable release yet — decided in the embedding change
 - usearch 2.x — the sole ANN engine (ADR 0004): C++11 HNSW core via cxx, disk-backed, scalar-quantized (default bf16), WAL + segments; replaces vec0 brute-force. Vectors are NOT read from old vec0: they are rebuilt from chunk text
-- rmcp 3.x — official MCP SDK over Streamable HTTP (design D8); wire compatibility with the oracle's legacy SSE transport is **deliberately not preserved**
+- rmcp 3.x — official MCP SDK over Streamable HTTP (design D8); the oracle's legacy HTTP+SSE transport is **also** served (double transport — override of D8, human decision 2026-08-31, change `add-legacy-sse-transport`; wire contract mcp-go v0.57.0)
 - cel-interpreter (entity-linking expressions), tokenizers, notify, tokio-cron-scheduler, indicatif
 
 ## Hard constraints
@@ -67,7 +67,7 @@ Dependency graph (fixed by design D1): `config, db, vectors → embedding, inges
 - **Toolchain pin:** `rust-toolchain.toml` pins 1.96.0, and the CI action `dtolnay/rust-toolchain@<rev>` must match that file exactly — a mismatch makes every cargo command fail with "toolchain not installed".
 - **Cargo.lock is committed on purpose:** this workspace produces a binary, and reproducible builds matter for parity testing against the Go oracle. Do not remove it or add `lock = false`.
 - **Workspace lints (task 1.1):** `missing_docs = "deny"` — public API must be documented; `unsafe_code = "forbid"`; clippy `all`/`unwrap_used`/`expect_used` are warn-level, but the gate runs with `-D warnings`, so any warning fails CI. Test modules may opt out locally: `#![allow(clippy::unwrap_used)]`.
-- **MCP transport (design D8):** Streamable HTTP via rmcp — do NOT implement the oracle's legacy SSE (`GET /sse` + `POST /message?sessionId=`); it is deprecated and was intentionally dropped by human decision 2026-08-18. Parity lives at the level of tool responses, compared against fixtures recorded once from the Go binary.
+- **MCP transport (design D8):** the transport is now **double** — Streamable HTTP via rmcp **and** the oracle's legacy HTTP+SSE (`GET /sse` + `POST /message?sessionId=`), re-added by human decision 2026-08-31 (change `add-legacy-sse-transport`; wire contract mcp-go v0.57.0) after D8 originally dropped it. Parity lives at the level of tool responses, compared against fixtures recorded once from the Go binary.
 - **Cross-builds:** windows-gnu instead of msvc (Zig cannot link MSVC ABI from a Linux host — cargo-zigbuild's own CI uses the same path). The x86_64 musl artifact is fully static and smoke-tested in an Alpine container in CI (`./synopsis --version`).
 - **No `make`:** unlike the oracle, there is no Makefile/CGO machinery here; plain cargo commands above are the whole build system.
 

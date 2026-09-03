@@ -11,7 +11,7 @@ The Go original in the sibling repository `../synopsis` is the **oracle**: its b
 
 ## Stack (frozen)
 
-Rust 1.96.0 (pinned in `rust-toolchain.toml`) · tokio + axum · rusqlite — bundled, FTS5 compiled in-tree · rmcp 3.x over Streamable HTTP for MCP (the oracle's legacy SSE transport is intentionally not reproduced — design D8) · ONNX runtime as an external `.so`/`.dylib` (bge-m3 int8 embeddings + NER) · usearch ANN index, disk-backed and quantized (sole engine, ADR 0004). The full list with hard constraints is in [AGENTS.md](AGENTS.md).
+Rust 1.96.0 (pinned in `rust-toolchain.toml`) · tokio + axum · rusqlite — bundled, FTS5 compiled in-tree · rmcp 3.x over Streamable HTTP for MCP (the oracle's legacy HTTP+SSE is also served — double transport, override of design D8 by human decision 2026-08-31, change `add-legacy-sse-transport`; wire contract mcp-go v0.57.0) · ONNX runtime as an external `.so`/`.dylib` (bge-m3 int8 embeddings + NER) · usearch ANN index, disk-backed and quantized (sole engine, ADR 0004). The full list with hard constraints is in [AGENTS.md](AGENTS.md).
 
 ## Commands
 
