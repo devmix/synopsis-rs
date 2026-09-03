@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use search::Searcher;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::error::McpError;
 
@@ -87,6 +87,11 @@ struct ResultItem {
     /// The wire source word (`"lexical" | "semantic" | "hybrid"`, possibly
     /// merged with the document source type by the enricher).
     source_type: String,
+    /// The chunk's own metadata bag (`section_title`, `breadcrumb`, …);
+    /// omitted when empty (chunk-metadata-persistence design D5). Distinct
+    /// from the enrichment data (`domains`, …).
+    #[serde(skip_serializing_if = "Map::is_empty")]
+    metadata: Map<String, Value>,
     /// Document domains, if the enricher filled them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     domains: Vec<String>,
@@ -208,6 +213,8 @@ fn is_known_domain(db: &db::Db, domain: &str) -> Result<bool, McpError> {
 
 /// Map a fused search result to the wire item (oracle field mapping in
 /// `handlers/search.go`, including the `metadata["domains"]` extraction).
+/// The `text` field carries the chunk's pure `chunk_text` (the section
+/// context lives in the item's `metadata` field, the chunk's own bag).
 fn result_item(result: &search::SearchResult) -> ResultItem {
     ResultItem {
         document_id: result.document_id,
@@ -219,6 +226,7 @@ fn result_item(result: &search::SearchResult) -> ResultItem {
         document_path: result.document_path.clone(),
         score: result.score,
         source_type: result.source_type.clone(),
+        metadata: result.chunk_metadata.clone(),
         domains: result
             .metadata
             .get("domains")
@@ -330,13 +338,18 @@ mod tests {
         }
     }
 
-    /// A canned fused result (oracle `TestHandleSearch_ResponseFields` shape).
+    /// A canned fused result (oracle `TestHandleSearch_ResponseFields`
+    /// shape) with a non-empty chunk metadata bag.
     fn canned_result(chunk_id: i64) -> SearchResult {
         let mut metadata = serde_json::Map::new();
         metadata.insert("domains".to_owned(), serde_json::json!(["hr", "policy"]));
+        let mut chunk_metadata = serde_json::Map::new();
+        chunk_metadata.insert("section_title".to_owned(), serde_json::json!("Guide"));
+        chunk_metadata.insert("breadcrumb".to_owned(), serde_json::json!("Atlas Guide"));
         SearchResult {
             chunk_id,
             chunk_text: format!("chunk {chunk_id} text"),
+            chunk_metadata,
             document_id: chunk_id * 10,
             sequence_num: chunk_id,
             start_offset: Some(chunk_id * 100),
@@ -492,6 +505,11 @@ mod tests {
         assert_eq!(item["document_path"], "/docs/1.md");
         assert_eq!(item["score"], serde_json::json!(0.85));
         assert_eq!(item["source_type"], "hybrid");
+        // The chunk's own metadata bag (distinct from the enrichment data).
+        assert_eq!(
+            item["metadata"],
+            serde_json::json!({"section_title": "Guide", "breadcrumb": "Atlas Guide"})
+        );
         assert_eq!(item["domains"], serde_json::json!(["hr", "policy"]));
         assert_eq!(item["entities"][0]["id"], serde_json::json!(100));
         assert_eq!(item["entities"][0]["name"], "Alice");
@@ -506,11 +524,13 @@ mod tests {
         result.end_offset = None;
         result.entities.clear();
         result.metadata.clear();
+        result.chunk_metadata.clear();
         let searcher = StubSearcher::new(vec![result]);
         let response = call(&db, &searcher, Some(serde_json::json!({ "query": "test" }))).unwrap();
         let item = &response["results"][0];
         assert!(item.get("start_offset").is_none());
         assert!(item.get("end_offset").is_none());
+        assert!(item.get("metadata").is_none(), "empty chunk bag → omitted");
         assert!(item.get("domains").is_none());
         assert!(item.get("entities").is_none());
         // Always-present fields stay present even when empty.

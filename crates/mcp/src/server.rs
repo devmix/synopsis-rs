@@ -1037,6 +1037,7 @@ mod tests {
             Ok(vec![SearchResult {
                 chunk_id: 7,
                 chunk_text: "canned".to_owned(),
+                chunk_metadata: Map::new(),
                 document_id: 1,
                 sequence_num: 0,
                 start_offset: None,

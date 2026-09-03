@@ -63,6 +63,7 @@ impl Searcher for StubSearcher {
         Ok(vec![SearchResult {
             chunk_id: 1,
             chunk_text: "quarterly hiring policy".to_owned(),
+            chunk_metadata: Map::new(),
             document_id: 1,
             sequence_num: 0,
             start_offset: Some(0),

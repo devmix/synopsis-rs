@@ -147,9 +147,11 @@ impl<'conn> SemanticSearcher<'conn> {
             .into_iter()
             .map(|(chunk, distance)| SemanticHit {
                 chunk_id: chunk.id,
-                // The hit carries the chunk's search_text (breadcrumb + body),
-                // not the raw chunk_text (search-text-embedding D4).
-                chunk_text: chunk.search_text,
+                // The hit carries the chunk's pure text (the byte-offset
+                // slice); the embedding leg matched on search_text, which is
+                // not carried (chunk-metadata-persistence design D5).
+                chunk_text: chunk.chunk_text,
+                metadata_json: chunk.metadata_json,
                 document_id: chunk.doc_id,
                 sequence_num: chunk.sequence_num,
                 start_offset: chunk.start_offset,
@@ -364,11 +366,11 @@ mod tests {
         });
     }
 
-    // The hit carries the chunk's search_text (breadcrumb + body), not the
-    // raw chunk_text (search-text-embedding D4): a seeded chunk with distinct
-    // texts returns search_text in the hit's text field.
+    // The hit carries the chunk's pure chunk_text (the byte-offset slice),
+    // not search_text (chunk-metadata-persistence design D5): a seeded chunk
+    // with distinct texts returns the pure body in the hit's text field.
     #[test]
-    fn search_hit_carries_search_text() {
+    fn search_hit_carries_chunk_text() {
         let db = in_memory_db();
         let doc = seed_doc(&db, "/docs/a.md", None);
         let chunk_id = db
@@ -392,8 +394,8 @@ mod tests {
             let hits = semantic.search("query", 20, None).unwrap();
             assert_eq!(hits.len(), 1);
             assert_eq!(
-                hits[0].chunk_text, "Atlas Guide\n\nzebra stripes",
-                "the hit carries search_text, not chunk_text"
+                hits[0].chunk_text, "zebra stripes",
+                "the hit carries the pure chunk_text, not search_text"
             );
         });
     }

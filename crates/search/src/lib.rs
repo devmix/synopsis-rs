@@ -43,7 +43,9 @@
 //! - [`LexicalHit`] / [`SemanticHit`] are raw sub-search hits before
 //!   fusion. Both carry a `score` where **lower is better** (FTS5 `bm25()`
 //!   and L2 distance respectively).
-//! - [`SearchResult`] is a fused, ranked hit: the chunk row fields, the
+//! - [`SearchResult`] is a fused, ranked hit: the chunk row fields (the
+//!   `text` field carries the chunk's pure `chunk_text`; the section context
+//!   lives in the chunk's own [`SearchResult::chunk_metadata`] bag), the
 //!   calibrated score (higher is better), the 1-based [`SearchResult::rank`],
 //!   the [`SourceType`] wire word (merged with the document source type by
 //!   the enricher), and the enrichment slots (`document_path`, `metadata`,
@@ -136,10 +138,14 @@ impl SourceType {
 pub struct LexicalHit {
     /// Chunk row id.
     pub chunk_id: i64,
-    /// The chunk search text (`search_text`: breadcrumb + body) — the text the
-    /// FTS5 index matched on and the one the result `text` field carries
-    /// (search-text-embedding D4).
+    /// The chunk's pure text (the byte-offset slice): the result `text` field
+    /// carries it. The FTS5 index matched on `search_text` (the
+    /// breadcrumb-prefixed form), which is not carried here
+    /// (chunk-metadata-persistence design D5).
     pub chunk_text: String,
+    /// The chunk's metadata bag as raw JSON, if any (parsed into
+    /// [`SearchResult::chunk_metadata`] by the mapping/fusion code).
+    pub metadata_json: Option<String>,
     /// Owning document id.
     pub document_id: i64,
     /// Position of the chunk within its document.
@@ -157,10 +163,14 @@ pub struct LexicalHit {
 pub struct SemanticHit {
     /// Chunk row id.
     pub chunk_id: i64,
-    /// The chunk search text (`search_text`: breadcrumb + body) — the text the
-    /// embedding leg matched on and the one the result `text` field carries
-    /// (search-text-embedding D4).
+    /// The chunk's pure text (the byte-offset slice): the result `text` field
+    /// carries it. The embedding leg matched on `search_text` (the
+    /// breadcrumb-prefixed form), which is not carried here
+    /// (chunk-metadata-persistence design D5).
     pub chunk_text: String,
+    /// The chunk's metadata bag as raw JSON, if any (parsed into
+    /// [`SearchResult::chunk_metadata`] by the mapping/fusion code).
+    pub metadata_json: Option<String>,
     /// Owning document id.
     pub document_id: i64,
     /// Position of the chunk within its document.
@@ -178,9 +188,15 @@ pub struct SemanticHit {
 pub struct SearchResult {
     /// Chunk row id.
     pub chunk_id: i64,
-    /// The chunk search text (`search_text`: breadcrumb + body): the section
-    /// context carried by the result's `text` field (search-text-embedding D4).
+    /// The chunk's pure text (the byte-offset slice): the result's `text`
+    /// field. The section context (breadcrumb, section title) is carried in
+    /// [`Self::chunk_metadata`], not glued into the text
+    /// (chunk-metadata-persistence design D5).
     pub chunk_text: String,
+    /// The chunk's own metadata bag (`section_title`, `heading_level`,
+    /// `breadcrumb`, …), parsed from `chunks.metadata_json`; empty when the
+    /// chunk has none. Distinct from the enrichment [`Self::metadata`] bag.
+    pub chunk_metadata: serde_json::Map<String, serde_json::Value>,
     /// Owning document id.
     pub document_id: i64,
     /// Position of the chunk within its document.
@@ -251,8 +267,27 @@ pub(crate) fn document_domains(metadata_json: Option<&str>) -> Vec<String> {
     }
 }
 
+/// The chunk's metadata bag from `chunks.metadata_json`: the raw JSON parsed
+/// into a map (`section_title`, `heading_level`, `breadcrumb`, …). `NULL`,
+/// empty, malformed, or non-object JSON yields an empty bag — the reader
+/// treats all of those as "no metadata" (chunk-metadata-persistence design
+/// D1/D5, mirroring [`document_domains`]).
+pub(crate) fn chunk_metadata_bag(
+    metadata_json: Option<&str>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let Some(json) = metadata_json.filter(|json| !json.is_empty()) else {
+        return serde_json::Map::new();
+    };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str(json) else {
+        return serde_json::Map::new();
+    };
+    map
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -264,6 +299,35 @@ mod tests {
         assert_eq!(
             normalize_domain(Some("  Eng   Dept ")),
             Some("eng dept".to_string())
+        );
+    }
+
+    // The chunk metadata bag: object JSON parses; NULL, empty, malformed and
+    // non-object JSON all yield an empty bag (design D1/D5).
+    #[test]
+    fn chunk_metadata_bag_shapes() {
+        assert!(chunk_metadata_bag(None).is_empty(), "NULL → empty bag");
+        assert!(
+            chunk_metadata_bag(Some("")).is_empty(),
+            "empty string → empty bag"
+        );
+        assert!(
+            chunk_metadata_bag(Some("{not valid json")).is_empty(),
+            "malformed JSON → empty bag"
+        );
+        assert!(
+            chunk_metadata_bag(Some(r#""a string""#)).is_empty(),
+            "non-object JSON → empty bag"
+        );
+        assert_eq!(
+            chunk_metadata_bag(Some(
+                r#"{"section_title":"Guide","breadcrumb":"Atlas Guide"}"#
+            )),
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                r#"{"section_title":"Guide","breadcrumb":"Atlas Guide"}"#
+            )
+            .unwrap(),
+            "object JSON → the parsed bag"
         );
     }
 }

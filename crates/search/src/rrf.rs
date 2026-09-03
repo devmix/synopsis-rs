@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use crate::{LexicalHit, SearchResult, SemanticHit, SourceType};
+use crate::{LexicalHit, SearchResult, SemanticHit, SourceType, chunk_metadata_bag};
 
 /// Calibrated RRF constant `k` applied when the caller passes `k <= 0`
 /// (oracle parity: lower `k` increases rank sensitivity, ~8× vs `k = 60`).
@@ -45,6 +45,10 @@ const NEUTRAL: f64 = 0.5;
 struct FusionEntry {
     chunk_id: i64,
     chunk_text: String,
+    /// The chunk's own metadata bag (parsed from `metadata_json`); both
+    /// legs carry the same bag for the same `chunk_id`, so the first leg
+    /// seen wins.
+    chunk_metadata: serde_json::Map<String, serde_json::Value>,
     document_id: i64,
     sequence_num: i64,
     start_offset: Option<i64>,
@@ -83,6 +87,7 @@ pub fn reciprocal_rank_fusion(
         let entry = pool.entry(hit.chunk_id).or_insert_with(|| FusionEntry {
             chunk_id: hit.chunk_id,
             chunk_text: hit.chunk_text.clone(),
+            chunk_metadata: chunk_metadata_bag(hit.metadata_json.as_deref()),
             document_id: hit.document_id,
             sequence_num: hit.sequence_num,
             start_offset: hit.start_offset,
@@ -100,6 +105,7 @@ pub fn reciprocal_rank_fusion(
         let entry = pool.entry(hit.chunk_id).or_insert_with(|| FusionEntry {
             chunk_id: hit.chunk_id,
             chunk_text: hit.chunk_text.clone(),
+            chunk_metadata: chunk_metadata_bag(hit.metadata_json.as_deref()),
             document_id: hit.document_id,
             sequence_num: hit.sequence_num,
             start_offset: hit.start_offset,
@@ -126,6 +132,7 @@ pub fn reciprocal_rank_fusion(
         .map(|e| SearchResult {
             chunk_id: e.chunk_id,
             chunk_text: e.chunk_text,
+            chunk_metadata: e.chunk_metadata,
             document_id: e.document_id,
             sequence_num: e.sequence_num,
             start_offset: e.start_offset,
@@ -241,6 +248,7 @@ mod tests {
         LexicalHit {
             chunk_id,
             chunk_text: text.to_owned(),
+            metadata_json: None,
             document_id,
             sequence_num: 0,
             start_offset: None,
@@ -260,6 +268,7 @@ mod tests {
         SemanticHit {
             chunk_id,
             chunk_text: text.to_owned(),
+            metadata_json: None,
             document_id,
             sequence_num: 0,
             start_offset: None,
@@ -272,6 +281,7 @@ mod tests {
         FusionEntry {
             chunk_id,
             chunk_text: String::new(),
+            chunk_metadata: serde_json::Map::new(),
             document_id: 0,
             sequence_num: 0,
             start_offset: None,
@@ -280,6 +290,37 @@ mod tests {
             bm25,
             source_type,
         }
+    }
+
+    // The fused result carries the chunk's metadata bag from the winning
+    // hit (both legs carry the same bag for the same chunk_id; a chunk
+    // without one gets an empty bag).
+    #[test]
+    fn fusion_carries_chunk_metadata() {
+        let mut shared = lexical(1, "shared", 1);
+        shared.metadata_json = Some(r#"{"breadcrumb":"a > b"}"#.to_owned());
+        let mut shared_sem = semantic(1, "shared", 1, 0.05);
+        shared_sem.metadata_json = Some(r#"{"breadcrumb":"a > b"}"#.to_owned());
+        let bare = lexical(2, "bare", 1); // no metadata_json
+
+        let got = reciprocal_rank_fusion(&[shared, bare], &[shared_sem], 60, 10);
+        assert_eq!(got.len(), 2, "both chunks fused");
+
+        let fused_shared = got.iter().find(|r| r.chunk_id == 1).unwrap();
+        assert_eq!(
+            fused_shared.chunk_metadata,
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                r#"{"breadcrumb":"a > b"}"#
+            )
+            .unwrap(),
+            "the fused result carries the chunk's bag"
+        );
+
+        let fused_bare = got.iter().find(|r| r.chunk_id == 2).unwrap();
+        assert!(
+            fused_bare.chunk_metadata.is_empty(),
+            "no metadata_json → an empty bag"
+        );
     }
 
     // Parity with oracle TestReciprocalRankFusion (rrf_test.go).

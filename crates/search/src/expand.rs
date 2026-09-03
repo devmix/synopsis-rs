@@ -294,6 +294,7 @@ mod tests {
         SearchResult {
             chunk_id,
             chunk_text: format!("chunk {chunk_id}"),
+            chunk_metadata: Map::new(),
             document_id: 1,
             sequence_num: 0,
             start_offset: None,

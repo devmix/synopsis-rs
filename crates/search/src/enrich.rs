@@ -183,6 +183,7 @@ mod tests {
         SearchResult {
             chunk_id,
             chunk_text: String::new(),
+            chunk_metadata: serde_json::Map::new(),
             document_id,
             sequence_num: 0,
             start_offset: None,

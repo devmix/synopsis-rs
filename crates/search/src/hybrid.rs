@@ -58,7 +58,8 @@ use serde_json::Map;
 
 use crate::{
     Enricher, GraphExpander, LexicalHit, LexicalSearcher, Reranker, SearchError, SearchResult,
-    Searcher, SemanticHit, SemanticSearcher, SourceType, reciprocal_rank_fusion,
+    Searcher, SemanticHit, SemanticSearcher, SourceType, chunk_metadata_bag,
+    reciprocal_rank_fusion,
 };
 
 /// Orchestrates the hybrid search pipeline (design D2/D5/D9).
@@ -266,8 +267,10 @@ impl Searcher for HybridSearcher<'_> {
 trait RawHit {
     /// Chunk row id.
     fn chunk_id(&self) -> i64;
-    /// The chunk text.
+    /// The chunk text (the pure byte-offset slice).
     fn chunk_text(&self) -> &str;
+    /// The chunk's metadata bag as raw JSON, if any.
+    fn metadata_json(&self) -> Option<&str>;
     /// Owning document id.
     fn document_id(&self) -> i64;
     /// Position of the chunk within its document.
@@ -286,6 +289,9 @@ impl RawHit for LexicalHit {
     }
     fn chunk_text(&self) -> &str {
         &self.chunk_text
+    }
+    fn metadata_json(&self) -> Option<&str> {
+        self.metadata_json.as_deref()
     }
     fn document_id(&self) -> i64 {
         self.document_id
@@ -311,6 +317,9 @@ impl RawHit for SemanticHit {
     fn chunk_text(&self) -> &str {
         &self.chunk_text
     }
+    fn metadata_json(&self) -> Option<&str> {
+        self.metadata_json.as_deref()
+    }
     fn document_id(&self) -> i64 {
         self.document_id
     }
@@ -329,16 +338,19 @@ impl RawHit for SemanticHit {
 }
 
 /// Map raw leg hits to pre-enrichment results for a standalone leg: the
-/// score is inverted (lower-is-better → higher-is-better) and 1-based
-/// ranks are assigned in leg order (oracle `LexicalSearch` /
-/// `SemanticSearch`). The enrichment slots (`document_path`, `metadata`,
-/// `entities`) start empty — the finalize pipeline fills them.
+/// score is inverted (lower-is-better → higher-is-better), 1-based ranks
+/// are assigned in leg order (oracle `LexicalSearch` / `SemanticSearch`),
+/// and the chunk's metadata bag is parsed from `metadata_json` (NULL or
+/// malformed → an empty bag, design D5). The enrichment slots
+/// (`document_path`, `metadata`, `entities`) start empty — the finalize
+/// pipeline fills them.
 fn standalone_results<H: RawHit>(hits: Vec<H>, source: SourceType) -> Vec<SearchResult> {
     hits.into_iter()
         .enumerate()
         .map(|(position, hit)| SearchResult {
             chunk_id: hit.chunk_id(),
             chunk_text: hit.chunk_text().to_owned(),
+            chunk_metadata: chunk_metadata_bag(hit.metadata_json()),
             document_id: hit.document_id(),
             sequence_num: hit.sequence_num(),
             start_offset: hit.start_offset(),
@@ -595,13 +607,15 @@ mod tests {
     }
 
     // Standalone leg mapping: inverted scores, 1-based ranks in leg order,
-    // empty enrichment slots.
+    // empty enrichment slots and an empty chunk metadata bag (no
+    // metadata_json seeded).
     #[test]
     fn standalone_results_maps_hits() {
         let hits = vec![
             LexicalHit {
                 chunk_id: 7,
                 chunk_text: "t7".to_string(),
+                metadata_json: None,
                 document_id: 1,
                 sequence_num: 2,
                 start_offset: Some(1),
@@ -611,6 +625,7 @@ mod tests {
             LexicalHit {
                 chunk_id: 3,
                 chunk_text: "t3".to_string(),
+                metadata_json: Some(r#"{"section_title":"T3"}"#.to_owned()),
                 document_id: 1,
                 sequence_num: 0,
                 start_offset: None,
@@ -636,14 +651,22 @@ mod tests {
         assert!(results[0].metadata.is_empty());
         assert!(results[0].entities.is_empty());
         assert!(results[0].document_path.is_empty());
+        // chunk_metadata: NULL → empty bag, JSON → the parsed bag.
+        assert!(results[0].chunk_metadata.is_empty(), "NULL → empty bag");
+        assert_eq!(
+            results[1].chunk_metadata["section_title"],
+            serde_json::json!("T3"),
+            "the parsed bag lands on the result"
+        );
     }
 
-    // The result `text` field (chunk_text) carries the chunk's search_text
-    // (breadcrumb + body), not the raw chunk_text (search-text-embedding D4):
-    // a seeded chunk with distinct texts returns search_text in the result's
-    // text field.
+    // The result `text` field (chunk_text) carries the chunk's pure
+    // chunk_text (the byte-offset slice), not search_text: a seeded chunk
+    // with distinct texts matches on the breadcrumb term (the FTS index is
+    // over search_text) and returns the pure body
+    // (chunk-metadata-persistence design D5).
     #[test]
-    fn result_text_carries_search_text() {
+    fn result_text_carries_chunk_text() {
         let db = in_memory_db();
         let doc = seed_doc(&db, "markdown", "/docs/a.md", None);
         let chunk_id = db
@@ -668,8 +691,69 @@ mod tests {
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].chunk_id, chunk_id);
             assert_eq!(
-                results[0].chunk_text, "Atlas Guide\n\nzebra stripes",
-                "the result text field carries search_text, not chunk_text"
+                results[0].chunk_text, "zebra stripes",
+                "the result text field carries the pure chunk_text, not search_text"
+            );
+        });
+    }
+
+    // The result carries the chunk's metadata bag: a seeded chunk with a
+    // metadata_json returns the parsed bag in chunk_metadata; a chunk
+    // without one returns an empty bag (chunk-metadata-persistence design
+    // D5).
+    #[test]
+    fn result_carries_chunk_metadata_bag() {
+        let db = in_memory_db();
+        let doc = seed_doc(&db, "markdown", "/docs/a.md", None);
+        let with_bag = db
+            .exec_tx(|tx| {
+                let chunks = ChunkDao::new(ConnectionOrTx::Transaction(&*tx));
+                chunks.create_with_search_text(
+                    doc,
+                    "zebra stripes",
+                    "Atlas Guide\n\nzebra stripes",
+                    Some(r#"{"section_title":"Guide","breadcrumb":"Atlas Guide"}"#),
+                    0,
+                    None,
+                    None,
+                )
+            })
+            .expect("seed chunk commits");
+        let without_bag = db
+            .exec_tx(|tx| {
+                let chunks = ChunkDao::new(ConnectionOrTx::Transaction(&*tx));
+                chunks.create_with_search_text(
+                    doc,
+                    "zebra spots",
+                    "Atlas Guide\n\nzebra spots",
+                    None,
+                    1,
+                    None,
+                    None,
+                )
+            })
+            .expect("seed chunk commits");
+        let provider = mock_provider(vec![1.0], false);
+        let index = mock_index(Vec::new());
+
+        with_searcher(&db, search_config(), &provider, &index, None, |searcher| {
+            let results = searcher.lexical_search("zebra", 10, None).unwrap();
+            assert_eq!(results.len(), 2);
+
+            let bagged = results.iter().find(|r| r.chunk_id == with_bag).unwrap();
+            assert_eq!(
+                bagged.chunk_metadata,
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                    r#"{"section_title":"Guide","breadcrumb":"Atlas Guide"}"#
+                )
+                .unwrap(),
+                "the chunk's bag is parsed onto the result"
+            );
+
+            let bare = results.iter().find(|r| r.chunk_id == without_bag).unwrap();
+            assert!(
+                bare.chunk_metadata.is_empty(),
+                "NULL metadata_json → an empty bag"
             );
         });
     }
