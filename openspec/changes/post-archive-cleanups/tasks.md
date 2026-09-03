@@ -6,7 +6,7 @@ sequential pass. Each is self-contained for a fresh agent.
 
 ## 1
 
-- [ ] 1.1 Fix the loadtest filler's FTS bookkeeping to match the init migration
+- [x] 1.1 Fix the loadtest filler's FTS bookkeeping to match the init migration
 
 **Goal.** The `load-test` filler recreates the `chunks_fts` triggers against the
 wrong column and inserts chunks without populating `search_text`, while the
@@ -53,7 +53,7 @@ its `ai`/`ad`/`au` triggers).
 
 ## 2
 
-- [ ] 2.1 Correct the stale `document_jobs` migration reference in the data-schema spec
+- [x] 2.1 Correct the stale `document_jobs` migration reference in the data-schema spec
 
 **Goal.** The `data-schema` main spec's `document_jobs` requirement points at a
 migration path that does not exist. Correct it to the real, consolidated
