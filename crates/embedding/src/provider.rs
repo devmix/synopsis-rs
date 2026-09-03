@@ -6,8 +6,7 @@
 //! the oracle, which ran batch=1 sequentially per text). Every resulting
 //! vector is L2-normalized before it is cached and returned.
 //!
-//! Re-architected from `../synopsis/internal/embedding/onnx_provider.go`, not
-//! transcribed. Deliberate deviations from the oracle:
+//! Re-architected, not transcribed. Deliberate deviations from the oracle:
 //! - **CLS pooling, as the oracle actually does.** The oracle takes
 //!   `data[:vectorDim]` of the output — the first (CLS) hidden state of
 //!   `last_hidden_state`, or the pre-pooled `sentence_embedding` vector. This

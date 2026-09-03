@@ -7,8 +7,7 @@
 //!   `DefaultMaxLength`);
 //! - [`Tokenizer::decode`] — token IDs back to text, special tokens skipped.
 //!
-//! Re-architected from `../synopsis/internal/embedding/sugarme_tokenizer.go`,
-//! not transcribed. Deliberate deviations from the oracle:
+//! Re-architected, not transcribed. Deliberate deviations from the oracle:
 //! - the oracle's `Tokenize` padded output to `maxLength` (with a pad id that
 //!   was never set for `tokenizer.json` files — it stayed 0 by accident), and
 //!   its provider then filled `attention_mask` with all ones, so padded
@@ -28,8 +27,7 @@ use tokenizers::Tokenizer as HfTokenizer;
 
 use crate::error::EmbeddingError;
 
-/// Default maximum sequence length, mirroring the oracle's `DefaultMaxLength`
-/// (`../synopsis/internal/embedding/tokenizer.go`).
+/// Default maximum sequence length, mirroring the oracle's `DefaultMaxLength`.
 pub const DEFAULT_MAX_LENGTH: usize = 512;
 
 /// Tokenization result: token IDs and the attention mask.

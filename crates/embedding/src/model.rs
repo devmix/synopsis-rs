@@ -10,8 +10,8 @@
 //! written only after every file has been downloaded, so a failed download
 //! never leaves the model marked as installed.
 //!
-//! Behavior is re-architected from `../synopsis/internal/onnx/model-manager.go`,
-//! `model-cache.go` and `model-registry.go` (not transcribed). Deliberate
+//! Behavior is re-architected from `model-manager.go`, `model-cache.go` and
+//! `model-registry.go` (not transcribed). Deliberate
 //! deviations, all stricter than the oracle:
 //! - the registry is the `models` section of `onnx.yaml` itself
 //!   (`ModelForName` first-match semantics, entries with a blank name are

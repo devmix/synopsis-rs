@@ -1,10 +1,9 @@
 //! Embedding pipeline: ONNX Runtime lifecycle, model and library management,
 //! tokenization, in-memory caching, and the bge-m3 int8 embedding provider.
 //!
-//! Oracle mapping: `../synopsis/internal/embedding` + `../synopsis/internal/onnx`
-//! (design.md D1/D5). Per the migration principle the Go oracle is a reference for
-//! behavior and contracts only — this crate is re-architected for Rust, not
-//! transcribed (see design decisions D1–D10).
+//! Per the migration principle the Go oracle is a reference for behavior and
+//! contracts only — this crate is re-architected for Rust, not transcribed
+//! (see design decisions D1–D10).
 //!
 //! The entry point is the factory [`new_onnx_provider`]: it ensures the ONNX
 //! Runtime shared library and the model files (downloading them on first use),

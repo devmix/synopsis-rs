@@ -6,7 +6,7 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges; oracle imports: ../synopsis/internal/embedding + internal/onnx.
+# D1 edges.
 # All external deps come from the workspace palette (embedding design D1/D2/D3/D8);
 # the palette entries carry the version-verification comments.
 [dependencies]

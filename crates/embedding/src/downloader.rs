@@ -5,8 +5,7 @@
 //! to a local path. It is the download primitive for the runtime-library
 //! manager (task 1.4) and the model manager (task 1.5).
 //!
-//! Behavior (design D8; re-architected from
-//! `../synopsis/internal/onnx/downloader.go`, not transcribed):
+//! Behavior (design D8; re-architected, not transcribed):
 //! - up to 3 retries with a 2 s delay between attempts;
 //! - a 10-minute end-to-end timeout per request;
 //! - a `synopsis/0.1.0` User-Agent;

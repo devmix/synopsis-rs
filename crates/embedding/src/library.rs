@@ -7,8 +7,8 @@
 //! and records the installation in a `.cache.json` manifest. A repeat call
 //! with the same version returns the cached path without touching the network.
 //!
-//! Behavior is re-architected from `../synopsis/internal/onnx/library.go`,
-//! `library_cache.go` and `library_registry.go` (not transcribed).
+//! Behavior is re-architected from `library.go`, `library_cache.go` and
+//! `library_registry.go` (not transcribed).
 //! Deliberate deviations, all stricter than the oracle:
 //! - downloads go through [`Downloader`] (retries, SSRF protection, progress,
 //!   partial-file cleanup) instead of a bare `http.Client`;

@@ -3,8 +3,8 @@
 //! Stores previously computed embeddings so that repeated texts (e.g. the
 //! same passage re-ingested) skip ONNX inference. Entries are keyed by
 //! [`cache_key`] — the hex sha256 of `"{model}|{dim}|{text}"`, byte-identical
-//! to the oracle's `CacheKey` (`../synopsis/internal/embedding/cache.go`) —
-//! so the same text never collides across models or dimensions.
+//! to the oracle's `CacheKey` — so the same text never collides across models
+//! or dimensions.
 //!
 //! Re-architected from the oracle, not transcribed. Deliberate deviations:
 //! - the oracle's DB write-through store (`NewEmbeddingCacheWithStore`) is
