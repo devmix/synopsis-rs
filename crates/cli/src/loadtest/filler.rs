@@ -88,20 +88,22 @@ pub fn fill(
     // 3. Rebuild FTS + restore triggers.
     match db.with_conn(|conn: &rusqlite::Connection| -> Result<(), rusqlite::Error> {
         conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')", [])?;
+        // The FTS table is over `search_text` (init migration), so the
+        // recreated triggers target that column, not `chunk_text`.
         conn.execute(
             "CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
-             INSERT INTO chunks_fts(rowid, chunk_text) VALUES (new.id, new.chunk_text); END",
+             INSERT INTO chunks_fts(rowid, search_text) VALUES (new.id, new.search_text); END",
             [],
         )?;
         conn.execute(
             "CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
-             INSERT INTO chunks_fts(chunks_fts, rowid, chunk_text) VALUES('delete', old.id, old.chunk_text); END",
+             INSERT INTO chunks_fts(chunks_fts, rowid, search_text) VALUES('delete', old.id, old.search_text); END",
             [],
         )?;
         conn.execute(
             "CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE ON chunks BEGIN
-             INSERT INTO chunks_fts(chunks_fts, rowid, chunk_text) VALUES('delete', old.id, old.chunk_text);
-             INSERT INTO chunks_fts(rowid, chunk_text) VALUES (new.id, new.chunk_text); END",
+             INSERT INTO chunks_fts(chunks_fts, rowid, search_text) VALUES('delete', old.id, old.search_text);
+             INSERT INTO chunks_fts(rowid, search_text) VALUES (new.id, new.search_text); END",
             [],
         )?;
         Ok(())
@@ -195,9 +197,11 @@ fn fill_scalar_tables(db: &Db, ds: &Dataset) -> Result<usize, String> {
             )?;
         }
         for c in &ds.chunks {
+            // Synthetic chunks have no heading breadcrumb, so
+            // `search_text == chunk_text` by construction (design D1).
             tx.execute(
-                "INSERT INTO chunks (id, doc_id, chunk_text, sequence_num, start_offset, end_offset) VALUES (?, ?, ?, ?, ?, ?)",
-                params![c.id, c.doc_id, c.text, c.seq_num, c.start_offset, c.end_offset],
+                "INSERT INTO chunks (id, doc_id, chunk_text, search_text, sequence_num, start_offset, end_offset) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![c.id, c.doc_id, c.text, c.text, c.seq_num, c.start_offset, c.end_offset],
             )?;
         }
         for e in &ds.entities {
@@ -280,4 +284,127 @@ fn table_counts(db: &Db) -> Result<HashMap<String, i64>, String> {
         counts.insert(table.to_string(), n);
     }
     Ok(counts)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use db::test_util::in_memory_db;
+    use embedding::EmbeddingProvider;
+    use vectors::{UsearchEngine, VectorIndexConfig};
+
+    use super::super::generator::{Generator, Scale};
+    use super::*;
+
+    /// A no-op embedding provider: every text maps to a fixed vector.
+    struct FakeEmbed {
+        /// Vector dimensionality.
+        dim: usize,
+    }
+
+    impl EmbeddingProvider for FakeEmbed {
+        fn generate_embeddings(
+            &self,
+            texts: &[String],
+        ) -> Result<Vec<Vec<f32>>, embedding::EmbeddingError> {
+            Ok((0..texts.len()).map(|_| vec![0.1f32; self.dim]).collect())
+        }
+
+        fn vector_dim(&self) -> usize {
+            self.dim
+        }
+
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+    }
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// A unique temp directory for the vector engine, removed on drop.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        /// Creates the directory.
+        fn new(tag: &str) -> Self {
+            let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "synopsis-cli-filler-{tag}-{}-{id}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The smallest legal scale: one document and one entity per domain,
+    /// two chunks per document.
+    fn tiny_scale() -> Scale {
+        Scale {
+            name: "tiny".to_owned(),
+            documents: 5,
+            chunks: 10,
+            entities: 5,
+            facts: 5,
+        }
+    }
+
+    /// After `fill`, the FTS index over `search_text` is non-empty: a lexical
+    /// MATCH on a word from a known synthetic chunk's text returns that chunk.
+    /// (The filler populates `search_text` and recreates the triggers against
+    /// it, so the `rebuild` step indexes real text, not empty strings.)
+    #[test]
+    fn fill_populates_fts_over_search_text() {
+        let db = in_memory_db();
+        let dir = TempDir::new("fts");
+        let vectors = UsearchEngine::create(
+            dir.0.clone(),
+            VectorIndexConfig::new(4, 16, 100, 256).expect("index config"),
+        )
+        .expect("create vector engine");
+        let embed = FakeEmbed { dim: 4 };
+        let mut generator = Generator::new(42);
+        let ds = generator.generate(&tiny_scale()).expect("generate dataset");
+
+        let report = fill(&db, &ds, &embed, &vectors, &FillOptions::new(100)).expect("fill");
+        assert_eq!(
+            report.tables.get("chunks").copied(),
+            Some(ds.chunks.len() as i64)
+        );
+
+        // The longest word of chunk 1's text (a vocabulary or template term):
+        // a bare alphanumeric token is a valid FTS5 query.
+        let chunk = &ds.chunks[0];
+        let term = chunk
+            .text
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.len() >= 5)
+            .max_by_key(|t| t.len())
+            .expect("chunk text has a word");
+        let rowids: Vec<i64> = db
+            .with_conn(|conn| -> Result<Vec<i64>, rusqlite::Error> {
+                let sql = format!("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '{term}'");
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map([], |r| r.get(0))?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })
+            .expect("checkout")
+            .expect("fts match");
+        assert!(
+            rowids.contains(&(chunk.id as i64)),
+            "chunk {} must be found by a lexical MATCH on its own text; got {rowids:?}",
+            chunk.id
+        );
+    }
 }
