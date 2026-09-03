@@ -40,7 +40,7 @@ and in-scope** (design D3). Do not hand-edit the lock.
 6. Staged diff = crate deletions + `Cargo.toml` + `Cargo.lock` only; nothing
    under `../synopsis`.
 
-- [ ] 1.2 Remove references from AGENTS.md + README.md (+ migration status)
+- [x] 1.2 Remove references from AGENTS.md + README.md (+ migration status)
 
 **Goal.** Remove every `parity-harness` mention from the two top-level docs and
 set the README migration status to **Complete**.
@@ -80,7 +80,7 @@ set the README migration status to **Complete**.
    fragments); no other content changed.
 4. No code files touched; `../synopsis` and `openspec/changes/archive/**` untouched.
 
-- [ ] 1.3 Remove references from mcp crate + COVERAGE.md + port-verification-report.md
+- [x] 1.3 Remove references from mcp crate + COVERAGE.md + port-verification-report.md
 
 **Goal.** Remove the last living-doc/`Cargo.toml`-comment references to the
 crate (all comment-only; no behavior change).
