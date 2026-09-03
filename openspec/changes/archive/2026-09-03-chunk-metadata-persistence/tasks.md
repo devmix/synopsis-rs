@@ -9,7 +9,7 @@ starting; the task body is the single source of truth for scope.
 
 ## 1. Type-hygiene: `DocumentChunk.metadata` → free-form bag (crates/ingestion)
 
-- [ ] 1.1 Change `DocumentChunk.metadata` from `DocumentMetadata` to `Map<String, Value>`; chunkers build the bag; NER reads the bag
+- [x] 1.1 Change `DocumentChunk.metadata` from `DocumentMetadata` to `Map<String, Value>`; chunkers build the bag; NER reads the bag
 
 **Goal.** `DocumentChunk.metadata` is currently a clone of the document's typed
 `DocumentMetadata` (a modeling mistake: a chunk should carry its own metadata).
@@ -71,7 +71,7 @@ ingester.go` (the NER call passing the chunk metadata map).
 
 ## 2. Schema: `chunks.metadata_json` column (crates/db + init migration)
 
-- [ ] 2.1 Add the `metadata_json` column to `chunks` and carry it in `Chunk`/`ChunkDao`
+- [x] 2.1 Add the `metadata_json` column to `chunks` and carry it in `Chunk`/`ChunkDao`
 
 **Goal.** Add a nullable `metadata_json TEXT` column to the `chunks` table
 (storing the per-chunk metadata bag as raw JSON, following the
@@ -113,7 +113,7 @@ justified deviation (design D1).
 
 ## 3. Persist: write the chunk's metadata bag (crates/ingestion + crates/db)
 
-- [ ] 3.1 The ingester serializes each chunk's metadata bag to `chunks.metadata_json`
+- [x] 3.1 The ingester serializes each chunk's metadata bag to `chunks.metadata_json`
 
 **Goal.** The per-document pipeline serializes each chunk's metadata bag (now a
 `Map<String, Value>` after task 1.1) to the `chunks.metadata_json` column (added
@@ -153,7 +153,7 @@ write); `../synopsis/internal/database/dao/chunk_dao.go` (the write signature).
 
 ## 4. Search + MCP: result `text` = pure `chunk_text`, wire `metadata` (crates/search + crates/mcp + parity fixture)
 
-- [ ] 4.1 Result `text` is the pure `chunk_text`; the chunk's metadata bag is carried on the result and the MCP response
+- [x] 4.1 Result `text` is the pure `chunk_text`; the chunk's metadata bag is carried on the result and the MCP response
 
 **Goal.** The fused, ranked search result's `text` field carries the chunk's pure
 `chunk_text` (the byte-offset slice), not `search_text`; the section context
