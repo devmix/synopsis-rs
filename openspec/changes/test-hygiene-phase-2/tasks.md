@@ -43,7 +43,7 @@ For the named source file `F` in crate `C`:
 
 ## 2
 
-- [ ] 2.1 Extract `config/src/preset.rs` tests → `config/tests/preset.rs`
+- [x] 2.1 Extract `config/src/preset.rs` tests → `config/tests/preset.rs`
 
 **Goal.** Shrink `crates/config/src/preset.rs` (2,427 lines; ~1,114 inline
 test lines) by relocating its movable tests to `crates/config/tests/preset.rs`.
