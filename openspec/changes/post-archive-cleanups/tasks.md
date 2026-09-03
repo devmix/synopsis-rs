@@ -88,7 +88,7 @@ init migration `migrations/knowledge/1-init/up.sql` contains the
 
 ## 3
 
-- [ ] 3.1 Expose document `updated_at` on the MCP `search` result item
+- [x] 3.1 Expose document `updated_at` on the MCP `search` result item
 
 **Goal.** The enricher already normalizes each document's `updated_at` to
 RFC3339 into the result's enrichment bag, but the MCP `search` response does
