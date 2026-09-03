@@ -1,8 +1,7 @@
 //! Lexical (FTS5/BM25) sub-search leg.
 //!
-//! Oracle mapping: `../synopsis/internal/search/lexical_search.go`. A thin
-//! wrapper over [`db::ChunkDao::search_fts`]: bm25 ranking, the domain filter
-//! and the limit clamping all live SQL-side in the DAO (it orders by
+//! A thin wrapper over [`db::ChunkDao::search_fts`]: bm25 ranking, the domain
+//! filter and the limit clamping all live SQL-side in the DAO (it orders by
 //! `bm25()` and applies the domain `EXISTS` before `LIMIT`).
 //!
 //! **Conscious deviations from the oracle:**

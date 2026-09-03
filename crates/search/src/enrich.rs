@@ -1,9 +1,5 @@
 //! Result enrichment: document metadata and chunk entities (design D6).
 //!
-//! Oracle mapping: `../synopsis/internal/search/enricher.go`, re-architected
-//! per the 2026-08-19 migration principles (functional copy, not a code
-//! copy).
-//!
 //! Flow: collect the unique document ids of the pool → one batched
 //! [`db::DocumentDao::get_by_ids`] → collect the unique chunk ids → one
 //! batched [`db::ChunkEntityDao::get_entities_by_chunks`] → per result:

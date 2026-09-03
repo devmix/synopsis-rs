@@ -1,7 +1,6 @@
 //! Semantic (vector) sub-search leg.
 //!
-//! Oracle mapping: `../synopsis/internal/search/semantic_search.go`,
-//! re-architected for the usearch-backed index (design D3): the oracle's vec0
+//! Re-architected for the usearch-backed index (design D3): the oracle's vec0
 //! `SearchVector` filtered by domain inside SQL; our [`vectors::VectorIndex`]
 //! is domain-blind, so the domain filter moves to the application side with
 //! over-fetch.

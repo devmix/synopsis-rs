@@ -1,8 +1,7 @@
 //! Hybrid (full-text + vector) search with Reciprocal Rank Fusion.
 //!
-//! Oracle mapping: `../synopsis/internal/search` (design D1). The Go code
-//! is a reference for behavior and contracts only — this crate is the
-//! Rust re-architecture (functional copy, not a code copy).
+//! The Go code is a reference for behavior and contracts only — this crate
+//! is the Rust re-architecture (functional copy, not a code copy).
 //!
 //! # Pipeline
 //!

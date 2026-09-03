@@ -6,8 +6,7 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges; oracle imports: ../synopsis/internal/search (config, db, embedding,
-# graph). db: SearchResult carries chunk/entity rows (task 4.1).
+# D1 edges. db: SearchResult carries chunk/entity rows (task 4.1).
 [dependencies]
 config = { workspace = true }
 db = { workspace = true }

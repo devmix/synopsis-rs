@@ -1,14 +1,12 @@
 //! Reciprocal Rank Fusion with BM25 calibration (design D4).
 //!
 //! Faithful port of the oracle's `rrf.go` — every numeric behavior is
-//! preserved and differential parity with `../synopsis/internal/search/
-//! rrf_test.go` is an acceptance criterion. One internal simplification,
-//! no behavior change: the oracle detects "semantic-only" entries via a
-//! `BM25Score == 0` sentinel combined with a source-type check; here a
-//! missing BM25 score is `Option::<f64>::None`, so a lexical entry with a
-//! raw BM25 score of exactly 0.0 is handled by the same code path as any
-//! other lexical entry (the oracle's sentinel logic did the same, via the
-//! source-type guard).
+//! preserved. One internal simplification, no behavior change: the oracle
+//! detects "semantic-only" entries via a `BM25Score == 0` sentinel combined
+//! with a source-type check; here a missing BM25 score is
+//! `Option::<f64>::None`, so a lexical entry with a raw BM25 score of
+//! exactly 0.0 is handled by the same code path as any other lexical entry
+//! (the oracle's sentinel logic did the same, via the source-type guard).
 //!
 //! Algorithm (design D4):
 //! 1. `score += 1 / (k + rank)` per list the chunk appears in (1-based

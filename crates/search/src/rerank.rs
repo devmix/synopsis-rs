@@ -1,10 +1,6 @@
 //! Post-fusion reranking: business rules, freshness and authority boosts
 //! (design D7).
 //!
-//! Oracle mapping: `../synopsis/internal/search/reranker.go`, re-architected
-//! per the 2026-08-19 migration principles (functional copy, not a code
-//! copy).
-//!
 //! [`Reranker::rerank`] applies, in order:
 //!
 //! 1. **business rules** — `is_deprecated` × `deprecated_boost`,

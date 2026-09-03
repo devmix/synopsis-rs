@@ -1,11 +1,6 @@
 //! Hybrid search orchestration: sequential sub-searches, RRF fusion and the
 //! finalize pipeline (design D2/D5/D9).
 //!
-//! Oracle mapping: `../synopsis/internal/search/hybrid_search.go`
-//! (`hybridSearcher`, `finalize`, `invertScore`, `HybridSearch`,
-//! `LexicalSearch`, `SemanticSearch`), re-architected per the migration
-//! principles (functional copy, not a code copy).
-//!
 //! [`HybridSearcher`] composes the already-built collaborators — the two
 //! sub-search legs ([`LexicalSearcher`] / [`SemanticSearcher`]), the
 //! [`Enricher`], the [`Reranker`] and the optional [`GraphExpander`] — and

@@ -1,9 +1,5 @@
 //! Graph expansion: enriching search results with graph context (design D8).
 //!
-//! Oracle mapping: `../synopsis/internal/search/graph_expansion.go`,
-//! re-architected per the migration principles (functional copy, not a code
-//! copy).
-//!
 //! Flow: collect the unique result entity ids (first-seen order, skipping
 //! ids absent from the graph) → one batched
 //! [`db::FactDao::list_by_entity_ids`] (approved facts only) → per entity:
