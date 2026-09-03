@@ -13,3 +13,8 @@ pub mod model;
 pub mod onnx_runtime;
 pub mod queue;
 pub mod serve;
+
+/// Test-only seams for integration tests (change test-hygiene-phase-2
+/// task 2.4); docs-hidden, not part of the public API.
+#[doc(hidden)]
+pub mod test_support;

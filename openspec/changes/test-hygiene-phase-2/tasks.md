@@ -71,7 +71,7 @@ the in-memory DB fixture rather than duplicating it.
 
 **Acceptance.** Shared per-task acceptance for crate `db`.
 
-- [ ] 2.3 Extract `mcp/src/server.rs` tests → `mcp/tests/server_units.rs`
+- [x] 2.3 Extract `mcp/src/server.rs` tests → `mcp/tests/server_units.rs`
 
 **Goal.** Shrink `crates/mcp/src/server.rs` (1,414 lines; ~657 inline test
 lines) by relocating its movable tests to
