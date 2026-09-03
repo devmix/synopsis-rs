@@ -6,8 +6,8 @@ Rust rewrite of [Synopsis](https://github.com/devmix/synopsis) — a local RAG +
 
 The Go original in the sibling repository `../synopsis` is the **oracle**: its behavior, tests, and contracts are the source of truth for parity throughout the migration. Current state of this repository:
 
-- **Done:** workspace skeleton — nine domain crates plus `parity-harness`; CI with quality gates (fmt + clippy + test) and a 5-target cross-build matrix; the parity mechanism itself (rmcp client wrapper with p50/p95 timing, fixture loader API, diff utilities).
-- **In progress:** module-by-module porting, one OpenSpec change at a time. The work queue lives in `openspec/changes/<change>/tasks.md`; contract specs in `openspec/specs/`.
+- **Done:** workspace skeleton — nine domain crates; CI with quality gates (fmt + clippy + test) and a 5-target cross-build matrix.
+- **Complete:** all modules ported and parity-checked; every change is archived under `openspec/changes/archive/`; contract specs in `openspec/specs/`.
 
 ## Stack (frozen)
 
@@ -22,13 +22,12 @@ Rust 1.96.0 (pinned in `rust-toolchain.toml`) · tokio + axum · rusqlite — bu
 | `cargo fmt --check` | formatting gate |
 | `cargo clippy --all-targets -- -D warnings` | lint gate — any warning fails the build |
 | `cargo zigbuild --release --target <t>` | cross-compile for one of the 5 CI targets (needs Zig 0.16.0) |
-| `cargo test -p parity-harness` | parity harness: percentile unit tests + in-process MCP round-trip |
 
 Cross-build targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`.
 
 ### Parity
 
-Parity is machine-checked, not reviewed line-by-line: the Go oracle's tool responses are recorded once as fixtures, then compared against the Rust server through the `parity-harness` MCP client (rmcp over Streamable HTTP) — JSON diffs of `tools/list` and tool-call responses, plus p50/p95 latency gates. The harness mechanism exists now; actual parity cases arrive together with each module change, and a task's acceptance gate is "its own cases are green".
+Parity was machine-checked during the migration, not reviewed line-by-line: the Go oracle's tool responses were recorded once as fixtures and compared against the Rust server — JSON diffs of `tools/list` and tool-call responses, plus p50/p95 latency gates. The transitional harness that ran those checks has now been removed; the port is complete.
 
 ## Layout
 

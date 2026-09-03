@@ -46,9 +46,8 @@ Rust rewrite of the Go service "Synopsis" (`../synopsis`): a local RAG + knowled
 | `crates/search` | hybrid (FTS5 + vector) search with RRF fusion | `internal/search` |
 | `crates/mcp` | MCP server over Streamable HTTP + 12 tool handlers | `internal/mcp` (+handlers) |
 | `crates/cli` | binary: subcommand dispatch, flags, config resolution | `cmd/app` |
-| `crates/parity-harness` | dev-tooling: rmcp client with p50/p95 timing, fixture loader, diff utilities | none — new crate (design D6) |
 
-Dependency graph (fixed by design D1): `config, db, vectors → embedding, ingestion, graph → search → mcp → cli`; `parity-harness` is outside the product dependency graph. Also: `openspec/` holds the spec-driven workflow artifacts; `.opencode/skills/` holds agent skills (`openspec-*`, `rust-best-practices`).
+Dependency graph (fixed by design D1): `config, db, vectors → embedding, ingestion, graph → search → mcp → cli`. Also: `openspec/` holds the spec-driven workflow artifacts; `.opencode/skills/` holds agent skills (`openspec-*`, `rust-best-practices`).
 
 ## Commands (repo root)
 
@@ -59,7 +58,6 @@ Dependency graph (fixed by design D1): `config, db, vectors → embedding, inges
 | `cargo test` | full workspace suite, ~seconds; no services or network needed |
 | `cargo build --release` | → `target/release/synopsis` (stub prints its version) |
 | `cargo zigbuild --release --target <t>` | cross-compile one of the 5 CI targets (needs Zig 0.16.0 + `cargo install --locked cargo-zigbuild`) |
-| `cargo test -p parity-harness` | parity harness: percentile unit tests + in-process MCP round-trip integration test |
 
 - Single crate: `cargo test -p <crate>` · single test: `cargo test -p <crate> -- <TestNameFilter>`
 - Cross-build targets (CI matrix, mirrors the oracle's build-all platforms): `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`.
@@ -70,7 +68,6 @@ Dependency graph (fixed by design D1): `config, db, vectors → embedding, inges
 - **Cargo.lock is committed on purpose:** this workspace produces a binary, and reproducible builds matter for parity testing against the Go oracle. Do not remove it or add `lock = false`.
 - **Workspace lints (task 1.1):** `missing_docs = "deny"` — public API must be documented; `unsafe_code = "forbid"`; clippy `all`/`unwrap_used`/`expect_used` are warn-level, but the gate runs with `-D warnings`, so any warning fails CI. Test modules may opt out locally: `#![allow(clippy::unwrap_used)]`.
 - **MCP transport (design D8):** Streamable HTTP via rmcp — do NOT implement the oracle's legacy SSE (`GET /sse` + `POST /message?sessionId=`); it is deprecated and was intentionally dropped by human decision 2026-08-18. Parity lives at the level of tool responses, compared against fixtures recorded once from the Go binary.
-- **vectors.bin fixture format:** stubbed with a TODO in `parity-harness`; the format is fixed by change `native-seam-spikes`. Do not invent one before that change lands.
 - **Cross-builds:** windows-gnu instead of msvc (Zig cannot link MSVC ABI from a Linux host — cargo-zigbuild's own CI uses the same path). The x86_64 musl artifact is fully static and smoke-tested in an Alpine container in CI (`./synopsis --version`).
 - **No `make`:** unlike the oracle, there is no Makefile/CGO machinery here; plain cargo commands above are the whole build system.
 
