@@ -1,9 +1,7 @@
 //! Domain-bounded BFS traversal (task 1.4, design D4).
 //!
-//! Oracle mapping: `../synopsis/internal/graph/traverser.go` (`BFS`,
-//! `BFSOptions`/`ApplyDefaults`, `matchesRelationType`) — the contract is
-//! ported verbatim; the implementation is re-architected on the petgraph
-//! `DiGraph` (migration principle: functional copy, not a code copy).
+//! The contract is ported verbatim; the implementation is re-architected
+//! on the petgraph `DiGraph`.
 //!
 //! ## Contract (D4)
 //!

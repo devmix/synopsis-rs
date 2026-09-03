@@ -1,9 +1,5 @@
 //! Index builder: SQLite → in-memory `petgraph::DiGraph` (design D1/D3).
 //!
-//! Oracle mapping: `../synopsis/internal/graph/graph.go` (`NewGraphFromDB`,
-//! `loadEntities`, `loadRelations`, `loadEntityLinks`) — functional copy,
-//! re-architected for Rust (migration principle: not a code copy).
-//!
 //! ## Storage model (D1)
 //!
 //! The `entities` / `facts` / `entity_links` tables in SQLite (via the `db`
@@ -23,7 +19,7 @@
 //!
 //! ## Fact edges vs entity-link edges (oracle verification, task 1.2)
 //!
-//! Verified against `../synopsis/internal/graph/graph.go` + `traverser.go`:
+//! Verified against the oracle:
 //!
 //! - **Facts are materialized as directed edges.** `loadRelations` reads
 //!   every fact and adds it as an edge `subject → object` with the fact

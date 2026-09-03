@@ -1,9 +1,5 @@
 //! Cross-domain entity linking pipeline (design D6, task 1.9).
 //!
-//! Oracle mapping: `../synopsis/internal/relations/{entity_links.go,
-//! expression_linker.go}` — a functional copy, re-architected for Rust
-//! (migration principle: not a code copy).
-//!
 //! # Pipeline
 //!
 //! [`build_entity_links`] loads all entities, enumerates the candidate pairs

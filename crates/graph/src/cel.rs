@@ -1,10 +1,5 @@
 //! CEL engine for ontology linking rules (design D2/D5, task 1.6).
 //!
-//! Oracle mapping: `../synopsis/internal/expression/{engine.go,scope_cache.go}`
-//! plus the function registration in
-//! `../synopsis/internal/relations/expression_linker.go` — a functional copy,
-//! re-architected for Rust (migration principle: not a code copy).
-//!
 //! # What this module provides
 //!
 //! - [`CelEngine`] — compiles CEL expression sources ONCE (cached by source

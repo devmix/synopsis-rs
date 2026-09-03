@@ -9,10 +9,6 @@
 //! [`EntityLinkerPrompts::notes`]: the crate has no logger, and the CLI /
 //! linker surfaces the note (the `LinkResult.notes` pattern).
 //!
-//! Oracle mapping: `../synopsis/internal/prompts/{loader,funcmap}.go` +
-//! `../synopsis/configs/prompts/entity-linker/*.tmpl` — a functional copy,
-//! re-architected for Rust (migration principle: not a code copy).
-//!
 //! # Deliberate deviations
 //!
 //! - Go `text/template` → Jinja2 / [`minijinja`]. The oracle templates are

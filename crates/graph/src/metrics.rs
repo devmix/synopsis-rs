@@ -1,9 +1,5 @@
 //! Graph metrics and DOT export (task 1.5).
 //!
-//! Oracle mapping: `../synopsis/internal/graph/metrics.go` (`Stats`,
-//! `ToDOT`) — a functional copy, re-architected for Rust (migration
-//! principle: not a code copy).
-//!
 //! ## Stats
 //!
 //! [`Graph::stats`] returns [`GraphStats`]: node count, edge count and the
