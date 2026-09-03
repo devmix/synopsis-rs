@@ -144,7 +144,7 @@ what 2.1 created). (Follow the shared pattern.)
 
 **Acceptance.** Shared per-task acceptance for crate `config`.
 
-- [ ] 2.8 Final verification: before/after report + full gates
+- [x] 2.8 Final verification: before/after report + full gates
 
 **Goal.** Produce a machine-verified before/after report for the change and
 confirm the full workspace is green.
