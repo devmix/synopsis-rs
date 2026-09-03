@@ -1,49 +1,45 @@
 //! DB-backed entity resolver: persistent deduplication of NER entities
 //! (design D9).
 //!
-//! Oracle mapping: the persistent parts of
-//! `../synopsis/internal/ingestion/entities/resolver.go` — `Resolver`,
-//! `hydrate`/`rehydrate`/`index`, `resolveOne`, `findBestCandidate`,
-//! `Lookup`/`LookupOrCreate`/`LookupOrCreateWithStats`/`AddEntities`. The
-//! pure primitives (batch clustering, canonical prototype, name
-//! similarity, metadata scoping) live in [`super::cluster`] and
-//! [`super::similarity`] (task 2.7) and are reused as-is.
+//! The persistent resolver and its helpers (`hydrate`/`rehydrate`/`index`,
+//! `resolve_one`, `find_best_candidate`, `lookup`, `lookup_or_create`,
+//! `lookup_or_create_with_stats`, `add_entities`). The pure primitives
+//! (batch clustering, canonical prototype, name similarity, metadata
+//! scoping) live in [`super::cluster`] and [`super::similarity`] (task 2.7)
+//! and are reused as-is.
 //!
 //! # Locking strategy
 //!
 //! Every operation holds the resolver's single [`Mutex`] for the whole
-//! operation — hydrate, resolution and DB writes included — mirroring the
-//! oracle's one global lock. This is safe with the db crate's DAO shape:
-//! the DAOs are bound to a [`ConnectionOrTx`] handle that is independent
-//! of the resolver's lock, each DAO call acquires and releases the
-//! connection's own internal lock, and no DAO callback ever re-enters the
-//! resolver — the two lock domains never nest in a cycle, so holding the
-//! index lock across DB calls cannot deadlock. The oracle used an
-//! `RWMutex`; a plain [`Mutex`] is the simplest correct strategy here,
-//! because every operation can mutate the index (even [`Resolver::lookup`]
-//! hydrates it on first use) and the critical section is dominated by DB
-//! I/O anyway.
+//! operation — hydrate, resolution and DB writes included — behind one
+//! global lock. This is safe with the db crate's DAO shape: the DAOs are
+//! bound to a [`ConnectionOrTx`] handle that is independent of the
+//! resolver's lock, each DAO call acquires and releases the connection's
+//! own internal lock, and no DAO callback ever re-enters the resolver —
+//! the two lock domains never nest in a cycle, so holding the index lock
+//! across DB calls cannot deadlock. A plain [`Mutex`] (rather than an
+//! `RwLock`) is the simplest correct strategy here, because every operation
+//! can mutate the index (even [`Resolver::lookup`] hydrates it on first use)
+//! and the critical section is dominated by DB I/O anyway.
 //!
-//! # Deliberate deviations (no-1:1-copy directive)
+//! # Design decisions
 //!
-//! - [`Resolver::lookup`] returns `Vec<Option<i64>>` aligned with the
-//!   input (Rust idiom) instead of the oracle's `[]int` with
-//!   `0` = "not found".
+//! - [`Resolver::lookup`] returns `Vec<Option<i64>>` aligned with the input
+//!   (Rust idiom) rather than a dense `Vec<i64>` with `0` = "not found".
 //! - [`Resolver::add_entities`] returns [`ResolvedEntity`] rows (id + the
-//!   extracted fields) instead of the oracle's full `dao.Entity` stubs:
-//!   the row-only columns (`created_at`, `metadata_json`) are unknown for
-//!   freshly created entities, and a stub carrying an empty `created_at`
-//!   would be a lie.
+//!   extracted fields) rather than full entity stubs: the row-only columns
+//!   (`created_at`, `metadata_json`) are unknown for freshly created
+//!   entities, and a stub carrying an empty `created_at` would be a lie.
 //! - Canonical-name promotion compares RUNE counts (task 2.7 semantics)
-//!   instead of the oracle's UTF-8 byte length.
+//!   rather than UTF-8 byte length.
 //! - The GC-missing-candidate recovery (design D9) is bounded to ONE
 //!   rehydrate + retry: after a full rehydrate the candidate id comes
 //!   from the database listing itself, so a second miss is the defensive
 //!   [`IngestionError::EntityCandidateGone`] error, not another retry.
 //!
-//! Block keys are `(normalized domain, entity type, bigram)` tuples and
-//! name keys are `"domain:normalized_name"` strings (oracle shape), so
-//! cross-domain and cross-type entities never merge.
+//! Block keys are `(normalized domain, entity type, bigram)` tuples and name
+//! keys are `"domain:normalized_name"` strings, so cross-domain and
+//! cross-type entities never merge.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -65,8 +61,6 @@ use crate::ner::{NerEntity, normalize};
 /// the same instance works over a pooled connection or inside an in-flight
 /// pipeline transaction. The in-memory blocking index is the only
 /// long-lived state (see the module docs for the locking strategy).
-///
-/// Oracle `entities.Resolver`.
 pub struct Resolver {
     threshold: f64,
     state: Mutex<BlockingIndex>,
@@ -116,8 +110,8 @@ impl Resolver {
     }
 
     /// Resolves each entity against the hydrated index, creating missing
-    /// ones, and returns the resolved ids aligned with the input (oracle
-    /// `LookupOrCreate`). Created entities are linked to `doc_id`.
+    /// ones, and returns the resolved ids aligned with the input. Created
+    /// entities are linked to `doc_id`.
     pub fn lookup_or_create(
         &self,
         exec: ConnectionOrTx<'_>,
@@ -129,10 +123,9 @@ impl Resolver {
     }
 
     /// Resolves each entity against the hydrated index, creating missing
-    /// ones (per-entity, no batch clustering — oracle
-    /// `LookupOrCreateWithStats`). Returns the resolved ids aligned with
-    /// the input plus the number of newly created entities; created ids
-    /// are linked to `doc_id` via `entity_sources`.
+    /// ones (per-entity, no batch clustering). Returns the resolved ids
+    /// aligned with the input plus the number of newly created entities;
+    /// created ids are linked to `doc_id` via `entity_sources`.
     pub fn lookup_or_create_with_stats(
         &self,
         exec: ConnectionOrTx<'_>,
@@ -172,8 +165,8 @@ impl Resolver {
     /// Normalizes, deduplicates and persists the batch: clusters similar
     /// names first (one canonical per cluster), resolves each canonical
     /// against the database, and links every resolved entity to `doc_id`
-    /// for provenance (oracle `AddEntities`). Returns the resolved
-    /// entities in cluster order, deduplicated by id.
+    /// for provenance. Returns the resolved entities in cluster order,
+    /// deduplicated by id.
     pub fn add_entities(
         &self,
         exec: ConnectionOrTx<'_>,
@@ -207,8 +200,8 @@ impl Resolver {
     }
 
     /// Merges `entity` into an existing canonical entity when a similar
-    /// candidate is found, otherwise creates a new one (oracle
-    /// `resolveOne`). Called with the index lock already held.
+    /// candidate is found, otherwise creates a new one. Called with the
+    /// index lock already held.
     fn resolve_one(
         &self,
         state: &mut BlockingIndex,
@@ -274,9 +267,8 @@ impl Resolver {
         }
     }
 
-    /// Persists a new entity (oracle `resolveOne`'s create path): scoped
-    /// metadata JSON + description through the atomic `get_or_create`,
-    /// indexed in-memory immediately.
+    /// Persists a new entity: scoped metadata JSON + description through the
+    /// atomic `get_or_create`, indexed in-memory immediately.
     fn create_entity(
         &self,
         state: &mut BlockingIndex,
@@ -315,9 +307,9 @@ impl Resolver {
 }
 
 /// A resolved (deduplicated) entity: the canonical row's identity plus the
-/// fields the caller can rely on (oracle `AddEntities`'s `dao.Entity`
-/// return, minus the row-only columns `created_at`/`metadata_json`, which
-/// are unknown for freshly created entities).
+/// fields the caller can rely on (the entity row, minus the row-only columns
+/// `created_at`/`metadata_json`, which are unknown for freshly created
+/// entities).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedEntity {
     /// The canonical entity's database id.
@@ -362,7 +354,7 @@ impl BlockingIndex {
         }
     }
 
-    /// Registers one entity in the index (oracle `index`).
+    /// Registers one entity in the index.
     fn index_entity(&mut self, id: i64, entity_type: &str, name: &str, domain: &str) {
         let domain = normalize(domain);
         self.names.insert(name_key(&domain, name), id);
@@ -376,10 +368,9 @@ impl BlockingIndex {
         }
     }
 
-    /// Lazily loads the whole `entities` table into the index on the
-    /// first call (oracle `hydrate`); later calls are a no-op — updates
-    /// arrive incrementally through [`Self::index_entity`] and name
-    /// promotion.
+    /// Lazily loads the whole `entities` table into the index on the first
+    /// call; later calls are a no-op — updates arrive incrementally through
+    /// [`Self::index_entity`] and name promotion.
     fn hydrate(&mut self, dao: &EntityDao<'_>) -> Result<(), IngestionError> {
         if self.hydrated {
             return Ok(());
@@ -391,8 +382,8 @@ impl BlockingIndex {
         Ok(())
     }
 
-    /// Discards the index and loads it from the database again (oracle
-    /// `rehydrate`): recovery from entities deleted mid-run by GC.
+    /// Discards the index and loads it from the database again: recovery
+    /// from entities deleted mid-run by GC.
     fn rehydrate(&mut self, dao: &EntityDao<'_>) -> Result<(), IngestionError> {
         self.names.clear();
         self.canonical.clear();
@@ -402,9 +393,9 @@ impl BlockingIndex {
         self.hydrate(dao)
     }
 
-    /// The most similar persisted entity of the same type AND domain
-    /// (oracle `findBestCandidate`): an exact normalized-name hit scores
-    /// 1.0, otherwise the best Jaro-Winkler over the shared bigram blocks.
+    /// The most similar persisted entity of the same type AND domain: an
+    /// exact normalized-name hit scores 1.0, otherwise the best
+    /// Jaro-Winkler over the shared bigram blocks.
     /// The candidate's canonical name is NOT carried: the merge path reads
     /// it from the database row (hydration and promotion keep the index's
     /// canonical names and the `entities` table in sync).
@@ -445,7 +436,7 @@ struct Candidate {
     score: f64,
 }
 
-/// `"domain:normalized_name"` — the exact-match key (oracle shape).
+/// `"domain:normalized_name"` — the exact-match key.
 fn name_key(domain: &str, name: &str) -> String {
     format!("{domain}:{}", normalize_name(name))
 }
@@ -475,7 +466,7 @@ mod tests {
 
     use super::*;
 
-    /// Test entity builder (oracle tests set only name/type/domain).
+    /// Test entity builder (sets only name/type/domain).
     fn entity(name: &str, entity_type: &str, domain: &str) -> NerEntity {
         NerEntity {
             name: name.to_string(),
@@ -578,7 +569,7 @@ mod tests {
 
     // ── add_entities ─────────────────────────────────────────────────────
 
-    /// Oracle `TestAddEntitiesBatchDedup` — full parity port.
+    /// Batch deduplication cases (merge / no-merge).
     #[test]
     fn add_entities_batch_dedup() {
         let cases: [(&str, Vec<NerEntity>, usize, Option<&str>); 4] = [
@@ -638,8 +629,7 @@ mod tests {
         }
     }
 
-    /// Oracle `TestAddEntitiesIncremental`: a shorter synonym in a second
-    /// call reuses the existing entity.
+    /// A shorter synonym in a second call reuses the existing entity.
     #[test]
     fn add_entities_incremental_reuses_existing() {
         let f = fixture();
@@ -657,7 +647,7 @@ mod tests {
         assert_eq!(second[0].name, "Apple Inc.", "canonical name preserved");
     }
 
-    /// Oracle `TestAddEntitiesCaseInsensitiveExactMatch`.
+    /// Case-insensitive exact match reuses the existing entity.
     #[test]
     fn add_entities_case_insensitive_exact_match() {
         let f = fixture();
@@ -669,8 +659,8 @@ mod tests {
         assert_eq!(resolved[0].id, existing);
     }
 
-    /// Oracle `TestAddEntitiesCanonicalPromotion`: the longer name wins,
-    /// and the old name still resolves to the same entity.
+    /// The longer name wins, and the old name still resolves to the same
+    /// entity.
     #[test]
     fn add_entities_promotes_canonical_name() {
         let f = fixture();
@@ -688,7 +678,7 @@ mod tests {
         assert_eq!(entity_count(&f), 1);
     }
 
-    /// Oracle `TestAddEntitiesProvenanceAcrossDocuments`.
+    /// Provenance links accumulate across documents.
     #[test]
     fn add_entities_links_provenance_across_documents() {
         let f = fixture();
@@ -714,7 +704,7 @@ mod tests {
         assert_eq!(source_doc_ids(&f, first[0].id), vec![f.doc_id, doc2]);
     }
 
-    /// Oracle `TestAddEntitiesEmpty` + `TestAddEntitiesInvalidDocID`.
+    /// Empty input yields nothing; an invalid doc id is an error.
     #[test]
     fn add_entities_empty_and_invalid_doc_id() {
         let f = fixture();
@@ -733,9 +723,8 @@ mod tests {
         assert!(matches!(err, IngestionError::InvalidDocumentId(0)), "{err}");
     }
 
-    /// Oracle `TestAddEntitiesWithinTransaction`: the resolver persists
-    /// through the same transaction that holds the write lock (a pool
-    /// connection would fail with "database is locked").
+    /// The resolver persists through the same transaction that holds the
+    /// write lock (a pool connection would fail with "database is locked").
     #[test]
     fn add_entities_within_transaction() {
         let f = fixture();
@@ -751,9 +740,8 @@ mod tests {
         assert_eq!(entity_count(&f), 1);
     }
 
-    /// Oracle `TestIndexSurvivesHandleChange`: switching the executor
-    /// handle (pool connection vs transaction) keeps the in-memory index
-    /// intact.
+    /// Switching the executor handle (pool connection vs transaction) keeps
+    /// the in-memory index intact.
     #[test]
     fn index_survives_handle_change() {
         let f = fixture();
@@ -775,8 +763,7 @@ mod tests {
         );
     }
 
-    /// Oracle `TestAddEntities_DomainIsolation` / `_SameDomainDedup` /
-    /// `_DomainNormalization`.
+    /// Domain isolation, same-domain dedup, and domain normalization.
     #[test]
     fn add_entities_domain_isolation_and_normalization() {
         // Identical (name, type) in DIFFERENT domains: distinct entities.
@@ -813,7 +800,7 @@ mod tests {
         assert_eq!(stored_entity(&f, resolved[0].id).domain, "hr");
     }
 
-    /// Oracle `TestAddEntities_PersistsConfidenceAndMetadata`.
+    /// Confidence and scoped metadata are persisted.
     #[test]
     fn add_entities_persists_confidence_and_metadata() {
         let f = fixture();
@@ -849,9 +836,8 @@ mod tests {
         );
     }
 
-    /// Oracle `TestLookup_*`: exact hit, similarity merge (0.9), no
-    /// candidate, input-order alignment, hydration from the DB, and no
-    /// creation.
+    /// Lookup cases: exact hit, similarity merge (0.9), no candidate,
+    /// input-order alignment, hydration from the DB, and no creation.
     #[test]
     fn lookup_resolves_without_creating() {
         let f = fixture();
@@ -887,16 +873,15 @@ mod tests {
         assert_eq!(entity_count(&f), before, "lookup must not create");
     }
 
-    /// Oracle `TestLookup_Empty`.
+    /// Empty input yields no ids.
     #[test]
     fn lookup_empty_input() {
         let f = fixture();
         assert!(run_op(&f, |exec, r| r.lookup(exec, &[])).is_empty());
     }
 
-    /// Oracle `TestLookupOrCreate_ExistingEntityReturnsExistingID` /
-    /// `_MissingEntityCreatedAndReturnsNewID` /
-    /// `_DedupRepeatedCallsReturnSameID`.
+    /// Existing entity returns its id; a missing entity is created; repeated
+    /// calls deduplicate.
     #[test]
     fn lookup_or_create_existing_and_created() {
         let f = fixture();
@@ -925,7 +910,7 @@ mod tests {
         assert_eq!(entity_count(&f), 2);
     }
 
-    /// Oracle `TestLookupOrCreate_EmptyInput` / `_InvalidDocID`.
+    /// Empty input yields no ids; an invalid doc id is an error.
     #[test]
     fn lookup_or_create_empty_and_invalid_doc_id() {
         let f = fixture();
@@ -946,7 +931,7 @@ mod tests {
         }
     }
 
-    /// Oracle `TestLookupOrCreate_MixedExistingAndNew`.
+    /// A mix of existing and new entities resolves correctly.
     #[test]
     fn lookup_or_create_mixed_existing_and_new() {
         let f = fixture();
@@ -967,7 +952,7 @@ mod tests {
         assert_eq!(entity_count(&f), 2);
     }
 
-    /// Oracle `TestLookupOrCreate_LaterAddEntitiesMergesIntoSynthetic`.
+    /// A later `add_entities` call merges into the synthetic entity.
     #[test]
     fn later_add_entities_merges_into_synthetic() {
         let f = fixture();
@@ -981,8 +966,8 @@ mod tests {
         assert_eq!(entity_count(&f), 1, "no duplicate row");
     }
 
-    /// Oracle `TestLookupOrCreateWithStats_*`: existing → 0 created, new →
-    /// 1 created, duplicate ingestion → 0 created, empty input.
+    /// The created count: existing → 0, new → 1, duplicate ingestion → 0,
+    /// empty input.
     #[test]
     fn lookup_or_create_with_stats_counts_created() {
         let f = fixture();

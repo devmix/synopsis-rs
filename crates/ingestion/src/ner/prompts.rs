@@ -8,28 +8,25 @@
 //! case and is *not* an error; a loaded override is recorded in
 //! [`NerPrompts::notes`].
 //!
-//! Oracle mapping: `../synopsis/configs/prompts/ner/{system,user}.tmpl` —
-//! a functional copy, re-expressed for minijinja (same prompt text and data
-//! shape; the field paths are snake_case). The oracle's `join` template
-//! function is minijinja's built-in `join` filter here.
+//! The embedded defaults are this crate's own `{system,user}.tmpl` prompt
+//! templates rendered with minijinja (the field paths are snake_case); the
+//! `join` template function is minijinja's built-in `join` filter.
 //!
-//! # Deliberate deviations
+//! # Design decisions
 //!
-//! - Go `text/template` → Jinja2 / [`minijinja`]: block trimming via the
-//!   environment's `trim_blocks`/`lstrip_blocks` instead of `{{- ... -}}`.
-//! - The oracle's user template says "from the provided content in separate
-//!   message" because the content went out as a separate attachment. Our
-//!   `LlmClient::call` has no attachments parameter (design D4), so the
-//!   content renders directly into the user prompt body under a `CONTENT:`
-//!   label — the wire shape differs, extracted-output parity is what matters.
+//! - Jinja2 / [`minijinja`] templating: block trimming via the environment's
+//!   `trim_blocks`/`lstrip_blocks` instead of `{{- ... -}}`.
+//! - The content renders directly into the user prompt body under a `CONTENT:`
+//!   label: `LlmClient::call` has no attachments parameter (design D4), so
+//!   the content is not sent as a separate attachment. Extracted-output
+//!   parity is what matters.
 //! - **Binding requirement (human decision 2026-08-23):** the rendered user
 //!   prompt includes an explicit *Document context* block (the chunk's
 //!   section path) when the chunk metadata carries one, and omits it when it
-//!   does not. The oracle only reached the LLM through breadcrumb prefixes
-//!   baked into the chunk text; our chunks are clean slices (the offset-bug
-//!   fix recorded in ingestion-sources), so the context must be explicit.
-//! - The oracle's JSON example is missing the comma after `"confidence"`;
-//!   the embedded default is a valid JSON example.
+//!   does not. The chunks are clean slices (the offset-bug fix recorded in
+//!   ingestion-sources), so the context must be explicit.
+//! - The embedded JSON example is valid: it includes the comma after
+//!   `"confidence"`.
 //!
 //! # Cache key
 //!
@@ -49,11 +46,9 @@ use sha2::{Digest, Sha256};
 
 use crate::error::IngestionError;
 
-/// Embedded system-prompt default (the functional Jinja2 rewrite of the
-/// oracle `configs/prompts/ner/system.tmpl`).
+/// Embedded system-prompt default (this crate's `system.tmpl` template).
 const EMBEDDED_SYSTEM: &str = include_str!("templates/system.tmpl");
-/// Embedded user-prompt default (the functional Jinja2 rewrite of the oracle
-/// `configs/prompts/ner/user.tmpl`).
+/// Embedded user-prompt default (this crate's `user.tmpl` template).
 const EMBEDDED_USER: &str = include_str!("templates/user.tmpl");
 
 // ── Render data (private: the template shape is this module's business) ────
@@ -121,10 +116,10 @@ impl RelationData {
 
 /// Formats one entity-attribute line body: `name (type)`, with a
 /// ` [required]` suffix when the attribute is required and a ` -> target`
-/// suffix for `ref` attributes with a non-empty target — the oracle's
-/// inline template conditionals, moved to code (the minijinja
-/// `trim_blocks` setting eats the newline of a line ending in a block tag,
-/// so the per-line logic lives here instead).
+/// suffix for `ref` attributes with a non-empty target — the inline template
+/// conditionals, moved to code (the minijinja `trim_blocks` setting eats the
+/// newline of a line ending in a block tag, so the per-line logic lives here
+/// instead).
 #[must_use]
 fn format_entity_attribute(def: &AttributeDef) -> String {
     let mut line = format!("{} ({})", def.name, attr_type_word(def.attr_type));
@@ -179,9 +174,9 @@ struct UserData {
     content: String,
 }
 
-/// The template word for an [`AttributeType`] (the oracle prints the raw XML
-/// word; known words map 1:1). `Unknown` — an unrecognized word whose raw
-/// text the config crate does not retain — renders as `"unknown"`.
+/// The template word for an [`AttributeType`] (the raw XML word; known words
+/// map 1:1). `Unknown` — an unrecognized word whose raw text the config crate
+/// does not retain — renders as `"unknown"`.
 #[must_use]
 fn attr_type_word(kind: AttributeType) -> &'static str {
     match kind {
@@ -252,8 +247,8 @@ impl NerPrompts {
 
     /// Render the system prompt for one domain.
     ///
-    /// `with_json_example` appends the JSON output example block (the
-    /// provider passes `true` — oracle `renderSystemPrompt(cfg, true)`).
+    /// `with_json_example` appends the JSON output example block (the provider
+    /// passes `true`).
     pub fn render_system(
         &self,
         domain: &DomainConfig,
@@ -351,7 +346,7 @@ pub fn load_ner_prompts(prompts_path: &str) -> Result<NerPrompts, IngestionError
 
     let mut env = Environment::new();
     // Clean prompt output: block tags ({% for %}/{% endfor %}) on their own
-    // lines contribute no stray whitespace (the oracle trims with `{{- -}}`).
+    // lines contribute no stray whitespace.
     env.set_trim_blocks(true);
     env.set_lstrip_blocks(true);
     // Preserve the template's final newline (keeps the rendered prompt
@@ -624,7 +619,7 @@ mod tests {
 
         let with_example = prompts.render_system(&sample_domain(), true).unwrap();
         assert!(with_example.contains("OUTPUT FORMAT:"), "{with_example}");
-        // The oracle's example is missing this comma; the default is valid.
+        // The default example is valid JSON (it includes this comma).
         assert!(
             with_example.contains("\"confidence\": <estimated confidence>,"),
             "{with_example}"
@@ -763,7 +758,7 @@ mod tests {
             format_entity_attribute(&attribute("manager", AttributeType::Ref, false, "employee")),
             "manager (ref) -> employee"
         );
-        // A ref without a target gets no arrow (oracle: `and (eq .Type "ref") .Target`).
+        // A ref without a target gets no arrow.
         assert_eq!(
             format_entity_attribute(&attribute("email", AttributeType::Ref, false, "")),
             "email (ref)"

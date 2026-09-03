@@ -5,9 +5,9 @@
 //! document-job state machine (task 1.1, [`db::DocumentJobDao`]): the file
 //! watcher (task 1.5), the startup reconcile and the CLI enqueue through it
 //! instead of calling the ingestion pipeline directly. The queue is a new
-//! Rust construct — the Go oracle ingests synchronously (the watcher
-//! re-ran the whole source ingest, `PruneDeleted` stat'ed each DB path) and
-//! has no equivalent producer.
+//! Rust construct: ingestion runs as per-file jobs rather than a synchronous
+//! whole-source re-ingest, so the durable job state has a single producer
+//! surface instead of an ad-hoc re-run.
 //!
 //! - [`DocumentJobQueue::enqueue_index`] / [`DocumentJobQueue::enqueue_delete`]
 //!   are thin idempotent upserts over the DAO (one `pending` job per path;
@@ -28,15 +28,14 @@
 //! worker (task 1.4) is the only consumer, and it re-reads each file itself
 //! (design `document-jobs-queue`, Architecture + Correction).
 //!
-//! Deliberate deviations from the oracle's prune behavior:
+//! Design decisions for the reconcile (prune) behavior:
 //!
 //! - A source root that is missing or not a directory is an explicit error,
 //!   never an "all files deleted" diff: a broken walk must not turn into a
 //!   mass delete.
 //! - "Absent on disk" is decided per candidate path with
-//!   [`std::fs::symlink_metadata`] (the oracle's `os.Stat` check), not
-//!   solely by walk membership: a file in a subdirectory the walk could not
-//!   read stays put.
+//!   [`std::fs::symlink_metadata`], not solely by walk membership: a file in
+//!   a subdirectory the walk could not read stays put.
 //! - A stale `pending` delete job is cancelled when its file is back on
 //!   disk with an unchanged hash (otherwise the worker would delete a live
 //!   document).
@@ -283,9 +282,9 @@ impl<'db> DocumentJobQueue<'db> {
         if !deleted.insert(path.to_owned()) || on_disk.contains_key(path) {
             return Ok(());
         }
-        // Per-path stat (the oracle's os.Stat check): walk membership above
-        // already excluded matched files, so a missing stat here means the
-        // file is genuinely gone (module docs).
+        // Per-path stat: walk membership above already excluded matched
+        // files, so a missing stat here means the file is genuinely gone
+        // (module docs).
         if fs::symlink_metadata(Path::new(path)).is_err() {
             self.enqueue_delete(path)?;
             stats.deleted += 1;

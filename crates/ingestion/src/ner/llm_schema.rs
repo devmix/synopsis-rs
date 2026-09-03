@@ -1,39 +1,34 @@
 //! JSON schema generation for the LLM NER provider (design D5, task 2.3).
 //!
-//! Oracle mapping: `../synopsis/internal/ingestion/ner/llm_json_schema.go`.
 //! The generated schema constrains the model's structured output to the
 //! domain's entities/relations shape; the `llm` client embeds it under
 //! `response_format.json_schema` (task 2.5 wires the call).
 //!
-//! # Deliberate deviations
+//! # Design decisions
 //!
-//! - The oracle's `GenerateJSONSchema(cfg, useSchema)` takes the client's
-//!   `IsRequiresSchema()` flag and returns `""` when it is false. Our
-//!   `LlmClient` exposes the mode as `ResponseFormat`
-//!   (`config::preset`) and itself falls back to `json_object` when the
-//!   schema is absent or empty, so the flag lives at the call site (task 2.5
-//!   passes `None` there) — this function is a pure function of the domain
-//!   config and always produces a schema.
-//! - Go's `json.MarshalIndent` escapes HTML characters and indents with four
-//!   spaces; `serde_json` does neither. The schema contains no HTML
-//!   characters, and the client parses the document back to JSON before
-//!   embedding it, so only the indent width differs (cosmetic).
-//! - The oracle's `GenerateEntitySchema`/`GenerateRelationSchema` are
-//!   unexported map builders; here they are `pub(crate)` because the parity
-//!   tests (oracle `llm_json_schema_test.go`) exercise them directly.
+//! - The mode flag lives at the call site. `LlmClient` exposes the mode as
+//!   `ResponseFormat` (`config::preset`) and itself falls back to
+//!   `json_object` when the schema is absent or empty (task 2.5 passes
+//!   `None` there), so this function is a pure function of the domain config
+//!   and always produces a schema.
+//! - `serde_json` pretty-prints with a two-space indent and no HTML
+//!   escaping. The schema contains no HTML characters, and the client parses
+//!   the document back to JSON before embedding it, so the indent width is
+//!   cosmetic.
+//! - The `entity_schema`/`relation_schema` builders are `pub(crate)` because
+//!   the tests exercise them directly.
 
 use config::DomainConfig;
 use config::ontology::AttributeType;
 use serde_json::{Map, Value, json};
 
-/// Generates the JSON schema for one domain's NER structured output
-/// (oracle `GenerateJSONSchema`).
+/// Generates the JSON schema for one domain's NER structured output.
 ///
 /// The top level is an object with an `entities` array (always present and
 /// required) and, when the domain defines relations, a `relations` array.
 /// The result is a pretty-printed JSON document (two-space indent — see the
 /// module docs); serialization of these literal values cannot fail, so the
-/// oracle's marshal-error → `""` arm has no Rust analogue.
+/// `unwrap_or_default` fallback never fires.
 #[must_use]
 pub fn generate_json_schema(domain: &DomainConfig) -> String {
     let mut properties = Map::new();
@@ -49,12 +44,12 @@ pub fn generate_json_schema(domain: &DomainConfig) -> String {
     serde_json::to_string_pretty(&schema).unwrap_or_default()
 }
 
-/// The `entities` array schema (oracle `GenerateEntitySchema`).
+/// The `entities` array schema.
 ///
 /// `name` and `type` are required; `type` carries an enum of the domain's
 /// lowercased entity ids when the domain defines entities; `attributes`
 /// carries the union of all entity attribute names (first definition wins on
-/// a name collision, oracle `allAttributes`).
+/// a name collision).
 pub(crate) fn entity_schema(domain: &DomainConfig) -> Value {
     let mut type_prop = Map::new();
     type_prop.insert("type".to_owned(), json!("string"));
@@ -67,9 +62,9 @@ pub(crate) fn entity_schema(domain: &DomainConfig) -> Value {
         type_prop.insert("enum".to_owned(), Value::Array(enum_values));
     }
 
-    // Oracle parity: without entity definitions the attributes property stays
-    // the plain `{"type": "object"}` base; with them it gains the `properties`
-    // map (possibly empty).
+    // Without entity definitions the attributes property stays the plain
+    // `{"type": "object"}` base; with them it gains the `properties` map
+    // (possibly empty).
     let attributes = if domain.entities.is_empty() {
         json!({"type": "object"})
     } else {
@@ -104,7 +99,7 @@ pub(crate) fn entity_schema(domain: &DomainConfig) -> Value {
     })
 }
 
-/// The `relations` array schema (oracle `GenerateRelationSchema`).
+/// The `relations` array schema.
 ///
 /// All five subject/predicate/object fields are required; `predicate`
 /// carries an enum of the domain's lowercased relation predicates when the
@@ -166,8 +161,8 @@ fn object_attributes_schema(attributes: &[(String, &'static str)]) -> Value {
     json!({"type": "object", "properties": properties})
 }
 
-/// Collects the union of attribute definitions across definitions (oracle
-/// `allAttributes`): first occurrence wins on a name collision.
+/// Collects the union of attribute definitions across definitions: first
+/// occurrence wins on a name collision.
 fn collect_attributes(
     pairs: impl Iterator<Item = (String, &'static str)>,
 ) -> Vec<(String, &'static str)> {
@@ -180,9 +175,9 @@ fn collect_attributes(
     seen
 }
 
-/// The JSON-schema type word for an entity attribute (oracle switch:
-/// `number|int|float` → number, `boolean` → boolean, everything else —
-/// `string`, `date`, `datetime`, `ref` and unknown words — → string).
+/// The JSON-schema type word for an entity attribute: `number|int|float` →
+/// number, `boolean` → boolean, everything else — `string`, `date`,
+/// `datetime`, `ref` and unknown words — → string.
 fn entity_attr_schema_type(kind: AttributeType) -> &'static str {
     match kind {
         AttributeType::Number => "number",
@@ -194,8 +189,8 @@ fn entity_attr_schema_type(kind: AttributeType) -> &'static str {
     }
 }
 
-/// The JSON-schema type word for a relation attribute (oracle switch over the
-/// raw XML word; its `condition` arm is the default and folds into `_`).
+/// The JSON-schema type word for a relation attribute (matched over the raw
+/// XML word; its `condition` arm is the default and folds into `_`).
 fn relation_attr_schema_type(word: &str) -> &'static str {
     match word {
         "number" | "int" | "float" => "number",
@@ -269,8 +264,7 @@ mod tests {
         }
     }
 
-    /// The oracle's full test domain: three entities with attributes, two
-    /// relations.
+    /// A full test domain: three entities with attributes, two relations.
     fn full_domain() -> DomainConfig {
         domain(
             vec![
@@ -297,8 +291,8 @@ mod tests {
         )
     }
 
-    /// Oracle `TestGenerateJSONSchema`: full config — top-level object,
-    /// entities + relations arrays, `entities` required.
+    /// Full config — top-level object, entities + relations arrays,
+    /// `entities` required.
     #[test]
     fn full_config_generates_object_with_entities_and_relations() {
         let schema: Value = serde_json::from_str(&generate_json_schema(&full_domain())).unwrap();
@@ -310,8 +304,7 @@ mod tests {
         assert!(required.iter().any(|field| field == "entities"));
     }
 
-    /// Oracle `TestGenerateJSONSchema`: empty config — a non-empty schema,
-    /// entities present, relations absent.
+    /// Empty config — a non-empty schema, entities present, relations absent.
     #[test]
     fn empty_config_has_entities_but_no_relations() {
         let raw = generate_json_schema(&domain(vec![], vec![]));
@@ -322,7 +315,7 @@ mod tests {
         assert!(schema["properties"].get("relations").is_none());
     }
 
-    /// Oracle `TestGenerateJSONSchema`: entities only — no relations property.
+    /// Entities only — no relations property.
     #[test]
     fn entities_only_have_no_relations_property() {
         let schema: Value = serde_json::from_str(&generate_json_schema(&domain(
@@ -335,8 +328,8 @@ mod tests {
         assert!(schema["properties"].get("relations").is_none());
     }
 
-    /// Oracle `TestGenerateEntitySchema` (entities with attributes): array
-    /// shape, required `name`/`type`, type enum, attributes object.
+    /// Entities with attributes: array shape, required `name`/`type`, type
+    /// enum, attributes object.
     #[test]
     fn entity_schema_carries_required_fields_and_type_enum() {
         let schema = entity_schema(&domain(
@@ -368,8 +361,8 @@ mod tests {
         assert_eq!(attrs["age"]["type"], "number");
     }
 
-    /// Oracle `TestGenerateEntitySchema` (different attribute types): the
-    /// per-kind mapping (date/ref collapse to string).
+    /// Different attribute types: the per-kind mapping (date/ref collapse to
+    /// string).
     #[test]
     fn entity_attribute_kind_mapping() {
         let schema = entity_schema(&domain(
@@ -394,8 +387,8 @@ mod tests {
         assert_eq!(attrs["category_ref"]["type"], "string");
     }
 
-    /// Oracle `TestGenerateEntitySchema` (empty entities): no type enum, and
-    /// the attributes property stays the plain object base (no `properties`).
+    /// Empty entities: no type enum, and the attributes property stays the
+    /// plain object base (no `properties`).
     #[test]
     fn empty_entities_have_no_enum_and_plain_attributes() {
         let schema = entity_schema(&domain(vec![], vec![]));
@@ -406,8 +399,8 @@ mod tests {
         assert!(properties["attributes"].get("properties").is_none());
     }
 
-    /// Oracle `TestGenerateEntitySchema` (attribute union): a name defined in
-    /// two entities appears once, with the first definition's kind.
+    /// Attribute union: a name defined in two entities appears once, with the
+    /// first definition's kind.
     #[test]
     fn attribute_union_first_definition_wins() {
         let schema = entity_schema(&domain(
@@ -423,8 +416,8 @@ mod tests {
         assert_eq!(attrs.as_object().unwrap().len(), 1);
     }
 
-    /// Oracle `TestGenerateRelationSchema` (relations with attributes): all
-    /// five fields required, predicate enum, attributes object.
+    /// Relations with attributes: all five fields required, predicate enum,
+    /// attributes object.
     #[test]
     fn relation_schema_carries_required_fields_and_predicate_enum() {
         let schema = relation_schema(&domain(
@@ -461,8 +454,7 @@ mod tests {
         assert_eq!(attrs["witness"]["type"], "string");
     }
 
-    /// Oracle `TestGenerateRelationSchema` (multiple relations): the enum
-    /// lists every predicate.
+    /// Multiple relations: the enum lists every predicate.
     #[test]
     fn multiple_relations_fill_the_predicate_enum() {
         let schema = relation_schema(&domain(
@@ -482,8 +474,7 @@ mod tests {
         }
     }
 
-    /// Oracle `TestGenerateRelationSchema` (empty relations): no predicate
-    /// enum.
+    /// Empty relations: no predicate enum.
     #[test]
     fn empty_relations_have_no_predicate_enum() {
         let schema = relation_schema(&domain(vec![entity("person", vec![])], vec![]));
@@ -494,7 +485,7 @@ mod tests {
         );
     }
 
-    /// Oracle `TestJSONSchemaValidity`: every builder emits valid JSON.
+    /// Every builder emits valid JSON.
     #[test]
     fn generated_schemas_are_valid_json() {
         let domain = full_domain();
@@ -507,8 +498,7 @@ mod tests {
         }
     }
 
-    /// Entity ids and relation predicates are lowercased in the enums
-    /// (oracle `strings.ToLower`).
+    /// Entity ids and relation predicates are lowercased in the enums.
     #[test]
     fn enums_are_lowercased() {
         let schema = generate_json_schema(&domain(

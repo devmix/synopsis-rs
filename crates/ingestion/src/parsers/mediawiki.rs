@@ -1,7 +1,7 @@
-//! Mediawiki parser (oracle: `internal/ingestion/parsers/mediawiki_parser.go`).
+//! Mediawiki parser.
 //!
 //! Walks a mediawiki dataset tree and returns one [`Document`] per page JSON
-//! file. Expected layout (oracle):
+//! file. Expected layout:
 //!
 //! ```text
 //! sourcePath/
@@ -15,33 +15,29 @@
 //!
 //! A page file is a JSON object with optional `title`, `url`, `wikitext`,
 //! `html`, `images`, `links`, `categories`, `entity_type` and `description`
-//! fields. The document content is the best available text (oracle
-//! `extractContent`): `wikitext` > `html` > `title` + `description` joined by
-//! a blank line (empty parts dropped).
+//! fields. The document content is the best available text:
+//! `wikitext` > `html` > `title` + `description` joined by a blank line
+//! (empty parts dropped).
 //!
 //! `graph.json` files (at any depth) are relations, not pages: every one is
 //! parsed as a title -> related titles map and merged into a single map that
 //! enriches each page's metadata (`graph_relations`).
 //!
-//! **Deliberate deviations from the oracle** (functional copy, not code
-//! copy):
+//! # Design decisions
 //!
 //! * **Exclusions** come from user `.synignore` files (human decision
-//!   2026-08-23) via the shared walk; the oracle's hardcoded `skipDirs`
-//!   list does not exist here.
+//!   2026-08-23) via the shared walk — there is no hardcoded skip-list.
 //! * **Malformed `graph.json`** files yield a non-fatal
-//!   [`IngestionError::Json`] (the oracle skipped them silently), consistent
-//!   with the JSON parser's up-front validation (task 1.4).
-//! * **`entity_type` fallback**: the oracle derived it from the `by-type/`
-//!   path layer only — the page JSON's own `entity_type` field was parsed
-//!   but never used (a dead field). When the path layer is absent, the JSON
-//!   field is used instead.
-//! * **`file_size`/`modified_at`** are populated like the sibling parsers
-//!   (the oracle's mediawiki parser left them unset).
-//! * A missing root is reported once, not once per pass (the oracle's second
-//!   `loadGraphJSON` walk would have added a duplicate error).
-//! * The oracle's `GraphEdge` struct is dead code (the graph is a plain
-//!   title -> titles map) and is not ported.
+//!   [`IngestionError::Json`] (silently skipping them would hide data
+//!   loss), consistent with the JSON parser's up-front validation (task
+//!   1.4).
+//! * **`entity_type` fallback**: derived from the `by-type/` path layer
+//!   first; when the path layer is absent, the page JSON's own
+//!   `entity_type` field is used.
+//! * **`file_size`/`modified_at`** are populated like the sibling parsers.
+//! * A missing root yields a single error, not one per pass (the relations
+//!   pass and the page pass would otherwise each add an error).
+//! * The graph is a plain title -> titles map; there is no edge struct.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -53,21 +49,20 @@ use crate::error::IngestionError;
 use crate::parsers::{format_rfc3339_utc, source_file_name, walk_matched_files};
 use crate::types::{Document, DocumentMetadata, ParseResult, Parser};
 
-/// File extensions the mediawiki parser accepts (oracle: `.json` page dumps).
+/// File extensions the mediawiki parser accepts (`.json` page dumps).
 const MEDIAWIKI_EXTENSIONS: &[&str] = &[".json"];
 
 /// File name (case-insensitive) of a relations file: walked for
-/// `graph_relations`, never ingested as a page (oracle `loadGraphJSON`).
+/// `graph_relations`, never ingested as a page.
 const GRAPH_FILE_NAME: &str = "graph.json";
 
-/// Path layer that names a page's entity type (oracle `extractPathComponents`).
+/// Path layer that names a page's entity type.
 const BY_TYPE_DIR: &str = "by-type";
 
-/// One mediawiki page as stored in the dataset (oracle `MediawikiPage`).
+/// One mediawiki page as stored in the dataset.
 ///
 /// Every field is optional: a missing field degrades to an empty content
-/// component exactly like the oracle's zero values. Unknown fields are
-/// ignored, as Go's `json.Unmarshal` did.
+/// component. Unknown fields are ignored (serde's default behavior).
 #[derive(Debug, Default, Deserialize)]
 struct Page {
     /// Page title.
@@ -103,9 +98,9 @@ impl MediawikiParser {
         is_json_file(path) && !is_graph_file(path)
     }
 
-    /// Merges every `graph.json` in the tree into title -> related titles
-    /// (oracle `loadGraphJSON`). Deterministic: sorted walk, BTreeMap
-    /// storage, and within one file the BTreeMap-backed serde_json key order.
+    /// Merges every `graph.json` in the tree into title -> related titles.
+    /// Deterministic: sorted walk, BTreeMap storage, and within one file the
+    /// BTreeMap-backed serde_json key order.
     fn load_graph(
         source_path: &Path,
         errors: &mut Vec<IngestionError>,
@@ -127,7 +122,7 @@ impl MediawikiParser {
         graph
     }
 
-    /// Reads one page JSON file into a [`Document`] (oracle `parsePageFile`).
+    /// Reads one page JSON file into a [`Document`].
     fn read_page(
         path: &Path,
         root: &Path,
@@ -170,7 +165,7 @@ impl MediawikiParser {
             insert_strs(&mut extra, "categories", categories);
         }
         // Graph relations keyed by title (absent when the title is not a
-        // graph node — oracle contract).
+        // graph node).
         if let Some(relations) = graph.get(&title) {
             insert_strs(&mut extra, "graph_relations", relations);
         }
@@ -202,7 +197,7 @@ impl MediawikiParser {
 
 impl Parser for MediawikiParser {
     fn parse(&self, source_path: &Path) -> ParseResult {
-        // A missing/unreadable root is reported once, not once per pass
+        // A missing/unreadable root yields one error, not one per pass
         // (module docs).
         if let Err(source) = std::fs::symlink_metadata(source_path) {
             return ParseResult {
@@ -214,7 +209,7 @@ impl Parser for MediawikiParser {
             };
         }
 
-        // First pass: relations (oracle `loadGraphJSON` before the page walk).
+        // First pass: relations (before the page walk).
         let mut errors = Vec::new();
         let graph = Self::load_graph(source_path, &mut errors);
         let mut documents = Vec::new();
@@ -241,10 +236,9 @@ impl Parser for MediawikiParser {
     }
 }
 
-/// The best available text (oracle `extractContent`): `wikitext` > `html` >
-/// `title` + `description` joined by a blank line, empty parts dropped.
-/// Original (untrimmed) text is kept — the oracle trimmed only for the
-/// emptiness filter.
+/// The best available text: `wikitext` > `html` > `title` + `description`
+/// joined by a blank line, empty parts dropped. Original (untrimmed) text
+/// is kept — trimming is used only for the emptiness filter.
 fn extract_content(page: &Page) -> String {
     for text in [page.wikitext.as_deref(), page.html.as_deref()]
         .into_iter()
@@ -267,9 +261,9 @@ fn extract_content(page: &Page) -> String {
 }
 
 /// `(space, wiki_type, entity_type)` from the path layout
-/// `<space>/<wiki-type>/by-type/<entity-type>/page.json` (oracle
-/// `extractPathComponents`). Each component is `None` when the layout does
-/// not provide it; a single-file source (no walk root) provides none.
+/// `<space>/<wiki-type>/by-type/<entity-type>/page.json`. Each component is
+/// `None` when the layout does not provide it; a single-file source (no
+/// walk root) provides none.
 fn path_components(path: &Path, root: &Path) -> (Option<String>, Option<String>, Option<String>) {
     let Ok(rel) = path.strip_prefix(root) else {
         return (None, None, None);
@@ -286,10 +280,9 @@ fn path_components(path: &Path, root: &Path) -> (Option<String>, Option<String>,
     (space, wiki_type, entity_type)
 }
 
-/// Merges one `graph.json` (title -> related titles) into `graph`
-/// (oracle `loadGraphJSON` merge). A file whose shape is not
-/// `map[string][]string` is rejected whole — the oracle's
-/// `json.Unmarshal` into that type failed the file the same way.
+/// Merges one `graph.json` (title -> related titles) into `graph`. A file
+/// whose shape is not a map of string arrays is rejected whole: the
+/// deserializer fails the file when any value is not an array of strings.
 fn merge_graph(
     graph: &mut BTreeMap<String, Vec<String>>,
     data: &str,
@@ -331,16 +324,14 @@ fn shape_error(path: &Path, title: &str) -> IngestionError {
     }
 }
 
-/// True for a `.json` file, case-insensitively (oracle:
-/// `strings.ToLower(name)` + `HasSuffix(".json")`).
+/// True for a `.json` file, case-insensitively.
 fn is_json_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
-/// True for a relations file named exactly `graph.json` (case-insensitive;
-/// oracle `strings.EqualFold(name, "graph.json")`).
+/// True for a relations file named exactly `graph.json` (case-insensitive).
 fn is_graph_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -366,18 +357,15 @@ fn insert_strs(extra: &mut Map<String, Value>, key: &str, values: &[String]) {
 
 #[cfg(test)]
 mod tests {
-    //! Differential tests against the Go oracle: inputs and expectations
-    //! (document counts, content priority, path components, graph relations)
-    //! are taken from
-    //! `../synopsis/internal/ingestion/parsers/mediawiki_parser_test.go`,
-    //! which passes there (`go test ./internal/ingestion/parsers/`).
+    //! Tests cover the documented behaviors: document counts, content
+    //! priority, path components, and graph relations.
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
     use crate::parsers::tests::TempTree;
 
-    /// The oracle's "single page" fixture.
+    /// The "single page" fixture.
     const PAGE_JSON: &str = r#"{
         "title": "API Gateway",
         "url": "https://example.com/API_Gateway",
@@ -435,7 +423,6 @@ mod tests {
 
     #[test]
     fn single_page_produces_one_document() {
-        // Oracle TestMediawikiParser_Parse "single page".
         let tree = TempTree::new();
         let path = tree.write(
             "space/wiki-type/by-type/services/api_gateway.json",
@@ -453,7 +440,7 @@ mod tests {
             doc.metadata.source_file,
             "space/wiki-type/by-type/services/api_gateway.json"
         );
-        // wikitext wins over html (oracle extractContent priority).
+        // wikitext wins over html (content priority).
         assert_eq!(doc.content, "== API Gateway ==\nA service mesh component.");
         assert_eq!(extra_str(doc, "title"), Some("API Gateway".into()));
         assert_eq!(
@@ -475,7 +462,6 @@ mod tests {
 
     #[test]
     fn graph_json_is_not_a_page() {
-        // Oracle TestMediawikiParser_Parse "skip graph.json".
         let tree = TempTree::new();
         tree.write("space/wiki-type/graph.json", r#"{"page1": ["page2"]}"#);
         tree.write(
@@ -495,8 +481,7 @@ mod tests {
 
     #[test]
     fn content_falls_back_html_then_title_description() {
-        // Oracle TestMediawikiParser_ExtractContent (html fallback and
-        // title + description last resort).
+        // html fallback and title + description last resort.
         let tree = TempTree::new();
         tree.write(
             "a/html_only.json",
@@ -532,7 +517,7 @@ mod tests {
         };
         assert_eq!(extract_content(&page), "== Wiki Content ==");
 
-        // Empty parts are dropped from the join (oracle TrimSpace filter).
+        // Empty parts are dropped from the join (whitespace-only filter).
         let page = Page {
             title: Some("   ".into()),
             description: Some("Only description".into()),
@@ -546,8 +531,7 @@ mod tests {
 
     #[test]
     fn path_components_follow_the_layout() {
-        // Oracle TestMediawikiParser_ExtractPathComponents "full path",
-        // plus the shallow layouts the oracle's guards cover.
+        // The full layout, plus the shallow layouts the guards cover.
         assert_eq!(
             path_components(
                 Path::new("/data/devmix/internal/by-type/services/api_gateway.json"),
@@ -559,7 +543,7 @@ mod tests {
                 Some("services".to_owned()),
             )
         );
-        // A 2-part path still provides the space (oracle: `len(parts) >= 2`).
+        // A 2-part path still provides the space.
         assert_eq!(
             path_components(Path::new("/data/space/page.json"), Path::new("/data")),
             (Some("space".into()), None, None)
@@ -568,7 +552,7 @@ mod tests {
             path_components(Path::new("/data/space/wiki/page.json"), Path::new("/data")),
             (Some("space".into()), Some("wiki".into()), None)
         );
-        // by-type match is case-insensitive (oracle EqualFold).
+        // by-type match is case-insensitive.
         assert_eq!(
             path_components(
                 Path::new("/data/s/w/By-Type/entities/p.json"),
@@ -585,7 +569,6 @@ mod tests {
 
     #[test]
     fn graph_relations_enrich_page_metadata() {
-        // Oracle TestMediawikiParser_GraphJSON.
         let tree = TempTree::new();
         tree.write(
             "space/wiki-type/graph.json",
@@ -619,8 +602,7 @@ mod tests {
 
     #[test]
     fn multiple_graph_files_merge() {
-        // Oracle TestMediawikiParser_LoadGraphJSON (the append-merge of
-        // `result[source] = append(...)` across graph files).
+        // The append-merge across graph files.
         let tree = TempTree::new();
         tree.write("space/a/graph.json", r#"{"A": ["B", "C"], "D": ["E"]}"#);
         tree.write("space/b/graph.json", r#"{"A": ["F"]}"#);
@@ -640,7 +622,6 @@ mod tests {
 
     #[test]
     fn without_graph_no_relations_key() {
-        // Oracle TestMediawikiParser_LoadGraphJSON_Missing.
         let tree = TempTree::new();
         tree.write(
             "space/by-type/x/page.json",
@@ -681,8 +662,8 @@ mod tests {
 
     #[test]
     fn broken_graph_json_is_non_fatal_and_recorded() {
-        // Deviation (module docs): the oracle skipped malformed graph files
-        // silently; here the error is recorded and pages still parse.
+        // Design (module docs): malformed graph files are recorded as
+        // non-fatal errors and pages still parse.
         let tree = TempTree::new();
         let bad = tree.write("space/graph.json", "{invalid");
         tree.write(
@@ -713,8 +694,7 @@ mod tests {
 
     #[test]
     fn graph_entries_must_be_string_arrays() {
-        // Oracle: `json.Unmarshal` into `map[string][]string` fails the
-        // whole file when a value is not a string array.
+        // A value that is not a string array fails the whole file.
         let tree = TempTree::new();
         let bad = tree.write("space/graph.json", r#"{"A": "not-an-array"}"#);
         tree.write(
@@ -745,8 +725,8 @@ mod tests {
 
     #[test]
     fn entity_type_falls_back_to_the_page_field() {
-        // Deviation (module docs): without the by-type/ path layer the page
-        // JSON's own entity_type field is used (the oracle left it dead).
+        // Design (module docs): without the by-type/ path layer the page
+        // JSON's own entity_type field is used.
         let tree = TempTree::new();
         tree.write(
             "space/wiki/loose.json",

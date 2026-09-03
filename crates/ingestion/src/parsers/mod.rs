@@ -1,4 +1,4 @@
-//! Filesystem source parsers (oracle: `internal/ingestion/parsers/`).
+//! Filesystem source parsers.
 //!
 //! Each format module implements [`crate::Parser`] on top of one shared walk:
 //! recursive, `.synignore` filtered, deterministically ordered, best-effort
@@ -36,14 +36,13 @@ pub(crate) const SYNIGNORE_FILE_NAME: &str = ".synignore";
 /// Walks `source_path` and calls `visit` for every file whose path satisfies
 /// `matches` and is not excluded by a `.synignore` file.
 ///
-/// Best-effort contract (design D1; oracle `filepath.WalkDir` semantics): a
-/// missing root, an unreadable directory and a `visit` failure are all
-/// appended to `errors` and the walk continues. `source_path` may be a
-/// directory (walked recursively) or a single file (visited when `matches`
-/// holds); symlinks are not followed, mirroring the oracle's Lstat-based
-/// `os.DirEntry`. Directory entries are visited in sorted file-name order —
-/// Rust's `std::fs::read_dir` is OS-ordered, and sorting restores the
-/// deterministic lexical order the oracle's `WalkDir` already had.
+/// Best-effort contract (design D1): a missing root, an unreadable directory
+/// and a `visit` failure are all appended to `errors` and the walk continues.
+/// `source_path` may be a directory (walked recursively) or a single file
+/// (visited when `matches` holds); symlinks are not followed (Lstat-based,
+/// never dereferenced). Directory entries are visited in sorted file-name
+/// order — Rust's `std::fs::read_dir` is OS-ordered, and sorting restores a
+/// deterministic lexical order.
 ///
 /// `.synignore` files are matched per entry during this walk (the matcher
 /// loads and caches them lazily per directory, so there is no second
@@ -63,7 +62,7 @@ pub(crate) fn walk_matched_files(
             walk_dir(source_path, &matches, &mut visit, &mut synignore, errors);
         }
         // A non-directory root (file or symlink with a matching name) is
-        // visited directly, like the oracle's single-entry `WalkDir`.
+        // visited directly.
         Ok(_) if matches(source_path) => push_visit(&mut visit, source_path, errors),
         Ok(_) => {} // root file without a matching extension: nothing to do
         Err(source) => errors.push(IngestionError::Io {
@@ -137,7 +136,7 @@ fn walk_dir(
 
     for entry in entries {
         let path = entry.path();
-        // `file_type` does not follow symlinks, like the oracle's DirEntry.
+        // `file_type` does not follow symlinks (Lstat-based).
         let is_dir = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
         // `.synignore` exclusions apply to files and directories alike; an
         // excluded directory prunes its whole subtree (gitignore semantics:
@@ -201,9 +200,8 @@ fn push_visit(
 
 /// The document's `source_file` metadata value: `path` relative to the walk
 /// root. Falls back to the bare file name when the path cannot be made
-/// relative (single-file source or an unrelated root) — the oracle left this
-/// empty on `filepath.Rel` failure, and a non-empty value is strictly more
-/// useful for downstream deduplication.
+/// relative (single-file source or an unrelated root) — a non-empty value is
+/// strictly more useful for downstream deduplication.
 pub(crate) fn source_file_name(path: &Path, root: &Path) -> String {
     path.strip_prefix(root)
         .ok()
@@ -217,9 +215,8 @@ pub(crate) fn source_file_name(path: &Path, root: &Path) -> String {
 }
 
 /// Formats `time` as an RFC 3339 UTC string at second precision
-/// (`2026-08-23T12:34:56Z`) — the shape of Go's `time.RFC3339` for UTC
-/// instants. Returns `None` for instants before the Unix epoch (not
-/// representable as a `SystemTime` duration).
+/// (`2026-08-23T12:34:56Z`). Returns `None` for instants before the Unix
+/// epoch (not representable as a `SystemTime` duration).
 ///
 /// Delegates to the workspace date/time seam (`utils::temporal`, jiff —
 /// change utils-crate, design D4); the signature is kept so the per-format

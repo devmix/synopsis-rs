@@ -1,32 +1,26 @@
 //! Name-similarity primitives for entity resolution (design D8).
 //!
-//! Oracle mapping: `../synopsis/internal/ingestion/entities/similarity.go`
-//! (`normalizeName`, `getBigrams`, `jaroWinkler`). All functions are pure
-//! and rune-aware, so Cyrillic (multi-byte UTF-8) names score identically
-//! to ASCII; the parity cases from the oracle's `similarity_test.go` are
-//! ported in full below.
+//! All functions are pure and rune-aware, so Cyrillic (multi-byte UTF-8)
+//! names score identically to ASCII.
 //!
-//! # Deliberate deviations
+//! # Design decisions
 //!
 //! - [`normalize_name`] delegates to the NER layer's `normalize`
 //!   (`crate::ner::normalize`) instead of re-implementing the rule: the
-//!   oracle's `normalizeName` and `utils.Normalize` are byte-for-byte the
-//!   same function, and the providers already tag domains with it (DRY).
+//!   providers already tag domains with it (DRY).
 //! - [`bigrams`] represents names shorter than two runes by their
-//!   *normalized* form; the oracle kept the raw (untrimmed) input, which
-//!   could leak stray whitespace into block keys (bug fix — the oracle's
-//!   own test inputs are already normalized, so parity is unaffected).
+//!   *normalized* form rather than the raw (untrimmed) input, which could
+//!   leak stray whitespace into block keys.
 //! - [`bigrams`] returns an ordered, deduplicated `Vec` (first-seen order)
-//!   rather than the oracle's `map`: Go map iteration order is random, the
-//!   ordered slice makes blocking deterministic.
+//!   rather than an unordered collection: `HashMap` iteration order is
+//!   random, the ordered slice makes blocking deterministic.
 
 use crate::ner::normalize;
 
 /// Normalizes an entity name for matching: trims surrounding whitespace,
 /// lowercases, and collapses internal whitespace runs to single spaces.
 ///
-/// Oracle `normalizeName` (identical to `utils.Normalize`, reused from the
-/// NER layer).
+/// Reused from the NER layer's `normalize` (`crate::ner::normalize`).
 pub fn normalize_name(name: &str) -> String {
     normalize(name)
 }
@@ -34,8 +28,7 @@ pub fn normalize_name(name: &str) -> String {
 /// Rune-aware character bigrams of a normalized name, deduplicated and in
 /// first-seen order.
 ///
-/// Names shorter than two runes are represented by their normalized form
-/// (oracle `getBigrams`).
+/// Names shorter than two runes are represented by their normalized form.
 pub fn bigrams(name: &str) -> Vec<String> {
     let normalized = normalize_name(name);
     let runes: Vec<char> = normalized.chars().collect();
@@ -54,10 +47,10 @@ pub fn bigrams(name: &str) -> Vec<String> {
 
 /// Jaro-Winkler similarity of two names in `[0.0, 1.0]`.
 ///
-/// Oracle `jaroWinkler`: both names are normalized first, the match window
-/// is `max(len1, len2) / 2 - 1` (clamped at 0), and a common prefix (up to
-/// 4 runes) earns a bonus of `prefix * 0.1 * (1 - jaro)`. The whole
-/// algorithm runs over `char`s, so Cyrillic names score correctly.
+/// Both names are normalized first, the match window is `max(len1, len2) / 2 -
+/// 1` (clamped at 0), and a common prefix (up to 4 runes) earns a bonus of
+/// `prefix * 0.1 * (1 - jaro)`. The whole algorithm runs over `char`s, so
+/// Cyrillic names score correctly.
 pub fn jaro_winkler(a: &str, b: &str) -> f64 {
     let a = normalize_name(a);
     let b = normalize_name(b);
@@ -130,9 +123,9 @@ mod tests {
 
     use super::*;
 
-    /// Oracle `TestNormalizeName` — full parity port.
+    /// Normalization cases: padding, Cyrillic, case folding, blank input.
     #[test]
-    fn normalize_name_matches_oracle_cases() {
+    fn normalize_name_matches_recorded_cases() {
         let cases = [
             ("  Apple Inc.  ", "apple inc."),
             ("Стив    Джобс", "стив джобс"),
@@ -144,9 +137,9 @@ mod tests {
         }
     }
 
-    /// Oracle `TestGetBigrams` — full parity port.
+    /// Bigram cases: single rune, ASCII, Cyrillic, mixed case/space.
     #[test]
-    fn bigrams_match_oracle_cases() {
+    fn bigrams_match_recorded_cases() {
         let cases: [(&str, &[&str]); 4] = [
             ("ab", &["ab"]),
             ("a", &["a"]),
@@ -165,9 +158,9 @@ mod tests {
         }
     }
 
-    /// Oracle `TestJaroWinkler` — full parity port (Cyrillic included).
+    /// Jaro-Winkler similarity cases (Cyrillic included).
     #[test]
-    fn jaro_winkler_matches_oracle_cases() {
+    fn jaro_winkler_matches_recorded_cases() {
         const EPS: f64 = 1e-3;
         let cases: [(&str, &str, f64); 8] = [
             ("Apple", "Apple", 1.0),
@@ -188,9 +181,9 @@ mod tests {
         }
     }
 
-    /// Oracle `TestJaroWinklerThresholdCases` — full parity port.
+    /// Jaro-Winkler threshold cases.
     #[test]
-    fn jaro_winkler_threshold_cases_match_oracle() {
+    fn jaro_winkler_threshold_cases_match() {
         const THRESHOLD: f64 = 0.8;
         let cases: [(&str, &str, bool); 4] = [
             ("Apple", "Apple Inc.", true),

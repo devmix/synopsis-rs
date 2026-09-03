@@ -1,35 +1,28 @@
 //! Per-document ingestion pipeline (series change 3, design D2/D3).
 //!
-//! Oracle reference: `internal/ingestion/ingester.go` (`Ingest`,
-//! `processDocument`, `generateEmbeddings`, `extractNerForChunks`,
-//! `storeDocument`, `storeChunks`). Re-architected for Rust per the
-//! no-1:1-copy directive:
+//! Design decisions:
 //!
 //! - **Collaborator injection (design D3):** [`Ingester::new`] takes the
 //!   database handle, the ingestion config, one [`Source`] (parser + chunker
 //!   fused), the [`EmbeddingProvider`], an optional [`NerProvider`], the
-//!   entity [`Resolver`] and a [`VectorSink`] by reference. The oracle's
-//!   constructor built DAOs, a transaction manager, the resolver and the
-//!   logger internally; here the CLI/runner change owns all resource wiring,
-//!   and tests inject mocks.
-//! - **Vectors after commit (design D5):** the oracle stored its vec0 rows
-//!   inside the SQLite transaction. Our vectors live in a separate index
+//!   entity [`Resolver`] and a [`VectorSink`] by reference. The CLI/runner
+//!   change owns all resource wiring, and tests inject mocks.
+//! - **Vectors after commit (design D5):** vectors live in a separate index
 //!   engine, so the chunk rows commit first and
 //!   [`VectorSink::insert_batch`] runs after the commit. A failure there
 //!   leaves vector-less chunks; orphan reconciliation (task 3.8) repairs the
 //!   divergence — the chunk row is the source of truth.
-//! - **No logger collaborator:** the oracle's structured logger is replaced
-//!   by `tracing` calls (the serve layer's subscriber owns them; the ingester
-//!   itself still takes no logger — design D3). These replace the crate's
-//!   former `eprintln!` warnings (document-jobs-queue task 1.8).
-//! - **Redundant second document update dropped:** the oracle re-updated the
-//!   document row at the end of the transaction with values it had already
-//!   written in `storeDocument`; one write is enough.
+//! - **No logger collaborator:** the ingester takes no logger (design D3);
+//!   `tracing` calls are owned by the serve layer's subscriber. These replace
+//!   the crate's former `eprintln!` warnings (document-jobs-queue task 1.8).
+//! - **Single document write:** the document row is written once per
+//!   transaction; a redundant second update at the end of the transaction is
+//!   dropped — one write is enough.
 //! - **Facts (task 3.5):** NER results are held per chunk (the parallel
 //!   `Vec<Option<NerResult>>` of the private `extract_ner` stage); the fact
-//!   half of the oracle's `storeEntities` (synthetic endpoint entities,
-//!   `facts` rows, `fact_sources` with quotes, weight recompute) runs in the
-//!   private `store_facts` stage inside the same transaction.
+//!   half of entity storage (synthetic endpoint entities, `facts` rows,
+//!   `fact_sources` with quotes, weight recompute) runs in the private
+//!   `store_facts` stage inside the same transaction.
 //!
 //! The pipeline's pure helpers (content hashing, quote extraction (design
 //! D7), source-type resolution) live in the private `helpers` module
@@ -58,8 +51,8 @@ use crate::types::{Document, DocumentChunk, DocumentMetadata, Source};
 
 pub use helpers::{compute_content_hash, extract_quote_from_chunk, source_type_from_metadata};
 
-/// Default embedding batch size when the config declares none (oracle
-/// parity: `if batchSize <= 0 { batchSize = 100 }`).
+/// Default embedding batch size when the config declares none
+/// (`batch_size <= 0` → 100).
 const DEFAULT_BATCH_SIZE: usize = 100;
 
 /// The vector-index write seam of the ingestion pipeline (design D5).
@@ -121,13 +114,12 @@ impl<'a> Ingester<'a> {
 
     /// Runs the full pipeline over the source directory.
     ///
-    /// Flow (oracle `Ingest`): validate the root is a directory → count
-    /// files for the progress bar → database backup (design D6) →
-    /// rebuild-clear (design D6, when `rebuild`) → parse → per-document
-    /// pipeline. Parse errors count into the stats; a parse that produced
-    /// nothing but errors fails the run (oracle parity). Per-document
-    /// failures count into [`ProgressStats::errors`] and never abort the
-    /// run (design D8).
+    /// Flow: validate the root is a directory → count files for the progress
+    /// bar → database backup (design D6) → rebuild-clear (design D6, when
+    /// `rebuild`) → parse → per-document pipeline. Parse errors count into
+    /// the stats; a parse that produced nothing but errors fails the run.
+    /// Per-document failures count into [`ProgressStats::errors`] and never
+    /// abort the run (design D8).
     ///
     /// # Errors
     ///
@@ -205,7 +197,7 @@ impl<'a> Ingester<'a> {
         Ok(tracker.stats())
     }
 
-    /// The per-document pipeline (oracle `processDocument`): hash-dedup →
+    /// The per-document pipeline: hash-dedup →
     /// chunk → batched embeddings → per-chunk NER → one transaction
     /// (document + chunks + entities + facts) → post-commit vector writes
     /// (design D5).
@@ -226,7 +218,7 @@ impl<'a> Ingester<'a> {
         let path = doc.source_path.to_string_lossy().into_owned();
         let content_hash = compute_content_hash(&doc.content);
 
-        // Read-only dedup lookup outside the transaction (oracle parity).
+        // Read-only dedup lookup outside the transaction.
         let existing_doc = self.db.with_conn(|conn| {
             DocumentDao::new(ConnectionOrTx::Connection(conn)).get_by_path(&path)
         })??;
@@ -240,7 +232,7 @@ impl<'a> Ingester<'a> {
 
         let chunks = self.source.chunk(&doc.content, &doc.metadata)?;
         if chunks.is_empty() {
-            // Empty document (oracle: warn + skip): nothing to index.
+            // Empty document (warn + skip): nothing to index.
             tracing::warn!(
                 doc = %doc.source_path.display(),
                 "empty document, skipping"
@@ -269,7 +261,7 @@ impl<'a> Ingester<'a> {
         // One transaction for all of this document's SQLite writes
         // (design D2): the DAOs, the GC and the resolver share the same
         // transaction handle, so entity resolution never hits the SQLite
-        // write lock from a second connection (oracle rationale).
+        // write lock from a second connection.
         let chunk_ids = self.db.exec_tx(|tx| -> Result<Vec<i64>, IngestionError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let docs = DocumentDao::new(exec);
@@ -331,8 +323,8 @@ impl<'a> Ingester<'a> {
                             links.link(chunk_id, entity.id)?;
                         }
                     }
-                    // Task 3.5: the fact half of the oracle's `storeEntities`
-                    // (no-op when the chunk has no facts).
+                    // Task 3.5: the fact half of entity storage (no-op when
+                    // the chunk has no facts).
                     facts::store_facts(
                         exec,
                         self.resolver,
@@ -369,8 +361,8 @@ impl<'a> Ingester<'a> {
         Ok(())
     }
 
-    /// Generates the chunk embeddings in config-sized batches (oracle
-    /// `generateEmbeddings`). A provider that returns a different vector
+    /// Generates the chunk embeddings in config-sized batches. A provider
+    /// that returns a different vector
     /// count than text count is a hard error: continuing would misalign
     /// every later vector.
     fn generate_embeddings(
@@ -401,7 +393,7 @@ impl<'a> Ingester<'a> {
         Ok(all_vectors)
     }
 
-    /// Runs the NER stage over every chunk (oracle `extractNerForChunks`).
+    /// Runs the NER stage over every chunk.
     ///
     /// The results are held in a `Vec<Option<NerResult>>` parallel to the
     /// chunks (design D2 of the sources change): chunks stay pure chunking
@@ -440,9 +432,8 @@ impl<'a> Ingester<'a> {
     }
 
     /// The `source_type` column value for a document: the typed
-    /// [`DocumentMetadata::source_type`] field (the re-architecture moved it
-    /// out of the free-form map; the oracle's `getSourceType` read the same
-    /// logical key). Empty → `"unknown"`.
+    /// [`DocumentMetadata::source_type`] field (moved out of the free-form
+    /// map). Empty → `"unknown"`.
     fn document_source_type(metadata: &DocumentMetadata) -> &str {
         if metadata.source_type.is_empty() {
             "unknown"
@@ -452,8 +443,8 @@ impl<'a> Ingester<'a> {
     }
 
     /// Counts the processable files under `source_path` (the progress bar
-    /// total; oracle `countFiles`). Count errors are collected, not
-    /// returned: they surface again — and louder — in the parse stage.
+    /// total). Count errors are collected, not returned: they surface again
+    /// — and louder — in the parse stage.
     fn count_files(&self, source_path: &Path) -> u64 {
         let extensions: HashSet<String> = self
             .source

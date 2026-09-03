@@ -1,8 +1,8 @@
 //! Fact persistence for the per-document pipeline (task 3.5).
 //!
-//! Oracle reference: the fact half of `storeEntities` in
-//! `internal/ingestion/ingester.go` (the entity half — `AddEntities` + chunk
-//! links — is inlined in [`super::Ingester::process_document`], task 3.4).
+//! The entity half (entity creation + chunk links) is inlined in
+//! [`super::Ingester::process_document`] (task 3.4); this module holds the
+//! fact half.
 //!
 //! Flow (one call per chunk, inside the per-document transaction): unique
 //! `(name, type, domain)` endpoints of all facts → synthetic [`NerEntity`]s
@@ -12,21 +12,19 @@
 //! ([`super::extract_quote_from_chunk`]) → one `recompute_weights` over the
 //! touched facts.
 //!
-//! Deliberate deviations from the oracle:
-//! - The endpoint key is a `(name, type, domain)` tuple, not the oracle's
-//!   `name + "\x00" + type + "\x00" + domain` string join — no delimiter
-//!   ambiguity by construction (task directive).
-//! - Unique endpoints are collected in first-seen order; the oracle iterated
-//!   a Go `map`, so its synthetic-entity creation order was random per run.
-//! - The oracle's "unresolved endpoint" warn branch is dead code there (its
-//!   own comment admits `LookupOrCreate guarantees all entries are
-//!   non-zero` — the resolver creates on a miss). It is kept here as a
-//!   defensive branch: if the resolver contract ever changes, a fact degrades
-//!   to a skipped fact with a warning instead of an erroring document. It is
-//!   unit-tested by calling [`persist_facts`] with a hand-built map.
-//! - The oracle's `factsCreated` and `sourcesCreated` counters are
-//!   incremented together on every iteration (always equal); one count
-//!   feeds both tracker fields.
+//! Design decisions:
+//! - The endpoint key is a `(name, type, domain)` tuple, not a delimited
+//!   string join — no delimiter ambiguity by construction (task directive).
+//! - Unique endpoints are collected in first-seen order, so synthetic-entity
+//!   creation order is deterministic per run.
+//! - The "unresolved endpoint" warn branch is defensive: the resolver
+//!   contract guarantees a hit on a miss (`LookupOrCreate` creates on a
+//!   miss), so the branch is unreachable today. It is kept so that if the
+//!   resolver contract ever changes, a fact degrades to a skipped fact with a
+//!   warning instead of an erroring document. It is unit-tested by calling
+//!   [`persist_facts`] with a hand-built map.
+//! - The `facts` and `fact_sources` counters are incremented together on
+//!   every stored fact (always equal); one count feeds both tracker fields.
 
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
@@ -45,9 +43,9 @@ use super::extract_quote_from_chunk;
 /// Identity of a fact endpoint: (name, entity type, normalized domain).
 type EntityKey = (String, String, String);
 
-/// Stores the fact half of the oracle's `storeEntities` for one chunk:
-/// synthetic endpoint entities, `facts` rows, `fact_sources` rows with
-/// quotes, and one weight recompute over the touched facts.
+/// Stores the fact half of entity storage for one chunk: synthetic endpoint
+/// entities, `facts` rows, `fact_sources` rows with quotes, and one weight
+/// recompute over the touched facts.
 ///
 /// Must run inside the per-document transaction (the call site passes the
 /// transaction's [`ConnectionOrTx`], so entity resolution never hits the
@@ -80,9 +78,8 @@ pub(super) fn store_facts(
             name: name.clone(),
             entity_type: entity_type.clone(),
             description: String::new(),
-            // The oracle's synthetic `ner.Entity` carries the zero
-            // confidence: the row is a fact-derived placeholder, not an
-            // extraction.
+            // The synthetic endpoint entity carries the zero confidence: the
+            // row is a fact-derived placeholder, not an extraction.
             confidence: 0.0,
             domain: domain.clone(),
             metadata: Map::new(),
@@ -201,8 +198,8 @@ fn persist_facts(
             None,
         )?;
 
-        // Oracle parity: the quote is always stored (even when empty), and
-        // `extracted_at` is RFC 3339 UTC (the workspace convention,
+        // The quote is always stored (even when empty), and `extracted_at`
+        // is RFC 3339 UTC (the workspace convention,
         // `crate::parsers::format_rfc3339_utc`).
         let quote = extract_quote_from_chunk(chunk_text, &fact.subject_name, &fact.object_name);
         let extracted_at = format_rfc3339_utc(SystemTime::now());
@@ -219,8 +216,7 @@ fn persist_facts(
 }
 
 /// The unique `(name, type, normalized-domain)` endpoints of all facts
-/// (subject + object side), in first-seen order — deterministic, unlike the
-/// oracle's Go-map iteration.
+/// (subject + object side), in first-seen order — deterministic.
 fn collect_endpoints(facts: &[NerFact]) -> Vec<EntityKey> {
     let mut seen: HashSet<EntityKey> = HashSet::new();
     let mut endpoints = Vec::new();

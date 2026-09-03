@@ -1,15 +1,12 @@
 //! Pure helpers of the per-document ingestion pipeline.
 //!
-//! Oracle reference (task 3.3, design D7): `internal/ingestion/ingester.go` —
-//! `computeContentHash`, `extractQuoteFromChunk` (+`trimToLineBoundary`) and
-//! `getSourceType`. All functions are pure and rune-aware: the oracle's
-//! `[]rune` arithmetic is ported to `char` slices, so multi-byte scripts
-//! (Cyrillic, CJK, emoji) are indexed and windowed identically.
+//! All functions are pure and rune-aware: multi-byte scripts (Cyrillic, CJK,
+//! emoji) are indexed and windowed by `char`, so they behave identically to
+//! single-byte text (task 3.3, design D7).
 //!
-//! Deliberate deviation from the oracle: case-insensitive matching uses
-//! Rust's `char::to_lowercase` (full Unicode case mapping) instead of Go's
-//! `strings.ToLower`; for the rare special-casing runes (e.g. `İ`) the two
-//! mappings can differ, and the Unicode-standard mapping is the more
+//! Design: case-insensitive matching uses Rust's `char::to_lowercase` (full
+//! Unicode case mapping); for the rare special-casing runes (e.g. `İ`) this
+//! differs from a simple fold, and the Unicode-standard mapping is the more
 //! correct one.
 
 use serde_json::{Map, Value};
@@ -22,9 +19,8 @@ const QUOTE_FALLBACK_RUNES: usize = 120;
 
 /// Hex-encoded SHA-256 of the given content.
 ///
-/// Oracle reference: `computeContentHash` (ingester.go). The hash is the
-/// document's dedup key: unchanged content yields an unchanged hash, so a
-/// re-ingestion skips the document (task 3.4).
+/// The hash is the document's dedup key: unchanged content yields an
+/// unchanged hash, so a re-ingestion skips the document (task 3.4).
 pub fn compute_content_hash(content: &str) -> String {
     let digest = Sha256::digest(content.as_bytes());
     let mut hex = String::with_capacity(digest.len() * 2);
@@ -40,8 +36,7 @@ pub fn compute_content_hash(content: &str) -> String {
 /// fallback. Empty input yields `""`. When the quote is truncated it is
 /// trimmed to a line boundary and `...` is appended.
 ///
-/// Oracle reference: `extractQuoteFromChunk` + `trimToLineBoundary`
-/// (ingester.go, design D7). All indices are rune (char) indices.
+/// All indices are rune (char) indices (design D7).
 pub fn extract_quote_from_chunk(chunk_text: &str, subject_name: &str, object_name: &str) -> String {
     if chunk_text.is_empty() {
         return String::new();
@@ -93,8 +88,7 @@ pub fn extract_quote_from_chunk(chunk_text: &str, subject_name: &str, object_nam
 
 /// Resolves the `source_type` field of a document metadata map.
 ///
-/// Oracle reference: `getSourceType` (ingester.go). A missing, empty or
-/// non-string value yields `"unknown"`.
+/// A missing, empty or non-string value yields `"unknown"`.
 pub fn source_type_from_metadata(metadata: &Map<String, Value>) -> String {
     metadata
         .get("source_type")
@@ -135,12 +129,9 @@ fn lowered_with_rune_map(text: &str) -> (String, Vec<usize>) {
 /// Trims the text at the last newline (`\n` or `\r`) boundary so quotes are
 /// never cut mid-line, then trims the resulting whitespace. If no newline
 /// is present, returns the text unchanged.
-///
-/// Oracle reference: `trimToLineBoundary` (ingester.go).
 fn trim_to_line_boundary(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
-    // `rposition` yields the from-the-front index of the last newline — the
-    // oracle's backward scan (`for i := len-1; i >= 0; i--`) is equivalent.
+    // `rposition` yields the from-the-front index of the last newline.
     let Some(idx) = chars.iter().rposition(|ch| *ch == '\n' || *ch == '\r') else {
         return text.to_owned();
     };
@@ -150,13 +141,12 @@ fn trim_to_line_boundary(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! Full parity with the oracle's `extractQuoteFromChunk` cases in
-    //! `internal/ingestion/ingester_test.go`, plus hash determinism,
-    //! `source_type` resolution and rune-window cases the oracle lacks.
+    //! Quote-extraction cases plus hash determinism, `source_type`
+    //! resolution and rune-window cases.
 
     use super::*;
 
-    // ── Oracle: TestExtractQuoteFromChunk_ChunkTextWithEntity ──────────
+    // ── Entity found in chunk text ────────────────────────────────────
 
     #[test]
     fn entity_found_in_chunk_text() {
@@ -201,7 +191,7 @@ mod tests {
         }
     }
 
-    // ── Oracle: TestExtractQuoteFromChunk_EntityNotFound ────────────────
+    // ── Neither entity found ──────────────────────────────────────────
 
     #[test]
     fn neither_entity_found_falls_back_to_prefix() {
@@ -217,7 +207,7 @@ mod tests {
         assert_eq!(extract_quote_from_chunk("", "Alice", "Acme Corp"), "");
     }
 
-    // ── Oracle: TestExtractQuoteFromChunk_WindowBounds ──────────────────
+    // ── Window bounds ─────────────────────────────────────────────────
 
     #[test]
     fn entity_at_start_no_negative_offset() {
@@ -236,7 +226,7 @@ mod tests {
         );
     }
 
-    // ── Oracle: TestExtractQuoteFromChunk_LineBoundaryTruncation ────────
+    // ── Line-boundary truncation ──────────────────────────────────────
 
     #[test]
     fn line_boundary_truncation() {
@@ -287,7 +277,7 @@ mod tests {
         }
     }
 
-    // ── Oracle: TestExtractQuoteFromChunk_MidLineTrimmed ────────────────
+    // ── Mid-line trimmed ──────────────────────────────────────────────
 
     #[test]
     fn mid_line_trimmed() {
@@ -295,13 +285,13 @@ mod tests {
         let quote = extract_quote_from_chunk(chunk_text, "Alice", "");
         assert!(quote.contains("Alice"), "quote: {quote:?}");
         // Truncated: the last line before the ellipsis must be a complete
-        // line (the oracle logs this; here it is asserted).
+        // line (asserted here).
         let clean = quote.strip_suffix("...").unwrap_or(&quote);
         let last_line = clean.split('\n').next_back().unwrap_or("");
         assert_eq!(last_line, "Alice works at Acme Corp.");
     }
 
-    // ── Rune-awareness (the oracle has no multi-byte cases) ─────────────
+    // ── Rune-awareness (multi-byte cases) ─────────────────────────────
 
     #[test]
     fn cyrillic_rune_window() {
@@ -379,7 +369,7 @@ mod tests {
         metadata.insert("source_type".to_owned(), Value::Number(42.into()));
         assert_eq!(source_type_from_metadata(&metadata), "unknown");
 
-        // Parity with the oracle: whitespace is not empty, so it is kept.
+        // Whitespace is not empty, so it is kept.
         metadata.insert("source_type".to_owned(), Value::String(" ".to_owned()));
         assert_eq!(source_type_from_metadata(&metadata), " ");
     }

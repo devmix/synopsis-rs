@@ -1,19 +1,17 @@
-//! JSON parser (oracle: `internal/ingestion/parsers/json_parser.go`).
+//! JSON parser.
 //!
 //! Recursively walks a source tree for `.json` files and returns one
 //! [`Document`] per file. The document content is the raw file text — the
 //! JSON chunker (task 1.5) re-parses it as an array of objects or a single
 //! object. The top-level structure (`"array"`, `"object"` or `"unknown"`)
-//! is detected at parse time and stored in the metadata extras (oracle
-//! `detectStructure`). Per-file failures are collected in
-//! [`ParseResult::errors`] and never abort the walk (design D1, oracle
-//! contract).
+//! is detected at parse time and stored in the metadata extras. Per-file
+//! failures are collected in [`ParseResult::errors`] and never abort the
+//! walk (design D1).
 //!
-//! **Deliberate deviation from the oracle:** the Go parser never validates
-//! JSON syntax — a broken file is ingested with structure `"unknown"` and
-//! the failure surfaces later as a *hard* chunker error that aborts the
-//! document (`ingester.go`). This parser validates up front: a
-//! syntactically invalid file (including an empty file) yields a non-fatal
+//! **Design:** the parser validates JSON syntax up front — a broken file
+//! would otherwise be ingested with structure `"unknown"` and the failure
+//! would surface later as a *hard* chunker error that aborts the document.
+//! A syntactically invalid file (including an empty file) yields a non-fatal
 //! [`IngestionError::Json`] in [`ParseResult::errors`] and no document
 //! (task 1.4 acceptance criterion), so the pipeline fails the file once, at
 //! the stage that can name the real cause.
@@ -24,14 +22,14 @@ use crate::error::IngestionError;
 use crate::parsers::{format_rfc3339_utc, source_file_name, walk_matched_files};
 use crate::types::{Document, DocumentMetadata, ParseResult, Parser};
 
-/// File extensions the JSON parser accepts (leading dot, as reported by
+/// File extensions the JSON parser accepts (leading dot, as returned by
 /// [`Parser::supported_extensions`]).
 const JSON_EXTENSIONS: &[&str] = &[".json"];
 
 /// Metadata extra key holding the detected top-level JSON structure.
 const STRUCTURE_KEY: &str = "structure";
 
-/// Top-level JSON structure of a parsed file (oracle `detectStructure`).
+/// Top-level JSON structure of a parsed file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Structure {
     /// `[ ... ]`
@@ -43,7 +41,7 @@ enum Structure {
 }
 
 impl Structure {
-    /// The metadata string the oracle stored in `metadata["structure"]`.
+    /// The metadata string stored in `metadata["structure"]`.
     fn as_str(self) -> &'static str {
         match self {
             Structure::Array => "array",
@@ -61,8 +59,8 @@ impl Structure {
 pub struct JsonParser;
 
 impl JsonParser {
-    /// True if `path` ends with a supported JSON extension, case
-    /// insensitively (oracle: `strings.ToLower(name)` + `HasSuffix(".json")`).
+    /// True if `path` ends with an accepted JSON extension, case
+    /// insensitively.
     ///
     /// `pub(crate)`: the unstructured parser (task 1.9) reuses this check to
     /// dispatch its single-file reads.
@@ -84,7 +82,7 @@ impl JsonParser {
         })
     }
 
-    /// Reads one JSON file into a [`Document`] (oracle `parseFile`).
+    /// Reads one JSON file into a [`Document`].
     ///
     /// `pub(crate)`: the unstructured parser (task 1.9) reuses this exact
     /// reader for the `.json` half of its walk, so the two formats cannot
@@ -232,8 +230,8 @@ mod tests {
 
     #[test]
     fn empty_object_and_array_are_ingested() {
-        // Oracle TestJSONParser_DetectStructure cases: `{}` -> object, `[]`
-        // -> array (both are valid JSON and are ingested).
+        // `{}` -> object, `[]` -> array (both are valid JSON and are
+        // ingested).
         let tree = TempTree::new();
         tree.write("obj.json", "{}");
         tree.write("arr.json", "[]");
@@ -248,8 +246,8 @@ mod tests {
 
     #[test]
     fn valid_scalar_json_is_ingested_with_structure_unknown() {
-        // Oracle detectStructure: first byte `4` is neither `[` nor `{` ->
-        // "unknown"; the file is still ingested.
+        // First byte `4` is neither `[` nor `{` -> "unknown"; the file is
+        // still ingested.
         let tree = TempTree::new();
         tree.write("scalar.json", "42");
 
@@ -415,8 +413,8 @@ mod tests {
 
     #[test]
     fn detect_structure_recognizes_top_level_types() {
-        // Oracle TestJSONParser_DetectStructure expectations, plus the valid
-        // scalar cases that map to "unknown".
+        // Top-level type expectations, plus the valid scalar cases that map
+        // to "unknown".
         assert_eq!(
             JsonParser::detect_structure(r#"{"key": "value"}"#).unwrap(),
             Structure::Object

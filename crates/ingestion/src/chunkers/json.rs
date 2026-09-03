@@ -1,45 +1,39 @@
-//! JSON chunker (oracle: `internal/ingestion/chunkers/json_chunker.go` and
-//! its tests).
+//! JSON chunker.
 //!
 //! Splits a JSON document at its structural unit: one chunk per object —
 //! each top-level element of an array document, or the whole value of a
 //! single-object document. Configuration arrives at construction from
 //! [`config::preset::JsonChunkerConfig`] (`chunking.json.*`): `text_fields`
-//! (an empty list falls back to the oracle's four defaults — the config
-//! crate's `apply_defaults` normally already applied them),
-//! `combine_fields` (one chunk per object vs. one chunk per text field) and
-//! `max_objects` (0 = unlimited).
+//! (an empty list falls back to the four defaults — the config crate's
+//! `apply_defaults` normally already applied them), `combine_fields` (one
+//! chunk per object vs. one chunk per text field) and `max_objects`
+//! (0 = unlimited).
 //!
-//! **Deliberate deviations from the oracle** (functional copy, not code copy):
+//! **Design decisions**:
 //!
-//! * **Byte-offset invariant (crate contract).** The oracle synthesized the
-//!   chunk text as `**field**: value` markdown joined with blank lines — not
-//!   a slice of the file, so its `StartOffset`/`EndOffset` could never point
-//!   at the text. Here the chunk text is the object's (or field value's) raw
-//!   JSON: a pure slice of the content, `content[start..end] == text`. The
-//!   field names the oracle embedded in the text live in the chunk metadata
-//!   instead (`text_fields` in combined mode, `field_name` in per-field
-//!   mode), and non-text fields stay inside the raw object rather than being
-//!   dropped from the indexed content.
-//! * **Scalar documents produce one chunk.** The oracle hard-errored on any
-//!   value that is neither an array nor an object (`42`, `"text"`, `null`),
-//!   while the parser (task 1.4) deliberately ingests valid scalars with
-//!   structure `"unknown"`. Erroring later in the chunker would re-create the
-//!   bug the parser deviation removed: a validated file aborting the pipeline
-//!   at a stage that cannot name the cause. A scalar has no internal
+//! * **Byte-offset invariant (crate contract).** The chunk text is the
+//!   object's (or field value's) raw JSON: a pure slice of the content,
+//!   `content[start..end] == text`. The field names live in the chunk
+//!   metadata instead (`text_fields` in combined mode, `field_name` in
+//!   per-field mode), and non-text fields stay inside the raw object rather
+//!   than being dropped from the indexed content.
+//! * **Scalar documents produce one chunk.** The parser (task 1.4)
+//!   deliberately ingests valid scalars (`42`, `"text"`, `null`) with
+//!   structure `"unknown"`. Erroring later in the chunker would re-create
+//!   the bug the parser design removed: a validated file aborting the
+//!   pipeline at a stage that cannot name the cause. A scalar has no internal
 //!   structure to split, so the whole content is the chunk.
-//! * **`sequence_num`** is the chunk's position in the returned slice (the
-//!   oracle numbered chunks by object index, which collided for per-field
-//!   chunks of one object and left gaps at skipped objects). The object index
-//!   stays in the metadata (`object_index`).
-//! * **Deterministic field order.** The oracle's combined-mode fallback
-//!   iterated Go map order (random per run); Rust iterates the BTreeMap-backed
-//!   [`serde_json::Map`] in key order.
+//! * **`sequence_num`** is the chunk's position in the returned slice
+//!   (numbering by object index would collide for per-field chunks of one
+//!   object and leave gaps at skipped objects). The object index stays in the
+//!   metadata (`object_index`).
+//! * **Deterministic field order.** The combined-mode fallback iterates the
+//!   BTreeMap-backed [`serde_json::Map`] in key order.
 //!
 //! The serde parse in [`Chunker::chunk`] also guards the chunker when it is
 //! called with content that bypassed the parser: syntactically invalid JSON
-//! is an [`IngestionError::Json`], matching the oracle's error for such input
-//! (in the pipeline the parser rejects it up front instead).
+//! is an [`IngestionError::Json`] (in the pipeline the parser rejects it up
+//! front instead).
 
 use std::path::PathBuf;
 
@@ -51,9 +45,9 @@ use crate::types::{Chunker, DocumentChunk, DocumentMetadata};
 
 /// JSON chunker.
 ///
-/// See the module docs for the splitting semantics and the deviations from
-/// the oracle. Stateless after construction: [`Chunker::chunk`] receives
-/// only the content and the document metadata.
+/// See the module docs for the splitting semantics and the design decisions.
+/// Stateless after construction: [`Chunker::chunk`] receives only the content
+/// and the document metadata.
 #[derive(Debug, Clone)]
 pub struct JsonChunker {
     text_fields: Vec<String>,
@@ -64,9 +58,9 @@ pub struct JsonChunker {
 impl JsonChunker {
     /// Creates a chunker from the config crate's JSON chunking settings.
     ///
-    /// An empty `text_fields` gains the oracle's four defaults (the config
-    /// crate normally already applied them); a negative `max_objects` is
-    /// clamped to 0 (unlimited).
+    /// An empty `text_fields` gains the four defaults (the config crate
+    /// normally already applied them); a negative `max_objects` is clamped to
+    /// 0 (unlimited).
     pub fn new(config: JsonChunkerConfig) -> Self {
         let text_fields = if config.text_fields.is_empty() {
             default_text_fields()
@@ -80,8 +74,8 @@ impl JsonChunker {
         }
     }
 
-    /// Produces the chunks of one JSON object at byte span `span` (oracle
-    /// `chunkObject`): a single combined chunk, or one chunk per text field.
+    /// Produces the chunks of one JSON object at byte span `span`: a single
+    /// combined chunk, or one chunk per text field.
     fn chunk_object(
         &self,
         map: &Map<String, Value>,
@@ -94,7 +88,7 @@ impl JsonChunker {
         if self.combine_fields {
             let fields = text_fields_of(map, &self.text_fields);
             if fields.is_empty() {
-                return; // No text content in this object (oracle parity).
+                return; // No text content in this object.
             }
             let meta = with_extras(metadata, index, None, Some(&fields));
             push_chunk(chunks, content, span.0, span.1, &meta);
@@ -141,8 +135,8 @@ impl Chunker for JsonChunker {
                     items.len()
                 };
                 for (i, item) in items.iter().enumerate().take(count) {
-                    // Non-object elements carry no fields to index (oracle:
-                    // unparseable objects are skipped).
+                    // Non-object elements carry no fields to index
+                    // (unparseable objects are skipped).
                     if let (Value::Object(map), Some(span)) = (item, spans.get(i)) {
                         self.chunk_object(map, i, *span, content, &metadata.extra, &mut chunks);
                     }
@@ -161,7 +155,7 @@ impl Chunker for JsonChunker {
     }
 }
 
-/// The oracle's default text fields (also the config crate's default).
+/// The default text fields (also the config crate's default).
 fn default_text_fields() -> Vec<String> {
     ["description", "title", "wikitext", "html"]
         .into_iter()
@@ -169,10 +163,9 @@ fn default_text_fields() -> Vec<String> {
         .collect()
 }
 
-/// The non-empty string fields of `map` used in combined mode: the
-/// configured `text_fields` present in the object (in configured order), or
-/// — when none match — every non-empty string field (oracle
-/// `combineFields` fallback; key order is BTreeMap order).
+/// The non-empty string fields of `map` used in combined mode: the configured
+/// `text_fields` present in the object (in configured order), or — when none
+/// match — every non-empty string field (key order is BTreeMap order).
 fn text_fields_of(map: &Map<String, Value>, configured: &[String]) -> Vec<String> {
     let matched: Vec<String> = configured
         .iter()
@@ -188,7 +181,7 @@ fn text_fields_of(map: &Map<String, Value>, configured: &[String]) -> Vec<String
         .collect()
 }
 
-/// True for a non-empty JSON string value (oracle `s != ""` check).
+/// True for a non-empty JSON string value.
 fn is_text_value(value: &Value) -> bool {
     value.as_str().is_some_and(|s| !s.is_empty())
 }
@@ -405,14 +398,10 @@ fn push_chunk(
 
 #[cfg(test)]
 mod tests {
-    //! Differential tests against the Go oracle: inputs and chunk-count
-    //! expectations are taken from
-    //! `../synopsis/internal/ingestion/chunkers/json_chunker_test.go`, which
-    //! passes there (`go test ./internal/ingestion/chunkers/`). Where an
-    //! oracle expectation conflicts with this crate's byte-offset invariant
-    //! (synthesized `**field**: value` text; scalar documents erroring), the
-    //! raw-slice text and the metadata are asserted instead — see the module
-    //! docs.
+    //! Chunk-count tests for the JSON chunker. Where a naive expectation
+    //! conflicts with this crate's byte-offset invariant (synthesized
+    //! `**field**: value` text; scalar documents erroring), the raw-slice
+    //! text and the metadata are asserted instead — see the module docs.
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -472,7 +461,7 @@ mod tests {
 
     #[test]
     fn array_of_objects_combined_one_chunk_per_object() {
-        // Oracle TestJSONChunker_ChunkArray "array of objects combined".
+        // Array of objects, combined mode.
         let content = "[\n\
                        {\"title\": \"First\", \"description\": \"Desc 1\"},\n\
                        {\"title\": \"Second\", \"description\": \"Desc 2\"}\n\
@@ -482,7 +471,7 @@ mod tests {
             .unwrap();
         assert_eq!(chunks.len(), 2);
         assert_invariant(content, &chunks);
-        // The text is the raw object slice (oracle synthesized markdown).
+        // The text is the raw object slice.
         assert_eq!(
             chunks[0].text,
             "{\"title\": \"First\", \"description\": \"Desc 1\"}"
@@ -503,8 +492,8 @@ mod tests {
 
     #[test]
     fn array_of_objects_per_field_one_chunk_per_text_field() {
-        // Oracle TestJSONChunker_ChunkArray "array of objects per field":
-        // title + description = 2 chunks for 1 object.
+        // Array of objects, per-field mode: title + description = 2 chunks
+        // for 1 object.
         let content = "[{\"title\": \"First\", \"description\": \"Desc 1\"}]";
         let chunker = JsonChunker::new(config(&["title", "description"], false, 0));
         let chunks = chunker
@@ -525,8 +514,7 @@ mod tests {
 
     #[test]
     fn empty_inputs_yield_no_chunks() {
-        // Oracle TestJSONChunker_ChunkArray "empty array"; blank content is
-        // the markdown chunker's convention.
+        // Empty array; blank content is the markdown chunker's convention.
         for content in ["[]", "", "   \n  "] {
             let chunks = combined(&["title"])
                 .chunk(content, &DocumentMetadata::default())
@@ -537,7 +525,7 @@ mod tests {
 
     #[test]
     fn single_object_combined_and_per_field() {
-        // Oracle TestJSONChunker_ChunkObject (both cases).
+        // Single object, both modes.
         let content = "{\"title\": \"Page Title\", \"description\": \"Full description here.\"}";
         let meta = DocumentMetadata::default();
 
@@ -559,8 +547,8 @@ mod tests {
 
     #[test]
     fn invalid_json_is_an_error() {
-        // Oracle TestJSONChunker_InvalidJSON. In the pipeline the parser
-        // rejects broken JSON up front; this guards direct chunker use.
+        // Invalid JSON is an error. In the pipeline the parser rejects broken
+        // JSON up front; this guards direct chunker use.
         let err = combined(&["title"])
             .chunk("{invalid json}", &DocumentMetadata::default())
             .unwrap_err();
@@ -569,7 +557,7 @@ mod tests {
 
     #[test]
     fn max_objects_limits_processed_elements() {
-        // Oracle TestJSONChunker_MaxObjects.
+        // max_objects limits the processed elements.
         let content = "[{\"title\": \"A\"}, {\"title\": \"B\"}, {\"title\": \"C\"}]";
         let chunker = JsonChunker::new(config(&["title"], true, 2));
         let chunks = chunker
@@ -588,9 +576,9 @@ mod tests {
 
     #[test]
     fn scalar_document_is_one_chunk_of_the_whole_content() {
-        // Deviation from the oracle (module docs): valid scalars are ingested
-        // by the parser with structure "unknown", so the chunker must not
-        // hard-fail on them.
+        // Design decision (module docs): valid scalars are ingested by the
+        // parser with structure "unknown", so the chunker must not hard-fail
+        // on them.
         for scalar in ["42", "\"hello\"", "true", "null"] {
             let chunks = combined(&["title"])
                 .chunk(scalar, &DocumentMetadata::default())
@@ -636,8 +624,8 @@ mod tests {
 
     #[test]
     fn objects_without_text_content_are_skipped() {
-        // Oracle combineFields: no parts -> no chunk; perFieldChunks: a
-        // missing field simply yields no chunk.
+        // Combined mode: no parts -> no chunk; per-field mode: a missing
+        // field simply yields no chunk.
         let content = "[{\"id\": 1}, {\"title\": \"Has text\"}]";
         let chunks = combined(&["title"])
             .chunk(content, &DocumentMetadata::default())
@@ -656,8 +644,8 @@ mod tests {
 
     #[test]
     fn combine_falls_back_to_all_string_fields() {
-        // Oracle combineFields fallback: no configured field present -> use
-        // all non-empty string fields (here: "name").
+        // Combined-mode fallback: no configured field present -> use all
+        // non-empty string fields (here: "name").
         let content = "{\"name\": \"bob\", \"age\": 30}";
         let chunks = combined(&["title", "description"])
             .chunk(content, &DocumentMetadata::default())
@@ -676,8 +664,8 @@ mod tests {
 
     #[test]
     fn non_object_array_elements_are_skipped() {
-        // Oracle chunkArray: elements that do not unmarshal to an object are
-        // skipped; their indices stay in `object_index`.
+        // Array elements that do not parse to an object are skipped; their
+        // indices stay in `object_index`.
         let content = "[{\"title\": \"A\"}, 42, null, \"str\", [1]]";
         let chunks = combined(&["title"])
             .chunk(content, &DocumentMetadata::default())
@@ -729,7 +717,7 @@ mod tests {
     #[test]
     fn default_text_fields_are_applied_when_empty() {
         // JsonChunkerConfig::default() has an empty field list and
-        // combine_fields = false: the oracle's four defaults kick in.
+        // combine_fields = false: the four defaults kick in.
         let chunker = JsonChunker::new(JsonChunkerConfig::default());
         let content = "{\"wikitext\": \"== T ==\", \"other\": 1}";
         let chunks = chunker

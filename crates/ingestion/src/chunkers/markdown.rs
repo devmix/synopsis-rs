@@ -1,5 +1,4 @@
-//! Structure-aware Markdown chunker (oracle:
-//! `internal/ingestion/chunkers/markdown_chunker.go` and its tests).
+//! Structure-aware Markdown chunker.
 //!
 //! Splits a Markdown document at ATX heading boundaries (levels 1-6) and caps
 //! sections that exceed `max_chunk_size` with fixed-size splitting + overlap.
@@ -8,37 +7,35 @@
 //! config crate has already normalized: defaults applied, and a configured
 //! `overlap_size: 0` preserved (the chunker never substitutes defaults).
 //!
-//! **Deliberate deviations from the oracle** (functional copy, not code copy):
+//! **Design decisions**:
 //!
-//! * **Byte-offset invariant (crate contract).** Chunk text is a pure slice of
-//!   the source: `content[start_offset..end_offset] == text`. The oracle
-//!   trimmed sections and prefixed breadcrumbs/file names into `Text` while
-//!   keeping offsets at the original span; here the breadcrumb, section title
-//!   and image paths live in the chunk [`metadata`](DocumentChunk::metadata)
-//!   bag (`section_title`, `breadcrumb`, `image_paths`), never in `text`.
+//! * **Byte-offset invariant (crate contract).** Chunk text is a pure slice
+//!   of the source: `content[start_offset..end_offset] == text`. The
+//!   breadcrumb, section title and image paths live in the chunk
+//!   [`metadata`](DocumentChunk::metadata) bag (`section_title`, `breadcrumb`,
+//!   `image_paths`), never in `text`.
 //! * **`search_text` (search-text-embedding design D1).** The chunk also
 //!   carries `search_text` — the only synthetic field — built from the
 //!   breadcrumb already computed for the metadata plus the body:
 //!   `breadcrumb + "\n\n" + text` for sectioned chunks, or `text` when there
-//!   is no breadcrumb (preamble / headingless). This is the exact
-//!   breadcrumb-prefixed text the oracle fed both search legs; here it lives
-//!   in a dedicated field so `text` keeps the byte-offset invariant.
-//! * **Strategy collapse.** The oracle's `"headers"` strategy had no size cap
-//!   (unbounded chunks overflow the embedding context); Rust `"headers"` and
+//!   is no breadcrumb (preamble / headingless). This is the
+//!   breadcrumb-prefixed text both search legs operate on; it lives in a
+//!   dedicated field so `text` keeps the byte-offset invariant.
+//! * **Strategy collapse.** The `"headers"` strategy has no size cap
+//!   (unbounded chunks overflow the embedding context), so `"headers"` and
 //!   `"hybrid"` both produce structure-aware chunks with oversized sections
-//!   split internally (the oracle's hybrid behavior). `"fixed"` is unchanged:
-//!   plain fixed-size splitting of the whole content.
-//! * **Character-based fixed splitting.** The oracle split at raw byte offsets
-//!   (Go `len`), which can land mid-rune on non-ASCII text and emit invalid
-//!   UTF-8 chunks. Sizes are in characters (as the config documents) and every
-//!   span lands on a character boundary.
-//! * **`min_section_size` is not used.** The oracle only ever checked it `> 0`
-//!   (the value was never compared), and the config crate normalizes it to a
-//!   positive default, so the gate was dead; Rust always splits sections that
-//!   exceed `max_chunk_size`.
-//! * **`sequence_num`** is the chunk's position in the returned slice (the
-//!   oracle numbered heading chunks by heading index, which collided with the
-//!   preamble chunk and left gaps at skipped header-only sections).
+//!   split internally. `"fixed"` is plain fixed-size splitting of the whole
+//!   content.
+//! * **Character-based fixed splitting.** Sizes are in characters (as the
+//!   config documents) and every span lands on a character boundary — raw
+//!   byte offsets would land mid-rune on non-ASCII text and emit invalid
+//!   UTF-8 chunks.
+//! * **`min_section_size` is not used.** The config crate normalizes it to a
+//!   positive default, and the chunker always splits sections that exceed
+//!   `max_chunk_size`.
+//! * **`sequence_num`** is the chunk's position in the returned slice
+//!   (numbering by heading index would collide with the preamble chunk and
+//!   leave gaps at skipped header-only sections).
 
 use config::preset::{ChunkingStrategy, MarkdownChunkerConfig};
 use serde_json::{Map, Value};
@@ -48,9 +45,9 @@ use crate::types::{Chunker, DocumentChunk, DocumentMetadata};
 
 /// Structure-aware Markdown chunker.
 ///
-/// See the module docs for the strategy semantics and the deviations from the
-/// oracle. Stateless after construction: [`Chunker::chunk`] receives only the
-/// content and the document metadata.
+/// See the module docs for the strategy semantics and the design decisions.
+/// Stateless after construction: [`Chunker::chunk`] receives only the content
+/// and the document metadata.
 #[derive(Debug, Clone)]
 pub struct MarkdownChunker {
     strategy: ChunkingStrategy,
@@ -86,9 +83,8 @@ impl MarkdownChunker {
             return chunks;
         }
 
-        // Preamble: text before the first heading (oracle keeps it only when
-        // non-blank; the file name stays in the document metadata, not in
-        // the text).
+        // Preamble: text before the first heading (kept only when non-blank;
+        // the file name stays in the document metadata, not in the text).
         let first = headings[0].pos;
         if first > 0 && !content[..first].trim().is_empty() {
             let mut meta = metadata.extra.clone();
@@ -99,8 +95,7 @@ impl MarkdownChunker {
         for (idx, heading) in headings.iter().enumerate() {
             let end = headings.get(idx + 1).map_or(content.len(), |next| next.pos);
             let section = &content[heading.pos..end];
-            // A section without a body carries no content to index (oracle
-            // `isHeaderOnly`).
+            // A section without a body carries no content to index.
             if is_header_only(section) {
                 continue;
             }
@@ -115,8 +110,7 @@ impl MarkdownChunker {
             if !breadcrumb.is_empty() {
                 meta.insert("breadcrumb".to_owned(), Value::String(breadcrumb));
             }
-            // Images are extracted from the body, never from the heading line
-            // (oracle `sectionBody` + `imageRe`).
+            // Images are extracted from the body, never from the heading line.
             if let Some(body) = section_body(section) {
                 insert_image_paths(&mut meta, body);
             }
@@ -136,8 +130,7 @@ impl MarkdownChunker {
         chunks
     }
 
-    /// Plain fixed-size chunking of the whole content (oracle `"fixed"`
-    /// strategy).
+    /// Plain fixed-size chunking of the whole content (`"fixed"` strategy).
     fn chunk_fixed(&self, content: &str, metadata: &DocumentMetadata) -> Vec<DocumentChunk> {
         let mut chunks = Vec::new();
         for (start, end) in fixed_spans(content, self.max_chunk_size, self.overlap_size) {
@@ -179,8 +172,8 @@ struct Heading {
     pos: usize,
 }
 
-/// Extracts all ATX headings with their byte positions (oracle
-/// `findHeadings` + `headingRe = ^#{1,6}\s+(.+)$` applied per line).
+/// Extracts all ATX headings with their byte positions (`^#{1,6}\s+(.+)$`
+/// applied per line).
 fn find_headings(content: &str) -> Vec<Heading> {
     let mut headings = Vec::new();
     let mut offset = 0;
@@ -205,7 +198,7 @@ fn parse_atx_heading(line: &str) -> Option<(u8, &str)> {
         return None;
     }
     let rest = line.get(level..)?;
-    // Go's `\s` class, minus the newline the line split already removed.
+    // The `\s` class, minus the newline the line split already removed.
     if !matches!(rest.get(..1)?, " " | "\t" | "\r" | "\u{0b}" | "\u{0c}") {
         return None;
     }
@@ -217,7 +210,7 @@ fn parse_atx_heading(line: &str) -> Option<(u8, &str)> {
 }
 
 /// Strips inline markdown markers from a heading for breadcrumb display
-/// (oracle `cleanHeading`: removes `**`, `*`, backticks, trims).
+/// (removes `**`, `*`, backticks, trims).
 fn clean_heading(text: &str) -> String {
     text.replace("**", "")
         .replace(['*', '`'], "")
@@ -225,8 +218,8 @@ fn clean_heading(text: &str) -> String {
         .to_owned()
 }
 
-/// Multi-line breadcrumb of the heading path (oracle `buildBreadcrumbs`):
-/// one `> Title` line per ancestor, indented by depth, most recent last.
+/// Multi-line breadcrumb of the heading path: one `> Title` line per ancestor,
+/// indented by depth, most recent last.
 fn build_breadcrumbs(headings: &[Heading], current_idx: usize) -> String {
     let mut path = Vec::new();
     let mut level = headings[current_idx].level;
@@ -249,19 +242,18 @@ fn build_breadcrumbs(headings: &[Heading], current_idx: usize) -> String {
 }
 
 /// True if the section has no body: every line after the heading line is
-/// blank (oracle `isHeaderOnly`).
+/// blank.
 fn is_header_only(section: &str) -> bool {
     section.lines().skip(1).all(|line| line.trim().is_empty())
 }
 
-/// The section text after the heading line, trimmed (oracle `sectionBody`).
+/// The section text after the heading line, trimmed.
 fn section_body(section: &str) -> Option<&str> {
     section.split_once('\n').map(|(_, rest)| rest.trim())
 }
 
 /// Stores the `![alt](path)` image paths of `text` in the chunk's metadata
-/// bag (oracle `imageRe` + `extractImageMetadata`). The alt text is ignored;
-/// an empty path is not an image.
+/// bag. The alt text is ignored; an empty path is not an image.
 fn insert_image_paths(meta: &mut Map<String, Value>, text: &str) {
     let mut paths = Vec::new();
     let mut from = 0;
@@ -296,8 +288,8 @@ fn insert_image_paths(meta: &mut Map<String, Value>, text: &str) {
 
 /// Fixed-size spans `(start, end)` in byte offsets over `content`, split at
 /// character boundaries: `max`/`overlap` are character counts (the config's
-/// documented units). Oracle `chunkFixed`, re-based from raw byte offsets
-/// (which could land mid-rune on non-ASCII text) onto character boundaries.
+/// documented units), re-based from raw byte offsets (which could land
+/// mid-rune on non-ASCII text) onto character boundaries.
 fn fixed_spans(content: &str, max: usize, overlap: usize) -> Vec<(usize, usize)> {
     let max = max.max(1);
     // Byte offset just after each character: `char_ends[k]` is where the
@@ -360,16 +352,11 @@ fn push_chunk(
 
 #[cfg(test)]
 mod tests {
-    //! Differential tests against the Go oracle.
-    //!
-    //! Inputs and expectations (chunk counts, breadcrumbs, section titles,
-    //! skip rules) are taken from
-    //! `../synopsis/internal/ingestion/chunkers/markdown_chunker_test.go`,
-    //! which passes there (`go test ./internal/ingestion/chunkers/`). Where an
-    //! oracle expectation conflicts with this crate's byte-offset invariant
-    //! (text with breadcrumb/file-name prefixes; hybrid sub-chunk offsets
-    //! re-based onto a re-prefixed text), the span and the metadata are
-    //! asserted instead of the prefixed text — see the module docs.
+    //! Chunking tests for the Markdown chunker. Where a naive expectation
+    //! conflicts with this crate's byte-offset invariant (text with
+    //! breadcrumb/file-name prefixes; hybrid sub-chunk offsets re-based onto
+    //! a re-prefixed text), the span and the metadata are asserted instead of
+    //! the prefixed text — see the module docs.
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -425,7 +412,7 @@ mod tests {
 
     #[test]
     fn header_only_sections_are_skipped() {
-        // Oracle TestMarkdownChunker_HeaderOnlySkip.
+        // Header-only sections are skipped.
         let cases = [
             ("# A\n\n## A.1\ntext under a1\n\n## A.2\ntext under a2", 2),
             (
@@ -449,8 +436,7 @@ mod tests {
 
     #[test]
     fn breadcrumbs_follow_the_heading_hierarchy() {
-        // Oracle TestMarkdownChunker_Breadcrumbs (two-level case) and
-        // TestMarkdownChunker_AcceptanceCriteria.
+        // Two-level breadcrumb case.
         let content = "# A\n\n## A.1\ntext under a1\n\n## A.2\ntext under a2";
         let chunks = chunker(1000, 100)
             .chunk(content, &DocumentMetadata::default())
@@ -537,7 +523,7 @@ mod tests {
 
     #[test]
     fn three_level_and_mixed_breadcrumbs() {
-        // Oracle TestMarkdownChunker_Breadcrumbs (remaining cases).
+        // Three-level and mixed breadcrumbs.
         let content = "# Chapter\n\n## Section 1\n\n### Subsection 1.1\ndeep content here";
         let chunks = chunker(1000, 100)
             .chunk(content, &DocumentMetadata::default())
@@ -579,7 +565,7 @@ mod tests {
 
     #[test]
     fn clean_heading_strips_inline_markers() {
-        // Oracle TestMarkdownChunker_CleanHeading.
+        // Inline markdown markers are stripped.
         let cases = [
             ("**Bold Heading**", "Bold Heading"),
             ("*Italic Heading*", "Italic Heading"),
@@ -597,8 +583,7 @@ mod tests {
 
     #[test]
     fn preamble_and_headingless_documents() {
-        // Oracle TestMarkdownChunker_PreambleWithFileName +
-        // TestMarkdownChunker_TextWithoutHeaders. The file name stays in the
+        // Preamble and headingless documents. The file name stays in the
         // document metadata (source_file) instead of prefixing the text.
         let content = "This is intro text before any heading.\n\n## Section\nbody";
         let metadata = DocumentMetadata {
@@ -709,7 +694,7 @@ mod tests {
 
     #[test]
     fn fixed_strategy_splits_the_whole_document() {
-        // Oracle TestMarkdownChunker_FixedStrategy.
+        // Fixed strategy splits the whole document.
         let metadata = DocumentMetadata::default();
         let fixed = MarkdownChunker::new(md_config(ChunkingStrategy::Fixed, 100, 0));
         let chunks = fixed.chunk("Short text.", &metadata).unwrap();
@@ -725,8 +710,7 @@ mod tests {
 
     #[test]
     fn hybrid_strategy_matches_headers() {
-        // Oracle TestMarkdownChunker_HybridStrategy, plus the strategy
-        // collapse: hybrid and headers produce identical output.
+        // Strategy collapse: hybrid and headers produce identical output.
         let content = "# Root\n\n## Section 1\nbody text here";
         let metadata = DocumentMetadata::default();
         let headers = chunker(1000, 100).chunk(content, &metadata).unwrap();

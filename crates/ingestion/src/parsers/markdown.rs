@@ -1,19 +1,16 @@
-//! Markdown parser (oracle: `internal/ingestion/parsers/markdown_parser.go`).
+//! Markdown parser.
 //!
 //! Recursively walks a source tree for Markdown files and returns one
 //! [`Document`] per file. Per-file and per-directory failures are collected
-//! in [`ParseResult::errors`] and never abort the walk (design D1, oracle
-//! contract).
+//! in [`ParseResult::errors`] and never abort the walk (design D1).
 //!
-//! **Deliberate deviation from the oracle:** the Go parser matches only the
-//! `.md` suffix. The task body (the source of truth here) requires both
-//! `.md` and `.markdown`, so [`MarkdownParser::supported_extensions`]
-//! reports both and the walk accepts both. The relative `source_file`,
-//! `file_size`/`modified_at` metadata, and the best-effort error collection
-//! follow the oracle. Exclusions differ by design (human decision
-//! 2026-08-23): the oracle's hardcoded `skipDirs` list is replaced by
-//! user `.synignore` files with gitignore semantics, inherited from the
-//! shared walk.
+//! **Design:** both the `.md` and `.markdown` suffixes are accepted, so
+//! [`MarkdownParser::supported_extensions`] returns both and the walk
+//! accepts both. The relative `source_file`, `file_size`/`modified_at`
+//! metadata, and the best-effort error collection are the shared walk
+//! contract. Exclusions (human decision 2026-08-23): a hardcoded skip-list
+//! is replaced by user `.synignore` files with gitignore semantics, inherited
+//! from the shared walk.
 
 use std::path::Path;
 
@@ -21,7 +18,7 @@ use crate::error::IngestionError;
 use crate::parsers::{format_rfc3339_utc, source_file_name, walk_matched_files};
 use crate::types::{Document, DocumentMetadata, ParseResult, Parser};
 
-/// File extensions the markdown parser accepts (leading dot, as reported by
+/// File extensions the markdown parser accepts (leading dot, as returned by
 /// [`Parser::supported_extensions`]).
 const MARKDOWN_EXTENSIONS: &[&str] = &[".md", ".markdown"];
 
@@ -33,8 +30,8 @@ const MARKDOWN_EXTENSIONS: &[&str] = &[".md", ".markdown"];
 pub struct MarkdownParser;
 
 impl MarkdownParser {
-    /// True if `path` ends with a supported Markdown extension, case
-    /// insensitively (oracle: `strings.ToLower(name)` + `HasSuffix(".md")`).
+    /// True if `path` ends with an accepted Markdown extension, case
+    /// insensitively.
     fn is_markdown(path: &Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
@@ -45,7 +42,7 @@ impl MarkdownParser {
             })
     }
 
-    /// Reads one Markdown file into a [`Document`] (oracle `parseFile`).
+    /// Reads one Markdown file into a [`Document`].
     fn read_file(path: &Path, root: &Path) -> Result<Document, IngestionError> {
         let content = std::fs::read_to_string(path).map_err(|source| IngestionError::Io {
             path: path.to_path_buf(),
@@ -54,8 +51,8 @@ impl MarkdownParser {
         // `metadata` is best-effort: a read that succeeded but a stat that
         // fails (e.g. the file vanished mid-walk) yields a document with
         // absent size/mtime rather than discarding the content we already
-        // have. The oracle treated stat failure as fatal; degrading is the
-        // more useful behavior and is recorded as a deviation.
+        // have. Treating stat failure as fatal would discard content that is
+        // already in hand; degrading is the more useful behavior.
         let meta = std::fs::metadata(path).ok();
         let file_size = meta.as_ref().map(|m| m.len());
         let modified_at = meta

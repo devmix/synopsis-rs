@@ -1,10 +1,6 @@
 //! Composite NER stage: ordered providers + auto-publish threshold filter
 //! (ingestion-ner design D7, task 2.6).
 //!
-//! Oracle mapping: `../synopsis/internal/ingestion/ner/composite_ner.go`
-//! (`NewCompositeNER`, `ExtractEntities`, `filterByAutoPublishThreshold`,
-//! `enrichMetadata`, `BuildCompositeFromStages`).
-//!
 //! [`CompositeNer`] implements [`NerProvider`] (name `"composite"`) so the
 //! pipeline treats the whole stage as one provider. Extraction runs the
 //! providers sequentially in declared order, short-circuits on the first
@@ -18,45 +14,40 @@
 //!
 //! # Design: pre-built providers + a stage factory
 //!
-//! [`CompositeNer::new`] takes **pre-built** `Vec<Box<dyn NerProvider>>`
-//! (oracle `NewCompositeNER`); the stage-to-provider wiring lives in the
-//! factory [`CompositeNer::build_from_stages`] (oracle
-//! `BuildCompositeFromStages`). Each provider has different construction
-//! needs — [`RegexNer`] only the domain configs, [`LlmNer`] the LLM config +
-//! prompts + cache pool — so pushing all of that into the composite
-//! constructor would couple orchestration to every provider's dependencies.
-//! The factory keeps one match arm per stage; the core stays
+//! [`CompositeNer::new`] takes **pre-built** `Vec<Box<dyn NerProvider>>`; the
+//! stage-to-provider wiring lives in the factory
+//! [`CompositeNer::build_from_stages`]. Each provider has different
+//! construction needs — [`RegexNer`] only the domain configs, [`LlmNer`] the
+//! LLM config + prompts + cache pool — so pushing all of that into the
+//! composite constructor would couple orchestration to every provider's
+//! dependencies. The factory keeps one match arm per stage; the core stays
 //! provider-agnostic and testable with stubs.
 //!
-//! # Deliberate deviations
+//! # Design decisions
 //!
-//! - **No "unknown stage" arm.** The oracle validates raw stage strings
-//!   (`want one of: regex, prose, llm`); the config crate's strict
-//!   [`NerMethod`] enum already rejects unknown words at parse time with the
-//!   same "want one of" message (config design D7), so the factory matches
-//!   the three variants exhaustively and the unknown-stage error has no Rust
+//! - **No "unknown stage" arm.** The config crate's strict [`NerMethod`]
+//!   enum already rejects unknown words at parse time with the same
+//!   "want one of" message (config design D7), so the factory matches the
+//!   three variants exhaustively and the unknown-stage error has no Rust
 //!   analogue.
-//! - **`prose` is a construction error.** Prose NER (the Go-only statistical
-//!   provider) is deferred by human decision 2026-08-23 — no Rust
-//!   equivalent, a second ONNX stack was rejected. The config parser still
-//!   accepts the `"prose"` word (the strict enum keeps oracle word parity);
-//!   the failure surfaces at provider construction as
-//!   [`IngestionError::ProseNerDeferred`].
-//! - **Empty merge is `Ok(None)`.** The oracle's composite always returns a
-//!   non-nil (possibly empty) `*Result`; the trait contract (design D2) says
+//! - **`prose` is a construction error.** Prose NER (a statistical provider
+//!   with no Rust equivalent) is deferred by human decision 2026-08-23 — a
+//!   second ONNX stack was rejected. The config parser still accepts the
+//!   `"prose"` word (the strict enum keeps the word); the failure surfaces at
+//!   provider construction as [`IngestionError::ProseNerDeferred`].
+//! - **Empty merge is `Ok(None)`.** The trait contract (design D2) says
 //!   "nothing found" is `Ok(None)` — an empty merge after filtering becomes
 //!   `Ok(None)`, like the individual providers (task 2.5 pattern).
 //! - **Threshold map keyed by the normalized domain name, built once at
-//!   construction.** The oracle keys its map by the raw `dc.Name` while both
-//!   providers tag entities with the *normalized* name (a config name with
-//!   uppercase or extra whitespace would silently disable filtering — bug
-//!   fix), and rebuilds the map on every extraction call (waste — the map is
-//!   built once here from the same domain configs the providers use).
-//! - **Fact endpoint keys are `(name, type)` tuples**, not the oracle's
-//!   `name|type` strings (same `|`-collision fix as the `regex.rs` dedup).
-//! - **Duplicate stages are allowed** (oracle parity): a repeated stage runs
-//!   twice and its entities are duplicated — the composite does not dedup
-//!   across providers (oracle behavior).
+//!   construction.** Both providers tag entities with the *normalized* name,
+//!   so the map is keyed by the normalized name (a config name with uppercase
+//!   or extra whitespace would otherwise silently disable filtering), and is
+//!   built once here from the same domain configs the providers use rather
+//!   than rebuilt on every extraction call.
+//! - **Fact endpoint keys are `(name, type)` tuples**, not `name|type`
+//!   strings (avoids a `|`-collision, the same fix as the `regex.rs` dedup).
+//! - **Duplicate stages are allowed:** a repeated stage runs twice and its
+//!   entities are duplicated — the composite does not dedup across providers.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -72,14 +63,13 @@ use super::{LlmNer, NerPrompts, NerProvider, NerResult, RegexNer};
 use crate::error::IngestionError;
 
 /// Metadata key carrying the name of the provider that produced an
-/// entity/fact (oracle `enrichMetadata`).
+/// entity/fact.
 const PROVIDER_KEY: &str = "provider";
 
 /// Composite NER stage: sequential providers + per-domain auto-publish
 /// threshold filter (design D7).
 ///
-/// Oracle `ner.CompositeNER`. `Send + Sync` — shareable behind a trait
-/// object (design D2).
+/// `Send + Sync` — shareable behind a trait object (design D2).
 pub struct CompositeNer {
     /// Providers in declared stage order.
     providers: Vec<Box<dyn NerProvider>>,
@@ -104,13 +94,13 @@ impl fmt::Debug for CompositeNer {
 
 impl CompositeNer {
     /// Builds the composite from pre-built providers and the domain configs
-    /// (oracle `NewCompositeNER`, minus the logger — logging is a pipeline
-    /// concern, not part of the extraction contract).
+    /// (no logger — logging is a pipeline concern, not part of the
+    /// extraction contract).
     ///
     /// The per-domain `auto_publish_threshold` map is built once here from
-    /// the same domain configs the providers were built from (oracle
-    /// `DefaultConfidencePolicy` → [`DomainConfig::effective_confidence`]),
-    /// keyed by the normalized domain name (see the module docs).
+    /// the same domain configs the providers were built from
+    /// ([`DomainConfig::effective_confidence`]), keyed by the normalized
+    /// domain name (see the module docs).
     pub fn new(providers: Vec<Box<dyn NerProvider>>, domain_configs: &[DomainConfig]) -> Self {
         let thresholds = domain_configs
             .iter()
@@ -127,8 +117,7 @@ impl CompositeNer {
         }
     }
 
-    /// Builds the composite from the configured NER stages (oracle
-    /// `BuildCompositeFromStages`).
+    /// Builds the composite from the configured NER stages.
     ///
     /// `methods` is `GlobalNerConfig.methods` in declared order: `regex`
     /// builds a [`RegexNer`] over all domain configs, `llm` builds an
@@ -175,12 +164,11 @@ impl CompositeNer {
             .collect()
     }
 
-    /// Per-domain `auto_publish_threshold` filter + fact cascade (oracle
-    /// `filterByAutoPublishThreshold`). Entities below their domain's
-    /// threshold are dropped; entities from domains absent from the map pass
-    /// through unfiltered. A fact survives only when BOTH its subject and
-    /// its object are among the surviving entities (oracle behavior: a fact
-    /// referencing a never-extracted entity is dangling and dropped too).
+    /// Per-domain `auto_publish_threshold` filter + fact cascade. Entities
+    /// below their domain's threshold are dropped; entities from domains
+    /// absent from the map pass through unfiltered. A fact survives only when
+    /// BOTH its subject and its object are among the surviving entities (a
+    /// fact referencing a never-extracted entity is dangling and dropped too).
     fn filter_by_auto_publish(&self, result: NerResult) -> NerResult {
         if self.thresholds.is_empty() {
             return result;
@@ -224,7 +212,7 @@ impl NerProvider for CompositeNer {
         content: &str,
         metadata: &Map<String, Value>,
     ) -> Result<Option<NerResult>, IngestionError> {
-        // Oracle `nil, nil` for an empty stage list.
+        // An empty stage list finds nothing.
         if self.providers.is_empty() {
             return Ok(None);
         }
@@ -232,8 +220,7 @@ impl NerProvider for CompositeNer {
         let mut merged = NerResult::default();
         for provider in &self.providers {
             // Design D10: a provider error aborts the whole call — no
-            // partial results (the oracle's context check has no Rust
-            // analogue, design D2).
+            // partial results (design D2).
             let Some(mut result) = provider.extract_entities(content, metadata)? else {
                 continue;
             };
@@ -253,10 +240,9 @@ impl NerProvider for CompositeNer {
 }
 
 /// Copies the chunk's source metadata into every entity/fact of `result`,
-/// then stamps the producing provider's name under `"provider"` when absent
-/// (oracle `enrichMetadata`). Source metadata wins on key collision (oracle
-/// loop order: the source bag is merged in first); the provider-set
-/// `domain` field is never touched.
+/// then stamps the producing provider's name under `"provider"` when absent.
+/// Source metadata wins on key collision (the source bag is merged in
+/// first); the provider-set `domain` field is never touched.
 fn enrich_metadata(provider_name: &str, result: &mut NerResult, source: &Map<String, Value>) {
     for entity in &mut result.entities {
         entity.metadata.extend(source.clone());
@@ -431,8 +417,8 @@ mod tests {
         load_ner_prompts("/nonexistent-ner-prompts").unwrap()
     }
 
-    /// Oracle `TestCompositeNER_PreservesDomain`: the provider-set domain
-    /// field survives enrichment untouched (single and multi-provider).
+    /// The provider-set domain field survives enrichment untouched (single
+    /// and multi-provider).
     #[test]
     fn provider_set_domain_is_preserved() {
         let (p1, _) = MockProvider::new(
@@ -499,9 +485,9 @@ mod tests {
     }
 
     /// Task 2.6: source metadata is extended into every entity and fact
-    /// (source wins on key collision — oracle loop order; provider metadata
-    /// survives non-colliding keys); the `"provider"` tag is set when absent
-    /// and preserved when already present.
+    /// (source wins on key collision; provider metadata survives
+    /// non-colliding keys); the `"provider"` tag is set when absent and
+    /// preserved when already present.
     #[test]
     fn source_metadata_is_extended_and_provider_tag_preserved() {
         let mut e = entity("Alice", "person", "hr", 0.9);
@@ -547,8 +533,7 @@ mod tests {
             result.entities[1].metadata.get("provider"),
             Some(&Value::String("p1".to_owned()))
         );
-        // A pre-existing "provider" key is preserved (oracle: set only if
-        // absent).
+        // A pre-existing "provider" key is preserved (set only if absent).
         assert_eq!(
             result.entities[2].metadata.get("provider"),
             Some(&Value::String("custom".to_owned()))
@@ -565,7 +550,7 @@ mod tests {
     }
 
     /// Task 2.6: entities below their domain's threshold are dropped;
-    /// exactly at the threshold is kept (oracle `>=`).
+    /// exactly at the threshold is kept (`>=`).
     #[test]
     fn entities_below_domain_threshold_are_dropped() {
         let hr = domain_config("hr", 0.5, &[]);
@@ -661,8 +646,7 @@ mod tests {
         assert_eq!(result.entities[0].name, "Unknown");
     }
 
-    /// Oracle: no domain configs → no filtering at all (dangling facts
-    /// included).
+    /// No domain configs → no filtering at all (dangling facts included).
     #[test]
     fn no_domain_configs_disables_filtering() {
         let (p1, _) = MockProvider::new(
@@ -721,8 +705,8 @@ mod tests {
         assert_eq!(p2_calls.load(Ordering::Relaxed), 0);
     }
 
-    /// Oracle bug fix: the threshold map is keyed by the normalized domain
-    /// name (the providers tag normalized names), so a config name with
+    /// The threshold map is keyed by the normalized domain name (the
+    /// providers tag normalized names), so a config name with
     /// uppercase/whitespace still filters its entities.
     #[test]
     fn threshold_map_is_keyed_by_normalized_domain_name() {

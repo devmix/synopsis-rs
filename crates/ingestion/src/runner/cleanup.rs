@@ -1,30 +1,25 @@
 //! Post-pipeline maintenance: orphan cleanup and cross-domain entity linking
 //! (pipeline task 3.8).
 //!
-//! Oracle mapping: `internal/ingestion/runner/runner.go` —
-//! `cleanupOrphanedDataLocked`, `BuildEntityLinks` (the oracle ran both at
-//! the end of its whole-tree run; in the queue-only model the worker's GC
-//! phase drives the sweep and the linking entry point is called directly).
+//! In the queue-only model the worker's GC phase drives the sweep and the
+//! linking entry point is called directly.
 //!
-//! **Conscious deviations from the oracle** (behavior ported, not
-//! transcribed):
+//! Design decisions:
 //!
 //! - [`OrphanCleanupStats`] has no `errors` field: a failure propagates as
-//!   `Err` (Rust convention); the oracle's per-step error list is subsumed
-//!   by the single `Result`.
+//!   `Err` (Rust convention); a per-step error list is subsumed by the
+//!   single `Result`.
 //! - The vector-orphan reconciliation runs OUTSIDE the SQLite transaction
 //!   (design D5): vectors live in the vectors engine, not in SQLite, so
 //!   cross-store atomicity is impossible — eventual consistency with the
 //!   chunk row as the source of truth.
 //! - [`Runner::build_entity_links`] reads the `last_linking_run` app_kv
-//!   value (the oracle's `relations.KVKeyLastLinkingRun` string, reused
-//!   verbatim) from the CACHE database but does not use it as a filter: the
-//!   Rust linker is always a full rebuild (recorded graph-crate deviation,
-//!   YAGNI). The run timestamp is still recorded after every successful run
-//!   (on the cache database), preserving the oracle's observable contract.
-//!   The LLM decision cache and this marker both live on the cache database
-//!   (task 1.10); without it the linker runs uncached and records no marker
-//!   (the oracle's nil-store no-op, non-fatal).
+//!   value from the CACHE database but does not use it as a filter: the
+//!   linker is always a full rebuild (recorded graph-crate deviation, YAGNI).
+//!   The run timestamp is still recorded after every successful run (on the
+//!   cache database). The LLM decision cache and this marker both live on the
+//!   cache database (task 1.10); without it the linker runs uncached and
+//!   records no marker (a nil-store no-op, non-fatal).
 //! - The runner mutex serializes these mutating entry points (design D4).
 
 use std::collections::HashSet;
@@ -38,15 +33,15 @@ use super::Runner;
 use crate::error::IngestionError;
 use crate::parsers::format_rfc3339_utc;
 
-/// app_kv key of the last entity-linking run timestamp (the oracle's
-/// `relations.KVKeyLastLinkingRun` string — the key is data contract).
+/// app_kv key of the last entity-linking run timestamp (the key is a data
+/// contract).
 pub const LAST_LINKING_RUN_KEY: &str = "last_linking_run";
 
-/// Counters of one orphan-cleanup run (oracle `OrphanCleanupStats`).
+/// Counters of one orphan-cleanup run.
 ///
-/// The oracle's `Errors` field is deliberately absent: failures propagate
-/// as `Err` from [`Runner::cleanup_orphaned_data`] instead of being
-/// collected (see the module docs).
+/// There is deliberately no `errors` field: failures propagate as `Err`
+/// from [`Runner::cleanup_orphaned_data`] instead of being collected (see
+/// the module docs).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OrphanCleanupStats {
     /// Entities deleted (no `entity_sources` links, no fact reference, and
@@ -72,7 +67,7 @@ impl<'a> Runner<'a> {
         self.cleanup_orphaned_data_locked()
     }
 
-    /// Runs cross-domain entity linking (oracle `BuildEntityLinks`).
+    /// Runs cross-domain entity linking.
     ///
     /// Skips cleanly (empty [`LinkResult`]) when the ontology carries no
     /// `cross-domain-links` block. The last-run timestamp under
@@ -80,7 +75,7 @@ impl<'a> Runner<'a> {
     /// always a full rebuild (recorded graph-crate deviation), so the value
     /// does not filter the run. After a successful run, the current
     /// timestamp is recorded (a record failure warns and does not fail the
-    /// run — oracle parity: it is bookkeeping for the next run).
+    /// run: it is bookkeeping for the next run).
     pub fn build_entity_links(&self) -> Result<LinkResult, IngestionError> {
         let _guard = self.lock();
         self.build_entity_links_locked()
@@ -123,8 +118,8 @@ impl<'a> Runner<'a> {
         };
         // The cache database holds BOTH the linker decision cache
         // (`llm_linker_cache`) and the `last_linking_run` marker (task 1.10).
-        // Without it the linker runs uncached and records no marker (the
-        // oracle's nil-store no-op, non-fatal).
+        // Without it the linker runs uncached and records no marker (a
+        // nil-store no-op, non-fatal).
         let cache = self.llm_cache.as_ref();
         let last_run = match cache {
             Some(cache) => cache.with_conn(|conn| {
@@ -177,10 +172,9 @@ fn reconcile_vectors(db: &Db, vectors: &dyn VectorIndex) -> Result<usize, Ingest
 }
 
 /// Records the current run timestamp under [`LAST_LINKING_RUN_KEY`] on the
-/// cache database (oracle `kv.Set(relations.KVKeyLastLinkingRun, now)`).
-/// `None` (caching disabled) records no marker — the oracle's nil-store
-/// no-op. A failure warns and does not propagate (oracle parity: bookkeeping
-/// only — the next run is a full rebuild either way).
+/// cache database. `None` (caching disabled) records no marker (a nil-store
+/// no-op). A failure warns and does not propagate (bookkeeping only — the
+/// next run is a full rebuild either way).
 fn record_linking_run(cache: Option<&Db>) {
     let Some(cache) = cache else {
         return;

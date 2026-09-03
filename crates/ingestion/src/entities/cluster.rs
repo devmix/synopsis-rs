@@ -1,23 +1,19 @@
 //! Batch clustering, canonical prototypes and metadata scoping (design D8).
 //!
-//! Oracle mapping: the pure parts of
-//! `../synopsis/internal/ingestion/entities/resolver.go` (`clusterBatch`,
-//! `canonicalProto`, `scopeEntityMetadata`, `unionFind`). The persistent
-//! blocking-index resolver (task 2.8) builds on these primitives; nothing
-//! here touches the database.
+//! The pure clustering primitives. The persistent blocking-index resolver
+//! (task 2.8) builds on these; nothing here touches the database.
 //!
-//! # Deliberate deviations
+//! # Design decisions
 //!
-//! - Block keys are `(domain, type, bigram)` tuples instead of the oracle's
-//!   concatenated `"domain:type:bigram"` strings — the same partitioning,
-//!   with no separator-collision risk.
-//! - [`canonical_proto`] ranks names by rune count, not the oracle's UTF-8
-//!   byte length (byte length is an encoding artifact that misorders
-//!   mixed-script names of equal rune count; ASCII parity is unaffected).
+//! - Block keys are `(domain, type, bigram)` tuples rather than concatenated
+//!   `"domain:type:bigram"` strings — the same partitioning, with no
+//!   separator-collision risk.
+//! - [`canonical_proto`] ranks names by rune count rather than UTF-8 byte
+//!   length (byte length is an encoding artifact that misorders mixed-script
+//!   names of equal rune count).
 //!
-//! Domain keys are normalized with the same rule the NER providers tag
-//! with (`crate::ner::normalize`, oracle `utils.Normalize`), so `"HR"` and
-//! `" hr "` block together.
+//! Domain keys are normalized with the same rule the NER providers tag with
+//! (`crate::ner::normalize`), so `"HR"` and `" hr "` block together.
 
 use std::collections::{HashMap, HashSet};
 
@@ -26,7 +22,7 @@ use serde_json::{Map, Value};
 use super::similarity::{bigrams, jaro_winkler};
 use crate::ner::{NerEntity, normalize};
 
-/// Groups entities into clusters of similar names (oracle `clusterBatch`).
+/// Groups entities into clusters of similar names.
 ///
 /// Bigram blocking: two entities are compared only when they share a
 /// `(normalized domain, type, bigram)` block — cross-domain or cross-type
@@ -92,7 +88,7 @@ pub fn cluster_batch(entities: &[NerEntity], threshold: f64) -> Vec<Vec<NerEntit
 }
 
 /// The cluster member with the longest name; ties resolve to the
-/// first-encountered member (oracle `canonicalProto`).
+/// first-encountered member.
 ///
 /// `cluster` must be non-empty (as produced by [`cluster_batch`]).
 pub fn canonical_proto(cluster: &[NerEntity]) -> &NerEntity {
@@ -105,12 +101,10 @@ pub fn canonical_proto(cluster: &[NerEntity]) -> &NerEntity {
     best
 }
 
-/// Document-level metadata fields that must not leak into entity metadata
-/// (oracle `docLevelFields`).
+/// Document-level metadata fields that must not leak into entity metadata.
 const DOCUMENT_LEVEL_FIELDS: &[&str] = &["url", "image_paths", "page_links", "categories"];
 
-/// Filters entity metadata down to entity-scoped fields (oracle
-/// `scopeEntityMetadata`).
+/// Filters entity metadata down to entity-scoped fields.
 ///
 /// Document-level fields (`url`, `image_paths`, `page_links`,
 /// `categories`) are dropped case-insensitively; provenance fields
@@ -132,7 +126,7 @@ pub fn scope_entity_metadata(entity_name: &str, raw: &Map<String, Value>) -> Map
     scoped
 }
 
-/// Disjoint-set with path compression (oracle `unionFind`).
+/// Disjoint-set with path compression.
 struct UnionFind {
     parent: Vec<usize>,
 }
@@ -175,7 +169,7 @@ mod tests {
 
     use super::*;
 
-    /// Test entity builder (oracle tests set only name/type/domain).
+    /// Test entity builder (sets only name/type/domain).
     fn entity(name: &str, entity_type: &str, domain: &str) -> NerEntity {
         NerEntity {
             name: name.to_string(),
@@ -187,8 +181,8 @@ mod tests {
         }
     }
 
-    /// Oracle `TestAddEntitiesBatchDedup` "ascii synonyms merged" (pure
-    /// clustering part — the DB assertions belong to task 2.8).
+    /// ASCII synonyms merge into one cluster (pure clustering part — the DB
+    /// assertions belong to task 2.8).
     #[test]
     fn cluster_batch_merges_ascii_synonyms() {
         let clusters = cluster_batch(
@@ -202,7 +196,7 @@ mod tests {
         assert_eq!(canonical_proto(&clusters[0]).name, "Apple Inc.");
     }
 
-    /// Oracle `TestAddEntitiesBatchDedup` "cyrillic initials merged".
+    /// Cyrillic initials merge into one cluster.
     #[test]
     fn cluster_batch_merges_cyrillic_initials() {
         let clusters = cluster_batch(
@@ -216,7 +210,7 @@ mod tests {
         assert_eq!(canonical_proto(&clusters[0]).name, "Стив Джобс");
     }
 
-    /// Oracle `TestAddEntitiesBatchDedup` "different types not merged".
+    /// Different entity types never merge.
     #[test]
     fn cluster_batch_keeps_different_types_apart() {
         let clusters = cluster_batch(
@@ -229,7 +223,7 @@ mod tests {
         assert_eq!(clusters.len(), 2);
     }
 
-    /// Oracle `TestAddEntitiesBatchDedup` "different names not merged".
+    /// Different names do not merge.
     #[test]
     fn cluster_batch_keeps_different_names_apart() {
         let clusters = cluster_batch(
@@ -242,8 +236,7 @@ mod tests {
         assert_eq!(clusters.len(), 2);
     }
 
-    /// Oracle `TestAddEntities_DomainIsolation`: identical (name, type) in
-    /// different domains never merge.
+    /// Identical (name, type) in different domains never merge.
     #[test]
     fn cluster_batch_isolates_domains() {
         let clusters = cluster_batch(
@@ -256,7 +249,7 @@ mod tests {
         assert_eq!(clusters.len(), 2);
     }
 
-    /// Oracle `TestAddEntities_SameDomainDedup`.
+    /// Identical (name, type, domain) dedup to one cluster.
     #[test]
     fn cluster_batch_dedups_same_domain() {
         let clusters = cluster_batch(
@@ -269,8 +262,7 @@ mod tests {
         assert_eq!(clusters.len(), 1);
     }
 
-    /// Oracle `TestAddEntities_DomainNormalization`: domains differing only
-    /// in case/whitespace block together.
+    /// Domains differing only in case/whitespace block together.
     #[test]
     fn cluster_batch_normalizes_domain_keys() {
         let clusters = cluster_batch(
@@ -283,7 +275,7 @@ mod tests {
         assert_eq!(clusters.len(), 1);
     }
 
-    /// Oracle `TestAddEntitiesEmpty`.
+    /// Empty input yields no clusters.
     #[test]
     fn cluster_batch_empty_input_yields_no_clusters() {
         assert!(cluster_batch(&[], 0.8).is_empty());
@@ -308,7 +300,7 @@ mod tests {
         assert_eq!(canonical_proto(&clusters[0]).name, "Apple Inc.");
     }
 
-    /// Oracle `canonicalProto` semantics: longest name wins.
+    /// Longest name wins.
     #[test]
     fn canonical_proto_longest_name_wins() {
         let cluster = vec![
@@ -325,9 +317,9 @@ mod tests {
         assert_eq!(canonical_proto(&cluster).name, "Вера");
     }
 
-    /// Oracle `TestScopeEntityMetadata` — full parity port.
+    /// Metadata scoping cases (keep / drop / title rewrite).
     #[test]
-    fn scope_entity_metadata_matches_oracle_cases() {
+    fn scope_entity_metadata_matches_recorded_cases() {
         // (entity name, raw pairs, expected keys, forbidden keys, expected title)
         type ScopeCase<'a> = (
             &'a str,

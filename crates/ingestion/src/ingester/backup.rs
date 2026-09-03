@@ -1,28 +1,23 @@
 //! Pre-ingest database backup and source clearing (task 3.6, design D6).
 //!
-//! Oracle reference: `internal/ingestion/ingester.go`
-//! (`createBackup`, `getDBPath`, `clearSourceData`), re-architected per the
-//! no-1:1-copy directive:
+//! Design decisions:
 //!
 //! - **Free functions, not methods:** both operations need only the
-//!   database handle (the oracle held the pool on the struct); the
-//!   [`super::Ingester`] calls them at its hooks.
+//!   database handle; the [`super::Ingester`] calls them at its hooks.
 //! - **Backup failures are warnings, never fatal (design D6):** a failed
 //!   snapshot is logged with `eprintln!` and reported as `Ok(false)` so the
 //!   ingest continues. Only a database that cannot even be read
 //!   (`PRAGMA database_list` failure — a storage-level fault) returns
 //!   `Err`, per design D8 ("DB failure fails that source").
-//! - **UTC timestamps:** the oracle stamped local time; the backup name is
-//!   an identifier, and UTC is unambiguous (no DST, no locale). Recorded
-//!   deviation.
-//! - **Component-boundary prefix match:** the oracle's
-//!   `strings.HasPrefix(clean(doc), clean(root))` matched SIBLING
-//!   directories (`/data/docs2/…` under root `/data/docs`) — a bug.
-//!   [`under_root`] matches at a path-component boundary instead.
-//! - **Single quotes escaped in `VACUUM INTO`:** the oracle interpolated
-//!   the path raw; the database file name is config-controlled, so the
-//!   literal is escaped (belt-and-braces on top of the internal-path
-//!   caveat).
+//! - **UTC timestamps:** the backup name is an identifier, and UTC is
+//!   unambiguous (no DST, no locale).
+//! - **Component-boundary prefix match:** a plain string prefix match
+//!   (`HasPrefix(clean(doc), clean(root))`) would match SIBLING directories
+//!   (`/data/docs2/…` under root `/data/docs`). [`under_root`] matches at a
+//!   path-component boundary instead.
+//! - **Single quotes escaped in `VACUUM INTO`:** the database file name is
+//!   config-controlled, so the string literal is escaped
+//!   (belt-and-braces on top of the internal-path caveat).
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -42,7 +37,7 @@ use crate::error::IngestionError;
 /// snapshot and skip with `Ok(false)`. A snapshot failure (unwritable
 /// backups directory, disk error, …) is a WARNING: it is logged with
 /// `eprintln!` and reported as `Ok(false)` — a backup failure must never
-/// abort an ingest (oracle parity).
+/// abort an ingest.
 ///
 /// # Errors
 ///
@@ -127,9 +122,8 @@ pub(crate) fn clear_source_data(db: &Db, source_root: &Path) -> Result<usize, In
 /// SQLite does not support bound parameters in `VACUUM INTO` — the path is
 /// interpolated as a string literal. This is safe because the path is
 /// generated internally (the database directory, a fixed `backups`
-/// subdirectory, the database file name and a timestamp), never user input
-/// (same caveat as the oracle); single quotes are additionally doubled
-/// (the oracle did not escape).
+/// subdirectory, the database file name and a timestamp), never user input;
+/// single quotes are additionally doubled.
 fn vacuum_into(db: &Db, backup_path: &Path) -> Result<(), IngestionError> {
     let literal = format!("'{}'", backup_path.to_string_lossy().replace('\'', "''"));
     db.with_conn(|conn| conn.execute_batch(&format!("VACUUM INTO {literal}")))
@@ -138,10 +132,9 @@ fn vacuum_into(db: &Db, backup_path: &Path) -> Result<(), IngestionError> {
     Ok(())
 }
 
-/// The database file name split into (stem, extension-including-dot),
-/// mirroring Go's `filepath.Base` + `filepath.Ext`: the extension is the
-/// suffix after the FINAL dot, and a leading dot is not an extension
-/// (`.hidden` → (`.hidden`, ``)).
+/// The database file name split into (stem, extension-including-dot): the
+/// extension is the suffix after the FINAL dot, and a leading dot is not an
+/// extension (`.hidden` → (`.hidden`, ``)).
 fn file_stem_and_ext(db_path: &Path) -> (String, String) {
     let file_name = db_path
         .file_name()
@@ -155,10 +148,10 @@ fn file_stem_and_ext(db_path: &Path) -> (String, String) {
     (stem.to_owned(), ext.to_owned())
 }
 
-/// `filepath.Clean` equivalent built on [`std::path::Components`]: redundant
-/// separators collapse, `.` segments drop, `..` segments pop — clamped at
-/// the root (the oracle kept leading `..` for relative inputs; ingest roots
-/// and stored document paths are absolute in practice).
+/// A `filepath.Clean` equivalent built on [`std::path::Components`]:
+/// redundant separators collapse, `.` segments drop, `..` segments pop —
+/// clamped at the root (leading `..` for relative inputs is not preserved;
+/// ingest roots and stored document paths are absolute in practice).
 fn clean_path(path: &Path) -> PathBuf {
     let mut components: Vec<Component<'_>> = Vec::new();
     for component in path.components() {
@@ -181,8 +174,8 @@ fn clean_path(path: &Path) -> PathBuf {
 
 /// Whether a stored document path lives under the source root: the cleaned
 /// path equals the cleaned root or extends it at a PATH-COMPONENT boundary
-/// (the oracle's plain string prefix matched sibling directories like
-/// `/data/docs2` under root `/data/docs` — fixed here).
+/// (a plain string prefix would match sibling directories like `/data/docs2`
+/// under root `/data/docs`).
 fn under_root(original_path: &str, root: &Path) -> bool {
     // `starts_with` matches at component boundaries and includes the
     // equality case (a document stored exactly at the root).

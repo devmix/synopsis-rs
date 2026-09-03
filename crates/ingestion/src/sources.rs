@@ -1,25 +1,20 @@
-//! Format composites and the source registry
-//! (oracle: `internal/ingestion/sources/`).
+//! Format composites and the source registry.
 //!
 //! A [`Source`] is the self-sufficient ingestion unit for one source type:
 //! one parser plus its chunker (design D1). The format composites
 //! ([`MarkdownSource`], [`JsonSource`], [`MediawikiSource`],
 //! [`WebpageSource`], [`UnstructuredSource`]) wire a crate parser to an
-//! injected chunker — the oracle's sources do the same. The unstructured
-//! format is the only composite with *two* chunkers: it parses both
-//! Markdown and JSON files and routes chunking on the document's
-//! `source_type` (oracle `UnstructuredSource`, cf. the oracle's
-//! `registry_test.go`). Mediawiki is the one deliberate deviation:
-//! the oracle injected the *markdown* chunker as a "graceful degradation"
-//! that never matched wikitext headings; the Rust pipeline injects the
-//! dedicated [`MediawikiChunker`](crate::chunkers::mediawiki::MediawikiChunker)
+//! injected chunker. The unstructured format is the only composite with
+//! *two* chunkers: it parses both Markdown and JSON files and routes
+//! chunking on the document's `source_type`. Mediawiki is the one format
+//! with a dedicated chunker: the markdown chunker's ATX matcher never
+//! matches wikitext headings, so the pipeline injects the dedicated
+//! [`MediawikiChunker`](crate::chunkers::mediawiki::MediawikiChunker)
 //! instead (task 1.7).
 //!
 //! [`Registry`] maps the `type` attribute word of a `global.xml` `<source>`
-//! element to its implementation (design D5, oracle `sources.Registry`).
-//! Looking up an unknown type is an explicit
-//! [`IngestionError::UnknownSourceType`] — never a silent skip (the oracle's
-//! runner failed with `no source for type %q` in the same case).
+//! element to its implementation (design D5). Looking up an unknown type is
+//! an explicit [`IngestionError::UnknownSourceType`] — never a silent skip.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -34,14 +29,13 @@ use crate::types::{
     Chunker, Document, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source,
 };
 
-/// Markdown source: [`MarkdownParser`] plus an injected Markdown chunker
-/// (oracle `sources.MarkdownSource`).
+/// Markdown source: [`MarkdownParser`] plus an injected Markdown chunker.
 ///
 /// The parser is a stateless unit struct, so the composite holds only the
-/// chunker. The chunker arrives as `Box<dyn Chunker>` (oracle: an interface
-/// parameter) so the pipeline (series change 3) can inject whatever the
-/// config selects, and later formats that reuse the markdown chunker
-/// (webpage) keep the same composition.
+/// chunker. The chunker arrives as `Box<dyn Chunker>` so the pipeline
+/// (series change 3) can inject whatever the config selects, and later
+/// formats that reuse the markdown chunker (webpage) keep the same
+/// composition.
 pub struct MarkdownSource {
     chunker: Box<dyn Chunker>,
 }
@@ -83,17 +77,16 @@ impl Chunker for MarkdownSource {
 
 impl Source for MarkdownSource {}
 
-/// JSON source: [`JsonParser`] plus an injected JSON chunker
-/// (oracle `sources.JsonSource`). See [`MarkdownSource`] for the composition
-/// rationale.
+/// JSON source: [`JsonParser`] plus an injected JSON chunker. See
+/// [`MarkdownSource`] for the composition rationale.
 pub struct JsonSource {
     chunker: Box<dyn Chunker>,
 }
 
 impl JsonSource {
-    /// Registry key: the `type` attribute word in `global.xml` (the oracle
-    /// registers `"json"` in its runner even though `global.xml` rarely uses
-    /// the word; kept for parity of the registry surface).
+    /// Registry key: the `type` attribute word in `global.xml`. The word is
+    /// rare in `global.xml` in practice, but it is registered to keep the
+    /// registry surface complete.
     pub const SOURCE_TYPE: &'static str = "json";
 
     /// Creates a JSON source over the given chunker.
@@ -128,15 +121,15 @@ impl Chunker for JsonSource {
 
 impl Source for JsonSource {}
 
-/// Mediawiki source: [`MediawikiParser`] plus an injected chunker (oracle
-/// `sources.MediawikiSource`).
+/// Mediawiki source: [`MediawikiParser`] plus an injected chunker.
 ///
-/// Deliberate deviation (task 1.7): the oracle injected the *markdown*
-/// chunker as a "graceful degradation" that never matched wikitext headings,
-/// collapsing heading-rich pages into one unsplit chunk. The Rust pipeline
+/// Design (task 1.7): the markdown chunker's ATX matcher never matches
+/// wikitext `== heading ==` lines, so reusing it would collapse
+/// heading-rich pages into one unsplit chunk. The pipeline therefore
 /// injects the dedicated
-/// [`MediawikiChunker`](crate::chunkers::mediawiki::MediawikiChunker)
-/// instead; the composite shape (parser + `Box<dyn Chunker>`) is identical.
+/// [`MediawikiChunker`](crate::chunkers::mediawiki::MediawikiChunker);
+/// the composite shape (parser + `Box<dyn Chunker>`) is the same as the
+/// other sources.
 pub struct MediawikiSource {
     chunker: Box<dyn Chunker>,
 }
@@ -178,14 +171,12 @@ impl Chunker for MediawikiSource {
 
 impl Source for MediawikiSource {}
 
-/// Webpage source: [`WebpageParser`] plus an injected Markdown chunker
-/// (oracle `sources.WebpageSource`).
+/// Webpage source: [`WebpageParser`] plus an injected Markdown chunker.
 ///
-/// The oracle injects the *markdown* chunker, and so does the Rust
-/// pipeline: the parser emits Markdown either way (raw `.md` pages or
-/// `.html` pages converted to Markdown), so the markdown chunker's
-/// ATX-heading structure-awareness applies to both page kinds. There is no
-/// dedicated webpage chunker (the oracle has none either).
+/// The parser emits Markdown either way (raw `.md` pages or `.html` pages
+/// converted to Markdown), so the markdown chunker's ATX-heading
+/// structure-awareness applies to both page kinds; there is no dedicated
+/// webpage chunker.
 pub struct WebpageSource {
     chunker: Box<dyn Chunker>,
 }
@@ -227,16 +218,13 @@ impl Chunker for WebpageSource {
 
 impl Source for WebpageSource {}
 
-/// Unstructured source: [`UnstructuredParser`] (Markdown + JSON files) plus
-/// two injected chunkers routed by the document's `source_type` (oracle
-/// `sources.UnstructuredSource`).
+/// Unstructured source: [`UnstructuredParser`] (Markdown + JSON files)
+/// plus two injected chunkers routed by the document's `source_type`.
 ///
-/// The oracle composes an `UnstructuredParser` (`.md`) and a `JSONParser`
-/// (`.json`) and routes chunking on `metadata["source_type"]`:
-/// `"unstructured"` → the markdown chunker, `"json"` → the JSON chunker,
-/// anything else is an explicit error (fail loud). The Rust composite keeps
-/// that routing contract; the parse side is a single shared walk (see the
-/// parser module docs) instead of the oracle's two walks.
+/// Chunking is routed on `metadata.source_type`: `"unstructured"` → the
+/// markdown chunker, `"json"` → the JSON chunker, anything else is an
+/// explicit error (fail loud). The parse side is a single shared walk (see
+/// the parser module docs).
 pub struct UnstructuredSource {
     md_chunker: Box<dyn Chunker>,
     json_chunker: Box<dyn Chunker>,
@@ -277,8 +265,8 @@ impl Chunker for UnstructuredSource {
         content: &str,
         metadata: &DocumentMetadata,
     ) -> Result<Vec<DocumentChunk>, IngestionError> {
-        // Oracle `Chunk`: the routing key is the document's source type —
-        // set by the parser, never guessed.
+        // The routing key is the document's source type — set by the
+        // parser, never guessed.
         match metadata.source_type.as_str() {
             Self::SOURCE_TYPE => self.md_chunker.chunk(content, metadata),
             JsonSource::SOURCE_TYPE => self.json_chunker.chunk(content, metadata),
@@ -290,7 +278,7 @@ impl Chunker for UnstructuredSource {
 impl Source for UnstructuredSource {}
 
 /// Maps a `global.xml` source-type word to its [`Source`] implementation
-/// (oracle `sources.Registry`, design D5).
+/// (design D5).
 ///
 /// Built once at pipeline start (series change 3) with one entry per known
 /// format, then queried for every configured `<source>` element. Unknown
@@ -298,7 +286,7 @@ impl Source for UnstructuredSource {}
 /// silent skip.
 ///
 /// Storage is a [`BTreeMap`]: [`types`](Self::types) is sorted and therefore
-/// deterministic — the oracle iterated a Go map in random order.
+/// deterministic (a plain `HashMap` would iterate in random order).
 #[derive(Default)]
 pub struct Registry {
     sources: BTreeMap<String, Box<dyn Source>>,
@@ -313,8 +301,7 @@ impl Registry {
     /// Registers `source` under `source_type` (the `global.xml` `type` word).
     ///
     /// Re-registering a known type is a programmer error surfaced as an
-    /// explicit [`IngestionError::AlreadyRegistered`] (oracle contract:
-    /// `Register` returns an error on duplicates).
+    /// explicit [`IngestionError::AlreadyRegistered`].
     pub fn register(
         &mut self,
         source_type: impl Into<String>,
@@ -339,8 +326,8 @@ impl Registry {
             .ok_or_else(|| IngestionError::UnknownSourceType(source_type.to_owned()))
     }
 
-    /// All registered type names, sorted (deterministic; the oracle iterated
-    /// a Go map in random order).
+    /// All registered type names, sorted (deterministic; a plain `HashMap`
+    /// would iterate in random order).
     pub fn types(&self) -> Vec<String> {
         self.sources.keys().cloned().collect()
     }
@@ -388,13 +375,12 @@ mod tests {
     }
 
     /// A JSON composite with the config-crate defaults (empty `text_fields`
-    /// falls back to the oracle's four defaults inside the chunker).
+    /// falls back to the four built-in defaults inside the chunker).
     fn json_source() -> JsonSource {
         JsonSource::new(Box::new(JsonChunker::new(JsonChunkerConfig::default())))
     }
 
-    /// A mediawiki composite with the dedicated wikitext chunker (task 1.7
-    /// deviation from the oracle's markdown-chunker reuse).
+    /// A mediawiki composite with the dedicated wikitext chunker (task 1.7).
     fn mediawiki_source() -> MediawikiSource {
         MediawikiSource::new(Box::new(MediawikiChunker::new(MarkdownChunkerConfig {
             strategy: ChunkingStrategy::Headers,
@@ -404,8 +390,8 @@ mod tests {
         })))
     }
 
-    /// A webpage composite with the injected markdown chunker (the oracle
-    /// wires the markdown chunker: the parser emits Markdown either way).
+    /// A webpage composite with the injected markdown chunker (the parser
+    /// emits Markdown either way).
     fn webpage_source() -> WebpageSource {
         WebpageSource::new(Box::new(MarkdownChunker::new(MarkdownChunkerConfig {
             strategy: ChunkingStrategy::Headers,
@@ -415,8 +401,8 @@ mod tests {
         })))
     }
 
-    /// An unstructured composite with the two injected chunkers the oracle
-    /// wires (registry_test.go: markdown chunker + JSON chunker).
+    /// An unstructured composite with the two injected chunkers: markdown
+    /// chunker + JSON chunker.
     fn unstructured_source() -> UnstructuredSource {
         UnstructuredSource::new(
             Box::new(MarkdownChunker::new(MarkdownChunkerConfig {
@@ -473,8 +459,8 @@ mod tests {
         let unstructured = registry.get("unstructured").unwrap();
         assert_eq!(unstructured.supported_extensions(), [".md", ".json"]);
 
-        // BTreeMap order: deterministic and sorted (the oracle iterated a Go
-        // map in random order).
+        // BTreeMap order: deterministic and sorted (a plain `HashMap` would
+        // iterate in random order).
         assert_eq!(
             registry.types(),
             vec!["json", "markdown", "mediawiki", "unstructured", "webpages"]
@@ -863,8 +849,8 @@ mod tests {
 
     #[test]
     fn unstructured_chunk_routing_rejects_unknown_source_type() {
-        // Oracle `Chunk`: an unknown routing key is an explicit error, never
-        // a guessed chunker.
+        // An unknown routing key is an explicit error, never a guessed
+        // chunker.
         let source: Box<dyn Source> = Box::new(unstructured_source());
         let metadata = DocumentMetadata {
             source_type: "mediawiki".to_owned(),

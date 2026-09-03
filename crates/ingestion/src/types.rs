@@ -1,12 +1,8 @@
 //! Core ingestion types and traits (design D1/D2).
 //!
-//! Oracle reference: `../synopsis/internal/ingestion/types.go`
-//! (Document/ParseResult/Parser), `chunkers/chunker.go` (DocumentChunk/Chunker)
-//! and `sources/source.go` (Source). Re-architected for Rust: the oracle's
-//! free-form `map[string]interface{}` document metadata becomes the typed
-//! [`DocumentMetadata`] with an extension bag; the chunk keeps a free-form
-//! [`Map<String, Value>`] bag of its own (oracle `DocumentChunk.Metadata`),
-//! and carries no NER result (design D2).
+//! Document metadata is a typed [`DocumentMetadata`] with an extension bag
+//! (replacing an untyped free-form map); the chunk keeps its own free-form
+//! [`Map<String, Value>`] bag, and carries no NER result (design D2).
 
 use std::path::{Path, PathBuf};
 
@@ -29,9 +25,9 @@ pub struct Document {
 /// Result of a parser walk: the documents found plus all non-fatal errors
 /// encountered along the way.
 ///
-/// Oracle contract preserved (design D1): parsing is best-effort — a broken
-/// file does not abort the walk; its error is collected here alongside the
-/// documents so the pipeline can report partial results.
+/// Design (D1): parsing is best-effort — a broken file does not abort the
+/// walk; its error is collected here alongside the documents so the pipeline
+/// can report partial results.
 ///
 /// Not `Clone`: `IngestionError` carries non-cloneable parser errors
 /// (`serde_json::Error`); the result is consumed by the pipeline.
@@ -45,17 +41,16 @@ pub struct ParseResult {
 
 /// Typed metadata attached to a [`Document`].
 ///
-/// The oracle stored a free-form `map[string]interface{}`. Re-design (design
-/// D1): the fields every parser fills are typed here, and the format-specific
-/// keys the oracle used map values for (`structure`, `title`, `url`,
-/// `graph_relations`, …) live in [`extra`](Self::extra). The chunk-specific
-/// keys (`section_title`, `heading_level`, `breadcrumb`, `image_paths`) are
+/// Design (D1): the fields every parser fills are typed here, and the
+/// format-specific keys (`structure`, `title`, `url`, `graph_relations`, …)
+/// live in [`extra`](Self::extra). The chunk-specific keys
+/// (`section_title`, `heading_level`, `breadcrumb`, `image_paths`) are
 /// produced by the chunkers and live in each chunk's own
 /// [`metadata`](DocumentChunk::metadata) bag.
 ///
 /// `extra` is a [`serde_json::Map`], i.e. a `BTreeMap`-backed key-sorted map
-/// (unless serde_json is built with `preserve_order`): deterministic ordering
-/// for parity diffs, in contrast to the oracle's random Go map iteration.
+/// (unless serde_json is built with `preserve_order`): deterministic ordering,
+/// in contrast to the random iteration order of a plain `HashMap`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DocumentMetadata {
     /// Source type name as registered in the source registry (the `type`
@@ -74,8 +69,7 @@ pub struct DocumentMetadata {
 
 /// A chunk of a document's content.
 ///
-/// Oracle reference: `chunkers/chunker.go DocumentChunk`. Deliberate deviation
-/// (design D2): no `NerResult` field — the NER stage (series change 2)
+/// Design (D2): no `NerResult` field — the NER stage (series change 2)
 /// attaches its results through its own structure keyed by chunk index,
 /// keeping the chunk a pure chunking artifact.
 ///
@@ -84,11 +78,10 @@ pub struct DocumentMetadata {
 /// every chunk produced by this crate satisfies
 /// `content[start_offset..end_offset] == text`: the chunk text is always a
 /// pure slice of the source, and the offsets always land on character
-/// boundaries (they derive from line/character boundaries). The oracle
-/// violated this by trimming sections and prefixing breadcrumbs/file names
-/// into `Text` while keeping offsets pointing at the original span; that is a
-/// deliberate fix — decorative context lives in the
-/// [`metadata`](Self::metadata) bag, never in `text`.
+/// boundaries (they derive from line/character boundaries). Decorative context
+/// (section trimming, breadcrumb/file-name prefixes) is deliberately kept out
+/// of `text` — it lives in the
+/// [`metadata`](Self::metadata) bag — so the invariant always holds.
 ///
 /// [`search_text`](Self::search_text) is the **only synthetic field** on the
 /// chunk: it may carry the section's heading breadcrumb prefixed to `text`
@@ -113,8 +106,7 @@ pub struct DocumentChunk {
     pub start_offset: usize,
     /// Byte offset one past the chunk's last byte in the original content.
     pub end_offset: usize,
-    /// The chunk's own free-form metadata bag (oracle
-    /// `DocumentChunk.Metadata`): the originating document's
+    /// The chunk's own free-form metadata bag: the originating document's
     /// [`extra`](DocumentMetadata::extra) keys plus the chunk-specific keys
     /// the chunker adds (`section_title`, `heading_level`, `breadcrumb`,
     /// `image_paths`, …). The document's typed fields are not part of the
@@ -145,9 +137,9 @@ pub trait Parser {
     /// error.
     fn parse(&self, source_path: &Path) -> ParseResult;
 
-    /// Reads and parses the single file at `path` (oracle `parseFile`);
-    /// never walks the source tree. `root` is the source root used to
-    /// compute the relative `source_file` metadata.
+    /// Reads and parses the single file at `path`; never walks the source
+    /// tree. `root` is the source root used to compute the relative
+    /// `source_file` metadata.
     ///
     /// # Errors
     ///
@@ -182,7 +174,7 @@ pub trait Chunker {
 }
 
 /// A self-sufficient ingestion unit for one source type: one parser plus its
-/// chunker (oracle `sources.Source`, design D1).
+/// chunker (design D1).
 ///
 /// Object-safe composite: `Box<dyn Source>` is the registry's storage type.
 pub trait Source: Parser + Chunker {}

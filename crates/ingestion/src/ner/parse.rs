@@ -1,21 +1,17 @@
 //! Pure LLM response processing for the NER provider (design D5, task 2.3).
 //!
-//! Oracle mapping: `parseLLMResponse` and its helpers in
-//! `../synopsis/internal/ingestion/ner/llm_ner.go`. These are the parse/
-//! validate rules of design D5; they are pure (no I/O) and the LlmNer
-//! provider (task 2.5) composes them after each per-domain call.
+//! [`parse_llm_response`] and its helpers. These are the parse/validate rules
+//! of design D5; they are pure (no I/O) and the LlmNer provider (task 2.5)
+//! composes them after each per-domain call.
 //!
-//! # Deliberate deviations
+//! # Design decisions
 //!
-//! - The oracle wraps its decode failure in a formatted `fmt.Errorf`; here
-//!   [`parse_llm_response`] returns the [`serde_json::Error`] directly and
-//!   the provider boundary (task 2.5) maps it into `IngestionError`
-//!   (design D10: LLM failures are fatal at the provider).
+//! - [`parse_llm_response`] returns the [`serde_json::Error`] directly; the
+//!   provider boundary (task 2.5) maps it into `IngestionError` (design D10:
+//!   LLM failures are fatal at the provider).
 //! - Parsed entities/facts carry an empty `domain`; the provider tags the
-//!   domain after parsing (oracle parity: the oracle sets `Domain` in
-//!   `ExtractEntities`, not in `parseLLMResponse`).
-//! - The oracle's `validateEntityMetadata` returns `nil` for an empty result;
-//!   here the result is an empty [`Map`] — the same value, owned by
+//!   domain after parsing (the tagging lives in the provider, not the parser).
+//! - An empty validation result is an empty [`Map`] — owned by
 //!   [`NerEntity::metadata`]/[`NerFact::metadata`].
 
 use std::sync::LazyLock;
@@ -27,19 +23,19 @@ use serde_json::{Map, Value};
 use super::{NerEntity, NerFact, NerResult};
 
 /// Confidence assigned when the model's `confidence` is absent or outside
-/// `[0.0, 1.0]` (oracle `defaultLLMConfidence`).
+/// `[0.0, 1.0]`.
 const DEFAULT_LLM_CONFIDENCE: f64 = 0.5;
-/// Description length cap in runes (oracle `maxDescLen`).
+/// Description length cap in runes.
 const MAX_DESCRIPTION_LEN: usize = 500;
-/// The version-shape pattern (oracle `attributeVersionRe`): an optional
-/// `v`/`V` prefix, digits, then dot/underscore/dash-separated alphanumerics.
+/// The version-shape pattern: an optional `v`/`V` prefix, digits, then
+/// dot/underscore/dash-separated alphanumerics.
 static VERSION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     // A static pattern that failed to compile would be a build bug.
     #[allow(clippy::expect_used)]
     Regex::new(r"^[vV]?[0-9]+([._-][a-zA-Z0-9]+)*$").expect("static version pattern compiles")
 });
-/// Obvious non-version patterns screened before the shape check (oracle
-/// `rejectPatterns`): year ranges and hedging words.
+/// Obvious non-version patterns screened before the shape check: year ranges
+/// and hedging words.
 const VERSION_REJECT_PATTERNS: &[&str] = &[
     " years",
     " year ",
@@ -53,7 +49,7 @@ const VERSION_REJECT_PATTERNS: &[&str] = &[
     "estimated",
 ];
 
-/// The model's raw NER output (oracle `nerOutput`).
+/// The model's raw NER output.
 #[derive(Debug, Deserialize)]
 struct NerOutput {
     /// Entity objects (JSON field `entities`).
@@ -64,7 +60,7 @@ struct NerOutput {
     relations: Vec<RawRelation>,
 }
 
-/// One raw entity (oracle `nerEntity`).
+/// One raw entity.
 #[derive(Debug, Deserialize)]
 struct RawEntity {
     /// Entity name; empty names are skipped.
@@ -84,7 +80,7 @@ struct RawEntity {
     attributes: Map<String, Value>,
 }
 
-/// One raw relation (oracle `nerRelation`).
+/// One raw relation.
 #[derive(Debug, Deserialize)]
 struct RawRelation {
     /// Subject entity type.
@@ -107,7 +103,7 @@ struct RawRelation {
     attributes: Map<String, Value>,
 }
 
-/// Parses and validates one LLM NER response (oracle `parseLLMResponse`).
+/// Parses and validates one LLM NER response.
 ///
 /// Rules (design D5):
 /// - entities with an empty name are skipped;
@@ -164,7 +160,7 @@ pub fn parse_llm_response(raw: &str) -> Result<NerResult, serde_json::Error> {
 }
 
 /// The entity's confidence: the model value when it lies in `[0.0, 1.0]`
-/// (NaN fails both bounds, like the oracle's comparisons), else the default.
+/// (NaN fails both bounds), else the default.
 fn normalized_confidence(confidence: Option<f64>) -> f64 {
     match confidence {
         Some(value) if (0.0..=1.0).contains(&value) => value,
@@ -172,11 +168,10 @@ fn normalized_confidence(confidence: Option<f64>) -> f64 {
     }
 }
 
-/// Limits `desc` to at most [`MAX_DESCRIPTION_LEN`] runes (oracle
-/// `truncateDescription`): the text is trimmed first; when it exceeds the
-/// cap, it is cut after the last sentence-ending punctuation (`.!?;`) within
-/// the cap (punctuation included, the cut prefix re-trimmed), else
-/// hard-capped at the cap.
+/// Limits `desc` to at most [`MAX_DESCRIPTION_LEN`] runes: the text is trimmed
+/// first; when it exceeds the cap, it is cut after the last sentence-ending
+/// punctuation (`.!?;`) within the cap (punctuation included, the cut prefix
+/// re-trimmed), else hard-capped at the cap.
 fn truncate_description(desc: &str) -> String {
     let trimmed = desc.trim();
     let runes: Vec<char> = trimmed.chars().collect();
@@ -194,13 +189,13 @@ fn truncate_description(desc: &str) -> String {
     }
 }
 
-/// Validates an LLM attributes bag (oracle `validateEntityMetadata`): string
-/// values containing the LLM-uncertainty comments "implied by context" or
-/// "not explicitly stated" (case-insensitive) are dropped, and a `version`
-/// key (case-insensitive) must look like a real version
-/// ([`is_valid_version`]) or it is dropped. Non-string values pass through.
+/// Validates an LLM attributes bag: string values containing the
+/// LLM-uncertainty comments "implied by context" or "not explicitly stated"
+/// (case-insensitive) are dropped, and a `version` key (case-insensitive)
+/// must look like a real version ([`is_valid_version`]) or it is dropped.
+/// Non-string values pass through.
 ///
-/// Returns a cleaned copy (empty when nothing survives — the oracle's nil).
+/// Returns a cleaned copy (empty when nothing survives).
 fn validate_metadata(attributes: &Map<String, Value>) -> Map<String, Value> {
     let mut cleaned = Map::new();
     for (key, value) in attributes {
@@ -218,10 +213,9 @@ fn validate_metadata(attributes: &Map<String, Value>) -> Map<String, Value> {
     cleaned
 }
 
-/// Checks whether `value` looks like a version identifier (oracle
-/// `isValidVersion`): reject-list screening first, then the version-shape
-/// pattern. Accepts `1`, `v2.3.1`, `1.0-beta`, `2_5`, …; rejects year
-/// ranges, dates and hedged strings.
+/// Checks whether `value` looks like a version identifier: reject-list
+/// screening first, then the version-shape pattern. Accepts `1`, `v2.3.1`,
+/// `1.0-beta`, `2_5`, …; rejects year ranges, dates and hedged strings.
 fn is_valid_version(value: &str) -> bool {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -246,7 +240,7 @@ mod tests {
 
     use super::*;
 
-    // ── truncate_description (oracle TestTruncateDescription*) ────────────
+    // ── truncate_description ───────────────────────────────────────────────
 
     #[test]
     fn short_description_is_unchanged() {
@@ -260,8 +254,8 @@ mod tests {
         assert_eq!(truncate_description("   "), "");
     }
 
-    /// Oracle `long_description_truncated_at_sentence`: a 3-sentence
-    /// description over the cap is cut at the last boundary within it.
+    /// A 3-sentence description over the cap is cut at the last boundary
+    /// within it.
     #[test]
     fn long_description_is_truncated_at_sentence_boundary() {
         let input = "This is the first sentence. This is the second sentence that goes on and on. \
@@ -277,8 +271,7 @@ mod tests {
         assert!(result.ends_with('.'), "{result}");
     }
 
-    /// Oracle `TestTruncateDescription_Exactly500`: exactly 500 runes stay,
-    /// 501 without a boundary is hard-capped.
+    /// Exactly 500 runes stay; 501 without a boundary is hard-capped.
     #[test]
     fn exactly_500_stays_and_501_is_hard_capped() {
         let exactly_500 = "a".repeat(499) + "b";
@@ -287,8 +280,7 @@ mod tests {
         assert_eq!(result.chars().count(), 500);
     }
 
-    /// Oracle `TestTruncateDescription_SentenceBoundary`: the cut happens at
-    /// the first boundary (51 runes), not at the cap.
+    /// The cut happens at the sentence boundary, not at the cap.
     #[test]
     fn sentence_boundary_before_limit_wins() {
         let input = format!("{} . {}.", "word ".repeat(10), "word ".repeat(100));
@@ -302,7 +294,7 @@ mod tests {
         assert!(result.ends_with('.'), "{result}");
     }
 
-    /// Oracle `TestTruncateDescription_HardCap_NoSentenceBoundary`.
+    /// No sentence boundary: hard-capped at the cap.
     #[test]
     fn no_boundary_is_hard_capped() {
         let result = truncate_description(&"x".repeat(600));
@@ -316,8 +308,7 @@ mod tests {
         assert_eq!(result.chars().count(), 500);
     }
 
-    /// The oracle's trailing-whitespace check: no result carries trailing
-    /// whitespace.
+    /// No result carries trailing whitespace.
     #[test]
     fn results_have_no_trailing_whitespace() {
         for input in [
@@ -346,7 +337,7 @@ mod tests {
         assert_eq!(normalized_confidence(Some(f64::NAN)), 0.5);
     }
 
-    // ── validate_metadata (oracle TestValidateEntityMetadata*) ─────────────
+    // ── validate_metadata ───────────────────────────────────────────────────
 
     #[test]
     fn empty_metadata_stays_empty() {
@@ -368,8 +359,7 @@ mod tests {
         assert_eq!(metadata.get("score"), Some(&json!(0.95)));
     }
 
-    /// Oracle `drops_uncertainty_comment_implied` / `not_explicitly`, plus
-    /// the case-insensitive matching.
+    /// Uncertainty comments are dropped, plus the case-insensitive matching.
     #[test]
     fn uncertainty_comments_are_dropped_case_insensitively() {
         let metadata = validate_metadata(
@@ -385,7 +375,7 @@ mod tests {
         assert_eq!(metadata.get("provider"), Some(&json!("internal")));
     }
 
-    /// Oracle `keeps_non_string_values`.
+    /// Non-string values pass through.
     #[test]
     fn non_string_values_pass_through() {
         let metadata = validate_metadata(
@@ -407,8 +397,7 @@ mod tests {
         assert_eq!(metadata.len(), 2);
     }
 
-    /// Oracle `TestValidateEntityMetadata_VersionField`: valid versions
-    /// survive, junk is dropped, other keys always survive.
+    /// Valid versions survive, junk is dropped, other keys always survive.
     #[test]
     fn version_field_is_validated() {
         for version in [
@@ -459,7 +448,7 @@ mod tests {
         assert!(dropped.is_empty());
     }
 
-    /// Oracle `TestIsValidVersion` (direct cases).
+    /// The version-shape accept/reject table.
     #[test]
     fn is_valid_version_table() {
         for valid in [
@@ -483,11 +472,11 @@ mod tests {
         }
     }
 
-    // ── parse_llm_response (oracle TestParseLLMResponse*) ──────────────────
+    // ── parse_llm_response ──────────────────────────────────────────────────
 
-    /// Oracle `valid_response`: counts, the default confidence (the
-    /// `confidence` key in attributes is metadata, not the entity field),
-    /// the metadata pass-through, and the empty domain.
+    /// Counts, the default confidence (the `confidence` key in attributes is
+    /// metadata, not the entity field), the metadata pass-through, and the
+    /// empty domain.
     #[test]
     fn valid_response_parses_entities_and_facts() {
         let result = parse_llm_response(
@@ -524,7 +513,7 @@ mod tests {
         assert!(fact.domain.is_empty());
     }
 
-    /// Oracle `skips_empty_entity_names`.
+    /// Empty entity names are skipped.
     #[test]
     fn empty_entity_names_are_skipped() {
         let result = parse_llm_response(
@@ -557,7 +546,8 @@ mod tests {
         )
     }
 
-    /// Oracle `skips_invalid_facts`, extended to every required field.
+    /// A fact with any empty required field is skipped, checked for every
+    /// field.
     #[test]
     fn facts_with_any_empty_required_field_are_skipped() {
         let raw = format!(
@@ -580,7 +570,7 @@ mod tests {
         assert_eq!(parse_llm_response(&raw).unwrap().facts.len(), 1);
     }
 
-    /// Oracle `truncates_long_description`.
+    /// Long descriptions are truncated during parsing.
     #[test]
     fn long_descriptions_are_truncated_in_parse() {
         let raw = format!(
@@ -597,7 +587,7 @@ mod tests {
         );
     }
 
-    /// Oracle `cleans_uncertainty_metadata`.
+    /// Uncertainty metadata is cleaned during parsing.
     #[test]
     fn uncertainty_metadata_is_cleaned_in_parse() {
         let result = parse_llm_response(
@@ -642,7 +632,7 @@ mod tests {
         assert!(result.facts.is_empty());
     }
 
-    /// Oracle `TestParseLLMResponse_InvalidJSON`.
+    /// Invalid JSON is an error.
     #[test]
     fn invalid_json_is_an_error() {
         assert!(parse_llm_response("{invalid json}").is_err());

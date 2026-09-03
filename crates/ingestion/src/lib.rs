@@ -1,10 +1,9 @@
 //! Document parsing and chunking for the Synopsis ingestion pipeline.
 //!
-//! This crate is the Rust re-architecture of the Go oracle's
-//! `internal/ingestion` package (design D1): parsers walk a source tree and
-//! extract [`Document`]s, chunkers split document content into
-//! [`DocumentChunk`]s, and a [`Source`] is the self-sufficient ingestion unit
-//! combining one parser with its chunker.
+//! This crate implements the ingestion pipeline (design D1): parsers walk a
+//! source tree and extract [`Document`]s, chunkers split document content
+//! into [`DocumentChunk`]s, and a [`Source`] is the self-sufficient ingestion
+//! unit combining one parser with its chunker.
 //!
 //! All five `global.xml` source formats are implemented as [`Source`]
 //! composites — [`MarkdownSource`], [`JsonSource`], [`MediawikiSource`],
@@ -36,8 +35,7 @@
 //! [`VectorSink`] seam (blanket-implemented over every vectors engine) so
 //! tests can record or fail writes without an index engine.
 //!
-//! Core contracts (oracle `types.go`, `chunkers/chunker.go`,
-//! `sources/source.go`):
+//! Core contracts:
 //!
 //! - Parsing is best-effort: per-file failures are collected in
 //!   [`ParseResult::errors`] and never abort the walk.
@@ -48,10 +46,9 @@
 //! - User `.synignore` files (gitignore semantics) are the single exclusion
 //!   mechanism for source walks; there is no built-in skip list.
 //!
-//! Deliberate deviation from the oracle (design D2): [`DocumentChunk`]
-//! carries no NER results — the NER layer attaches them through its own
-//! structure keyed by chunk index, keeping the chunk a pure chunking
-//! artifact.
+//! Design (D2): [`DocumentChunk`] carries no NER results — the NER layer
+//! attaches them through its own structure keyed by chunk index, keeping the
+//! chunk a pure chunking artifact.
 //!
 //! Every public module item is re-exported at the crate root
 //! (`ingestion::MarkdownSource`, `ingestion::Registry`, …), so downstream

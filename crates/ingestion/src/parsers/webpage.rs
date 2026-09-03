@@ -1,7 +1,7 @@
-//! Webpage parser (oracle: `internal/ingestion/parsers/webpage_parser.go`).
+//! Webpage parser.
 //!
 //! Walks a webpage dataset tree and returns one [`Document`] per page.
-//! Expected layout (oracle):
+//! Expected layout:
 //!
 //! ```text
 //! sourcePath/
@@ -12,35 +12,31 @@
 //! ```
 //!
 //! Pages are grouped per directory by page name (file name without
-//! extension, case-insensitive — the oracle lowercased the name). When both
-//! `page.md` and `page.html` exist for the same page name, the `.md` file
-//! wins and the `.html` twin is ignored (oracle `parsePage` preference).
-//! `.html` pages are converted to Markdown with `html-to-markdown-rs` — the
-//! Rust analogue of the oracle's `JohannesKaufmann/html-to-markdown` library
-//! (html5ever-based, fault-tolerant, structural output) — so the document
-//! content is Markdown and the injected markdown chunker can split it on ATX
-//! headings. **Byte-offset invariant:** chunk offsets are relative to this
-//! extracted/converted content (`Document.content`), never the raw HTML.
+//! extension, case-insensitive). When both `page.md` and `page.html` exist
+//! for the same page name, the `.md` file wins and the `.html` twin is
+//! ignored. `.html` pages are converted to Markdown with
+//! `html-to-markdown-rs` (html5ever-based, fault-tolerant, structural
+//! output) so the document content is Markdown and the injected markdown
+//! chunker can split it on ATX headings. **Byte-offset invariant:** chunk
+//! offsets are relative to this extracted/converted content
+//! (`Document.content`), never the raw HTML.
 //!
-//! **Deliberate deviations from the oracle** (functional copy, not code
-//! copy):
+//! # Design decisions
 //!
 //! * **Exclusions** come from user `.synignore` files (human decision
-//!   2026-08-23) via the shared walk; the oracle's hardcoded `skipDirs` list
-//!   does not exist here. The `static/` skip is kept, but as a
-//!   *format-specific* rule (it names part of the webpage dataset layout,
-//!   like `graph.json` is for mediawiki), not a global skip list.
-//! * **`file_size`** is the on-disk file size of the chosen page file; the
-//!   oracle stored `len(content)` (the converted Markdown size for `.html`
-//!   pages — inconsistent with its other parsers). **`modified_at`** is
-//!   populated like the sibling parsers (the oracle left it unset).
+//!   2026-08-23) via the shared walk — there is no hardcoded skip-list. The
+//!   `static/` skip is kept, but as a *format-specific* rule (it names part
+//!   of the webpage dataset layout, like `graph.json` is for mediawiki),
+//!   not a global skip list.
+//! * **`file_size`** is the on-disk file size of the chosen page file
+//!   (storing the converted content's length instead would be inconsistent
+//!   with the sibling parsers). **`modified_at`** is populated like the
+//!   sibling parsers.
 //! * **Invalid UTF-8** in an `.html` file is a non-fatal
-//!   [`IngestionError::Io`] (the Rust converter takes `&str`; the Go oracle
-//!   string-cast the bytes).
-//! * The oracle's `isImageExt` helper is defined in this file but never used
-//!   by the webpage parser (its only caller is `unstructured_parser.go`'s
-//!   `collectImages`); the Rust port therefore lives in the unstructured
-//!   module, where it is live.
+//!   [`IngestionError::Io`] (the converter takes `&str`, so the failure
+//!   surfaces at the read).
+//! * The image-extension helper lives in the unstructured module, where it
+//!   is used (the webpage parser has no image collection).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -51,17 +47,17 @@ use crate::error::IngestionError;
 use crate::parsers::{format_rfc3339_utc, source_file_name, walk_matched_files};
 use crate::types::{Document, DocumentMetadata, ParseResult, Parser};
 
-/// File extensions the webpage parser accepts, in the order reported by
-/// [`Parser::supported_extensions`] (oracle: `.md` preferred, `.html`
-/// converted to Markdown).
+/// File extensions the webpage parser accepts, in the order returned by
+/// [`Parser::supported_extensions`] (`.md` preferred, `.html` converted to
+/// Markdown).
 const WEBPAGE_EXTENSIONS: &[&str] = &[".md", ".html"];
 
 /// Directory name that holds static site assets (css/js/images), never
-/// content pages (oracle: `d.Name() == "static"` pruned the subtree).
+/// content pages (the whole subtree is pruned).
 const STATIC_DIR: &str = "static";
 
-/// Candidate files collected for one page name in one directory (oracle
-/// `pageFiles`). At least one is `Some` for every grouped entry.
+/// Candidate files collected for one page name in one directory. At least
+/// one is `Some` for every grouped entry.
 #[derive(Debug, Default)]
 struct PageFiles {
     /// Path to the `.md` file, if present (preferred).
@@ -78,8 +74,7 @@ struct PageFiles {
 pub struct WebpageParser;
 
 impl WebpageParser {
-    /// True for a page file: a `.md` or `.html` file, case-insensitively
-    /// (oracle: `strings.ToLower(name)` + extension check).
+    /// True for a page file: a `.md` or `.html` file, case-insensitively.
     fn is_page_file(path: &Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
@@ -87,8 +82,8 @@ impl WebpageParser {
     }
 
     /// True when `path` lies under a directory named `static` at or below
-    /// the walk root (oracle: the `static` directory prunes its whole
-    /// subtree, the root included).
+    /// the walk root (the `static` directory prunes its whole subtree, the
+    /// root included).
     fn under_static_dir(path: &Path, root: &Path, root_is_static: bool) -> bool {
         if root_is_static {
             return true;
@@ -108,7 +103,7 @@ impl WebpageParser {
     }
 
     /// Groups the walked page files by `dir/page-name` (lowercased page
-    /// name; `.md` preferred over `.html`) — oracle `collectPages`.
+    /// name; `.md` preferred over `.html`).
     fn collect_pages(
         source_path: &Path,
         errors: &mut Vec<IngestionError>,
@@ -153,9 +148,8 @@ impl WebpageParser {
     }
 
     /// Reads the content for one grouped page, preferring `.md` over `.html`
-    /// and converting HTML to Markdown (oracle `parsePage` content branch).
-    /// `Ok(None)` is unreachable: every grouped entry has at least one
-    /// candidate file.
+    /// and converting HTML to Markdown. `Ok(None)` is unreachable: every
+    /// grouped entry has at least one candidate file.
     fn page_content(page: &PageFiles) -> Result<Option<(PathBuf, String)>, IngestionError> {
         if let Some(md) = &page.md {
             let content = std::fs::read_to_string(md).map_err(|source| IngestionError::Io {
@@ -175,9 +169,8 @@ impl WebpageParser {
         Ok(Some((html.clone(), content)))
     }
 
-    /// Converts one HTML page to Markdown (oracle `conv.ConvertString`).
-    /// `None` output (an empty document) degrades to empty content, like
-    /// the oracle's empty string.
+    /// Converts one HTML page to Markdown. `None` output (an empty document)
+    /// degrades to empty content.
     fn convert_html(html: &str, path: &Path) -> Result<String, IngestionError> {
         let result = html_to_markdown_rs::convert(html, None).map_err(|error| {
             IngestionError::HtmlConversion {
@@ -188,7 +181,7 @@ impl WebpageParser {
         Ok(result.content.unwrap_or_default())
     }
 
-    /// Builds the document for one read page (oracle `parsePage` tail).
+    /// Builds the document for one read page.
     fn document(file_path: PathBuf, content: String, root: &Path) -> Document {
         // `metadata` is best-effort: a read that succeeded but a stat that
         // fails (e.g. the file vanished mid-walk) yields a document with
@@ -220,8 +213,7 @@ impl Parser for WebpageParser {
         let mut errors = Vec::new();
         let pages = Self::collect_pages(source_path, &mut errors);
 
-        // BTreeMap iteration is sorted by the `dir/page-name` key — the
-        // oracle's `slices.Sort(keys)` order.
+        // BTreeMap iteration is sorted by the `dir/page-name` key.
         let mut documents = Vec::new();
         for page in pages.into_values() {
             match Self::page_content(&page) {
@@ -264,11 +256,8 @@ impl Parser for WebpageParser {
 
 #[cfg(test)]
 mod tests {
-    //! Differential tests against the Go oracle: inputs and expectations
-    //! (document counts, md-over-html preference, `static/` exclusion,
-    //! metadata shape) are taken from
-    //! `../synopsis/internal/ingestion/parsers/webpage_parser_test.go`,
-    //! which passes there (`go test ./internal/ingestion/parsers/`).
+    //! Tests cover the documented behaviors: document counts, md-over-html
+    //! preference, `static/` exclusion, and metadata shape.
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -301,7 +290,6 @@ mod tests {
 
     #[test]
     fn flat_md_pages_produce_one_document_each() {
-        // Oracle TestWebpageParser_Parse "flat md pages produce one document each".
         let tree = TempTree::new();
         tree.write("pages/index.md", "# Home\nWelcome to the site.");
         tree.write("pages/about.md", "# About\nOur story.");
@@ -321,8 +309,7 @@ mod tests {
 
     #[test]
     fn html_page_is_converted_to_markdown() {
-        // Oracle TestWebpageParser_Parse "html page converted to markdown":
-        // the converted content is non-empty Markdown.
+        // The converted content is non-empty Markdown.
         let tree = TempTree::new();
         tree.write("pages/page-1.html", "<h1>Title</h1><p>Body text.</p>");
 
@@ -340,7 +327,6 @@ mod tests {
 
     #[test]
     fn md_preferred_over_html_for_same_page_name() {
-        // Oracle TestWebpageParser_Parse "md preferred over html for same page name".
         let tree = TempTree::new();
         tree.write("pages/page-1.md", "# MD Content\nThis should win.");
         tree.write(
@@ -361,7 +347,6 @@ mod tests {
 
     #[test]
     fn static_directory_is_excluded() {
-        // Oracle TestWebpageParser_Parse "static directory excluded".
         let tree = TempTree::new();
         tree.write("pages/index.md", "# Home");
         tree.write("static/logo.png", "binary data");
@@ -377,8 +362,8 @@ mod tests {
 
     #[test]
     fn a_root_named_static_yields_no_documents() {
-        // Oracle: the `static` skip applies to the walk root itself
-        // (`filepath.SkipDir` on the root entry prunes everything).
+        // The `static` skip applies to the walk root itself: a root named
+        // `static` prunes everything.
         let tree = TempTree::new();
         tree.write("static/pages/index.md", "# Home");
 
@@ -390,7 +375,6 @@ mod tests {
 
     #[test]
     fn mixed_md_and_html_pages() {
-        // Oracle TestWebpageParser_Parse "mixed md and html pages".
         let tree = TempTree::new();
         tree.write("pages/home.md", "# Home MD");
         tree.write("pages/pricing.html", "<h1>Pricing</h1><p>Plans below.</p>");
@@ -408,7 +392,6 @@ mod tests {
 
     #[test]
     fn subdirectory_pages_are_collected() {
-        // Oracle TestWebpageParser_Parse "subdirectory pages collected".
         let tree = TempTree::new();
         tree.write("pages/blog/post-1.md", "# Post One");
         tree.write("pages/blog/post-2.html", "<h1>Post Two</h1>");
@@ -424,7 +407,6 @@ mod tests {
 
     #[test]
     fn non_md_html_files_are_ignored() {
-        // Oracle TestWebpageParser_Parse "non-md-html files ignored".
         let tree = TempTree::new();
         tree.write("pages/index.md", "# Home");
         tree.write("pages/readme.txt", "not a content file");
@@ -438,8 +420,6 @@ mod tests {
 
     #[test]
     fn extensions_and_page_names_are_case_insensitive() {
-        // Oracle: `strings.ToLower(name)` before the extension check and the
-        // page-name grouping.
         let tree = TempTree::new();
         tree.write("pages/UPPER.HTML", "<h1>Upper</h1>");
         tree.write("pages/About.MD", "# About MD");
@@ -462,7 +442,6 @@ mod tests {
 
     #[test]
     fn source_file_metadata_is_relative() {
-        // Oracle TestWebpageParser_SourceFileMetadata.
         let tree = TempTree::new();
         tree.write("pages/index.md", "# Home");
         tree.write("pages/about.html", "<h1>About</h1>");
@@ -478,7 +457,6 @@ mod tests {
 
     #[test]
     fn valid_html_produces_no_errors() {
-        // Oracle TestWebpageParser_HTMLConversion.
         let tree = TempTree::new();
         tree.write("pages/broken.html", "<h1>Valid HTML</h1><p>Content.</p>");
 
@@ -490,8 +468,8 @@ mod tests {
 
     #[test]
     fn malformed_html_still_converts() {
-        // html5ever is fault-tolerant (like the oracle's x/net/html): broken
-        // markup degrades to best-effort Markdown, not an error.
+        // html5ever is fault-tolerant: broken markup degrades to
+        // best-effort Markdown, not an error.
         let tree = TempTree::new();
         tree.write("pages/tangled.html", "<h1>Unclosed<div><p>Text</p>");
 
@@ -506,10 +484,10 @@ mod tests {
 
     #[test]
     fn system_directories_are_walked_without_synignore() {
-        // Oracle TestWebpageParser_SkipDirs (shape only): the oracle's
-        // hardcoded skipDirs is gone (human decision 2026-08-23); without a
-        // .synignore everything is walked. The test files are not page files
-        // (no .md/.html), so the document count is unchanged either way.
+        // There is no hardcoded skip-list (human decision 2026-08-23);
+        // without a .synignore everything is walked. The test files are not
+        // page files (no .md/.html), so the document count is unchanged
+        // either way.
         let tree = TempTree::new();
         tree.write("pages/index.md", "# Home");
         tree.write(".git/config", "[core]");
@@ -537,7 +515,7 @@ mod tests {
 
     #[test]
     fn invalid_utf8_html_is_non_fatal() {
-        // Deviation (module docs): the Rust converter takes `&str`, so an
+        // Design (module docs): the converter takes `&str`, so an
         // invalid-UTF-8 file fails at the read with a non-fatal Io error.
         let tree = TempTree::new();
         tree.write("pages/good.html", "<h1>Good</h1>");

@@ -1,10 +1,8 @@
 //! Multi-source ingestion runner (pipeline task 3.7, design D3/D4).
 //!
-//! Oracle reference: `internal/ingestion/runner/runner.go`. The oracle's
-//! `Runner` is a stateful service object assembled by the CLI; this module
-//! ports its behavior with the design D3 re-architecture: the [`Runner`]
-//! holds no globals — every dependency (db, configs, registry, providers) is
-//! a reference passed to [`Runner::new`] via [`RunnerParams`].
+//! Design D3: the [`Runner`] holds no globals — every dependency (db,
+//! configs, registry, providers) is a reference passed to [`Runner::new`]
+//! via [`RunnerParams`].
 //!
 //! Responsibilities (queue-only model, remove-direct-ingest task 1.4):
 //!
@@ -28,26 +26,25 @@
 //! and drives [`Runner::process_document_by_path`] /
 //! [`Runner::delete_document_at`].
 //!
-//! All mutating entry points are serialized by an internal mutex (oracle
-//! `r.mu`): the worker and a CLI operation must never write SQLite
-//! concurrently (design D4).
+//! All mutating entry points are serialized by an internal mutex: the
+//! worker and a CLI operation must never write SQLite concurrently
+//! (design D4).
 //!
-//! Deliberate deviations from the oracle (behavior is ported, not
-//! transcribed — migration principles):
+//! Design decisions:
 //!
 //! - Domain enrichment wraps the fused [`Source`] (parser + chunker) rather
-//!   than a standalone parser interface: the Rust [`Ingester`] parses through
-//!   one `Source` trait (design D2), so the wrapper stamps
+//!   than a standalone parser interface: the [`Ingester`] parses through one
+//!   `Source` trait (design D2), so the wrapper stamps
 //!   [`DOMAIN_METADATA_KEY`] on parsed documents (see the private
 //!   `DomainEnrichedSource` below).
 //! - Path containment is component-aware (the private `is_within` helper):
-//!   the oracle's raw string prefix check would treat `/data/docs2/file.md`
-//!   as inside `/data/docs`.
-//! - `detectSourceType`'s `contains("mediawiki")` branch is subsumed by
-//!   `contains("wiki")` (every mediawiki name contains "wiki"); the oracle's
-//!   second check was dead code.
-//! - Warnings use `eprintln!` (crate convention, no logger in the frozen
-//!   stack), not the oracle's `log` package.
+//!   a raw string prefix check would treat `/data/docs2/file.md` as inside
+//!   `/data/docs`.
+//! - [`detect_source_type`] uses `contains("wiki")`, which also matches
+//!   every mediawiki name (a separate `contains("mediawiki")` check would be
+//!   dead code).
+//! - Warnings use `eprintln!` (crate convention; no logger in the frozen
+//!   stack).
 
 pub mod cleanup;
 
@@ -75,11 +72,11 @@ use crate::types::{
     Chunker, Document, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source,
 };
 
-/// The `metadata.extra` key carrying the source's domain list (port of the
-/// oracle's `domainEnrichedParser`, which set `metadata["domain"] = src.Domain`).
+/// The `metadata.extra` key carrying the source's domain list (the
+/// [`DomainEnrichedSource`] wrapper stamps it on every parsed document).
 pub const DOMAIN_METADATA_KEY: &str = "domain";
 
-/// Aggregated outcome of a multi-source run (oracle `SummaryStats`).
+/// Aggregated outcome of a multi-source run.
 ///
 /// Per-source progress is the usual [`crate::ProgressStats`]; this struct
 /// adds the cross-source bookkeeping: how many sources completed and the
@@ -98,8 +95,7 @@ pub struct SummaryStats {
     pub errors: Vec<String>,
 }
 
-/// Collaborators for [`Runner::new`] (design D3: injection instead of the
-/// oracle's assembled service object).
+/// Collaborators for [`Runner::new`] (design D3: dependency injection).
 pub struct RunnerParams<'a> {
     /// Shared database handle.
     pub db: &'a Db,
@@ -129,8 +125,8 @@ pub struct RunnerParams<'a> {
     /// task 3.8: the `llm` linking method loads
     /// `{prompts_path}/entity-linker/`, embedded defaults when absent).
     pub prompts_path: &'a str,
-    /// LLM-NER cache database (a separate handle per the oracle); `None`
-    /// disables response caching.
+    /// LLM-NER cache database (a separate handle from the main database);
+    /// `None` disables response caching.
     pub llm_cache: Option<Db>,
 }
 
@@ -138,8 +134,7 @@ pub struct RunnerParams<'a> {
 ///
 /// Holds references to every collaborator plus the source index built from
 /// the configured sources (absolute normalized path → config index) and the
-/// enabled roots. All mutating entry points take an internal mutex (oracle
-/// `r.mu`).
+/// enabled roots. All mutating entry points take an internal mutex.
 pub struct Runner<'a> {
     db: &'a Db,
     ingest_cfg: &'a IngestionConfig,
@@ -154,22 +149,22 @@ pub struct Runner<'a> {
     llm_cache: Option<Db>,
 
     /// Configured sources keyed by absolute (lexically normalized) path;
-    /// includes disabled sources (path lookup does not filter, oracle parity).
+    /// includes disabled sources (path lookup does not filter by enabled
+    /// state).
     source_index: BTreeMap<String, usize>,
     /// Absolute paths of the non-disabled sources (enabled-root containment
     /// for [`Self::belongs_to_source`]).
     enabled_roots: Vec<PathBuf>,
 
-    /// Serializes all mutating entry points (oracle `r.mu`).
+    /// Serializes all mutating entry points.
     lock: Mutex<()>,
 }
 
 impl<'a> Runner<'a> {
     /// Wraps the injected collaborators (design D3) and builds the source
-    /// index from the global config (oracle `NewRunner` bookkeeping).
+    /// index from the global config.
     ///
-    /// Unresolvable source paths are skipped (oracle `continue`), never
-    /// fatal.
+    /// Unresolvable source paths are skipped, never fatal.
     pub fn new(params: RunnerParams<'a>) -> Self {
         let RunnerParams {
             db,
@@ -217,8 +212,7 @@ impl<'a> Runner<'a> {
         }
     }
 
-    /// Finds the configured source containing `path` (oracle
-    /// `findSourceForPath` / `SourceForPath`).
+    /// Finds the configured source containing `path`.
     ///
     /// An exact match on the absolute normalized path wins (the watch root
     /// itself); otherwise the longest configured root that contains the path
@@ -245,8 +239,7 @@ impl<'a> Runner<'a> {
         best.and_then(|(_, index)| self.source_by_index(index))
     }
 
-    /// True when `path` lies under any enabled configured source root
-    /// (oracle `belongsToSource`).
+    /// True when `path` lies under any enabled configured source root.
     pub fn belongs_to_source(&self, path: &str) -> bool {
         let Ok(path_abs) = to_abs_path(path) else {
             return false;
@@ -391,14 +384,13 @@ impl<'a> Runner<'a> {
         self.global.and_then(|g| g.sources.get(index))
     }
 
-    /// Assembles the per-source NER provider (oracle `buildNERProvider`).
+    /// Assembles the per-source NER provider.
     ///
     /// Returns `None` — the run proceeds without NER — when NER is disabled
-    /// in the preset or the composite construction fails (degradation, oracle
-    /// parity: warning only). Domain configs are resolved by name from the
-    /// injected map; a missing domain is warned and skipped. Stage methods
-    /// come from `GlobalConfig.ner.methods` (empty without a global
-    /// ontology).
+    /// in the preset or the composite construction fails (degradation:
+    /// warning only). Domain configs are resolved by name from the injected
+    /// map; a missing domain is warned and skipped. Stage methods come from
+    /// `GlobalConfig.ner.methods` (empty without a global ontology).
     fn build_ner_provider(&self, src: &SourceConfig) -> Option<Box<dyn NerProvider>> {
         if self.ingest_cfg.ner.disabled {
             return None;
@@ -431,7 +423,7 @@ impl<'a> Runner<'a> {
         }
     }
 
-    /// Acquires the run mutex (oracle `r.mu.Lock`).
+    /// Acquires the run mutex.
     ///
     /// A poisoned lock is recovered: the guarded state is `()`, so a
     /// panicking holder cannot have corrupted anything.
@@ -457,13 +449,12 @@ impl VectorSink for SinkAdapter<'_> {
 }
 
 /// Wraps a registry source and stamps the source's domain list into every
-/// parsed document's metadata (port of the oracle's `domainEnrichedParser`,
-/// which set `metadata["domain"] = src.Domain`).
+/// parsed document's metadata ([`DOMAIN_METADATA_KEY`]).
 ///
-/// The Rust [`Ingester`] parses through the fused [`Source`] trait (design
-/// D2), so the enrichment happens here at document level rather than by
-/// wrapping a standalone parser interface: [`Parser::parse`] delegates to the
-/// inner source and then stamps [`DOMAIN_METADATA_KEY`] on every document;
+/// The [`Ingester`] parses through the fused [`Source`] trait (design D2),
+/// so the enrichment happens here at document level rather than by wrapping
+/// a standalone parser interface: [`Parser::parse`] delegates to the inner
+/// source and then stamps [`DOMAIN_METADATA_KEY`] on every document;
 /// chunking and supported extensions delegate unchanged.
 struct DomainEnrichedSource<'a> {
     /// The registry source implementation.
@@ -520,13 +511,12 @@ impl Chunker for DomainEnrichedSource<'_> {
 
 impl Source for DomainEnrichedSource<'_> {}
 
-/// Infers the source type word from the path's base name (oracle
-/// `detectSourceType`).
+/// Infers the source type word from the path's base name.
 ///
-/// A base containing `wiki` (which also matches `mediawiki` — the oracle's
-/// second check was dead) → `"mediawiki"`; containing `webpage` →
-/// `"webpages"`; otherwise → `"unstructured"`. Case-insensitive; the base
-/// name is the last path component (a trailing slash is ignored).
+/// A base containing `wiki` (which also matches every mediawiki name) →
+/// `"mediawiki"`; containing `webpage` → `"webpages"`; otherwise →
+/// `"unstructured"`. Case-insensitive; the base name is the last path
+/// component (a trailing slash is ignored).
 pub fn detect_source_type(path: &str) -> &'static str {
     let base = Path::new(path)
         .components()
@@ -548,8 +538,7 @@ pub fn detect_source_type(path: &str) -> &'static str {
 }
 
 /// The registry word for a configured source: the explicit `type` attribute,
-/// or the detected one when the attribute is absent (oracle parity: an empty
-/// `type` is detected from the path).
+/// or the detected one when the attribute is empty (detected from the path).
 fn resolve_source_type(src: &SourceConfig) -> String {
     match &src.source_type {
         SourceType::Unknown(word) if word.is_empty() => detect_source_type(&src.path).to_owned(),
@@ -570,8 +559,7 @@ fn source_type_word(kind: &SourceType) -> String {
 }
 
 /// Resolves `path` against the current directory and normalizes it
-/// lexically (oracle `filepath.Abs` — no filesystem access beyond reading
-/// the current directory).
+/// lexically (no filesystem access beyond reading the current directory).
 ///
 /// # Errors
 ///
@@ -589,8 +577,8 @@ fn to_abs_path(path: &str) -> Result<PathBuf, std::io::Error> {
 
 /// True when `path` is `root` itself or lies strictly under it.
 ///
-/// Component-aware (deliberate fix over the oracle's raw string prefix:
-/// `/data/docs2` must not be treated as inside `/data/docs`).
+/// Component-aware: `/data/docs2` must not be treated as inside
+/// `/data/docs` (a raw string prefix check would).
 ///
 /// `pub(crate)`: the queue producer's reconcile (document-jobs-queue
 /// task 1.3) filters `documents` rows by the same containment.

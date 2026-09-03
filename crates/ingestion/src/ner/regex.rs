@@ -1,24 +1,21 @@
-//! Rule-based NER provider (oracle `regex_ner.go`, design D3).
+//! Rule-based NER provider (design D3).
 //!
 //! [`RegexNer`] flattens the extraction rules of the domain configs into
 //! prepared rules at construction. Patterns are already compiled by the
 //! config loader (config design D5: `ValidateAndCompile` at load time), so
-//! the constructor cannot fail — the oracle's compile-error return from
-//! `NewRegexNER` has no Rust analogue (deliberate deviation, recorded in the
-//! task 2.1 report).
+//! the constructor cannot fail — pattern compilation errors are reported at
+//! config load time, not here.
 //!
-//! Extraction semantics (oracle parity, `regex_ner_test.go`):
+//! Extraction semantics:
 //!
 //! - capture group 1 wins over the full match when the pattern has groups;
-//!   a non-participating group 1 yields no entity (oracle: empty `match[1]`);
+//!   a non-participating group 1 yields no entity (an empty group 1);
 //! - names are trimmed, empty names skipped;
-//! - dedup by `(name, entity_type, domain)` — the oracle joins the key with
-//!   `"|"`, which collides when a name contains `|`; the tuple key fixes that
-//!   (deliberate deviation);
+//! - dedup by `(name, entity_type, domain)` — a tuple key, not a `"|"`-joined
+//!   string (which would collide when a name contains `|`);
 //! - every entity is stamped with the matching rule's id under the
 //!   `"rule_id"` metadata key;
-//! - empty content, zero rules or zero matches → `Ok(None)` (oracle's
-//!   `nil, nil`, design D2).
+//! - empty content, zero rules or zero matches → `Ok(None)` (design D2).
 
 use std::collections::HashSet;
 
@@ -47,8 +44,8 @@ struct PreparedRule {
 
 /// Rule-based NER provider over the domain configs' regex extraction rules.
 ///
-/// Oracle `ner.RegexNER`. Construction flattens all rules of all domains in
-/// config order and reuses the patterns as compiled by
+/// Construction flattens all rules of all domains in config order and reuses
+/// the patterns as compiled by
 /// [`config::load_domain_config`](config::load_domain_config) — no
 /// recompilation here (design D3).
 pub struct RegexNer {
@@ -62,8 +59,8 @@ impl RegexNer {
     ///
     /// Cannot fail: the config loader already validated and compiled every
     /// pattern (config design D5). Domain names are normalized (trim +
-    /// lowercase + collapse whitespace, oracle `utils.Normalize`) and entity
-    /// types lowercased (oracle `strings.ToLower`).
+    /// lowercase + collapse whitespace, [`normalize`]) and entity types
+    /// lowercased.
     pub fn new(domain_configs: &[DomainConfig]) -> Self {
         let mut rules = Vec::new();
         for config in domain_configs {
@@ -92,8 +89,7 @@ impl NerProvider for RegexNer {
         content: &str,
         _metadata: &Map<String, Value>,
     ) -> Result<Option<NerResult>, IngestionError> {
-        // The rule engine is pure and synchronous: the oracle's context
-        // cancellation check has no Rust analogue (design D2).
+        // The rule engine is pure and synchronous (design D2).
         if content.trim().is_empty() || self.rules.is_empty() {
             return Ok(None);
         }
@@ -102,9 +98,8 @@ impl NerProvider for RegexNer {
         let mut entities = Vec::new();
 
         for rule in &self.rules {
-            // Capture group 1 wins when the pattern has groups (oracle:
-            // `NumSubexp() > 0` ⇔ `captures_len() > 1` — index 0 is the
-            // full match).
+            // Capture group 1 wins when the pattern has groups
+            // (`captures_len() > 1` — index 0 is the full match).
             let prefer_capture = rule.pattern.captures_len() > 1;
             for captures in rule.pattern.captures_iter(content) {
                 let group = if prefer_capture {
@@ -119,8 +114,8 @@ impl NerProvider for RegexNer {
                 if name.is_empty() {
                     continue;
                 }
-                // Dedup by (name, type, domain); a tuple key, not the
-                // oracle's "|"-joined string (see the module docs).
+                // Dedup by (name, type, domain); a tuple key, not a
+                // "|"-joined string (see the module docs).
                 if !seen.insert((name.clone(), rule.entity_type.clone(), rule.domain.clone())) {
                     continue;
                 }
@@ -150,9 +145,9 @@ impl NerProvider for RegexNer {
     }
 }
 
-/// Oracle `utils.Normalize`: trim, lowercase and collapse internal whitespace
-/// runs to single spaces. Crate-private: `LlmNer` reuses it for domain
-/// tagging (ingestion-ner task 2.5) instead of re-implementing the rule.
+/// Trims, lowercases and collapses internal whitespace runs to single
+/// spaces. Crate-private: `LlmNer` reuses it for domain tagging
+/// (ingestion-ner task 2.5) instead of re-implementing the rule.
 pub(crate) fn normalize(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.to_lowercase()
@@ -167,9 +162,9 @@ mod tests {
 
     use super::*;
 
-    /// Oracle test pattern with a capture group (email local part).
+    /// Test pattern with a capture group (email local part).
     const EMAIL_CAPTURE: &str = r"([a-zA-Z0-9._%+\-]+)@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}";
-    /// Oracle test pattern without a capture group (full email).
+    /// Test pattern without a capture group (full email).
     const EMAIL_FULL: &str = r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}";
 
     /// Writes a one-domain XML with the given rules and loads it through the
@@ -195,8 +190,8 @@ mod tests {
         config
     }
 
-    /// Oracle case 1: capture group extracts the first group instead of the
-    /// full match; rule id, confidence and domain are stamped on the entity.
+    /// Capture group extracts the first group instead of the full match;
+    /// rule id, confidence and domain are stamped on the entity.
     #[test]
     fn capture_group_wins_over_full_match() {
         let ner = RegexNer::new(&[load_domain(
@@ -226,7 +221,7 @@ mod tests {
         assert!(result.facts.is_empty());
     }
 
-    /// Oracle case 2: capture group with a simple username.
+    /// Capture group with a simple username.
     #[test]
     fn capture_group_simple_username() {
         let ner = RegexNer::new(&[load_domain(
@@ -243,7 +238,7 @@ mod tests {
         assert_eq!(result.entities[0].name, "john");
     }
 
-    /// Oracle case 3: multiple matches keep their order of appearance.
+    /// Multiple matches keep their order of appearance.
     #[test]
     fn capture_group_multiple_matches_in_order() {
         let ner = RegexNer::new(&[load_domain(
@@ -266,8 +261,7 @@ mod tests {
         );
     }
 
-    /// Oracle case 4: without a capture group the full match is used
-    /// (backward compatible).
+    /// Without a capture group the full match is used.
     #[test]
     fn no_capture_group_uses_full_match() {
         let ner = RegexNer::new(&[load_domain(
@@ -285,8 +279,8 @@ mod tests {
         assert_eq!(result.entities[0].entity_type, "email");
     }
 
-    /// Oracle case 5: a capture-group pattern with no match yields nothing —
-    /// `Ok(None)`, not an empty result.
+    /// A capture-group pattern with no match yields nothing — `Ok(None)`, not
+    /// an empty result.
     #[test]
     fn no_match_yields_none() {
         let ner = RegexNer::new(&[load_domain(
@@ -370,7 +364,7 @@ mod tests {
         assert_eq!(result.entities[1].domain, "beta");
     }
 
-    /// Oracle `strings.ToLower(rule.Entity)`: entity types are lowercased.
+    /// Entity types are lowercased.
     #[test]
     fn entity_type_is_lowercased() {
         let ner = RegexNer::new(&[load_domain(
@@ -385,8 +379,8 @@ mod tests {
         assert_eq!(result.entities[0].entity_type, "employee");
     }
 
-    /// Oracle semantics: with capture groups, a non-participating group 1
-    /// yields an empty name and is skipped (oracle: empty `match[1]`).
+    /// With capture groups, a non-participating group 1 yields an empty name
+    /// and is skipped.
     #[test]
     fn non_participating_capture_group_is_skipped() {
         let ner = RegexNer::new(&[load_domain(

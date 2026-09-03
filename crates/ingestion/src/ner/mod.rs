@@ -1,9 +1,8 @@
 //! NER (named entity recognition) layer (change `ingestion-ner`, design D1).
 //!
-//! Oracle reference: `../synopsis/internal/ingestion/ner/` — `ner.go` (result
-//! types + provider trait) and `regex_ner.go` (the rule-based provider, ported
-//! in [`RegexNer`]). Extraction results attach to chunks through the
-//! pipeline's own structure — the chunk itself stays a pure chunking artifact
+//! The result types and the provider trait, plus the rule-based provider
+//! ([`RegexNer`]). Extraction results attach to chunks through the pipeline's
+//! own structure — the chunk itself stays a pure chunking artifact
 //! (ingestion-sources design D2).
 //!
 //! Core contracts (design D2):
@@ -12,8 +11,8 @@
 //!   (task 2.6) and the pipeline runner can store providers behind a trait
 //!   object.
 //! - `extract_entities` returns `Ok(None)` for "nothing found" (empty
-//!   content, no rules, no matches) — the oracle's `nil, nil`; extraction
-//!   failures are the `Err` arm, never `Ok(None)` (design D10).
+//!   content, no rules, no matches); extraction failures are the `Err` arm,
+//!   never `Ok(None)` (design D10).
 //! - Entity/fact metadata bags are [`serde_json::Map`] — the same BTreeMap-
 //!   backed type chunk metadata uses, so enrichment is a plain extend.
 //!
@@ -27,7 +26,7 @@
 //! stage orchestrator: sequential providers in declared order + the
 //! per-domain auto-publish threshold filter.
 //!
-//! All public items are re-exported at the crate root (task 2.9), so
+//! All public items are available at the crate root (task 2.9), so
 //! downstream crates reference `ingestion::NerProvider`,
 //! `ingestion::CompositeNer`, … directly.
 
@@ -56,9 +55,9 @@ pub(crate) use regex::normalize;
 
 /// An entity extracted from chunk content by a [`NerProvider`].
 ///
-/// Oracle `ner.Entity`. The oracle's `Type` field is `entity_type` here —
-/// `type` is a Rust keyword, so the field carries an explicit prefix
-/// (deliberate deviation, recorded in the task 2.1 report).
+/// The `type` field is `entity_type` here — `type` is a Rust keyword, so the
+/// field carries an explicit prefix (design decision, recorded in the task
+/// 2.1 report).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NerEntity {
     /// Normalized entity name (trimmed).
@@ -77,8 +76,6 @@ pub struct NerEntity {
 }
 
 /// A fact (subject–predicate–object triple) extracted by a [`NerProvider`].
-///
-/// Oracle `ner.Fact`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NerFact {
     /// Subject entity type.
@@ -99,8 +96,8 @@ pub struct NerFact {
 
 /// The extraction result of one [`NerProvider::extract_entities`] call.
 ///
-/// Oracle `ner.Result`. Serialized as the LLM cache payload (design D6,
-/// task 2.4), so the serde derives are part of the contract here.
+/// Serialized as the LLM cache payload (design D6, task 2.4), so the serde
+/// derives are part of the contract here.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NerResult {
     /// Entities extracted, in provider order (deduplicated by the provider).
@@ -114,8 +111,8 @@ pub struct NerResult {
 /// Object-safe (`Send + Sync`, design D2): the composite stage (task 2.6)
 /// and the pipeline runner store providers as `Box<dyn NerProvider>`.
 ///
-/// Oracle `ner.Provider`. The oracle's `context.Context` argument is dropped:
-/// Rust cancellation is a runtime concern, not part of the data-flow contract.
+/// Rust cancellation is a runtime concern, not part of the data-flow
+/// contract, so the extract method takes no cancellation token.
 pub trait NerProvider: Send + Sync {
     /// Stable provider name (`"regex"`, `"llm"`, …) used for metadata tagging.
     fn name(&self) -> &'static str;
@@ -126,7 +123,7 @@ pub trait NerProvider: Send + Sync {
     /// of the results happens in the composite stage (design D7).
     ///
     /// `Ok(None)` means "nothing found" (empty content, no rules, no
-    /// matches) — the oracle's `nil, nil`; it is never an error (design D10).
+    /// matches); it is never an error (design D10).
     fn extract_entities(
         &self,
         content: &str,

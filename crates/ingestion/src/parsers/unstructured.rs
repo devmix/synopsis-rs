@@ -1,42 +1,34 @@
-//! Unstructured parser (oracle:
-//! `internal/ingestion/parsers/unstructured_parser.go`).
+//! Unstructured parser.
 //!
-//! The oracle's `UnstructuredSource` merges two parsers: an
-//! `UnstructuredParser` for `.md` files and the `JSONParser` for `.json`
-//! files. This module is the Rust re-architecture of that merge: one shared
+//! The [`UnstructuredSource`](crate::sources::UnstructuredSource) composite
+//! merges two parsers: an [`UnstructuredParser`] for `.md` files and the
+//! [`JsonParser`] for `.json` files. This module is that merge: one shared
 //! walk over the source tree that dispatches each file to the matching
 //! reader, so the two formats are parsed in one pass with one global
 //! deterministic order. Markdown documents carry the `image_paths` metadata:
-//! the image file names sitting in the same directory as the file (oracle
-//! `collectImages`). Per-file failures are collected in
-//! [`ParseResult::errors`] and never abort the walk (design D1, oracle
-//! contract).
+//! the image file names sitting in the same directory as the file
+//! ([`UnstructuredParser::collect_images`]). Per-file failures are collected
+//! in [`ParseResult::errors`] and never abort the walk (design D1).
 //!
-//! **Deliberate deviations from the oracle** (functional copy, not code
-//! copy):
+//! # Design decisions
 //!
-//! * **Single walk, global sorted order.** The oracle runs two separate
-//!   walks (one per parser) and concatenates all Markdown documents before
-//!   all JSON documents. Rust does one walk and dispatches per file, so the
-//!   documents come out in one global sorted path order. Document order is
-//!   not a frozen contract (the oracle's registry iteration was map-ordered
-//!   anyway).
+//! * **Single walk, global sorted order.** One walk dispatches per file, so
+//!   the documents come out in one global sorted path order (two separate
+//!   walks would concatenate all Markdown documents before all JSON
+//!   documents). Document order is not a frozen contract.
 //! * **Exclusions** come from user `.synignore` files (human decision
-//!   2026-08-23) via the shared walk; the oracle's hardcoded `skipDirs` list
-//!   does not exist here.
+//!   2026-08-23) via the shared walk — there is no hardcoded skip-list.
 //! * **`stat` failure degrades** to absent `file_size`/`modified_at` instead
-//!   of discarding the already-read content (same deviation as the markdown
+//!   of discarding the already-read content (same decision as the markdown
 //!   parser).
-//! * The oracle's public `GroupSections` helper is not ported: chunking is
-//!   the job of the chunkers injected into
+//! * There is no standalone section-grouping helper in this module: chunking
+//!   is the job of the chunkers injected into
 //!   [`UnstructuredSource`](crate::sources::UnstructuredSource), and the
-//!   markdown chunker's structure-aware splitting (headings + size caps) is
-//!   a superset of `GroupSections` (which only cut at heading boundaries).
-//! * The oracle matches only `.md` (not `.markdown`) for the unstructured
-//!   format; that restriction is preserved here.
-//! * The oracle's `isImageExt` helper lives in the webpage file (unused by
-//!   the webpage parser itself) but is *used* by this parser; the extension
-//!   list is ported here, where it is live.
+//!   markdown chunker's structure-aware splitting (headings + size caps)
+//!   covers plain heading-boundary cutting.
+//! * Only `.md` (not `.markdown`) is matched for the unstructured format.
+//! * The image-extension list ([`IMAGE_EXTENSIONS`]) lives here, where it is
+//!   used (the webpage parser has no image collection).
 
 use std::path::Path;
 
@@ -47,17 +39,16 @@ use crate::parsers::json::JsonParser;
 use crate::parsers::{format_rfc3339_utc, source_file_name, walk_matched_files};
 use crate::types::{Document, DocumentMetadata, ParseResult, Parser};
 
-/// File extensions the unstructured parser accepts, in the order reported by
-/// [`Parser::supported_extensions`] (oracle: `.md` from the unstructured
-/// parser, `.json` from the JSON parser).
+/// File extensions the unstructured parser accepts, in the order returned by
+/// [`Parser::supported_extensions`] (`.md` from the markdown half, `.json`
+/// from the JSON half).
 const UNSTRUCTURED_EXTENSIONS: &[&str] = &[".md", ".json"];
 
-/// Image file extensions collected into the `image_paths` metadata (oracle
-/// `isImageExt`).
+/// Image file extensions collected into the `image_paths` metadata.
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"];
 
 /// Metadata extra key holding the image file names found in the same
-/// directory as the Markdown file (oracle `metadata["image_paths"]`).
+/// directory as the Markdown file.
 const IMAGE_PATHS_KEY: &str = "image_paths";
 
 /// Parses unstructured (Markdown + JSON) source trees into documents.
@@ -68,8 +59,7 @@ const IMAGE_PATHS_KEY: &str = "image_paths";
 pub struct UnstructuredParser;
 
 impl UnstructuredParser {
-    /// True if `path` ends with a supported extension, case insensitively
-    /// (oracle: `strings.ToLower(name)` + suffix checks).
+    /// True if `path` ends with an accepted extension, case insensitively.
     fn is_candidate(path: &Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
@@ -85,7 +75,7 @@ impl UnstructuredParser {
     }
 
     /// Reads one Markdown file into a [`Document`] with the image files of
-    /// its directory in the metadata (oracle `parseMarkdownFile`).
+    /// its directory in the metadata.
     fn read_markdown_file(path: &Path, root: &Path) -> Result<Document, IngestionError> {
         let content = std::fs::read_to_string(path).map_err(|source| IngestionError::Io {
             path: path.to_path_buf(),
@@ -103,9 +93,8 @@ impl UnstructuredParser {
             .and_then(format_rfc3339_utc);
 
         let mut extra = Map::new();
-        // Oracle `collectImages`: image file names in the *same* directory,
-        // not recursive. A directory that cannot be read yields no images
-        // (oracle returns nil), not an error.
+        // Image file names in the *same* directory, not recursive. A
+        // directory that cannot be read yields no images, not an error.
         if let Some(dir) = path.parent() {
             let images = Self::collect_images(dir);
             if !images.is_empty() {
@@ -129,8 +118,8 @@ impl UnstructuredParser {
         })
     }
 
-    /// The image file names (base names, sorted) in `dir` (oracle
-    /// `collectImages`). A directory that cannot be read yields no images.
+    /// The image file names (base names, sorted) in `dir`. A directory that
+    /// cannot be read yields no images.
     fn collect_images(dir: &Path) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
@@ -138,8 +127,8 @@ impl UnstructuredParser {
         let mut names: Vec<std::ffi::OsString> = entries
             .flatten()
             .filter(|entry| {
-                // `file_type` does not follow symlinks, like the oracle's
-                // `DirEntry.IsDir`; subdirectories are never collected.
+                // `file_type` does not follow symlinks; subdirectories are
+                // never collected.
                 entry.file_type().is_ok_and(|file_type| !file_type.is_dir())
                     && Path::new(&entry.file_name())
                         .extension()
@@ -205,11 +194,8 @@ impl Parser for UnstructuredParser {
 
 #[cfg(test)]
 mod tests {
-    //! Differential tests against the Go oracle: inputs and expectations
-    //! (document counts, `source_type` metadata, image association) are taken
-    //! from
-    //! `../synopsis/internal/ingestion/parsers/unstructured_parser_test.go`,
-    //! which passes there (`go test ./internal/ingestion/parsers/`).
+    //! Tests cover the documented behaviors: document counts, `source_type`
+    //! metadata, and image association.
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -242,8 +228,8 @@ mod tests {
 
     #[test]
     fn md_files_produce_unstructured_documents() {
-        // Oracle TestUnstructuredParser_Parse: single md file -> 1 document;
-        // multiple md files + a .txt -> 2 documents (the .txt is ignored).
+        // Single md file -> 1 document; multiple md files + a .txt -> 2
+        // documents (the .txt is ignored).
         let tree = TempTree::new();
         tree.write("docs/readme.md", "# Hello\nSome text.");
 
@@ -305,9 +291,8 @@ mod tests {
 
     #[test]
     fn images_in_same_directory_are_associated() {
-        // Oracle TestUnstructuredParser_ImageAssociation: article.md with
-        // banner.png and logo.svg next to it -> 1 document with 2 image
-        // paths (base names).
+        // article.md with banner.png and logo.svg next to it -> 1 document
+        // with 2 image paths (base names).
         let tree = TempTree::new();
         tree.write("docs/article.md", "# Article\n![hero](banner.png)");
         tree.write("docs/banner.png", "image data");
@@ -335,8 +320,8 @@ mod tests {
 
     #[test]
     fn image_collection_is_flat_and_extension_filtered() {
-        // Oracle `collectImages`: the same directory only (no recursion),
-        // image extensions only (case-insensitive), base names only.
+        // The same directory only (no recursion), image extensions only
+        // (case-insensitive), base names only.
         let tree = TempTree::new();
         tree.write("docs/article.md", "# Article");
         tree.write("docs/photo.JPG", "uppercase extension");
@@ -362,8 +347,7 @@ mod tests {
 
     #[test]
     fn documents_are_in_global_sorted_order() {
-        // Deviation (module docs): one global sorted path order instead of
-        // the oracle's "all markdown, then all json" concatenation.
+        // Design (module docs): one global sorted path order.
         let tree = TempTree::new();
         tree.write("b/items.json", "[]");
         tree.write("a/guide.md", "# Guide");

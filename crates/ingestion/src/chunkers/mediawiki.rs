@@ -1,13 +1,11 @@
 //! Structure-aware Mediawiki (wikitext) chunker.
 //!
-//! The oracle had no mediawiki chunker: `MediawikiSource` reused the
-//! Markdown chunker as a "graceful degradation" (oracle
-//! `sources/mediawiki_source.go`) whose ATX matcher never matched wikitext
-//! headings, so a heading-rich page collapsed into one unsplit chunk.
-//! **Deliberate deviation:** this chunker applies the markdown chunker's
-//! section algorithm to the wikitext heading syntax `== Title ==` (levels
-//! 1-6, balanced leading/trailing `=`), with a hand-written matcher — the
-//! same no-regex policy as the markdown chunker.
+//! **Design:** the markdown chunker's ATX heading matcher does not match the
+//! wikitext heading syntax `== Title ==`, so a heading-rich page fed to it
+//! would collapse into one unsplit chunk. This chunker therefore applies the
+//! markdown chunker's section algorithm to the wikitext syntax (levels 1-6,
+//! balanced leading/trailing `=`), with a hand-written matcher — the same
+//! no-regex policy as the markdown chunker.
 //!
 //! Strategy semantics mirror the markdown chunker:
 //!
@@ -20,8 +18,8 @@
 //!
 //! Configuration is the config crate's section-aware text knobs
 //! ([`MarkdownChunkerConfig`], `chunking.markdown.*`): the config format has
-//! no mediawiki section (frozen contract), and the oracle fed the markdown
-//! chunker settings to the mediawiki source — same knobs, same meaning.
+//! no mediawiki section (frozen contract), so the mediawiki source reuses
+//! the markdown chunker settings — same knobs, same meaning.
 //!
 //! The byte-offset invariant (crate contract) holds as in the markdown
 //! chunker: `content[start_offset..end_offset] == text`. Image paths come
@@ -40,9 +38,9 @@ use crate::types::{Chunker, DocumentChunk, DocumentMetadata};
 
 /// Structure-aware Mediawiki (wikitext) chunker.
 ///
-/// See the module docs for the strategy semantics and the deviation from the
-/// oracle. Stateless after construction: [`Chunker::chunk`] receives only
-/// the content and the document metadata.
+/// See the module docs for the strategy semantics and the design rationale.
+/// Stateless after construction: [`Chunker::chunk`] receives only the
+/// content and the document metadata.
 #[derive(Debug, Clone)]
 pub struct MediawikiChunker {
     strategy: ChunkingStrategy,
@@ -322,9 +320,7 @@ fn push_chunk(
 
 #[cfg(test)]
 mod tests {
-    //! The oracle has no mediawiki chunker to diff against (it reused the
-    //! markdown chunker — the deviation recorded in the module docs), so
-    //! these tests pin this chunker's own contract: the wikitext heading
+    //! These tests pin this chunker's own contract: the wikitext heading
     //! matcher, the section algorithm, and the byte-offset invariant.
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -570,8 +566,8 @@ mod tests {
             .unwrap();
         assert_eq!(headers, hybrid);
         assert_eq!(headers.len(), 2);
-        // Sibling headings are not ancestors (oracle `buildBreadcrumbs`
-        // walks strictly lower levels only).
+        // Sibling headings are not ancestors (breadcrumbs walk strictly
+        // lower levels only).
         assert_eq!(breadcrumb(&headers[1]), Some("> Section 1"));
     }
 

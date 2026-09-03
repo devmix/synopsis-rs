@@ -1,43 +1,35 @@
 //! LLM NER provider (ingestion-ner design D5, task 2.5).
 //!
-//! Oracle mapping: `../synopsis/internal/ingestion/ner/llm_ner.go`
-//! (`NewLLMNER` + `ExtractEntities`). Composes the finished pieces:
-//! [`NerPrompts`] renders the per-domain system/user prompts (task 2.2,
-//! design D4), [`build_cache_key`] + [`LlmNerCache`] persist responses
-//! (task 2.4, design D6), [`generate_json_schema`] builds the
-//! structured-output schema and [`parse_llm_response`] applies the D5
-//! parse/validate rules (task 2.3).
+//! Composes the finished pieces: [`NerPrompts`] renders the per-domain
+//! system/user prompts (task 2.2, design D4), [`build_cache_key`] +
+//! [`LlmNerCache`] persist responses (task 2.4, design D6),
+//! [`generate_json_schema`] builds the structured-output schema and
+//! [`parse_llm_response`] applies the D5 parse/validate rules (task 2.3).
 //!
 //! Extraction (design D5/D7): domains are processed in config order. Per
-//! domain: render system (with the JSON example, oracle passes `true`) +
-//! user (type lists + clean content + the Document context block), build
-//! the cache key, check the cache — on a miss call
-//! [`LlmClient::call`](llm::LlmClient::call) with the generated schema and
-//! schema name `ner_result`, parse/validate, tag every entity/fact with the
-//! normalized domain name, and store the tagged result in the cache BEFORE
-//! merging it into the result (oracle order: the composite stage enriches
-//! the metadata with source data afterwards, design D7).
+//! domain: render system (with the JSON example) + user (type lists + clean
+//! content + the Document context block), build the cache key, check the
+//! cache — on a miss call [`LlmClient::call`](llm::LlmClient::call) with the
+//! generated schema and schema name `ner_result`, parse/validate, tag every
+//! entity/fact with the normalized domain name, and store the tagged result
+//! in the cache BEFORE merging it into the result (the composite stage
+//! enriches the metadata with source data afterwards, design D7).
 //!
-//! # Deliberate deviations
+//! # Design decisions
 //!
-//! - **`Ok(None)` for an empty merge.** The oracle's LLM provider always
-//!   returns a non-nil `*Result` (possibly empty); the trait contract
-//!   (design D2) says "nothing found" is `Ok(None)` — an empty merge
-//!   becomes `Ok(None)`, like `RegexNer`.
-//! - **Empty content short-circuits.** The oracle would still call the
-//!   model with empty content; here empty/whitespace content returns
+//! - **`Ok(None)` for an empty merge.** The trait contract (design D2) says
+//!   "nothing found" is `Ok(None)` — an empty merge becomes `Ok(None)`,
+//!   like `RegexNer`.
+//! - **Empty content short-circuits.** Empty/whitespace content returns
 //!   `Ok(None)` without I/O (design D2; avoids a wasted HTTP round-trip).
-//! - **No silent config defaults.** The oracle clamps a negative
-//!   temperature to 0 and a non-positive `max_tokens` to 2048; our
-//!   [`LlmClient::new`](llm::LlmClient::new) fails fast on those instead
-//!   (llm crate deviation), so the validated config values are used verbatim
-//!   in the cache key.
-//! - **Schema is always passed to the call.** The oracle's
-//!   `GenerateJSONSchema(cfg, requires_schema)` returns `""` when the
-//!   client does not need a schema; here the mode decision lives inside
+//! - **No silent config defaults.** [`LlmClient::new`](llm::LlmClient::new)
+//!   fails fast on a negative temperature or a non-positive `max_tokens`
+//!   (llm crate design) instead of clamping them, so the validated config
+//!   values are used verbatim in the cache key.
+//! - **Schema is always passed to the call.** The mode decision lives inside
 //!   [`LlmClient`](llm::LlmClient) (`ResponseFormat`): in `json_object`
-//!   mode the schema arguments are ignored, in `json_schema` mode the
-//!   schema is embedded under `ner_result`. Passing it unconditionally is
+//!   mode the schema arguments are ignored, in `json_schema` mode the schema
+//!   is embedded under `ner_result`. Passing it unconditionally is
 //!   behavior-identical and keeps the call site uniform.
 //! - **Content renders into the user prompt** (no attachments parameter —
 //!   design D4, recorded in `prompts.rs`).
@@ -48,15 +40,14 @@
 //! - **Domain re-tagging on a cache hit is load-bearing.** The rendered
 //!   prompts carry no domain name, so two domains with identical schemas
 //!   produce the same cache key: the second domain's call hits the first
-//!   domain's (already tagged) entry and must be re-tagged. The oracle
-//!   re-tags on every hit for the same reason; the miss path stores the
-//!   tagged result, so a shared key is last-writer-wins in the table.
+//!   domain's (already tagged) entry and must be re-tagged. The miss path
+//!   stores the tagged result, so a shared key is last-writer-wins in the
+//!   table.
 //!
 //! # Database access
 //!
 //! The provider owns an `Option<db::Db>` pool: `Some` enables caching,
-//! `None` disables it (the oracle's nil store no-op). This mirrors the
-//! oracle, whose `LLMCache` held its own `*sql.DB` store independent of the
+//! `None` disables it. The cache holds its own pool independent of the
 //! pipeline's transaction — cache writes are plain autocommit statements,
 //! never part of a pipeline transaction. Each cache operation checks a
 //! connection out via [`Db::with_conn`] for the duration of that operation
@@ -81,7 +72,7 @@ use crate::error::IngestionError;
 /// One domain in config order: the normalized name (for tagging) plus the
 /// config the prompts and schema render from.
 struct DomainEntry {
-    /// Normalized domain name (oracle `utils.Normalize`).
+    /// Normalized domain name.
     name: String,
     /// The domain config (owned copy; the caller's slice may not outlive
     /// the provider).
@@ -90,11 +81,10 @@ struct DomainEntry {
 
 /// LLM-based NER provider over the domain configs (design D5).
 ///
-/// Oracle `ner.LLMNER`. Built once per pipeline run: the validated
-/// [`LlmClient`], the loaded [`NerPrompts`], the domain configs in order,
-/// and an optional database pool for the response cache (`None` disables
-/// caching). `Send + Sync` — shareable behind `Arc` or a trait object
-/// (design D2).
+/// Built once per pipeline run: the validated [`LlmClient`], the loaded
+/// [`NerPrompts`], the domain configs in order, and an optional database
+/// pool for the response cache (`None` disables caching). `Send + Sync` —
+/// shareable behind `Arc` or a trait object (design D2).
 ///
 /// The client is blocking by design (llm crate D2): call
 /// [`extract_entities`](NerProvider::extract_entities) from sync contexts
@@ -106,7 +96,7 @@ pub struct LlmNer {
     prompts: NerPrompts,
     /// Domain configs in config order with their normalized names.
     domains: Vec<DomainEntry>,
-    /// Response cache pool; `None` disables caching (oracle nil store).
+    /// Response cache pool; `None` disables caching.
     cache: Option<Db>,
     /// Cache-key parameters from the validated config (server, model,
     /// sampling, token budget).
@@ -135,9 +125,9 @@ impl LlmNer {
     /// Builds the provider from a validated LLM config and the domain
     /// configs.
     ///
-    /// `domain_configs` must contain at least one entry — the oracle errors
-    /// with "no valid domain configs" otherwise. `prompts` is the loaded
-    /// template set (task 2.2); `cache` is the database pool for the
+    /// `domain_configs` must contain at least one entry
+    /// ([`IngestionError::LlmNerNoDomains`] otherwise). `prompts` is the
+    /// loaded template set (task 2.2); `cache` is the database pool for the
     /// response cache, or `None` to disable caching.
     ///
     /// # Errors
@@ -210,8 +200,7 @@ impl NerProvider for LlmNer {
         content: &str,
         metadata: &Map<String, Value>,
     ) -> Result<Option<NerResult>, IngestionError> {
-        // Design D2: nothing to extract, no I/O (the oracle would still
-        // call the model — recorded deviation).
+        // Design D2: nothing to extract, no I/O.
         let normalized_content = content.trim();
         if normalized_content.is_empty() {
             return Ok(None);
@@ -251,8 +240,8 @@ impl NerProvider for LlmNer {
                     domain: domain.name.clone(),
                     source,
                 })?;
-            // Tag the domain before the cache write (oracle order): the
-            // stored entry carries the domain, and the composite stage's
+            // Tag the domain before the cache write: the stored entry
+            // carries the domain, and the composite stage's
             // source-metadata enrichment happens later (design D7).
             let result = tag_domain(result, &domain.name);
             self.cache_set(&key, &result)?;
@@ -271,8 +260,8 @@ impl NerProvider for LlmNer {
 }
 
 /// Tags every entity and fact of `result` with `domain` (the parser leaves
-/// the domain empty; the provider stamps it — oracle parity, and the
-/// re-tagging on a cache hit is load-bearing: see the module docs).
+/// the domain empty; the provider stamps it, and the re-tagging on a cache
+/// hit is load-bearing: see the module docs).
 fn tag_domain(mut result: NerResult, domain: &str) -> NerResult {
     for entity in &mut result.entities {
         entity.domain = domain.to_owned();
@@ -522,8 +511,8 @@ mod tests {
 
     // ── Constructor ─────────────────────────────────────────────────────────
 
-    /// The oracle errors with "no valid domain configs" — here
-    /// [`IngestionError::LlmNerNoDomains`].
+    /// An empty domain config list is an error
+    /// ([`IngestionError::LlmNerNoDomains`]).
     #[test]
     fn constructor_requires_at_least_one_domain() {
         let err = LlmNer::new(&llm_config("http://127.0.0.1:1"), &[], prompts(), None).unwrap_err();

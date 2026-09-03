@@ -1,39 +1,30 @@
 //! Persistent LLM-NER response cache (ingestion-ner design D6).
 //!
-//! Oracle references: `../synopsis/internal/ingestion/ner/llm_cache.go`
-//! (`BuildCacheKey`, `LLMCache`) on top of the generic SQLite key-value store
-//! `../synopsis/internal/cache/store.go`.
-//!
-//! Re-architected for the db crate's conventions (task 2.4) rather than
-//! transcribed: the oracle's `*cache.Store` (its own `*sql.DB` pool plus a
-//! table-name registry) collapses into the db crate's unified executor
-//! surface — the cache is bound to a [`ConnectionOrTx`] exactly like the db
-//! crate's DAOs (cf. `db::AppKv`), so it works over a pooled connection or
-//! inside an in-flight pipeline transaction. Caching is disabled by the
-//! caller simply not constructing a cache (`Option<LlmNerCache>` in the LLM
-//! provider, task 2.5) — the oracle's nil-store no-op.
+//! The cache is bound to a [`ConnectionOrTx`] exactly like the db crate's
+//! DAOs (cf. `db::AppKv`), so it works over a pooled connection or inside
+//! an in-flight pipeline transaction. Caching is disabled by the caller
+//! simply not constructing a cache (`Option<LlmNerCache>` in the LLM
+//! provider, task 2.5).
 //!
 //! The table `llm_ner_cache (cache_key TEXT PRIMARY KEY, result TEXT NOT
 //! NULL)` is created lazily with `CREATE TABLE IF NOT EXISTS` on first use —
-//! the frozen v5 migration shape stays untouched (the table is absent from
-//! the oracle's own migrations too, design D6).
+//! the frozen v5 migration shape stays untouched (the table is deliberately
+//! absent from the migrations, design D6).
 //!
-//! Deliberate deviations from the oracle (recorded):
+//! Design decisions:
 //!
-//! - **Database errors propagate; they are not misses.** The oracle's store
-//!   treats ANY driver error as a cache miss; the db crate convention (cf.
-//!   `app_kv.rs`) propagates them instead — a broken database must not look
-//!   empty (design D10: cache/DB failures are fatal for the extraction
-//!   call). Corrupted JSON is still a miss (oracle behavior).
-//! - **No table-name memoization.** The oracle memoizes created tables
-//!   behind a mutex (`seen` map); here the idempotent `CREATE TABLE IF NOT
+//! - **Database errors propagate; they are not misses.** A broken database
+//!   must not look empty, so driver errors propagate as
+//!   [`IngestionError::Db`] (db convention, cf. `app_kv.rs`) — design D10:
+//!   cache/DB failures are fatal for the extraction call. Corrupted JSON is
+//!   still a miss (see [`get`](Self::get)).
+//! - **No table-name memoization.** The idempotent `CREATE TABLE IF NOT
 //!   EXISTS` simply runs on every call. The table persists in the database
 //!   file and the DDL costs microseconds — YAGNI.
-//! - **Fixed table name.** The oracle allows a caller-chosen table name
-//!   (default `llm_ner_cache`); only this cache exists, so the name is a
-//!   constant (YAGNI).
-//! - **No context parameter.** Go's `ctx.Err()` checks are a runtime concern,
-//!   not part of the data-flow contract (design D2).
+//! - **Fixed table name.** Only this cache exists, so the name is a constant
+//!   (YAGNI).
+//! - **No context parameter.** Cancellation is a runtime concern, not part of
+//!   the data-flow contract (design D2).
 //!
 //! The cache key format is **internal-only** (design D6): it is never
 //! compared across implementations, so no cross-language byte parity is a
@@ -73,7 +64,7 @@ impl<'conn> LlmNerCache<'conn> {
     /// Return the cached extraction result for `key`, or `None` on a miss.
     ///
     /// A miss is: no row, or a row whose JSON payload does not deserialize
-    /// into [`NerResult`] (corrupted entry — oracle behavior; the next
+    /// into [`NerResult`] (corrupted entry — treated as a miss; the next
     /// [`set`](Self::set) overwrites it). Database failures are NOT misses:
     /// they propagate as [`IngestionError::Db`] (db convention, see the
     /// module docs).
@@ -96,8 +87,8 @@ impl<'conn> LlmNerCache<'conn> {
         }
     }
 
-    /// Store `result` under `key`, replacing any existing entry (oracle
-    /// `INSERT OR REPLACE` semantics).
+    /// Store `result` under `key`, replacing any existing entry
+    /// (`INSERT OR REPLACE` semantics).
     pub fn set(&self, key: &str, result: &NerResult) -> Result<(), IngestionError> {
         let json = serde_json::to_string(result)
             .map_err(|source| IngestionError::NerCacheJson { source })?;
@@ -135,8 +126,9 @@ impl<'conn> LlmNerCache<'conn> {
 /// **The key format is internal-only** (design D6): keys are never compared
 /// across implementations, so no cross-language byte parity is a contract.
 /// The temperature uses Rust's shortest round-trip float representation
-/// (e.g. `0.5` → `"0.5"`, `0.0` → `"0"`, `1.0` → `"1"`), which agrees with
-/// the oracle's Go `%g` for the temperature range a config can express.
+/// (e.g. `0.5` → `"0.5"`, `0.0` → `"0"`, `1.0` → `"1"`), which matches the
+/// shortest-representation form for the temperature range a config can
+/// express.
 #[must_use]
 pub fn build_cache_key(
     server: &str,
@@ -244,8 +236,7 @@ mod tests {
         });
     }
 
-    // corrupted or wrong-shaped JSON payload → miss, not an error
-    // (oracle behavior).
+    // corrupted or wrong-shaped JSON payload → miss, not an error.
     #[test]
     fn corrupted_entry_is_a_miss() {
         let db = in_memory_db();
@@ -337,8 +328,8 @@ mod tests {
         );
     }
 
-    // temperature is formatted like Go's %g: shortest representation without
-    // trailing zeros (0.5 → "0.5", 0.0 → "0", 1.0 → "1").
+    // temperature is formatted as the shortest representation without trailing
+    // zeros (0.5 → "0.5", 0.0 → "0", 1.0 → "1").
     #[test]
     fn key_uses_g_like_temperature_formatting() {
         let args = ("server", "model", 2048, "sys", "user");

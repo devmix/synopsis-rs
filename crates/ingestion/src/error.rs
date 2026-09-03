@@ -3,7 +3,7 @@
 //! `IngestionError` is a [`thiserror`] enum (workspace convention, cf.
 //! `config::ConfigError`). Parsers never fail hard: per-file failures are
 //! collected in [`ParseResult::errors`](crate::types::ParseResult::errors) and
-//! the walk continues (oracle contract, design D1). Chunkers and the source
+//! the walk continues (design D1). Chunkers and the source
 //! registry (task 1.6) return the error directly.
 
 use std::path::PathBuf;
@@ -56,7 +56,7 @@ pub enum IngestionError {
 
     /// A source type was registered twice (registry, task 1.6). Registration
     /// happens once at pipeline start, so a duplicate is a programmer error —
-    /// surfaced explicitly (oracle contract: `Register` errors on duplicates).
+    /// surfaced explicitly (registration errors on duplicates).
     #[error("source type {0:?} already registered")]
     AlreadyRegistered(String),
 
@@ -70,8 +70,8 @@ pub enum IngestionError {
     UnknownStrategy(String),
 
     /// A document's `source_type` has no chunker in the unstructured source's
-    /// routing table (task 1.9). The oracle fails loud on an unknown routing
-    /// key instead of guessing a chunker.
+    /// routing table (task 1.9). An unknown routing key is an explicit error
+    /// instead of guessing a chunker.
     #[error("unknown source type {0:?} for unstructured chunk routing")]
     ChunkRouting(String),
 
@@ -146,8 +146,7 @@ pub enum IngestionError {
     },
 
     /// The LLM provider was constructed without any domain config
-    /// (ingestion-ner task 2.5; the oracle errors with "no valid domain
-    /// configs").
+    /// (ingestion-ner task 2.5).
     #[error("llm ner: at least one domain config is required")]
     LlmNerNoDomains,
 
@@ -155,8 +154,8 @@ pub enum IngestionError {
     /// task 2.6): prose NER is deferred by human decision 2026-08-23 — the
     /// Go-only statistical provider has no Rust equivalent and a second
     /// ONNX stack was rejected. The config parser still accepts the `"prose"`
-    /// word (the strict `NerMethod` enum keeps oracle word parity); the
-    /// failure surfaces at provider construction instead.
+    /// word (the strict `NerMethod` enum keeps it); the failure surfaces at
+    /// provider construction instead.
     #[error(
         "ner stage \"prose\" is not implemented: prose NER is deferred \
         (human decision 2026-08-23 — Go-only statistical provider, no Rust \
@@ -192,8 +191,8 @@ pub enum IngestionError {
         source: serde_json::Error,
     },
 
-    /// The ingest root exists but is not a directory (pipeline task 3.4,
-    /// oracle parity: `Ingest` rejects a file root before doing anything).
+    /// The ingest root exists but is not a directory (pipeline task 3.4):
+    /// the ingest rejects a file root before doing anything.
     #[error("source path {path} is not a directory")]
     NotADirectory {
         /// The offending path.
@@ -201,8 +200,7 @@ pub enum IngestionError {
     },
 
     /// Parsing produced no documents but did produce errors (pipeline
-    /// task 3.4, oracle parity): the run fails instead of reporting a
-    /// successful no-op.
+    /// task 3.4): the run fails instead of reporting a successful no-op.
     #[error("no documents parsed, {count} errors occurred")]
     NoDocumentsParsed {
         /// Number of parse errors collected.
@@ -250,8 +248,7 @@ pub enum IngestionError {
         source: serde_json::Error,
     },
 
-    /// No configured source root contains the given path (pipeline task 3.7,
-    /// oracle parity: `no configured source contains %s` from `SyncSource`).
+    /// No configured source root contains the given path (pipeline task 3.7).
     #[error("no configured source contains {path}")]
     NoSourceForPath {
         /// The path that matched no configured source root.

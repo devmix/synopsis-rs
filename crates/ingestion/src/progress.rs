@@ -1,24 +1,18 @@
 //! Ingestion run progress: counters and a stderr progress bar.
 //!
-//! Functional port of the oracle's `internal/ingestion/progress.go`:
 //! [`ProgressStats`] is a plain counter snapshot for one ingestion run, and
 //! [`ProgressTracker`] accumulates it while an [`indicatif::ProgressBar`]
 //! renders per-file progress.
 //!
-//! Deliberate deviations from the oracle (Rust re-architecture):
+//! Design decisions:
 //!
-//! - The oracle guards its counters with a mutex for cross-goroutine
-//!   sharing. A run is single-threaded (the Runner serializes runs behind
-//!   one mutex, design D4), so the tracker takes `&mut self` — no interior
-//!   mutability needed.
-//! - The oracle's progress bar was commented out; here the bar is real but
-//!   auto-hidden when stderr is not a terminal, so headless runs (tests,
-//!   cron, piped output) never emit ANSI traffic and no separate no-op
-//!   tracker type is required.
+//! - A run is single-threaded (the Runner serializes runs behind one mutex,
+//!   design D4), so the tracker takes `&mut self` — no interior mutability or
+//!   lock is needed.
+//! - The bar is real but auto-hidden when stderr is not a terminal, so
+//!   headless runs (tests, cron, piped output) never emit ANSI traffic and no
+//!   separate no-op tracker type is required.
 //! - Counters are `u64`: they only ever increase.
-//! - The field the oracle calls `embeddings_generated` is
-//!   [`ProgressStats::embeddings_created`] — internal naming only, no
-//!   compatibility obligation.
 
 use std::io::IsTerminal;
 use std::time::{Duration, Instant};
