@@ -85,7 +85,7 @@ phase-1 — extend, don't recreate).
 
 **Acceptance.** Shared per-task acceptance for crate `mcp`.
 
-- [ ] 2.4 Extract `cli/src/serve/server.rs` tests → `cli/tests/serve_server.rs`
+- [x] 2.4 Extract `cli/src/serve/server.rs` tests → `cli/tests/serve_server.rs`
 
 **Goal.** Shrink `crates/cli/src/serve/server.rs` (1,430 lines; ~650 inline
 test lines) by relocating its movable tests to
