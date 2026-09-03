@@ -10,7 +10,12 @@
 //! 5), every source has a domain, and the regex rule is compiled in place (design D5) — criteria
 //! (a) and (e). Edge-case documents cover the task 3.1b validation matrix — criteria (г), (д),
 //! (ж), (з) — with error messages byte-parity to `../synopsis/internal/config/global_config.go`
-//! and `internal/domain/global_pool.go`. Criterion (б) lives in `src/ontology.rs` unit tests.
+//! and `internal/domain/global_pool.go`.
+//!
+//! Also hosts the tests relocated from the inline `#[cfg(test)]` module in `src/ontology.rs`
+//! (change `test-hygiene-phase-2`, task 2.7) — criterion (б): they exercise only the public API
+//! (plus the crate's own `quick-xml` dependency for the parse-only helper), so names and
+//! assertions are carried over verbatim and the move changes no behavior.
 
 // Test target: unwrap/expect on fixture loading is intentional (the files always exist).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -18,7 +23,9 @@
 use std::path::{Path, PathBuf};
 
 use config::ConfigError;
-use config::ontology::{AttributeType, LinkMethod, NerMethod, SourceType, load_global_config};
+use config::ontology::{
+    AttributeType, GlobalConfig, LinkMethod, NerMethod, SourceType, load_global_config,
+};
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data")
@@ -386,4 +393,316 @@ fn malformed_xml_is_an_xml_error_carrying_the_file_path() {
         }
         other => panic!("expected Xml error for malformed input, got: {other:?}"),
     }
+}
+
+// ── Relocated from src/ontology.rs (test-hygiene-phase-2 task 2.7) ───────────
+
+/// Parses an in-memory document through the exact deserializer of `load_global_config` minus
+/// file I/O.
+fn parse(xml: &str) -> Result<GlobalConfig, ConfigError> {
+    quick_xml::de::from_str::<GlobalConfig>(xml).map_err(|source| ConfigError::Xml {
+        path: "test.xml".to_string(),
+        source,
+    })
+}
+
+#[test]
+fn load_with_empty_dir_yields_none() {
+    assert!(load_global_config("").is_ok_and(|cfg| cfg.is_none()));
+}
+
+#[test]
+fn load_with_missing_file_yields_none() {
+    let dir =
+        std::env::temp_dir().join(format!("synopsis-ontology-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(load_global_config(&dir).is_ok_and(|cfg| cfg.is_none()));
+    let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
+fn load_anchors_relative_source_paths_to_the_ontology_dir() {
+    // Relative source paths resolve against the directory holding global.xml, not the
+    // process working directory (a `..` segment is preserved verbatim in the join).
+    let dir = std::env::temp_dir().join(format!("synopsis-ontology-anchor-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("global.xml"),
+        r#"<global><sources>
+<source path="../content/documents/hr" type="markdown"/>
+<source path="docs" type="markdown"/>
+</sources></global>"#,
+    )
+    .unwrap();
+
+    let cfg = load_global_config(&dir)
+        .unwrap()
+        .expect("global.xml present");
+    assert_eq!(
+        cfg.sources[0].path,
+        dir.join("../content/documents/hr").to_string_lossy()
+    );
+    assert_eq!(cfg.sources[1].path, dir.join("docs").to_string_lossy());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn load_keeps_absolute_source_paths_verbatim() {
+    let dir =
+        std::env::temp_dir().join(format!("synopsis-ontology-absolute-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let absolute = std::env::temp_dir().join("synopsis-ontology-abs-source");
+    std::fs::write(
+        dir.join("global.xml"),
+        format!(
+            r#"<global><sources><source path="{absolute}" type="markdown"/></sources></global>"#,
+            absolute = absolute.display()
+        ),
+    )
+    .unwrap();
+
+    let cfg = load_global_config(&dir)
+        .unwrap()
+        .expect("global.xml present");
+    assert_eq!(cfg.sources[0].path, absolute.to_string_lossy());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn minimal_document_parses_to_empty_structure() {
+    // Parse-only: absent blocks stay empty — task 3.1b applies the oracle defaults on top.
+    let cfg = parse("<global></global>").unwrap();
+    assert!(cfg.sources.is_empty());
+    assert!(cfg.cross_domain_links.is_none(), "absent block stays None");
+    assert!(cfg.ner.methods.is_empty());
+    assert!(cfg.entities.is_empty());
+    assert!(cfg.relations.is_empty());
+    assert!(cfg.extraction.regex_rules.is_empty());
+
+    // D15 revision 4: <expression> sits inside an <expressions> wrapper, which in turn is a
+    // direct child of <cross-domain-links>.
+    let cdl = parse(
+        "<global><cross-domain-links>\
+         <methods><method>expression</method></methods>\
+         <expressions><expression><name>x</name></expression></expressions>\
+         </cross-domain-links></global>",
+    )
+    .unwrap()
+    .cross_domain_links
+    .expect("block present");
+    // Both threshold elements are absent: the raw zero values survive, defaults come in 3.1b.
+    assert_eq!(cdl.llm_confidence_threshold, 0.0);
+    assert_eq!(cdl.batch_size, 0);
+    assert!(cdl.equals.is_none());
+    assert_eq!(cdl.expressions[0].relation_type, "");
+}
+
+#[test]
+fn source_fields_parse_to_raw_values() {
+    // Parse-only: absent fields keep raw zero values; 3.1b defaults empty domains to
+    // ["default"] and rejects missing path/type with the oracle's messages. D15 revision 4:
+    // <domain> items sit inside a <domains> wrapper.
+    let cfg = parse("<global><sources><source type=\"markdown\"/></sources></global>").unwrap();
+    assert!(cfg.sources[0].path.is_empty());
+    assert_eq!(cfg.sources[0].domains, Vec::<String>::new());
+
+    // Absent `type` attribute → the enum's Default (Unknown("")), not a parse error.
+    let cfg = parse("<global><sources><source path=\"a\"></source></sources></global>").unwrap();
+    assert_eq!(cfg.sources[0].path, "a");
+    assert_eq!(cfg.sources[0].source_type, SourceType::default());
+
+    // Unknown (non-empty) types are tolerated at parse time — the oracle only checks presence.
+    let cfg = parse(
+        "<global><sources><source path=\"a\" type=\"confluence\"></source></sources></global>",
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.sources[0].source_type,
+        SourceType::Unknown("confluence".to_string())
+    );
+
+    // Multiple <domain> items in file order.
+    let cfg = parse(
+        "<global><sources><source path=\"a\" type=\"markdown\">\
+         <domains><domain>x</domain><domain>y</domain></domains>\
+         </source></sources></global>",
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.sources[0].domains,
+        vec!["x".to_string(), "y".to_string()]
+    );
+}
+
+#[test]
+fn unknown_method_values_are_rejected_at_parse() {
+    // Strict enums (design D15 revision 4): the Go oracle validates exactly these sets in
+    // Validate(), so an unknown word is a parse error here instead of a 3.1b validation one.
+    let err = parse(
+        "<global><cross-domain-links>\
+         <methods><method>bogus</method></methods>\
+         </cross-domain-links></global>",
+    )
+    .expect_err("bogus link method must fail parsing");
+    match &err {
+        ConfigError::Xml { path, .. } => assert_eq!(path, "test.xml"),
+        other => panic!("expected Xml error, got: {other:?}"),
+    }
+    let msg = err.to_string();
+    assert!(msg.contains("\"bogus\""), "message names the word: {msg}");
+
+    // Matching is case-sensitive (the oracle compares exact words; derived matching of
+    // rename_all-lowercase identifiers is too).
+    let err = parse(
+        "<global><cross-domain-links>\
+         <methods><method>Expression</method></methods>\
+         </cross-domain-links></global>",
+    )
+    .expect_err("wrong-case link method must fail parsing");
+    assert!(err.to_string().contains("\"Expression\""));
+
+    // Same strictness for the NER method list.
+    let err = parse("<global><ner><methods><method>spacy</method></methods></ner></global>")
+        .expect_err("bogus ner method must fail parsing");
+    assert!(err.to_string().contains("\"spacy\""));
+}
+
+#[test]
+fn empty_method_elements_contribute_nothing_like_the_oracle() {
+    // Go's encoding/xml skips a text-less <method> element when unmarshalling into []string;
+    // the helpers mirror that by dropping empty items before strict mapping.
+    let cfg = parse(
+        "<global><ner>\
+         <methods><method></method><method>regex</method></methods>\
+         </ner></global>",
+    )
+    .unwrap();
+    assert_eq!(cfg.ner.methods, vec![NerMethod::Regex]);
+}
+
+#[test]
+fn attribute_only_method_element_parses_as_its_attribute_name() {
+    // The oracle fixture writes the equals method as `<method>equals</method>` (an attribute,
+    // not text). Go's encoding/xml and quick-xml both surface that element's single empty
+    // attribute name as its string value, so it parses to `Equals` in both — the spelling is
+    // preserved verbatim in the fixture precisely because this quirk keeps parity.
+    let cfg = parse(
+        "<global><cross-domain-links>\
+         <methods><method>expression</method><method>equals</method><method>llm</method></methods>\
+         </cross-domain-links></global>",
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.cross_domain_links.expect("block present").methods,
+        vec![LinkMethod::Expression, LinkMethod::Equals, LinkMethod::Llm]
+    );
+}
+
+#[test]
+fn absent_attributes_parse_to_empty_defaults() {
+    // D15 revision 4: <entity> sits inside an <entities> wrapper; its attributes and
+    // synonyms sit in their own wrappers.
+    let cfg = parse(
+        "<global><entities>\
+         <entity name=\"A\"><attributes>\
+         <attribute name=\"x\" required=\"true\"></attribute>\
+         </attributes></entity>\
+         </entities></global>",
+    )
+    .unwrap();
+    let entity = &cfg.entities[0];
+    // Absent @id stays "" (3.1b: "global entity id is required").
+    assert!(entity.id.is_empty());
+    assert_eq!(entity.name, "A");
+    assert!(entity.description.is_empty());
+    let attribute = &entity.attributes[0];
+    // Absent @type → the tolerant enum's Default (Unknown); absent @target stays "".
+    assert_eq!(attribute.attr_type, AttributeType::default());
+    assert!(attribute.required);
+    assert!(attribute.target.is_empty());
+}
+
+#[test]
+fn regex_rules_parse_without_compiling() {
+    // Parse-only (3.1b compiles per D5): the pattern stays text; even an invalid pattern parses.
+    let cfg = parse(
+        "<global><extraction>\
+         <regex-rules><regex id=\"email\" entity=\"email\" pattern=\"[unclosed\"\
+         confidence=\"0.9\"></regex></regex-rules>\
+         </extraction></global>",
+    )
+    .unwrap();
+    assert_eq!(cfg.extraction.regex_rules.len(), 1);
+    let rule = &cfg.extraction.regex_rules[0];
+    assert_eq!(rule.id, "email");
+    assert_eq!(rule.entity, "email");
+    assert_eq!(rule.pattern, "[unclosed");
+    assert!((rule.confidence - 0.9).abs() < f64::EPSILON);
+}
+
+#[test]
+fn wrapped_attribute_and_synonym_blocks_parse_independently() {
+    // D15 revision 4: <attribute> and <synonym> items live in separate wrappers, so their
+    // relative order inside the entity no longer matters — each list is read from its own
+    // container. Both orders below parse to the same values.
+    let doc_a = "<global><entities>\
+         <entity id=\"a\" name=\"A\">\
+           <attributes><attribute name=\"x\" type=\"string\"></attribute></attributes>\
+           <synonyms><synonym>s1</synonym><synonym>s2</synonym></synonyms>\
+         </entity></entities></global>";
+    let doc_b = "<global><entities>\
+         <entity id=\"a\" name=\"A\">\
+           <synonyms><synonym>s1</synonym><synonym>s2</synonym></synonyms>\
+           <attributes><attribute name=\"x\" type=\"string\"></attribute></attributes>\
+         </entity></entities></global>";
+
+    for doc in [doc_a, doc_b] {
+        let entity = &parse(doc).unwrap().entities[0];
+        assert_eq!(entity.attributes.len(), 1);
+        assert_eq!(entity.attributes[0].attr_type, AttributeType::String);
+        assert_eq!(entity.synonyms, vec!["s1".to_string(), "s2".to_string()]);
+    }
+}
+
+#[test]
+fn relation_children_parse_with_attributes() {
+    // D15 revision 4: <relation> sits inside a <relations> wrapper; its <attribute> items
+    // keep the oracle's attribute-only shape inside an <attributes> wrapper.
+    let cfg = parse(
+        "<global><relations>\
+         <relation source=\"a\" predicate=\"p\" target=\"b\" description=\"d\">\
+           <attributes><attribute name=\"since\" type=\"date\"/></attributes>\
+         </relation></relations></global>",
+    )
+    .unwrap();
+    let relation = &cfg.relations[0];
+    assert_eq!(relation.source, "a");
+    assert_eq!(relation.predicate, "p");
+    assert_eq!(relation.target, "b");
+    assert_eq!(relation.description, "d");
+    assert_eq!(relation.attributes.len(), 1);
+    assert_eq!(relation.attributes[0].name, "since");
+    assert_eq!(relation.attributes[0].attr_type, "date");
+}
+
+#[test]
+fn attribute_types_match_known_words_and_tolerate_others() {
+    // Tolerant enum via pure derive + #[serde(other)]: known words (case-insensitive per the
+    // rename_all-lowercase identifiers are exact — the oracle ships lowercase words, so match
+    // the fixture's spelling) map to variants; anything else lands in Unknown.
+    let cfg = parse(
+        "<global><entities>\
+         <entity id=\"a\" name=\"A\"><attributes>\
+           <attribute name=\"x\" type=\"date\"></attribute>\
+           <attribute name=\"y\" type=\"ref\" target=\"b\"></attribute>\
+           <attribute name=\"z\" type=\"weird\"></attribute>\
+         </attributes></entity>\
+         </entities></global>",
+    )
+    .unwrap();
+    let attributes = &cfg.entities[0].attributes;
+    assert_eq!(attributes[0].attr_type, AttributeType::Date);
+    assert_eq!(attributes[1].attr_type, AttributeType::Ref);
+    assert!(!attributes[1].target.is_empty());
+    assert_eq!(attributes[2].attr_type, AttributeType::Unknown);
 }

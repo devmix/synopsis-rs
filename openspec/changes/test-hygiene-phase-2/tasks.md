@@ -112,7 +112,7 @@ extend).
 
 **Acceptance.** Shared per-task acceptance for crate `mcp`.
 
-- [ ] 2.6 Extract `vectors/src/usearch/mod.rs` tests → `vectors/tests/usearch_units.rs`
+- [x] 2.6 Extract `vectors/src/usearch/mod.rs` tests → `vectors/tests/usearch_units.rs`
 
 **Goal.** Shrink `crates/vectors/src/usearch/mod.rs` (1,258 lines; ~408 inline
 test lines) by relocating its movable tests to
