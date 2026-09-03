@@ -67,7 +67,7 @@ Source refs are `//! Oracle mapping/reference: \`../synopsis/internal/
 **Acceptance.** `rg '\.\./synopsis' crates/embedding/src/ crates/embedding/
 Cargo.toml` → **0**. `cargo fmt/clippy/test` green.
 
-- [ ] 1.4 Clean `graph` crate (7 files, 10 refs)
+- [x] 1.4 Clean `graph` crate (7 files, 10 refs)
 
 **Scope.** `crates/graph/src/{cel,graph,lib,linker,metrics,prompts,traverser}.rs`
 (`cel.rs`, `graph.rs`, `prompts.rs` have 2 refs each). Module-level
