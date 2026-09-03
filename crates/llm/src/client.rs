@@ -18,7 +18,7 @@
 //! sleeper is injectable (the test-only `with_sleeper` seam) so no test ever
 //! sleeps for real.
 //!
-//! Deliberate deviations from the oracle (`../synopsis/internal/llm/client.go`),
+//! Deliberate deviations from the oracle,
 //! recorded per the migration principles:
 //! - message `content` is a plain string, not the oracle's `[{type, text}]`
 //!   parts array — for text-only prompts the wire form is equivalent, and a

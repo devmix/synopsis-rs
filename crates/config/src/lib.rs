@@ -2,7 +2,7 @@
 //!
 //! This crate ports the Go oracle's `internal/config` package: YAML presets
 //! ([`preset`]), the external ONNX model registry (`onnx.yaml`, task 2.1) and
-//! the XML ontologies (task 3.x). Oracle mapping: `../synopsis/internal/config`.
+//! the XML ontologies (task 3.x).
 //!
 //! The main entry point is [`load`](preset::load), which parses a YAML config
 //! file into a typed [`Config`] with no defaults applied and no validation —
