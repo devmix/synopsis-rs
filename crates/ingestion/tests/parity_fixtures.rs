@@ -44,7 +44,7 @@ use ingestion::sources::{
     JsonSource, MarkdownSource, MediawikiSource, UnstructuredSource, WebpageSource,
 };
 use ingestion::{Document, DocumentChunk, IngestionError, ParseResult, Source};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// A temporary source tree that removes itself on drop (the `pub(crate)`
 /// helper under `src/parsers` is not visible from integration tests).
@@ -129,15 +129,15 @@ fn source_files(result: &ParseResult) -> Vec<String> {
         .collect()
 }
 
-/// A string extra of the metadata, if present.
-fn extra_str<'a>(metadata: &'a ingestion::DocumentMetadata, key: &str) -> Option<&'a str> {
-    metadata.extra.get(key).and_then(Value::as_str)
+/// A string key of a metadata bag (a document's `extra` or a chunk's own
+/// bag), if present.
+fn extra_str<'a>(metadata: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    metadata.get(key).and_then(Value::as_str)
 }
 
-/// A string-array extra of the metadata (empty when absent).
-fn extra_strings(metadata: &ingestion::DocumentMetadata, key: &str) -> Vec<String> {
+/// A string-array key of a metadata bag (empty when absent).
+fn extra_strings(metadata: &Map<String, Value>, key: &str) -> Vec<String> {
     metadata
-        .extra
         .get(key)
         .and_then(Value::as_array)
         .map(|values| {
@@ -359,11 +359,11 @@ fn json_pipeline_matches_oracle() {
         assert_eq!(doc.metadata.source_type, JsonSource::SOURCE_TYPE);
     }
     assert_eq!(
-        extra_str(&document(&result, "data.json").metadata, "structure"),
+        extra_str(&document(&result, "data.json").metadata.extra, "structure"),
         Some("object")
     );
     assert_eq!(
-        extra_str(&document(&result, "items.json").metadata, "structure"),
+        extra_str(&document(&result, "items.json").metadata.extra, "structure"),
         Some("array")
     );
 
@@ -440,46 +440,52 @@ fn mediawiki_pipeline_matches_oracle() {
         gateway.content,
         "== API Gateway ==\nA service mesh component."
     );
-    assert_eq!(extra_str(&gateway.metadata, "title"), Some("API Gateway"));
     assert_eq!(
-        extra_str(&gateway.metadata, "url"),
+        extra_str(&gateway.metadata.extra, "title"),
+        Some("API Gateway")
+    );
+    assert_eq!(
+        extra_str(&gateway.metadata.extra, "url"),
         Some("https://example.com/API_Gateway")
     );
     // Oracle TestMediawikiParser_ExtractPathComponents "full path": the
     // by-type layer yields space / wiki type / entity.
-    assert_eq!(extra_str(&gateway.metadata, "space"), Some("space"));
-    assert_eq!(extra_str(&gateway.metadata, "wiki_type"), Some("wiki-type"));
+    assert_eq!(extra_str(&gateway.metadata.extra, "space"), Some("space"));
+    assert_eq!(
+        extra_str(&gateway.metadata.extra, "wiki_type"),
+        Some("wiki-type")
+    );
     // Path layer first, the page JSON field as fallback (module docs).
     assert_eq!(
-        extra_str(&gateway.metadata, "entity_type"),
+        extra_str(&gateway.metadata.extra, "entity_type"),
         Some("services")
     );
     assert_eq!(
-        extra_strings(&gateway.metadata, "page_links"),
+        extra_strings(&gateway.metadata.extra, "page_links"),
         vec!["Service Catalog".to_owned()]
     );
     assert_eq!(
-        extra_strings(&gateway.metadata, "image_paths"),
+        extra_strings(&gateway.metadata.extra, "image_paths"),
         vec!["gateway.png".to_owned()]
     );
     assert_eq!(
-        extra_strings(&gateway.metadata, "categories"),
+        extra_strings(&gateway.metadata.extra, "categories"),
         vec!["Services".to_owned(), "Networking".to_owned()]
     );
     // Oracle TestMediawikiParser_GraphJSON: relations keyed by title.
     assert_eq!(
-        extra_strings(&gateway.metadata, "graph_relations"),
+        extra_strings(&gateway.metadata.extra, "graph_relations"),
         vec!["Service Catalog".to_owned(), "Load Balancer".to_owned()]
     );
 
     let database = document(&result, "space/wiki-type/by-type/systems/database.json");
     assert_eq!(database.content, "A data storage system.");
     assert_eq!(
-        extra_str(&database.metadata, "entity_type"),
+        extra_str(&database.metadata.extra, "entity_type"),
         Some("systems")
     );
     assert_eq!(
-        extra_strings(&database.metadata, "graph_relations"),
+        extra_strings(&database.metadata.extra, "graph_relations"),
         vec!["Storage".to_owned()]
     );
 
@@ -606,7 +612,7 @@ fn unstructured_pipeline_matches_oracle() {
         // Oracle TestUnstructuredParser_ImageAssociation: the image files
         // of the same directory, sorted.
         assert_eq!(
-            extra_strings(&doc.metadata, "image_paths"),
+            extra_strings(&doc.metadata.extra, "image_paths"),
             vec!["banner.png".to_owned(), "logo.svg".to_owned()]
         );
     }

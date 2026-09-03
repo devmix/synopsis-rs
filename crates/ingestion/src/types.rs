@@ -3,9 +3,10 @@
 //! Oracle reference: `../synopsis/internal/ingestion/types.go`
 //! (Document/ParseResult/Parser), `chunkers/chunker.go` (DocumentChunk/Chunker)
 //! and `sources/source.go` (Source). Re-architected for Rust: the oracle's
-//! free-form `map[string]interface{}` metadata becomes the typed
-//! [`DocumentMetadata`] with an extension bag, and the chunk carries no NER
-//! result (design D2).
+//! free-form `map[string]interface{}` document metadata becomes the typed
+//! [`DocumentMetadata`] with an extension bag; the chunk keeps a free-form
+//! [`Map<String, Value>`] bag of its own (oracle `DocumentChunk.Metadata`),
+//! and carries no NER result (design D2).
 
 use std::path::{Path, PathBuf};
 
@@ -42,14 +43,15 @@ pub struct ParseResult {
     pub errors: Vec<IngestionError>,
 }
 
-/// Typed metadata attached to a [`Document`] and copied (with chunk-specific
-/// extras) into every [`DocumentChunk`] derived from it.
+/// Typed metadata attached to a [`Document`].
 ///
 /// The oracle stored a free-form `map[string]interface{}`. Re-design (design
 /// D1): the fields every parser fills are typed here, and the format-specific
-/// keys the oracle used map values for (`section_title`, `heading_level`,
-/// `breadcrumb`, `image_paths`, `structure`, `title`, `url`,
-/// `graph_relations`, …) live in [`extra`](Self::extra).
+/// keys the oracle used map values for (`structure`, `title`, `url`,
+/// `graph_relations`, …) live in [`extra`](Self::extra). The chunk-specific
+/// keys (`section_title`, `heading_level`, `breadcrumb`, `image_paths`) are
+/// produced by the chunkers and live in each chunk's own
+/// [`metadata`](DocumentChunk::metadata) bag.
 ///
 /// `extra` is a [`serde_json::Map`], i.e. a `BTreeMap`-backed key-sorted map
 /// (unless serde_json is built with `preserve_order`): deterministic ordering
@@ -86,7 +88,7 @@ pub struct DocumentMetadata {
 /// violated this by trimming sections and prefixing breadcrumbs/file names
 /// into `Text` while keeping offsets pointing at the original span; that is a
 /// deliberate fix — decorative context lives in the
-/// [`metadata`](Self::metadata) extras, never in `text`.
+/// [`metadata`](Self::metadata) bag, never in `text`.
 ///
 /// [`search_text`](Self::search_text) is the **only synthetic field** on the
 /// chunk: it may carry the section's heading breadcrumb prefixed to `text`
@@ -111,9 +113,13 @@ pub struct DocumentChunk {
     pub start_offset: usize,
     /// Byte offset one past the chunk's last byte in the original content.
     pub end_offset: usize,
-    /// Chunk metadata: the originating document's metadata plus chunk-specific
-    /// extras (`section_title`, `breadcrumb`, …).
-    pub metadata: DocumentMetadata,
+    /// The chunk's own free-form metadata bag (oracle
+    /// `DocumentChunk.Metadata`): the originating document's
+    /// [`extra`](DocumentMetadata::extra) keys plus the chunk-specific keys
+    /// the chunker adds (`section_title`, `heading_level`, `breadcrumb`,
+    /// `image_paths`, …). The document's typed fields are not part of the
+    /// bag — they stay on [`DocumentMetadata`].
+    pub metadata: Map<String, Value>,
 }
 
 impl DocumentChunk {
@@ -158,14 +164,16 @@ pub trait Parser {
 ///
 /// Chunking configuration (strategy, max/overlap sizes) is injected at
 /// construction time; [`chunk`](Self::chunk) receives only the content and
-/// the document's metadata (which is copied into each produced chunk).
+/// the document's metadata, from which each produced chunk builds its own
+/// [`metadata`](DocumentChunk::metadata) bag.
 ///
 /// Object-safe: see [`Parser`].
 pub trait Chunker {
     /// Splits `content` into ordered chunks.
     ///
-    /// `metadata` is the originating document's metadata; each returned chunk
-    /// carries a clone of it plus chunk-specific extras.
+    /// `metadata` is the originating document's metadata; each returned
+    /// chunk's bag is built from the document's `extra` keys plus the
+    /// chunker's chunk-specific keys.
     fn chunk(
         &self,
         content: &str,
@@ -216,7 +224,9 @@ mod tests {
                 sequence_num: 0,
                 start_offset: 0,
                 end_offset: content.len(),
-                metadata: metadata.clone(),
+                // The stub adds no chunk-specific keys: the bag is the
+                // document's `extra` as-is.
+                metadata: metadata.extra.clone(),
                 ..Default::default()
             }])
         }
@@ -317,9 +327,18 @@ mod tests {
             sequence_num: 0,
             start_offset: 2,
             end_offset: 7,
-            metadata: document.metadata,
+            // The chunk's own bag: the document's `extra` keys, no typed
+            // fields.
+            metadata: document.metadata.extra.clone(),
         };
         assert_eq!(chunk.source_slice(&document.content), "Title");
+        assert_eq!(
+            chunk
+                .metadata
+                .get("image_paths")
+                .map(|v| v.as_array().map(|a| a.len())),
+            Some(Some(2))
+        );
     }
 
     #[test]

@@ -593,7 +593,9 @@ mod tests {
                 &document.content[chunk.start_offset..chunk.end_offset],
                 chunk.text
             );
-            assert_eq!(chunk.metadata.source_type, MarkdownSource::SOURCE_TYPE);
+            // The chunk's bag carries the section keys (the typed document
+            // fields stay on the document).
+            assert!(chunk.metadata.get("section_title").is_some());
         }
     }
 
@@ -631,7 +633,11 @@ mod tests {
                 &document.content[chunk.start_offset..chunk.end_offset],
                 chunk.text
             );
-            assert_eq!(chunk.metadata.source_type, JsonSource::SOURCE_TYPE);
+            // The chunk's bag carries the JSON chunker's keys.
+            assert_eq!(
+                chunk.metadata.get("object_index"),
+                Some(&serde_json::Value::from(index as u64))
+            );
         }
     }
 
@@ -682,14 +688,15 @@ mod tests {
                 &document.content[chunk.start_offset..chunk.end_offset],
                 chunk.text
             );
-            assert_eq!(chunk.metadata.source_type, MediawikiSource::SOURCE_TYPE);
+            // The chunk's bag carries the section keys (the typed document
+            // fields stay on the document).
+            assert!(chunk.metadata.get("section_title").is_some());
         }
         assert_eq!(
             chunks
                 .iter()
                 .map(|c| {
                     c.metadata
-                        .extra
                         .get("section_title")
                         .and_then(serde_json::Value::as_str)
                 })
@@ -747,14 +754,15 @@ mod tests {
                 &html_doc.content[chunk.start_offset..chunk.end_offset],
                 chunk.text
             );
-            assert_eq!(chunk.metadata.source_type, WebpageSource::SOURCE_TYPE);
+            // The chunk's bag carries the section keys (the typed document
+            // fields stay on the document).
+            assert!(chunk.metadata.get("section_title").is_some());
         }
         assert_eq!(
             chunks
                 .iter()
                 .map(|c| {
                     c.metadata
-                        .extra
                         .get("section_title")
                         .and_then(serde_json::Value::as_str)
                 })
@@ -818,14 +826,15 @@ mod tests {
                 &md_doc.content[chunk.start_offset..chunk.end_offset],
                 chunk.text
             );
-            assert_eq!(chunk.metadata.source_type, UnstructuredSource::SOURCE_TYPE);
+            // The chunk's bag carries the section keys (the typed document
+            // fields stay on the document).
+            assert!(chunk.metadata.get("section_title").is_some());
         }
         assert_eq!(
             chunks
                 .iter()
                 .map(|c| {
                     c.metadata
-                        .extra
                         .get("section_title")
                         .and_then(serde_json::Value::as_str)
                 })
@@ -844,7 +853,11 @@ mod tests {
                 &json_doc.content[chunk.start_offset..chunk.end_offset],
                 chunk.text
             );
-            assert_eq!(chunk.metadata.source_type, JsonSource::SOURCE_TYPE);
+            // The chunk's bag carries the JSON chunker's keys.
+            assert_eq!(
+                chunk.metadata.get("object_index"),
+                Some(&serde_json::Value::from(index as u64))
+            );
         }
     }
 

@@ -121,7 +121,9 @@ impl Chunker for TestSource {
                     sequence_num: chunks.len(),
                     start_offset: offset,
                     end_offset: offset + line.len(),
-                    metadata: metadata.clone(),
+                    // No chunk-specific keys in this test source: the bag is
+                    // the document's `extra` as-is.
+                    metadata: metadata.extra.clone(),
                 });
             }
             offset += line.len() + 1;
@@ -210,7 +212,9 @@ impl Chunker for BreadCrumbSource {
             sequence_num: 0,
             start_offset: 0,
             end_offset: content.len(),
-            metadata: metadata.clone(),
+            // No chunk-specific keys in this test source: the bag is the
+            // document's `extra` as-is.
+            metadata: metadata.extra.clone(),
         }])
     }
 }

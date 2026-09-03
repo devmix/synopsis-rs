@@ -270,7 +270,9 @@ mod tests {
                         sequence_num: seq,
                         start_offset: start,
                         end_offset: end,
-                        metadata: metadata.clone(),
+                        // No chunk-specific keys in this test source: the bag
+                        // is the document's `extra` as-is.
+                        metadata: metadata.extra.clone(),
                     });
                 }
                 start = end;

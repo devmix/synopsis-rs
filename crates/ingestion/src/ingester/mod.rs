@@ -413,7 +413,7 @@ impl<'a> Ingester<'a> {
         }
         chunks
             .iter()
-            .map(|chunk| ner.extract_entities(&chunk.text, &chunk.metadata.extra))
+            .map(|chunk| ner.extract_entities(&chunk.text, &chunk.metadata))
             .collect()
     }
 

@@ -88,7 +88,7 @@ impl JsonChunker {
         index: usize,
         span: (usize, usize),
         content: &str,
-        metadata: &DocumentMetadata,
+        metadata: &Map<String, Value>,
         chunks: &mut Vec<DocumentChunk>,
     ) {
         if self.combine_fields {
@@ -144,18 +144,18 @@ impl Chunker for JsonChunker {
                     // Non-object elements carry no fields to index (oracle:
                     // unparseable objects are skipped).
                     if let (Value::Object(map), Some(span)) = (item, spans.get(i)) {
-                        self.chunk_object(map, i, *span, content, metadata, &mut chunks);
+                        self.chunk_object(map, i, *span, content, &metadata.extra, &mut chunks);
                     }
                 }
             }
             Value::Object(map) => {
                 let start = first_value_start(content);
                 let end = skip_value(content, start).unwrap_or(content.len());
-                self.chunk_object(map, 0, (start, end), content, metadata, &mut chunks);
+                self.chunk_object(map, 0, (start, end), content, &metadata.extra, &mut chunks);
             }
             // Scalar (string / number / bool / null): the whole content is
             // the chunk (see the module docs).
-            _ => push_chunk(&mut chunks, content, 0, content.len(), metadata),
+            _ => push_chunk(&mut chunks, content, 0, content.len(), &metadata.extra),
         }
         Ok(chunks)
     }
@@ -193,25 +193,25 @@ fn is_text_value(value: &Value) -> bool {
     value.as_str().is_some_and(|s| !s.is_empty())
 }
 
-/// The document metadata plus the chunk-specific extras: `object_index`
-/// always, `field_name` in per-field mode, `text_fields` in combined mode.
+/// The chunk's metadata bag: the document's `extra` keys plus the
+/// chunk-specific keys — `object_index` always, `field_name` in per-field
+/// mode, `text_fields` in combined mode.
 fn with_extras(
-    metadata: &DocumentMetadata,
+    metadata: &Map<String, Value>,
     object_index: usize,
     field_name: Option<&str>,
     text_fields: Option<&[String]>,
-) -> DocumentMetadata {
+) -> Map<String, Value> {
     let mut meta = metadata.clone();
-    meta.extra
-        .insert("object_index".to_owned(), Value::from(object_index as u64));
+    meta.insert("object_index".to_owned(), Value::from(object_index as u64));
     if let Some(field_name) = field_name {
-        meta.extra.insert(
+        meta.insert(
             "field_name".to_owned(),
             Value::String(field_name.to_owned()),
         );
     }
     if let Some(fields) = text_fields {
-        meta.extra.insert(
+        meta.insert(
             "text_fields".to_owned(),
             Value::Array(fields.iter().map(|f| Value::String(f.clone())).collect()),
         );
@@ -389,7 +389,7 @@ fn push_chunk(
     content: &str,
     start: usize,
     end: usize,
-    metadata: &DocumentMetadata,
+    metadata: &Map<String, Value>,
 ) {
     let text = content[start..end].to_owned();
     chunks.push(DocumentChunk {
@@ -447,7 +447,7 @@ mod tests {
     }
 
     fn extra<'a>(chunk: &'a DocumentChunk, key: &str) -> Option<&'a Value> {
-        chunk.metadata.extra.get(key)
+        chunk.metadata.get(key)
     }
 
     fn extra_str(chunk: &DocumentChunk, key: &str) -> Option<String> {
@@ -742,9 +742,10 @@ mod tests {
     }
 
     #[test]
-    fn document_metadata_is_copied_into_chunks() {
-        // The originating document metadata (including the parser's
-        // "structure" extra) rides along into every chunk.
+    fn document_extra_keys_ride_along_in_the_chunk_bag() {
+        // The document's `extra` keys (the parser's "structure" here) ride
+        // along into every chunk's bag alongside the chunk-specific keys
+        // (design D2); the document's typed fields stay on the document.
         let mut meta = DocumentMetadata {
             source_type: "json".to_owned(),
             source_file: "data/items.json".to_owned(),
@@ -755,8 +756,8 @@ mod tests {
         let content = "[{\"title\": \"A\"}]";
         let chunks = combined(&["title"]).chunk(content, &meta).unwrap();
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].metadata.source_file, "data/items.json");
-        assert_eq!(chunks[0].metadata.source_type, "json");
         assert_eq!(extra_str(&chunks[0], "structure"), Some("array".into()));
+        assert_eq!(extra_u64(&chunks[0], "object_index"), Some(0));
+        assert_eq!(extra_strings(&chunks[0], "text_fields"), vec!["title"]);
     }
 }

@@ -33,7 +33,7 @@
 //! consolidation task unifies the two chunkers.
 
 use config::preset::{ChunkingStrategy, MarkdownChunkerConfig};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::error::IngestionError;
 use crate::types::{Chunker, DocumentChunk, DocumentMetadata};
@@ -73,14 +73,14 @@ impl MediawikiChunker {
         if headings.is_empty() {
             // No headings: the whole document is one chunk (markdown
             // chunker convention).
-            push_chunk(&mut chunks, content, 0, content.len(), metadata);
+            push_chunk(&mut chunks, content, 0, content.len(), &metadata.extra);
             return chunks;
         }
 
         // Preamble: text before the first heading (kept only when non-blank).
         let first = headings[0].pos;
         if first > 0 && !content[..first].trim().is_empty() {
-            push_chunk(&mut chunks, content, 0, first, metadata);
+            push_chunk(&mut chunks, content, 0, first, &metadata.extra);
         }
 
         for (idx, heading) in headings.iter().enumerate() {
@@ -91,17 +91,15 @@ impl MediawikiChunker {
                 continue;
             }
 
-            let mut meta = metadata.clone();
-            meta.extra.insert(
+            let mut meta = metadata.extra.clone();
+            meta.insert(
                 "section_title".to_owned(),
                 Value::String(heading.text.clone()),
             );
-            meta.extra
-                .insert("heading_level".to_owned(), Value::from(heading.level));
+            meta.insert("heading_level".to_owned(), Value::from(heading.level));
             let breadcrumb = build_breadcrumbs(&headings, idx);
             if !breadcrumb.is_empty() {
-                meta.extra
-                    .insert("breadcrumb".to_owned(), Value::String(breadcrumb));
+                meta.insert("breadcrumb".to_owned(), Value::String(breadcrumb));
             }
 
             // `fixed_spans` yields a single (0, len) span for sections that
@@ -123,7 +121,7 @@ impl MediawikiChunker {
     fn chunk_fixed(&self, content: &str, metadata: &DocumentMetadata) -> Vec<DocumentChunk> {
         let mut chunks = Vec::new();
         for (start, end) in fixed_spans(content, self.max_chunk_size, self.overlap_size) {
-            push_chunk(&mut chunks, content, start, end, metadata);
+            push_chunk(&mut chunks, content, start, end, &metadata.extra);
         }
         chunks
     }
@@ -308,7 +306,7 @@ fn push_chunk(
     content: &str,
     start: usize,
     end: usize,
-    metadata: &DocumentMetadata,
+    metadata: &Map<String, Value>,
 ) {
     let text = content[start..end].to_owned();
     chunks.push(DocumentChunk {
@@ -354,7 +352,6 @@ mod tests {
             .iter()
             .map(|c| {
                 c.metadata
-                    .extra
                     .get("section_title")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
@@ -364,11 +361,7 @@ mod tests {
     }
 
     fn breadcrumb(chunk: &DocumentChunk) -> Option<&str> {
-        chunk
-            .metadata
-            .extra
-            .get("breadcrumb")
-            .and_then(Value::as_str)
+        chunk.metadata.get("breadcrumb").and_then(Value::as_str)
     }
 
     /// Crate invariant: every chunk is a pure byte-offset slice of `content`,
@@ -420,7 +413,6 @@ mod tests {
         assert_eq!(
             chunks[1]
                 .metadata
-                .extra
                 .get("heading_level")
                 .and_then(Value::as_u64),
             Some(3)
@@ -464,8 +456,14 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_invariant(content, &chunks);
         assert_eq!(chunks[0].text, "Intro text before any section.\n\n");
-        assert!(chunks[0].metadata.extra.get("section_title").is_none());
-        assert_eq!(chunks[0].metadata.source_file, "space/page.json");
+        // The preamble chunk's bag carries no section keys, and the document
+        // has no `extra` keys of its own (the typed fields stay on the
+        // document, not in the chunk's bag).
+        assert!(
+            chunks[0].metadata.is_empty(),
+            "preamble bag: {:?}",
+            chunks[0].metadata
+        );
         assert_eq!(titles(&chunks[1..]), vec!["Section"]);
 
         let plain = "Just plain wikitext without headings.";
@@ -632,7 +630,11 @@ mod tests {
     }
 
     #[test]
-    fn document_metadata_is_copied_into_chunks() {
+    fn document_extra_keys_ride_along_in_the_chunk_bag() {
+        // The document's `extra` keys (the parser's `title`/`image_paths`
+        // here) ride along into every chunk's bag alongside the
+        // chunk-specific keys (design D2); the document's typed fields stay
+        // on the document.
         let mut meta = DocumentMetadata {
             source_type: "mediawiki".to_owned(),
             source_file: "space/page.json".to_owned(),
@@ -648,12 +650,14 @@ mod tests {
         let content = "== Sec ==\nbody";
         let chunks = chunker(1000, 100).chunk(content, &meta).unwrap();
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].metadata.source_file, "space/page.json");
-        assert_eq!(chunks[0].metadata.source_type, "mediawiki");
         assert_eq!(
-            chunks[0].metadata.extra.get("title"),
+            chunks[0].metadata.get("title"),
             Some(&Value::String("Page".to_owned()))
         );
-        assert!(chunks[0].metadata.extra.get("image_paths").is_some());
+        assert!(chunks[0].metadata.get("image_paths").is_some());
+        assert_eq!(
+            chunks[0].metadata.get("section_title"),
+            Some(&Value::String("Sec".to_owned()))
+        );
     }
 }

@@ -14,8 +14,8 @@
 //!   the source: `content[start_offset..end_offset] == text`. The oracle
 //!   trimmed sections and prefixed breadcrumbs/file names into `Text` while
 //!   keeping offsets at the original span; here the breadcrumb, section title
-//!   and file name live in the chunk [`metadata`](DocumentMetadata::extra)
-//!   (`section_title`, `breadcrumb`, `image_paths`), never in `text`.
+//!   and image paths live in the chunk [`metadata`](DocumentChunk::metadata)
+//!   bag (`section_title`, `breadcrumb`, `image_paths`), never in `text`.
 //! * **`search_text` (search-text-embedding design D1).** The chunk also
 //!   carries `search_text` — the only synthetic field — built from the
 //!   breadcrumb already computed for the metadata plus the body:
@@ -41,7 +41,7 @@
 //!   preamble chunk and left gaps at skipped header-only sections).
 
 use config::preset::{ChunkingStrategy, MarkdownChunkerConfig};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::error::IngestionError;
 use crate::types::{Chunker, DocumentChunk, DocumentMetadata};
@@ -80,17 +80,18 @@ impl MarkdownChunker {
         let mut chunks = Vec::new();
         if headings.is_empty() {
             // No headings: the whole document is one preamble chunk.
-            let mut meta = metadata.clone();
+            let mut meta = metadata.extra.clone();
             insert_image_paths(&mut meta, content);
             push_chunk(&mut chunks, content, 0, content.len(), &meta);
             return chunks;
         }
 
         // Preamble: text before the first heading (oracle keeps it only when
-        // non-blank; the file name stays in the metadata, not in the text).
+        // non-blank; the file name stays in the document metadata, not in
+        // the text).
         let first = headings[0].pos;
         if first > 0 && !content[..first].trim().is_empty() {
-            let mut meta = metadata.clone();
+            let mut meta = metadata.extra.clone();
             insert_image_paths(&mut meta, &content[..first]);
             push_chunk(&mut chunks, content, 0, first, &meta);
         }
@@ -104,17 +105,15 @@ impl MarkdownChunker {
                 continue;
             }
 
-            let mut meta = metadata.clone();
-            meta.extra.insert(
+            let mut meta = metadata.extra.clone();
+            meta.insert(
                 "section_title".to_owned(),
                 Value::String(heading.text.clone()),
             );
-            meta.extra
-                .insert("heading_level".to_owned(), Value::from(heading.level));
+            meta.insert("heading_level".to_owned(), Value::from(heading.level));
             let breadcrumb = build_breadcrumbs(&headings, idx);
             if !breadcrumb.is_empty() {
-                meta.extra
-                    .insert("breadcrumb".to_owned(), Value::String(breadcrumb));
+                meta.insert("breadcrumb".to_owned(), Value::String(breadcrumb));
             }
             // Images are extracted from the body, never from the heading line
             // (oracle `sectionBody` + `imageRe`).
@@ -142,7 +141,7 @@ impl MarkdownChunker {
     fn chunk_fixed(&self, content: &str, metadata: &DocumentMetadata) -> Vec<DocumentChunk> {
         let mut chunks = Vec::new();
         for (start, end) in fixed_spans(content, self.max_chunk_size, self.overlap_size) {
-            push_chunk(&mut chunks, content, start, end, metadata);
+            push_chunk(&mut chunks, content, start, end, &metadata.extra);
         }
         chunks
     }
@@ -260,10 +259,10 @@ fn section_body(section: &str) -> Option<&str> {
     section.split_once('\n').map(|(_, rest)| rest.trim())
 }
 
-/// Stores the `![alt](path)` image paths of `text` in the chunk metadata
-/// (oracle `imageRe` + `extractImageMetadata`). The alt text is ignored; an
-/// empty path is not an image.
-fn insert_image_paths(meta: &mut DocumentMetadata, text: &str) {
+/// Stores the `![alt](path)` image paths of `text` in the chunk's metadata
+/// bag (oracle `imageRe` + `extractImageMetadata`). The alt text is ignored;
+/// an empty path is not an image.
+fn insert_image_paths(meta: &mut Map<String, Value>, text: &str) {
     let mut paths = Vec::new();
     let mut from = 0;
     while let Some(rel) = text[from..].find("![") {
@@ -288,7 +287,7 @@ fn insert_image_paths(meta: &mut DocumentMetadata, text: &str) {
         from = start + 2 + close + 1 + 1 + paren + 1;
     }
     if !paths.is_empty() {
-        meta.extra.insert(
+        meta.insert(
             "image_paths".to_owned(),
             Value::Array(paths.into_iter().map(Value::String).collect()),
         );
@@ -334,17 +333,17 @@ fn fixed_spans(content: &str, max: usize, overlap: usize) -> Vec<(usize, usize)>
 /// `search_text` (search-text-embedding design D1) is the breadcrumb context
 /// the FTS5 index and the embedding leg operate on: `breadcrumb + "\n\n" +
 /// text` when the chunk carries a section breadcrumb (already in the
-/// metadata), or `text` otherwise (preamble / headingless). The `text` itself
-/// stays a pure source slice — the byte-offset invariant is untouched.
+/// metadata bag), or `text` otherwise (preamble / headingless). The `text`
+/// itself stays a pure source slice — the byte-offset invariant is untouched.
 fn push_chunk(
     chunks: &mut Vec<DocumentChunk>,
     content: &str,
     start: usize,
     end: usize,
-    metadata: &DocumentMetadata,
+    metadata: &Map<String, Value>,
 ) {
     let text = content[start..end].to_owned();
-    let search_text = match metadata.extra.get("breadcrumb").and_then(Value::as_str) {
+    let search_text = match metadata.get("breadcrumb").and_then(Value::as_str) {
         Some(breadcrumb) => format!("{breadcrumb}\n\n{text}"),
         None => text.clone(),
     };
@@ -398,7 +397,6 @@ mod tests {
             .iter()
             .map(|c| {
                 c.metadata
-                    .extra
                     .get("section_title")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
@@ -408,11 +406,7 @@ mod tests {
     }
 
     fn breadcrumb(chunk: &DocumentChunk) -> Option<&str> {
-        chunk
-            .metadata
-            .extra
-            .get("breadcrumb")
-            .and_then(Value::as_str)
+        chunk.metadata.get("breadcrumb").and_then(Value::as_str)
     }
 
     /// Crate invariant: every chunk is a pure byte-offset slice of `content`,
@@ -468,8 +462,19 @@ mod tests {
             vec![Some("> A\n > A.1"), Some("> A\n > A.2")]
         );
         assert_eq!(titles(&chunks), vec!["A.1", "A.2"]);
+        // The chunk's metadata bag carries the section keys under a heading
+        // hierarchy (task 1.1, criterion 2).
+        assert_eq!(
+            chunks[0].metadata["breadcrumb"],
+            Value::String("> A\n > A.1".to_owned())
+        );
+        assert_eq!(
+            chunks[0].metadata["section_title"],
+            Value::String("A.1".to_owned())
+        );
+        assert_eq!(chunks[0].metadata["heading_level"], Value::from(2));
         // The text stays a pure slice: it starts at the heading line, and the
-        // breadcrumb lives in the metadata instead of prefixing the text.
+        // breadcrumb lives in the bag instead of prefixing the text.
         assert_eq!(chunks[0].text, "## A.1\ntext under a1\n\n");
         assert_eq!(chunks[1].text, "## A.2\ntext under a2");
     }
@@ -516,7 +521,7 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_invariant(content, &chunks);
         // The preamble has no breadcrumb: search_text == text.
-        assert!(chunks[0].metadata.extra.get("breadcrumb").is_none());
+        assert!(chunks[0].metadata.get("breadcrumb").is_none());
         assert_eq!(chunks[0].search_text, chunks[0].text);
         // The sectioned chunk carries the breadcrumb context.
         assert_eq!(chunks[1].search_text, "> Section\n\n## Section\nbody");
@@ -546,7 +551,6 @@ mod tests {
         assert_eq!(
             chunks[0]
                 .metadata
-                .extra
                 .get("heading_level")
                 .and_then(Value::as_u64),
             Some(3)
@@ -595,7 +599,7 @@ mod tests {
     fn preamble_and_headingless_documents() {
         // Oracle TestMarkdownChunker_PreambleWithFileName +
         // TestMarkdownChunker_TextWithoutHeaders. The file name stays in the
-        // metadata (source_file) instead of prefixing the text.
+        // document metadata (source_file) instead of prefixing the text.
         let content = "This is intro text before any heading.\n\n## Section\nbody";
         let metadata = DocumentMetadata {
             source_file: "docs/guide.md".to_owned(),
@@ -605,8 +609,14 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_invariant(content, &chunks);
         assert_eq!(chunks[0].text, "This is intro text before any heading.\n\n");
-        assert!(chunks[0].metadata.extra.get("section_title").is_none());
-        assert_eq!(chunks[0].metadata.source_file, "docs/guide.md");
+        // The preamble chunk's bag carries no section keys, and the document
+        // has no `extra` keys of its own (the typed fields stay on the
+        // document, not in the chunk's bag).
+        assert!(
+            chunks[0].metadata.is_empty(),
+            "preamble bag: {:?}",
+            chunks[0].metadata
+        );
         assert_eq!(titles(&chunks[1..]), vec!["Section"]);
 
         let plain = "Just plain text without headers.";
@@ -760,10 +770,9 @@ mod tests {
             .unwrap();
         assert_eq!(chunks.len(), 2);
         assert_invariant(content, &chunks);
-        assert!(chunks[0].metadata.extra.get("image_paths").is_none());
+        assert!(chunks[0].metadata.get("image_paths").is_none());
         let images = chunks[1]
             .metadata
-            .extra
             .get("image_paths")
             .and_then(Value::as_array)
             .unwrap();
