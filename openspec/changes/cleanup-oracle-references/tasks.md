@@ -27,7 +27,7 @@ each task, `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
 
 ## 1
 
-- [ ] 1.1 Clean `db` crate (14 files, 14 refs)
+- [x] 1.1 Clean `db` crate (14 files, 14 refs)
 
 **Scope.** `crates/db/src/{app_kv,chunk_entity,chunk,connection,document,
 entity_link,entity,entity_source,executor,fact,fact_source,gc,lib,utils}.rs`.
