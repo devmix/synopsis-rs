@@ -28,8 +28,12 @@ NOT touched (historical audit trail).
   that is a real Rust/SQLite concept, not the Go-project migration.
 - Crate edits are comment-only → `cargo fmt/clippy/test` stay green.
 - **Acceptance pattern** (per scope): `rg -i '\.\./synopsis|oracle|Go
-  (original|code|binary|service|project)|ported|re-architected|not transcribed|
-  functional copy|\.go\b|\.tmpl' <scope>` → **0**.
+  (original|code|binary|service|project)|\bported\b|re-architected|not
+  transcribed|functional copy|\.go\b|\.tmpl' <scope>` → **0**. NOTE: `\bported\b`
+  is word-bounded on purpose — the substring `ported` inside legitimate
+  identifiers (`supported_extensions`, `UnsupportedExtension`, `reported`,
+  `supported`) is a false positive and must NOT be "fixed" by renaming public
+  API (that is a code change, out of scope).
 
 ## 1 — Crates (whole-crate scope; the narrative is in more files than just the
 path-ref files)
