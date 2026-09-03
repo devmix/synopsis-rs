@@ -56,7 +56,7 @@ and (only if needed) `crates/config/src/test_support.rs` + its re-export in
 
 **Acceptance.** Shared per-task acceptance for crate `config`.
 
-- [ ] 2.2 Extract `db/src/entity.rs` tests → `db/tests/entity.rs`
+- [x] 2.2 Extract `db/src/entity.rs` tests → `db/tests/entity.rs`
 
 **Goal.** Shrink `crates/db/src/entity.rs` (1,369 lines; ~883 inline test
 lines — 64%, majority-test) by relocating its movable tests to
