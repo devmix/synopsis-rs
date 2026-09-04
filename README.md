@@ -1,17 +1,17 @@
 # Synopsis (Rust)
 
-Rust rewrite of [Synopsis](https://github.com/devmix/synopsis) — a local RAG + knowledge-graph MCP server for personal use: ingest documents, extract entities and facts, answer questions with hybrid search over SQLite FTS5 plus an ANN index, and expose the same 12 MCP tools as the original. One local binary, no external services; sized to run on a laptop (16 GB RAM).
+A local RAG + knowledge-graph MCP server for personal use: ingest documents, extract entities and facts, answer questions with hybrid search over SQLite FTS5 plus an ANN index, and expose 12 MCP tools. One local binary, no external services; sized to run on a laptop (16 GB RAM).
 
-## Migration status
+## Status
 
-The Go original in the sibling repository `../synopsis` is the **oracle**: its behavior, tests, and contracts are the source of truth for parity throughout the migration. Current state of this repository:
+Current state of this repository:
 
 - **Done:** workspace skeleton — nine domain crates; CI with quality gates (fmt + clippy + test) and a 5-target cross-build matrix.
-- **Complete:** all modules ported and parity-checked; every change is archived under `openspec/changes/archive/`; contract specs in `openspec/specs/`.
+- **Complete:** all modules complete; every change is archived under `openspec/changes/archive/`; contract specs in `openspec/specs/`.
 
 ## Stack (frozen)
 
-Rust 1.96.0 (pinned in `rust-toolchain.toml`) · tokio + axum · rusqlite — bundled, FTS5 compiled in-tree · rmcp 3.x over Streamable HTTP for MCP (the oracle's legacy HTTP+SSE is also served — double transport, override of design D8 by human decision 2026-08-31, change `add-legacy-sse-transport`; wire contract mcp-go v0.57.0) · ONNX runtime as an external `.so`/`.dylib` (bge-m3 int8 embeddings + NER) · usearch ANN index, disk-backed and quantized (sole engine, ADR 0004). The full list with hard constraints is in [AGENTS.md](AGENTS.md).
+Rust 1.96.0 (pinned in `rust-toolchain.toml`) · tokio + axum · rusqlite — bundled, FTS5 compiled in-tree · rmcp 3.x over Streamable HTTP for MCP (the legacy HTTP+SSE is also served — double transport, override of design D8 by human decision 2026-08-31, change `add-legacy-sse-transport`; wire contract mcp-go v0.57.0) · ONNX runtime as an external `.so`/`.dylib` (bge-m3 int8 embeddings + NER) · usearch ANN index, disk-backed and quantized (sole engine, ADR 0004). The full list with hard constraints is in [AGENTS.md](AGENTS.md).
 
 ## Commands
 
@@ -27,7 +27,7 @@ Cross-build targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `
 
 ### Parity
 
-Parity was machine-checked during the migration, not reviewed line-by-line: the Go oracle's tool responses were recorded once as fixtures and compared against the Rust server — JSON diffs of `tools/list` and tool-call responses, plus p50/p95 latency gates. The transitional harness that ran those checks has now been removed; the port is complete.
+Parity was machine-checked, not reviewed line-by-line: tool responses were recorded as fixtures and compared — JSON diffs of `tools/list` and tool-call responses, plus p50/p95 latency gates. The transitional harness that ran those checks has now been removed; the implementation is complete.
 
 ## Layout
 
