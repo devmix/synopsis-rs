@@ -90,7 +90,7 @@ contract, petgraph `DiGraph` design.
 
 **Acceptance.** the pattern above over `crates/graph/src/` → **0**. Gates green.
 
-- [ ] 1.5 Clean `search` crate (~105 mentions)
+- [x] 1.5 Clean `search` crate (~105 mentions)
 
 **Scope.** all of `crates/search/src/`. Strip "Faithful port of the oracle's
 `rrf.go`", "The Go code is a reference…", Go file names → describe the
