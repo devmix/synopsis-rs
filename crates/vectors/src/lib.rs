@@ -1,6 +1,6 @@
-//! ANN index contract (trait) and the USearch engine; replaces Go vec0
-//! brute-force search. No Go counterpart - new crate per design.md D1 (tier 0: no
-//! internal dependencies; the sole engine is USearch, ADR 0004).
+//! ANN index contract (trait) and the USearch engine; replaces brute-force
+//! vector search. Tier 0 per design.md D1: no internal dependencies; the sole
+//! engine is USearch (ADR 0004).
 //!
 //! The public seam is [`VectorIndex`] (object-safe; consumers hold
 //! `Arc<dyn VectorIndex>`), [`VectorIndexConfig`] (index/query parameters) and
@@ -22,7 +22,7 @@
 //!
 //! 1. **Cascade order (call contract).** When removing chunks, the consumer
 //!    calls [`VectorIndex::delete_by_chunk_ids`] BEFORE deleting the chunk
-//!    rows in SQLite (the oracle's "vectors → chunks" order). A crash between
+//!    rows in SQLite (the "vectors → chunks" order). A crash between
 //!    the steps leaves orphaned *vectors* — visible and machine-detectable by
 //!    reconciliation — instead of live chunks with missing vectors, which
 //!    would silently degrade recall.
@@ -34,8 +34,8 @@
 //!    The ultimate repair is a full [`VectorIndex::rebuild`] from chunk text
 //!    (re-encoding done by the ingestion layer, a future change).
 //!
-//! Module [`synx`] implements the SYNX binary fixture format (`vectors.bin`), the
-//! oracle ↔ harness vector-dump contract (native-seam-spikes design D4): a streaming
+//! Module [`synx`] implements the SYNX binary fixture format (`vectors.bin`) —
+//! the vector-dump fixture contract (native-seam-spikes design D4): a streaming
 //! reader and a chunk_id-sorted writer.
 
 pub mod error;

@@ -43,9 +43,9 @@ pub fn now_rfc3339() -> Option<String> {
 }
 
 /// Formats `time` as an RFC 3339 UTC string at second precision
-/// (`2026-08-23T12:34:56Z`) — the shape of Go's `time.RFC3339` for UTC
-/// instants. Returns `None` for instants before the Unix epoch (not
-/// representable as a `SystemTime` duration).
+/// (`2026-08-23T12:34:56Z`) — the canonical RFC 3339 form for UTC instants.
+/// Returns `None` for instants before the Unix epoch (not representable as a
+/// `SystemTime` duration).
 pub fn format_rfc3339(time: SystemTime) -> Option<String> {
     let seconds = time.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
     // `Display` renders RFC 3339 with `Z` and no fractional part for
@@ -83,7 +83,7 @@ pub fn format_backup_stamp(time: SystemTime) -> String {
 /// renders as `Z`) and the SQLite `CURRENT_TIMESTAMP` layout
 /// (`"2026-08-01 12:00:00"`, interpreted as UTC, with an optional
 /// fractional part). Fractional seconds are at most 9 digits and are
-/// dropped in the output (as in the oracle's `time.Format(RFC3339)`).
+/// dropped in the output.
 /// Returns `None` for empty or unparseable inputs so the caller can skip
 /// the key instead of failing.
 pub fn normalize_to_rfc3339(value: &str) -> Option<String> {
@@ -104,7 +104,7 @@ pub fn parse_epoch_seconds(value: &str) -> Option<i64> {
 }
 
 /// Renders the offset in canonical RFC 3339 form: `Z` for a zero offset,
-/// `±HH:MM` otherwise (the oracle's `time.Format(time.RFC3339)` behavior).
+/// `±HH:MM` otherwise.
 fn render_offset(offset: Offset) -> String {
     if offset.is_zero() {
         return "Z".to_owned();
@@ -295,7 +295,7 @@ mod tests {
         }
     }
 
-    // A zero offset renders as `Z` (oracle `time.Format(RFC3339)`).
+    // A zero offset renders as `Z` (canonical RFC 3339 form).
     #[test]
     fn normalize_zero_offset_renders_z() {
         assert_eq!(

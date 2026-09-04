@@ -1,4 +1,4 @@
-//! SYNX binary fixture format (`vectors.bin`) — the oracle ↔ harness contract.
+//! SYNX binary fixture format (`vectors.bin`) — the vector-dump fixture contract.
 //!
 //! Layout (native-seam-spikes design D4, verbatim):
 //!
@@ -38,7 +38,7 @@ pub const BUF_CAPACITY: usize = 8 * 1024;
 /// so input may arrive in any order; equal ids keep their input order.
 ///
 /// The sort buffers all row data in memory; the ~4 GB target files are
-/// produced by the oracle, this writer serves fixture creation and tests.
+/// produced by the fixture writer, this writer serves fixture creation and tests.
 pub fn write<W: Write, R: AsRef<[f32]>>(
     writer: &mut W,
     dim: u32,
