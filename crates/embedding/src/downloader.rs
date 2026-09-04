@@ -5,7 +5,7 @@
 //! to a local path. It is the download primitive for the runtime-library
 //! manager (task 1.4) and the model manager (task 1.5).
 //!
-//! Behavior (design D8; re-architected, not transcribed):
+//! Behavior (design D8):
 //! - up to 3 retries with a 2 s delay between attempts;
 //! - a 10-minute end-to-end timeout per request;
 //! - a `synopsis/0.1.0` User-Agent;
@@ -15,19 +15,18 @@
 //! - progress reporting through an [`indicatif::ProgressBar`] (auto-hidden
 //!   when stdout is not a terminal);
 //! - post-download size verification against the caller-provided expected
-//!   size (improvement over the oracle, which only checked file existence);
+//!   size;
 //! - the destination file is removed on any failure, so a partial or
 //!   mismatched download is never left behind.
 //!
-//! Deliberate deviations from the oracle, both stricter:
-//! - unresolvable hosts are rejected instead of allowed (the oracle let them
-//!   through to fail at connect time; here the SSRF verdict must be
-//!   computable before a request);
+//! Design decisions:
+//! - unresolvable hosts are rejected instead of allowed (the SSRF verdict
+//!   must be computable before a request);
 //! - permanent failures (non-retryable HTTP status, size mismatch) abort
 //!   immediately instead of being retried pointlessly.
 //!
-//! Known limitation (shared with the oracle): the SSRF verdict covers the
-//! initial host only; a redirect to a private address is not re-checked.
+//! Known limitation: the SSRF verdict covers the initial host only; a
+//! redirect to a private address is not re-checked.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, ToSocketAddrs};
@@ -49,7 +48,7 @@ const DEFAULT_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// End-to-end timeout for a single request (design D8).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// User-Agent identifying the client; matches the oracle's identity.
+/// User-Agent identifying the client.
 const USER_AGENT: &str = "synopsis/0.1.0";
 
 /// Chunk size for streaming response bodies to disk.

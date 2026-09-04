@@ -10,30 +10,24 @@
 //! written only after every file has been downloaded, so a failed download
 //! never leaves the model marked as installed.
 //!
-//! Behavior is re-architected from `model-manager.go`, `model-cache.go` and
-//! `model-registry.go` (not transcribed). Deliberate
-//! deviations, all stricter than the oracle:
-//! - the registry is the `models` section of `onnx.yaml` itself
-//!   (`ModelForName` first-match semantics, entries with a blank name are
-//!   skipped like in the oracle) instead of a separate wrapper type —
-//!   ownership, not copying, is what isolates the manager from config
-//!   mutation;
+//! Design decisions:
+//! - the registry is the `models` section of `onnx.yaml` itself (first-match
+//!   lookup, entries with a blank name are skipped) instead of a separate
+//!   wrapper type — ownership, not copying, is what isolates the manager
+//!   from config mutation;
 //! - the installation check verifies that *every* configured file exists,
-//!   not only that the model directory does (the oracle could return a path
-//!   whose primary file had been deleted while the directory survived);
+//!   not only that the model directory does (the directory can survive after
+//!   its primary file has been deleted);
 //! - [`ModelCache`] is stateless: the manifest is re-read from disk on every
 //!   call instead of mirrored in an in-memory map behind a mutex. A corrupt
 //!   manifest means "nothing installed" (reinstall), consistent with
-//!   [`crate::library::LibraryManager`]; the oracle failed at cache
-//!   construction instead;
+//!   [`crate::library::LibraryManager`];
 //! - file names from the config are validated with the shared escape guard
 //!   (`safe_relative` in `crate::library`) before any download, so a hostile
-//!   `onnx.yaml` cannot write outside the models directory (the oracle
-//!   joined names verbatim).
+//!   `onnx.yaml` cannot write outside the models directory.
 //!
-//! Known limitation (deviation from the oracle): `ModelFile::checksum` stays
-//! in the config schema but is not verified here — the oracle verifies a
-//! `sha256:` checksum when present, but no shipped `onnx.yaml` sets one, and
+//! Known limitation: `ModelFile::checksum` stays in the config schema but is
+//! not verified here — no shipped `onnx.yaml` sets a `sha256:` checksum, and
 //! the size verification (design D8) is the active integrity check. Adding
 //! checksum verification belongs to the downloader, not this module.
 
@@ -47,15 +41,14 @@ use crate::downloader::Downloader;
 use crate::error::EmbeddingError;
 use crate::library::{installed_at_now, safe_relative};
 
-/// Models directory name under the workspace directory (oracle parity).
+/// Models directory name under the workspace directory.
 const MODELS_DIR_NAME: &str = "models";
-/// Installation manifest name inside the models directory (oracle parity).
+/// Installation manifest name inside the models directory.
 const CACHE_FILE_NAME: &str = ".cache.json";
 
 /// Installation manifest entry for one model (a `.cache.json` value).
 ///
-/// Field names mirror the oracle's `InstalledModelInfo` JSON so manifests
-/// written by either implementation remain readable by the other.
+/// The field names are the on-disk manifest format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledModel {
     /// Registry name of the model.
@@ -69,8 +62,7 @@ pub struct InstalledModel {
 }
 
 /// Manifest of installed models: a JSON object mapping model name to
-/// [`InstalledModel`], stored at `<models_dir>/.cache.json` (oracle
-/// `ModelCache`).
+/// [`InstalledModel`], stored at `<models_dir>/.cache.json`.
 ///
 /// The cache is stateless — every call re-reads the manifest from disk — so
 /// no locking is needed and a missing or corrupt file simply reads as
@@ -158,7 +150,7 @@ pub struct ModelManager {
 impl ModelManager {
     /// Creates a manager rooted at `workspace_dir` (the GLOBAL workspace root,
     /// not per-dataset — storage-layout-restructure D3), reading the model
-    /// registry and the default model name from `cfg` (oracle `NewModelManager`).
+    /// registry and the default model name from `cfg`.
     #[must_use]
     pub fn new(workspace_dir: impl AsRef<Path>, cfg: &OnnxConfig) -> Self {
         Self::with_downloader(workspace_dir, cfg, Downloader::new())
@@ -191,7 +183,7 @@ impl ModelManager {
 
     /// Ensures the named model is installed and returns the path of its
     /// primary file (the first file in the model definition, or the model
-    /// directory when the model has no files) (oracle `EnsureModel`).
+    /// directory when the model has no files).
     ///
     /// An empty `name` uses the default model from the config. When the
     /// manifest marks the model installed and every configured file exists,
@@ -222,8 +214,7 @@ impl ModelManager {
     }
 
     /// True when the manifest marks `name` installed and every configured
-    /// file of the model exists on disk (oracle `IsInstalled` plus the
-    /// directory check, stricter: all files, not just the directory).
+    /// file of the model exists on disk: all files, not just the directory.
     #[must_use]
     pub fn is_installed(&self, name: &str) -> bool {
         let Some(info) = self.model(name) else {
@@ -238,8 +229,7 @@ impl ModelManager {
                 .all(|file| model_dir.join(&file.name).is_file())
     }
 
-    /// Returns the registry entry for `name`, if any (first match,
-    /// `ModelForName` semantics).
+    /// Returns the registry entry for `name`, if any (first match).
     #[must_use]
     pub fn model(&self, name: &str) -> Option<&ModelInfo> {
         self.entries.iter().find(|model| model.name == name)
@@ -257,8 +247,7 @@ impl ModelManager {
         self.models_dir.join(name)
     }
 
-    /// Path of a specific file of an installed model, if it exists
-    /// (oracle `ModelPathForFile`).
+    /// Path of a specific file of an installed model, if it exists.
     #[must_use]
     pub fn path_for_file(&self, name: &str, file_name: &str) -> Option<PathBuf> {
         let path = self.model_dir(name).join(file_name);
@@ -271,8 +260,7 @@ impl ModelManager {
         &self.models_dir
     }
 
-    /// Removes the model files and its manifest entry (oracle
-    /// `DeleteModel`).
+    /// Removes the model files and its manifest entry.
     ///
     /// # Errors
     ///
@@ -291,8 +279,8 @@ impl ModelManager {
     }
 
     /// Downloads every missing file of the model and marks it installed in
-    /// the manifest (oracle `DownloadModel`). The manifest is the last step,
-    /// so a failed download never leaves the model marked installed.
+    /// the manifest. The manifest is the last step, so a failed download
+    /// never leaves the model marked installed.
     fn download_model(&self, info: &ModelInfo) -> Result<(), EmbeddingError> {
         // Validate every file name before downloading anything, so a hostile
         // onnx.yaml cannot write outside the models directory.
@@ -310,7 +298,7 @@ impl ModelManager {
         for (file, rel) in info.files.iter().zip(rel_paths) {
             let dest = model_dir.join(rel);
             if dest.is_file() {
-                continue; // already downloaded (oracle parity)
+                continue; // already downloaded
             }
             let expected = (file.size_bytes > 0).then_some(file.size_bytes as u64);
             self.downloader.download(&file.url, &dest, expected)?;
@@ -324,7 +312,7 @@ impl ModelManager {
     }
 
     /// Path of the primary model file: the first file in the definition, or
-    /// the model directory when the model has no files (oracle parity).
+    /// the model directory when the model has no files.
     fn primary_path(&self, info: &ModelInfo) -> PathBuf {
         match info.files.first() {
             Some(file) => self.model_dir(&info.name).join(&file.name),
@@ -591,7 +579,7 @@ mod tests {
         );
         assert_eq!(server.request_count(), 3, "one request per file");
         assert!(manager.is_installed("bge-m3-int8"));
-        // Manifest written with the oracle's field names.
+        // Manifest written with the documented field names.
         let manifest: BTreeMap<String, InstalledModel> = serde_json::from_slice(
             &std::fs::read(models_dir_of(&dir).join(CACHE_FILE_NAME)).unwrap(),
         )
@@ -862,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_manifest_uses_oracle_field_names() {
+    fn cache_manifest_uses_documented_field_names() {
         let dir = temp_dir("cache-shape");
         let cache = ModelCache::new(&dir);
         cache

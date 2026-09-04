@@ -1,8 +1,5 @@
 //! Embedding pipeline: ONNX Runtime lifecycle, model and library management,
-//! tokenization, in-memory caching, and the bge-m3 int8 embedding provider.
-//!
-//! Per the migration principle the Go oracle is a reference for behavior and
-//! contracts only — this crate is re-architected for Rust, not transcribed
+//! tokenization, in-memory caching, and the bge-m3 int8 embedding provider
 //! (see design decisions D1–D10).
 //!
 //! The entry point is the factory [`new_onnx_provider`]: it ensures the ONNX
@@ -40,15 +37,14 @@ use std::sync::Arc;
 use config::onnx::OnnxConfig;
 use config::preset::LocalEmbedding;
 
-/// Vector dimension used when the config declares none (oracle fallback:
-/// 1024, the BGE-M3 default).
+/// Vector dimension used when the config declares none (fallback: 1024, the
+/// BGE-M3 default).
 const DEFAULT_VECTOR_DIM: usize = 1024;
 
-/// Tokenizer file name shipped alongside model files (oracle parity).
+/// Tokenizer file name shipped alongside model files.
 const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 
-/// Builds the ONNX embedding provider from configuration (oracle
-/// `NewONNXProvider`, re-architected — not transcribed).
+/// Builds the ONNX embedding provider from configuration.
 ///
 /// `workspace_dir` is the GLOBAL workspace root (`PathsConfig::workspace_dir`):
 /// the models and the ONNX Runtime are shared across datasets
@@ -65,9 +61,9 @@ const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 /// 5. [`Tokenizer::from_file`] + [`EmbeddingCache`] + [`OnnxProvider::new`] —
 ///    assemble the shareable provider.
 ///
-/// `cfg.model_path` (when non-empty) overrides registry resolution, mirroring
-/// the oracle: the file is used as-is and the tokenizer is looked for next to
-/// it unless `cfg.tokenizer_path` is set. Otherwise the model is resolved from
+/// `cfg.model_path` (when non-empty) overrides registry resolution: the file
+/// is used as-is and the tokenizer is looked for next to it unless
+/// `cfg.tokenizer_path` is set. Otherwise the model is resolved from
 /// the `onnx.yaml` registry by `cfg.model_name` (empty name → the registry
 /// default) and downloaded through [`ModelManager::ensure_model`] when not
 /// installed yet.
@@ -154,13 +150,13 @@ fn resolve_model(
     }
 }
 
-/// Explicit `model_path` override (oracle `NewONNXProvider` semantics): the
-/// file is used as-is — no registry lookup, no download — and the tokenizer
+/// Explicit `model_path` override: the file is used as-is — no registry
+/// lookup, no download — and the tokenizer
 /// is looked for next to it unless `cfg.tokenizer_path` is set.
 fn resolve_explicit_path(cfg: &LocalEmbedding) -> Result<ResolvedModel, EmbeddingError> {
     let path = PathBuf::from(&cfg.model_path);
     let name = if cfg.model_name.is_empty() {
-        // The oracle's label fallback: an unnamed explicit model is just
+        // Label fallback: an unnamed explicit model is just
         // "default" for the cache key.
         "default".to_string()
     } else {
@@ -236,7 +232,7 @@ fn resolve_from_registry(
 }
 
 /// The provider's vector dimension from the config; a non-positive value
-/// falls back to the BGE-M3 default (oracle: `if cfg.VectorDim <= 0 { 1024 }`).
+/// falls back to the BGE-M3 default (1024).
 fn positive_dim(cfg_dim: i32) -> usize {
     if cfg_dim > 0 {
         cfg_dim as usize
@@ -610,8 +606,8 @@ mod tests {
     }
 
     /// An explicit path with no name and no dimension falls back to the
-    /// oracle defaults: label "default", BGE-M3 dimension 1024, and an
-    /// explicit tokenizer path when given.
+    /// defaults: label "default", BGE-M3 dimension 1024, and an explicit
+    /// tokenizer path when given.
     #[test]
     fn resolve_model_explicit_path_defaults() {
         let cfg = LocalEmbedding {

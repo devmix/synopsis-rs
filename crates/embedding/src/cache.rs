@@ -2,37 +2,29 @@
 //!
 //! Stores previously computed embeddings so that repeated texts (e.g. the
 //! same passage re-ingested) skip ONNX inference. Entries are keyed by
-//! [`cache_key`] — the hex sha256 of `"{model}|{dim}|{text}"`, byte-identical
-//! to the oracle's `CacheKey` — so the same text never collides across models
-//! or dimensions.
+//! [`cache_key`] — the hex sha256 of `"{model}|{dim}|{text}"` — so the same
+//! text never collides across models or dimensions.
 //!
-//! Re-architected from the oracle, not transcribed. Deliberate deviations:
-//! - the oracle's DB write-through store (`NewEmbeddingCacheWithStore`) is
-//!   NOT ported: persistence is a non-goal (design D3, YAGNI — a persistent
-//!   cache would come later via the db crate if ever needed);
-//! - the oracle cleared the whole cache on ANY `Set` at capacity, including
-//!   an overwrite of an already-cached entry. Overwriting does not grow the
-//!   map, so it does not evict here (see [`EmbeddingCache::set`]).
+//! Design decisions:
+//! - no DB write-through store: persistence is a non-goal (design D3, YAGNI —
+//!   a persistent cache would come later via the db crate if ever needed);
+//! - overwriting an already-cached entry does not grow the map, so it does
+//!   not evict (see [`EmbeddingCache::set`]).
 //!
-//! Eviction at capacity is a full clear (oracle behavior, design D3): cheap
-//! and good enough for the laptop-scale, single-pass ingestion workload; an
-//! LRU would add bookkeeping without a measurable win.
+//! Eviction at capacity is a full clear (design D3): cheap and good enough
+//! for the laptop-scale, single-pass ingestion workload; an LRU would add
+//! bookkeeping without a measurable win.
 
 use std::collections::HashMap;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use sha2::{Digest, Sha256};
 
-/// Default maximum number of cached embeddings, mirroring the oracle's
-/// `defaultCacheMaxSize` (`cache.go`).
+/// Default maximum number of cached embeddings.
 pub const DEFAULT_MAX_SIZE: usize = 10_000;
 
 /// Computes the deterministic cache key: the hex sha256 of
 /// `"{model}|{dim}|{text}"`.
-///
-/// The format matches the oracle's `CacheKey` exactly
-/// (`fmt.Sprintf("%s|%d|%s", modelName, dim, text)`), so keys produced by the
-/// Go binary and by this function are byte-identical.
 #[must_use]
 pub fn cache_key(model: &str, dim: usize, text: &str) -> String {
     let digest = Sha256::digest(format!("{model}|{dim}|{text}"));
@@ -58,9 +50,9 @@ fn to_hex(bytes: &[u8]) -> String {
 /// # Eviction
 ///
 /// When the number of entries reaches the size limit, inserting a NEW entry
-/// first clears the whole cache (the oracle's behavior); after such an
-/// eviction the new entry is the only one present. Overwriting an existing
-/// entry never evicts (see the module docs).
+/// first clears the whole cache; after such an eviction the new entry is the
+/// only one present. Overwriting an existing entry never evicts (see the
+/// module docs).
 #[derive(Debug)]
 pub struct EmbeddingCache {
     inner: RwLock<HashMap<String, Vec<f32>>>,
@@ -76,8 +68,7 @@ impl EmbeddingCache {
 
     /// Creates an empty cache with an explicit size limit.
     ///
-    /// `max_size` is the maximum number of entries; `0` means unlimited
-    /// (mirroring the oracle's `maxSize` semantics).
+    /// `max_size` is the maximum number of entries; `0` means unlimited.
     #[must_use]
     pub fn with_max_size(max_size: usize) -> Self {
         Self {
@@ -98,8 +89,8 @@ impl EmbeddingCache {
     /// for the same triple.
     ///
     /// If the cache is at its size limit and the key is not already present,
-    /// the whole cache is cleared first (oracle behavior, design D3);
-    /// overwriting an existing entry does not evict (see the module docs).
+    /// the whole cache is cleared first (design D3); overwriting an existing
+    /// entry does not evict (see the module docs).
     pub fn set(&self, model: &str, dim: usize, text: &str, vec: &[f32]) {
         let key = cache_key(model, dim, text);
         let mut map = self.write();
@@ -210,10 +201,10 @@ mod tests {
         assert_eq!(cache.get("model-a", 1024, "other text"), Some(vec![4.0]));
     }
 
-    /// The key format is byte-identical to the oracle's `CacheKey`: golden
-    /// digest of "bge-m3|1024|hello" computed with `sha256sum`.
+    /// The key is the hex sha256 of `"{model}|{dim}|{text}"`: golden digest
+    /// of "bge-m3|1024|hello" computed with `sha256sum`.
     #[test]
-    fn cache_key_matches_oracle_format() {
+    fn cache_key_matches_golden_digest() {
         assert_eq!(
             cache_key("bge-m3", 1024, "hello"),
             "10ea4576a1e88eb7760edafc7b8ac1f8119857d16332e81ac631d8fea1a0dc54"
@@ -221,7 +212,7 @@ mod tests {
     }
 
     /// At the size limit, inserting a NEW entry clears the whole cache
-    /// (oracle behavior); the new entry is the only one left, and the limit
+    /// (design D3); the new entry is the only one left, and the limit
     /// applies again from the fresh state.
     #[test]
     fn eviction_clears_cache_at_max_size() {
@@ -245,8 +236,8 @@ mod tests {
         assert_eq!(cache.get("m", 1, "g"), Some(vec![7.0]));
     }
 
-    /// Overwriting an existing entry at the size limit does NOT evict
-    /// (conscious deviation from the oracle — see the module docs).
+    /// Overwriting an existing entry at the size limit does NOT evict (see
+    /// the module docs).
     #[test]
     fn overwrite_at_max_size_does_not_evict() {
         let cache = EmbeddingCache::with_max_size(2);
@@ -258,7 +249,7 @@ mod tests {
         assert_eq!(cache.get("m", 1, "b"), Some(vec![2.0]));
     }
 
-    /// `max_size = 0` means unlimited (oracle `maxSize` semantics).
+    /// `max_size = 0` means unlimited.
     #[test]
     fn zero_max_size_is_unlimited() {
         let cache = EmbeddingCache::with_max_size(0);

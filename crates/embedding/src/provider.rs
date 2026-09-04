@@ -2,21 +2,18 @@
 //!
 //! [`OnnxProvider`] implements [`EmbeddingProvider`] on top of an `ort`
 //! [`Session`]: all texts of a call are tokenized, right-padded to the batch's
-//! actual max length, and fed to the model in ONE ONNX run (improvement over
-//! the oracle, which ran batch=1 sequentially per text). Every resulting
+//! actual max length, and fed to the model in ONE ONNX run. Every resulting
 //! vector is L2-normalized before it is cached and returned.
 //!
-//! Re-architected, not transcribed. Deliberate deviations from the oracle:
-//! - **CLS pooling, as the oracle actually does.** The oracle takes
-//!   `data[:vectorDim]` of the output — the first (CLS) hidden state of
-//!   `last_hidden_state`, or the pre-pooled `sentence_embedding` vector. This
-//!   is NOT mean pooling; matching the oracle keeps parity with fixtures
-//!   recorded from the Go binary. The attention mask is still a model input
-//!   (it masks the padding this provider adds, which the oracle could not do
-//!   correctly — see the module docs in `tokenizer.rs`).
+//! Design decisions:
+//! - **CLS pooling.** The provider takes the first `vector_dim` values of the
+//!   output — the first (CLS) hidden state of `last_hidden_state`, or the
+//!   pre-pooled `sentence_embedding` vector. This is NOT mean pooling. The
+//!   attention mask is still a model input (it masks the padding this
+//!   provider adds — see the module docs in `tokenizer.rs`).
 //! - **A text that tokenizes to zero tokens is a clear error** instead of an
 //!   empty tensor that fails deep inside the ONNX Runtime with an opaque
-//!   message (the oracle has no guard).
+//!   message.
 //! - **No cancellation token** (design D9): the sync API has no
 //!   `context.Context` equivalent.
 //!
@@ -34,7 +31,7 @@ use crate::cache::EmbeddingCache;
 use crate::error::EmbeddingError;
 use crate::tokenizer::{Tokenized, Tokenizer};
 
-/// L2-norm threshold below which normalization is skipped (oracle: `1e-9`).
+/// L2-norm threshold below which normalization is skipped.
 const L2_EPS: f64 = 1e-9;
 
 /// Padding token id: bge-m3's XLM-RoBERTa vocabulary reserves id 0 for `[PAD]`.
@@ -323,7 +320,7 @@ fn pad_batch(tokenized: &[Tokenized]) -> PaddedBatch {
 ///
 /// `shape` is `[batch, dim]` for a pooled `sentence_embedding` (the whole row
 /// is the vector) or `[batch, seq_len, dim]` for `last_hidden_state` (the CLS
-/// — first — token of the row, the oracle's behavior).
+/// — first — token of the row).
 ///
 /// # Errors
 ///
@@ -388,8 +385,7 @@ fn check_row_and_width(
 
 /// L2-normalizes `vector` in place; a (near-)zero vector is left untouched.
 ///
-/// The norm accumulates in `f64` and the division happens in `f32`,
-/// bit-for-bit the oracle's `L2` normalization.
+/// The norm accumulates in `f64` and the division happens in `f32`.
 fn l2_normalize(vector: &mut [f32]) {
     let norm: f64 = vector.iter().map(|v| f64::from(*v) * f64::from(*v)).sum();
     let norm = norm.sqrt();

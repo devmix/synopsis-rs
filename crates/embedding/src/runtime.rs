@@ -29,8 +29,7 @@ const INTER_THREADS: usize = 1;
 ///
 /// Must be called before [`build_session`] (and any other `ort` use in this
 /// process). A second call in the same process is a no-op: the library handle
-/// and the environment are process-wide singletons, mirroring the oracle's
-/// `IsInitialized` guard in `newONNXProviderContext`.
+/// and the environment are process-wide singletons.
 ///
 /// # Errors
 ///
@@ -55,9 +54,7 @@ pub fn init_runtime(lib_path: &Path) -> Result<(), EmbeddingError> {
 ///
 /// The model file is checked to exist before any `ort` API is touched:
 /// constructing an `ort::Error` requires the runtime library to be loaded, and
-/// under `load-dynamic` that panics rather than returns an error. The
-/// existence check mirrors the oracle's `os.Stat` pre-check in
-/// `newONNXProviderContext`.
+/// under `load-dynamic` that panics rather than returns an error.
 ///
 /// # Errors
 ///

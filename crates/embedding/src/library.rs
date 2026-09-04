@@ -7,19 +7,16 @@
 //! and records the installation in a `.cache.json` manifest. A repeat call
 //! with the same version returns the cached path without touching the network.
 //!
-//! Behavior is re-architected from `library.go`, `library_cache.go` and
-//! `library_registry.go` (not transcribed).
-//! Deliberate deviations, all stricter than the oracle:
+//! Design decisions:
 //! - downloads go through [`Downloader`] (retries, SSRF protection, progress,
-//!   partial-file cleanup) instead of a bare `http.Client`;
+//!   partial-file cleanup);
 //! - archive entries that would escape the cache directory (zip-slip /
-//!   tar-slip) are rejected — the oracle joined entry names verbatim;
+//!   tar-slip) are rejected;
 //! - no unversioned symlink (`libonnxruntime.so`) is created (design D10):
 //!   `ort::init_from` loads the library by its explicit cached path.
 //!
-//! The cache manifest keeps the oracle's JSON field names
-//! (`version`, `library_path`, `install_time`, `platform`) so a manifest
-//! written by the Go binary remains readable.
+//! The cache manifest uses the JSON field names `version`, `library_path`,
+//! `install_time`, `platform` — a stable on-disk format.
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -30,17 +27,16 @@ use serde::{Deserialize, Serialize};
 use crate::downloader::Downloader;
 use crate::error::EmbeddingError;
 
-/// Cache directory name under the workspace directory (oracle parity).
+/// Cache directory name under the workspace directory.
 const CACHE_DIR_NAME: &str = "onnxruntime";
-/// Installation manifest name inside the cache directory (oracle parity).
+/// Installation manifest name inside the cache directory.
 const CACHE_FILE_NAME: &str = ".cache.json";
-/// Downloaded-archive name prefix inside the cache directory (oracle parity).
+/// Downloaded-archive name prefix inside the cache directory.
 const ARCHIVE_NAME_PREFIX: &str = "onnxruntime-archive.";
 
 /// Installation manifest for the ONNX Runtime shared library (`.cache.json`).
 ///
-/// Field names mirror the oracle's `LibraryCache` JSON so manifests written
-/// by either implementation remain readable by the other.
+/// The field names are the on-disk manifest format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryCache {
     /// ONNX Runtime version the library was installed for.
@@ -68,8 +64,7 @@ pub struct LibraryManager {
 impl LibraryManager {
     /// Creates a manager rooted at `workspace_dir` (the GLOBAL workspace
     /// root, not per-dataset — storage-layout-restructure D3), resolving the
-    /// platform entry for the current OS/architecture from `cfg`
-    /// (oracle `NewLibraryManager`).
+    /// platform entry for the current OS/architecture from `cfg`.
     ///
     /// # Errors
     ///
@@ -108,8 +103,7 @@ impl LibraryManager {
         })
     }
 
-    /// Ensures the library is installed and returns its path
-    /// (oracle `EnsureLibrary`).
+    /// Ensures the library is installed and returns its path.
     ///
     /// When the cache manifest names the configured version and the file
     /// still exists, the cached path is returned without any download.
@@ -134,8 +128,7 @@ impl LibraryManager {
     }
 
     /// Returns the path of the installed library, if the cache manifest
-    /// matches the configured version and the file still exists
-    /// (oracle `GetLibraryPath` / `IsInstalled`).
+    /// matches the configured version and the file still exists.
     #[must_use]
     pub fn library_path(&self) -> Option<PathBuf> {
         let cache = self.load_cache()?;
@@ -157,8 +150,8 @@ impl LibraryManager {
         &self.version
     }
 
-    /// Removes the installed library and its metadata (oracle
-    /// `UninstallLibrary`). A no-op when nothing is installed.
+    /// Removes the installed library and its metadata. A no-op when nothing
+    /// is installed.
     pub fn uninstall(&self) -> Result<(), EmbeddingError> {
         if self.library_path().is_none() {
             return Ok(());
@@ -168,7 +161,7 @@ impl LibraryManager {
     }
 
     /// Downloads the release archive, extracts it, and writes the cache
-    /// manifest (oracle `DownloadLibrary`).
+    /// manifest.
     fn install(&self) -> Result<(), EmbeddingError> {
         std::fs::create_dir_all(&self.cache_dir)?;
         let archive_path = self
@@ -177,7 +170,7 @@ impl LibraryManager {
         self.downloader
             .download(&self.platform.archive_url, &archive_path, None)?;
         // The archive is never needed once extracted, so it is removed on
-        // every exit, success or failure (oracle parity).
+        // every exit, success or failure.
         let extracted = self
             .extract_archive(&archive_path)
             .and_then(|()| self.place_library());
@@ -198,7 +191,7 @@ impl LibraryManager {
     }
 
     /// Archive file extension from the config (`zip`/`tgz`); anything else
-    /// is a config error (oracle "unsupported archive format").
+    /// is a config error.
     fn archive_ext(&self) -> Result<&'static str, EmbeddingError> {
         match &self.platform.archive_format {
             ArchiveFormat::Zip => Ok("zip"),
@@ -215,9 +208,8 @@ impl LibraryManager {
         }
     }
 
-    /// Copies the extracted library to its final versioned name
-    /// (oracle copyFile step). No unversioned symlink is created
-    /// (design D10).
+    /// Copies the extracted library to its final versioned name. No
+    /// unversioned symlink is created (design D10).
     fn place_library(&self) -> Result<(), EmbeddingError> {
         let rel = safe_relative(&self.platform.library_path).map_err(|reason| {
             EmbeddingError::Config(format!("invalid library_path in onnx.yaml: {reason}"))
@@ -229,8 +221,8 @@ impl LibraryManager {
     }
 
     /// Reads the cache manifest; a missing or unreadable/corrupt manifest
-    /// means "not installed" (oracle `IsInstalled` swallows load errors, so
-    /// a broken manifest simply triggers a reinstall).
+    /// means "not installed" (load errors are swallowed, so a broken
+    /// manifest simply triggers a reinstall).
     fn load_cache(&self) -> Option<LibraryCache> {
         let data = std::fs::read(self.cache_dir.join(CACHE_FILE_NAME)).ok()?;
         serde_json::from_slice(&data).ok()
@@ -263,9 +255,8 @@ fn unsupported_format(format: String) -> EmbeddingError {
     EmbeddingError::Config(format!("unsupported archive format: {format}"))
 }
 
-/// Maps the Rust compile-time OS/arch to the oracle-style platform key
-/// (e.g. `"linux-amd64"`), the `key` values used in `onnx.yaml` (computed
-/// from Go's `GOOS`/`GOARCH` in the oracle).
+/// Maps the Rust compile-time OS/arch to the platform key (e.g.
+/// `"linux-amd64"`), the `key` values used in `onnx.yaml`.
 ///
 /// Public so other crates' tests (e.g. `cli`) can delegate their
 /// `test_platform_key` fixture helper to the production code path instead
@@ -285,8 +276,7 @@ pub fn current_platform_key() -> Option<String> {
 }
 
 /// Normalizes an archive entry name to a relative path, rejecting names that
-/// are absolute or contain `..` components (zip-slip / tar-slip protection;
-/// the oracle joined entry names verbatim).
+/// are absolute or contain `..` components (zip-slip / tar-slip protection).
 ///
 /// Crate-internal: also used by [`crate::model`] to validate model file names
 /// from `onnx.yaml` before joining them to the models directory.
@@ -309,7 +299,7 @@ pub(crate) fn safe_relative(name: &str) -> Result<PathBuf, String> {
     Ok(out)
 }
 
-/// Extracts a ZIP archive into `dest_dir` (oracle `extractZip`).
+/// Extracts a ZIP archive into `dest_dir`.
 fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<(), EmbeddingError> {
     let file = std::fs::File::open(archive_path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(|err| {
@@ -329,7 +319,7 @@ fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<(), EmbeddingErro
     Ok(())
 }
 
-/// Extracts a TAR.GZ archive into `dest_dir` (oracle `extractTgz`).
+/// Extracts a TAR.GZ archive into `dest_dir`.
 fn extract_tgz(archive_path: &Path, dest_dir: &Path) -> Result<(), EmbeddingError> {
     let file = std::fs::File::open(archive_path)?;
     let decoder = flate2::read::GzDecoder::new(file);
@@ -585,13 +575,13 @@ mod tests {
         assert_eq!(lib, cache_dir.join(LIB_NAME));
         assert_eq!(std::fs::read(&lib).unwrap(), FAKE_LIBRARY);
         assert_eq!(server.request_count(), 1);
-        // The archive is removed after extraction (oracle parity).
+        // The archive is removed after extraction.
         assert!(
             !cache_dir
                 .join(format!("{ARCHIVE_NAME_PREFIX}{ext}"))
                 .exists()
         );
-        // Manifest written with the oracle's field names.
+        // Manifest written with the documented field names.
         let manifest: LibraryCache =
             serde_json::from_slice(&std::fs::read(cache_dir.join(CACHE_FILE_NAME)).unwrap())
                 .unwrap();
@@ -702,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn current_platform_key_is_an_oracle_key() {
+    fn current_platform_key_is_a_supported_key() {
         let key = test_platform_key();
         assert!(
             [

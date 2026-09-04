@@ -3,23 +3,18 @@
 //! bge-m3 ships a `tokenizer.json`; this module loads it and exposes exactly
 //! what the ONNX provider (task 1.8) needs to build its inference inputs:
 //! - [`Tokenizer::tokenize`] — token IDs plus the attention mask, truncated
-//!   to [`DEFAULT_MAX_LENGTH`] (512, mirroring the oracle's
-//!   `DefaultMaxLength`);
+//!   to [`DEFAULT_MAX_LENGTH`] (512);
 //! - [`Tokenizer::decode`] — token IDs back to text, special tokens skipped.
 //!
-//! Re-architected, not transcribed. Deliberate deviations from the oracle:
-//! - the oracle's `Tokenize` padded output to `maxLength` (with a pad id that
-//!   was never set for `tokenizer.json` files — it stayed 0 by accident), and
-//!   its provider then filled `attention_mask` with all ones, so padded
-//!   positions were fed to the model as real tokens. Padding is deliberately
-//!   NOT done here: it is a batch-shaping concern of the provider, which pads
-//!   to the batch's actual max length and extends the mask with zeros. This
-//!   wrapper returns the exact token sequence, truncated to the model's
-//!   maximum length.
-//! - `encode` is called with `add_special_tokens = true` (the HF convention);
-//!   the oracle passed `false`. For bge-m3 the post-processor adds no special
-//!   tokens, so the two are behaviorally identical; `true` is the correct
-//!   choice if a tokenizer.json ever declares a template that does.
+//! Design decisions:
+//! - padding is deliberately NOT done here: it is a batch-shaping concern of
+//!   the provider, which pads to the batch's actual max length and extends
+//!   the attention mask with zeros. This wrapper returns the exact token
+//!   sequence, truncated to the model's maximum length.
+//! - `encode` is called with `add_special_tokens = true` (the HF convention).
+//!   For bge-m3 the post-processor adds no special tokens, so the choice is
+//!   behaviorally neutral; `true` is the correct choice if a tokenizer.json
+//!   ever declares a template that does.
 
 use std::path::Path;
 
@@ -27,7 +22,7 @@ use tokenizers::Tokenizer as HfTokenizer;
 
 use crate::error::EmbeddingError;
 
-/// Default maximum sequence length, mirroring the oracle's `DefaultMaxLength`.
+/// Default maximum sequence length.
 pub const DEFAULT_MAX_LENGTH: usize = 512;
 
 /// Tokenization result: token IDs and the attention mask.
@@ -58,8 +53,7 @@ impl Tokenizer {
     ///
     /// A probe encoding is run right after loading so that a file which
     /// parses but cannot encode fails at load time, not on the first
-    /// [`tokenize`](Self::tokenize) call (mirrors the oracle's validation
-    /// encode).
+    /// [`tokenize`](Self::tokenize) call.
     ///
     /// # Errors
     ///
