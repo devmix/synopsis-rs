@@ -263,7 +263,7 @@ blocks intact).
 
 ## 3 — Verification
 
-- [ ] 3.1 Final whole-repo verification
+- [x] 3.1 Final whole-repo verification
 
 **Acceptance.**
 1. `rg -i '\.\./synopsis' crates/ AGENTS.md README.md openspec/config.yaml
