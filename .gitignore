@@ -15,3 +15,8 @@ workspace/*
 
 # Cargo.lock is committed on purpose: this workspace produces a binary and
 # reproducible builds matter for parity testing against recorded fixtures.
+
+# Docusaurus website build artifacts
+docs/website/node_modules/
+docs/website/.docusaurus/
+docs/website/build/
