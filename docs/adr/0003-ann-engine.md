@@ -57,7 +57,7 @@
 ## Открытые вопросы / остаточные риски
 
 1. **Тонкие маржи у i8_ef200:** p95 9.6–9.8 ms против гейта <10 ms (запас ~3 %) и recall 0.957–0.962 против ≥0.95 (+0.7–1.2 pp). На более загруженной машине ноутбука p95 может выйти за гейт. Митигация в crate'е `vectors`: efSearch — runtime-настройка (не константа), дефолт 200; при регрессии на реальном корпусе поднять nprobes/efSearch или вернуться к f32_ef200 ценой p95.
-2. **Синтетическая геометрия:** 256-кластерная гауссова смесь — вопрос механики индекса (design D2), но реальный bge-m3-корпус может отличаться. По митигации D2 измерения S3 **повторяются на реальной фикстуре** в change'е `vectors` (явная задача там); полный 1M-прогон тоже остаётся за ним. — *закрыт appendix'ом (2026-08-22): 1M-прогон выполнен — гейты p95/recall не выполнены, см. «Эскалация»; повтор на реальной фикстуре отложен (экспорт оракула недоступен).*
+2. **Синтетическая геометрия:** 256-кластерная гауссова смесь — вопрос механики индекса (design D2), но реальный bge-m3-корпус может отличаться. По митигации D2 измерения S3 **повторяются на реальной фикстуре** в change'е `vectors` (явная задача там); полный 1M-прогон тоже остаётся за ним. — *закрыт appendix'ом (2026-08-22): 1M-прогон выполнен — гейты p95/recall не выполнены, см. «Эскалация»; повтор на реальной фикстуре отложен (экспорт `vectors.bin` недоступен).*
 3. **Шум машины:** p50/p95 разброс >5 % у НЕрекомендуемых конфигов между прогонами A/B (артефакт общей загруженной машины; у i8_ef200 оба перцентиля <5 %) — см. appendix «Воспроизводимость».
 4. **Асинхронный путь замера:** тайминг включает полный async-пути search→stream collect через tokio (как и в боевом crate'е) — overhead рантайма учтён, а не приписан движку.
 
@@ -95,7 +95,7 @@
 
 ### Прогон (б): реальная фикстура vectors.bin
 
-**Отложен** — экспорт оракула `vectors.bin` недоступен (task 1.8: НЕ блокер архивации change'а). Harness готов: `SYNOPSIS_BENCH_VECTORS_BIN=<path> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture`. Задокументированное отклонение: запросы — seeded-выборка строк корпуса (в экспорте нет held-out-множества), recall@10 против exact-top-10 при этом определён корректно.
+**Отложен** — экспорт `vectors.bin` недоступен (task 1.8: НЕ блокер архивации change'а). Harness готов: `SYNOPSIS_BENCH_VECTORS_BIN=<path> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture`. Задокументированное отклонение: запросы — seeded-выборка строк корпуса (в экспорте нет held-out-множества), recall@10 против exact-top-10 при этом определён корректно.
 
 ### Команды запуска (воспроизводимость)
 
@@ -104,8 +104,8 @@
 cargo test -p vectors --release -- --ignored full_benchmark_synthetic --nocapture
 # то же + митигационный sweep на индексе run B
 SYNOPSIS_BENCH_SWEEP=1 cargo test -p vectors --release -- --ignored full_benchmark_synthetic --nocapture
-# прогон (б) — когда экспорт оракула станет доступен
-SYNOPSIS_BENCH_VECTORS_BIN=<oracle vectors.bin> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture
+# прогон (б) — когда экспорт vectors.bin станет доступен
+SYNOPSIS_BENCH_VECTORS_BIN=<vectors.bin> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture
 # env: SYNOPSIS_BENCH_N (default 1_000_000), SYNOPSIS_BENCH_WORK_DIR (default /mnt/local/sandbox/opencode-vectors-18)
 ```
 
