@@ -70,7 +70,7 @@ validation, plain-string content, injectable sleeper, onnx.yaml registry).
 **Acceptance.** the pattern above over `crates/config/src/ crates/llm/src/` →
 **0**. Gates green.
 
-- [ ] 1.3 Clean `embedding` crate (~123 mentions)
+- [x] 1.3 Clean `embedding` crate (~123 mentions)
 
 **Scope.** all of `crates/embedding/src/`. Strip "re-architected, not
 transcribed", "the oracle's `CacheKey`", "mirroring the oracle's
