@@ -8,7 +8,7 @@ The Synopsis data storage layer: the SQLite connection (WAL, a fixed set of PRAG
 
 ### Requirement: Connection and migrations
 
-The `db` crate opens the SQLite database with the PRAGMA settings: WAL, synchronous=NORMAL, cache_size=-64000, mmap_size=268435456, foreign_keys=ON, busy_timeout=5000. The schema is created by a single squashed init migration (the final v5 state), embedded into the binary at compile time; `PRAGMA user_version` is the sole source of truth about the schema state (=1 after init); the `_schema_migrations` table is NOT created; a legacy knowledge.db is NOT opened and NOT migrated. Future migrations are numbered directories `<id>-<slug>/up.sql`, forward-only; shipped migrations are never edited.
+The `db` crate opens the SQLite database with the PRAGMA settings: WAL, synchronous=NORMAL, cache_size=-64000, mmap_size=268435456, foreign_keys=ON, busy_timeout=5000. The schema is created by a single squashed init migration (the final v5 state), embedded into the binary at compile time; `PRAGMA user_version` is the sole source of truth about the schema state (=1 after init); the `_schema_migrations` table is NOT created; a pre-existing knowledge.db is NOT opened and NOT migrated. Future migrations are numbered directories `<id>-<slug>/up.sql`, forward-only; shipped migrations are never edited.
 
 #### Scenario: Fresh-database initialization
 - **WHEN** the db opens a nonexistent database file

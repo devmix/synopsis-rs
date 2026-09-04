@@ -28,7 +28,7 @@
 //!   "chunk not found" error (consistent with `DocumentDao`);
 //! - `delete_by_ids` returns the number of rows deleted and batches the `IN`
 //!   list in chunks of [`config::ID_BATCH_SIZE`] (design D9);
-//! - the legacy vector-store operations are deliberately absent — vector
+//! - vector-store operations are deliberately absent — vector
 //!   search moves to the `vectors` change (design D7);
 //! - `metadata_json` column (chunk-metadata-persistence design D1): the
 //!   chunk's own metadata bag as raw JSON (`Option<String>`, parsed on

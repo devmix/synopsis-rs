@@ -4,7 +4,7 @@
 # workspace; `coverage` measures workspace line coverage with cargo-llvm-cov
 # and uploads an lcov artifact (change coverage-rust-workspace, task 1.1) —
 # measure-first, no gates. The 5-target cross-build + packaging now happens
-# in `release.yml` at tag time (mirroring the legacy Go structure — "Keeping
+# in `release.yml` at tag time ("Keeping
 # dev runs fast"); see the rebuild-ci-cd change (design D1).
 name: CI
 

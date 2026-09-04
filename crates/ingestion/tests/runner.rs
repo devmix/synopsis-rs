@@ -538,7 +538,7 @@ fn find_source_for_path_longest_prefix_wins_and_component_boundary() {
     assert_eq!(found.path, inner.to_string_lossy().into_owned());
 
     // Component boundary: `<root>/docs2` is NOT inside `<root>/docs`
-    // (the legacy raw string prefix would have matched).
+    // (the old raw string prefix would have matched).
     let sibling = root.sub("docs2");
     assert!(
         runner

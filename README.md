@@ -1,34 +1,116 @@
-# Synopsis (Rust)
+# Synopsis
 
-A local RAG + knowledge-graph MCP server for personal use: ingest documents, extract entities and facts, answer questions with hybrid search over SQLite FTS5 plus an ANN index, and expose 12 MCP tools. One local binary, no external services; sized to run on a laptop (16 GB RAM).
+A local RAG + knowledge-graph MCP server in Rust — one binary, no external
+services, built for a 16 GB laptop. It ingests your documents (Markdown,
+JSON, web pages), builds a hybrid index (SQLite FTS5 + disk-backed quantized
+ANN via usearch), extracts entities and links them across domains into a
+knowledge graph, and serves everything over MCP (12 read-only tools).
 
-## Status
+- **Hybrid search** — lexical (FTS5) + semantic (vector) with RRF fusion and
+  recency/authority reranking
+- **Knowledge graph** — entity extraction (NER via ONNX), cross-domain entity
+  linking (LLM-based), CEL linkers, petgraph index
+- **MCP server** — 12 tools over Streamable HTTP (`/mcp`) with the legacy
+  HTTP+SSE transport (`GET /sse` + `POST /message`) also served, plus
+  `GET /health`
+- **Disk-backed ANN** — usearch HNSW (mmap, scalar-quantized, WAL + segments);
+  the query path never loads the embedding model
+- **Self-contained build** — SQLite/FTS5 compiled in-tree (bundled), no CGO,
+  no system dependencies; the ONNX runtime `.so`/`.dylib` and model weights
+  are downloaded by the binary on demand (verified by URL + size + SHA-256)
 
-Current state of this repository:
+## Building from source
 
-- **Done:** workspace skeleton — nine domain crates; CI with quality gates (fmt + clippy + test) and a 5-target cross-build matrix.
-- **Complete:** all modules complete; every change is archived under `openspec/changes/archive/`; contract specs in `openspec/specs/`.
+Requires the pinned toolchain (see `rust-toolchain.toml`, Rust **1.96.0**);
+rustup installs it automatically on the first cargo command.
 
-## Stack (frozen)
+```sh
+cargo build --release     # → target/release/synopsis
+cargo test                # full workspace suite; no services or network needed
+```
 
-Rust 1.96.0 (pinned in `rust-toolchain.toml`) · tokio + axum · rusqlite — bundled, FTS5 compiled in-tree · rmcp 3.x over Streamable HTTP for MCP (the legacy HTTP+SSE is also served — double transport, override of design D8 by human decision 2026-08-31, change `add-legacy-sse-transport`; wire contract mcp-go v0.57.0) · ONNX runtime as an external `.so`/`.dylib` (bge-m3 int8 embeddings + NER) · usearch ANN index, disk-backed and quantized (sole engine, ADR 0004). The full list with hard constraints is in [AGENTS.md](AGENTS.md).
+Prebuilt archives for the 5 supported targets (Linux amd64/arm64, Windows
+amd64, macOS arm64) are published as Gitea Releases on `v*` tags — the
+archive bundles the stripped binary, this README, `workspace/configs/` and
+the `edtech` demo ontology.
 
-## Commands
+## Quick start
 
-| Command | What it does |
+```sh
+synopsis onnx-runtime install   # download the ONNX runtime per workspace/configs/onnx.yaml
+synopsis model download         # download the default embedding model
+synopsis serve                  # start the MCP server (port 8080, preset "default")
+```
+
+Without `--config`, the config is auto-searched:
+`<exeDir>/workspace/configs/` → parent directory → CWD; the default preset is
+`config.default.yaml` next to `onnx.yaml` (the model/runtime registry).
+`--preset NAME` selects `config.{NAME}.yaml`; `--dataset NAME` overrides the
+configured dataset.
+
+## CLI
+
+```
+synopsis [--config PATH] [--preset NAME] [--dataset NAME] <subcommand>
+```
+
+| Subcommand | Purpose |
 |---|---|
-| `cargo build --release` | builds the `synopsis` binary (`target/release/synopsis`; stub prints its version) |
-| `cargo test` | full workspace suite — no services or network needed |
-| `cargo fmt --check` | formatting gate |
-| `cargo clippy --all-targets -- -D warnings` | lint gate — any warning fails the build |
-| `cargo zigbuild --release --target <t>` | cross-compile for one of the 5 CI targets (needs Zig 0.16.0) |
+| `serve [--no-initial-sync] [--port N] [--auto-rebuild-vectors]` | start the MCP server with initial sync + file watching |
+| `queue status\|reset-retries` | inspect/repair the document job queue |
+| `db stats\|clear` | dataset statistics / delete all dataset state |
+| `model list\|download\|delete\|info\|benchmark [NAME]` | manage embedding models |
+| `onnx-runtime install\|status\|uninstall` | manage the ONNX runtime library |
+| `load-test [--scale small\|medium\|large] [--seed N] [--iterations N] [--json PATH] [--no-fill]` | benchmark all MCP tool handlers on generated data |
 
-Cross-build targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`.
+## Data layout
 
-### Parity
+Runtime state lives under `workspace/` (gitignored; created and downloaded by
+the binary):
 
-Parity was machine-checked, not reviewed line-by-line: tool responses were recorded as fixtures and compared — JSON diffs of `tools/list` and tool-call responses, plus p50/p95 latency gates. The transitional harness that ran those checks has now been removed; the implementation is complete.
+```
+workspace/
+├── configs/                  # tracked: presets, onnx.yaml, prompt templates
+├── datasets/<name>/
+│   ├── ontology/             # tracked for the edtech demo dataset
+│   ├── content/              # tracked for the edtech demo dataset
+│   └── state/                # knowledge.db + vectors (per dataset)
+├── db/cache/cache.db         # global cache DB (embedding cache, manifests)
+├── models/                   # downloaded model weights
+└── onnxruntime/              # downloaded ONNX runtime library
+```
 
-## Layout
+The knowledge DB is always built from scratch by the Rust binary (one
+squashed init migration, `PRAGMA user_version` as the sole schema state) —
+existing `knowledge.db` files are never opened or upgraded.
 
-See [AGENTS.md](AGENTS.md) for the crate table, dependency graph, execution model (AI writes / human reviews), and agent-facing rules.
+## MCP tools
+
+`search`, `catalog_overview`, `catalog_documents`, `catalog_entities`,
+`search_entities_by_type`, `search_facts`, `get_document_context`,
+`get_chunk_by_id`, `get_fact_by_id`, `get_entity_dossier`,
+`get_entity_relations`, `get_entity_links` — all read-only, facts restricted
+to `approved` status. Wire contract: `openspec/specs/mcp-contract/`.
+
+## Development
+
+- Gates: `cargo fmt --check` · `cargo clippy --all-targets -- -D warnings` ·
+  `cargo test` (CI runs all three; cross-builds only on `v*` tags)
+- Coverage: `cargo llvm-cov --workspace --html` — measure-first, no gates
+  (see `COVERAGE.md`)
+- Cross-builds: `cargo zigbuild --release --target <t>` with Zig 0.16.0
+  (targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`,
+  `aarch64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`)
+
+Workspace crates: `config` (presets/ontology), `db` (SQLite/FTS5/migrations),
+`vectors` (ANN engine), `embedding` (ONNX runtime), `ingestion` (parsers,
+chunkers, NER, job queue), `graph` (knowledge graph + linkers), `search`
+(hybrid/RRF), `mcp` (server + tools), `llm` (LLM client), `utils` (shared
+helpers), `cli` (the `synopsis` binary).
+
+Architecture decisions: `docs/adr/`. Spec-driven workflow: `openspec/`.
+Agent instructions: `AGENTS.md`.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).

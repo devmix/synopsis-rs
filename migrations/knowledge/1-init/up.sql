@@ -17,11 +17,11 @@
 --
 -- Derived mechanically (2026-08-18) from the full schema dump of
 -- fixtures/knowledge.db (sqlite_master + PRAGMA table_info; provenance in
--- fixtures/README.md), with legacy artifacts excluded by this explicit list:
---   _schema_migrations               -- legacy migration-tracking table. NOT created here:
+-- fixtures/README.md), with pre-existing artifacts excluded by this explicit list:
+--   _schema_migrations               -- prior migration-tracking table. NOT created here:
 --                                      PRAGMA user_version is the single source of truth
 --                                      about schema state (design D6).
---   chunks_vec,                      -- legacy SQLite-vec0 vector store (384-dim) and its
+--   chunks_vec,                      -- prior SQLite-vec0 vector store (384-dim) and its
 --   chunks_vec_info,                 -- shadow tables. Rust rebuilds vectors from chunk
 --   chunks_vec_chunks,               -- text; old vec0 data is never read or migrated.
 --   chunks_vec_rowids,
@@ -29,7 +29,7 @@
 -- SQLite-internal objects are also absent by design (the engine creates them as needed):
 -- sqlite_sequence and the FTS5 shadow tables of chunks_fts.
 --
--- Semantic cross-check against the legacy 001–005 migrations (task 1.1
+-- Semantic cross-check against the prior 001–005 migrations (task 1.1
 -- revision 3): 001 base schema; 002 unique idx_documents_original_path (its
 -- row dedup is a data migration — nothing to replay on an empty DB); 003
 -- drops documents.domain and idx_documents_domain (so documents has NO domain
@@ -39,10 +39,10 @@
 -- it is a cache, not knowledge).
 -- The DDL below reflects the final state minus that table.
 --
--- Deliberate deviation from the legacy v5 schema (human decision 2026-08-20,
+-- Deliberate deviation from the v5 schema (human decision 2026-08-20,
 -- db-module task 1.14 revision 2): fact_sources.document_id is INTEGER with
 -- an FK to documents(id) ON DELETE CASCADE (like entity_sources.document_id),
--- not the legacy TEXT type. The legacy v5 schema is self-inconsistent (schema
+-- not the v5 TEXT type. The v5 schema is self-inconsistent (schema
 -- TEXT vs an `int` field relying on type affinity). The fix lands in the
 -- squashed init migration BEFORE any database was deployed, so the
 -- forward-only rule is not violated in spirit.
@@ -53,7 +53,7 @@
 -- sectioned chunks, so heading terms are searchable and embedded. `chunk_text`
 -- stays the pure source slice (the byte-offset invariant `content[start..end] ==
 -- chunk_text` is preserved); `search_text` defaults to it. Explicit, justified
--- deviation from the legacy v5 schema: the legacy implementation overwrote
+-- deviation from the v5 schema: the prior implementation overwrote
 -- chunk_text with the breadcrumb-prefixed text, which breaks the offset
 -- semantics; Rust keeps both columns instead.
 --
@@ -62,14 +62,14 @@
 -- chunk-specific metadata stores NULL). Rust stores it as `Option<String>`,
 -- parsed on demand (the `documents.metadata_json` pattern). Restores the
 -- field from the original Rust design, dropped earlier to match the frozen
--- v5 shape; explicit, justified deviation from the legacy v5 schema (the
--- legacy `chunks` table has no metadata column).
+-- v5 shape; explicit, justified deviation from the v5 schema (the
+-- v5 `chunks` table has no metadata column).
 --
 -- Folded-in Rust operational tables (formerly the forward-only document-jobs and
 -- usearch-WAL migrations):
 --   document_jobs            -- persistent state machine for document operations
 --                              (document-jobs-queue change, task 1.1). New Rust
---                              operational table; the legacy implementation has
+--                              operational table; the prior implementation has
 --                              no equivalent queue (it ingests synchronously), so
 --                              no parity is required.
 --   usearch_vectors_log      -- write-ahead log for the usearch ANN engine
@@ -78,7 +78,7 @@
 --                              "current/RAM operations". Vector payloads are NOT
 --                              stored here — they live in the chunks table (the
 --                              rebuild re-encodes chunk text). New Rust operational
---                              table; the legacy implementation has no equivalent
+--                              table; the prior implementation has no equivalent
 --                              (its vec0 store had no WAL), so no parity is required.
 
 CREATE TABLE documents (

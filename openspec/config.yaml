@@ -39,8 +39,8 @@ context: |
     full-precision vectors (~4 GB) do not fit in RAM → the index must be
     disk-backed/mmap + a quantized graph. The query path does not load the embedding model.
   - One local binary, no external services.
-  - Rust builds its own DB from scratch: one squashed init migration; legacy knowledge.db
-    is NOT opened, NOT upgraded, data is NOT migrated (decisions 2026-08-18,
+  - Rust builds its own DB from scratch: one squashed init migration; existing knowledge.db files
+    are NOT opened, NOT upgraded, data is NOT migrated (decisions 2026-08-18,
     design D6). The v5 schema shape (5 migrations) — a structural contract.
 
   ## Execution model (IMPORTANT for task decomposition)

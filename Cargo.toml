@@ -121,8 +121,8 @@ petgraph = { version = "0.8", default-features = false, features = ["std"] }
 cel = "0.14"
 # Prompt template engine (llm change, design D3; human decision 2026-08-23):
 # the entity-linker prompts are user-overridable data with context loops and
-# join/truncate helpers, so a real template engine replaces the legacy
-# text/template. Verified against the crates.io index: minijinja 2.24.0 is the
+# join/truncate helpers, so a real template engine is used. Verified against
+# the crates.io index: minijinja 2.24.0 is the
 # current stable 2.x line (3.0.0 is still alpha); MSRV 1.70, no known CVEs,
 # well below our pinned Rust 1.96.0. Default features trimmed to what the
 # linker needs: `serde` (render our input structs into a `Value`) and
@@ -139,13 +139,13 @@ indicatif = "0.18"
 # CLI parsing (cli change, design D1; user-approved stack extension 2026-08-27,
 # recorded in openspec/config.yaml): clap 4.6.6 Builder API for full control
 # over flag/help structure. Help text is Rust-idiomatic — deliberately NOT
-# byte-matched to the legacy CLI's help text (user decision 2026-08-27).
+# byte-matched to any prior reference (user decision 2026-08-27).
 clap = "4.6.6"
 # Structured logging in the cli binary only (cli change, design D2; user-approved
 # 2026-08-27): library crates stay logger-less. Both are already in the lock
 # graph (verified 2026-08-27: tracing 0.1.44 / tracing-subscriber 0.3.23 are the
-# current pins); `env-filter` honors RUST_LOG, `json` is the legacy
-# implementation's other log format (design D2).
+# current pins); `env-filter` honors RUST_LOG, `json` is the alternate log
+# format (design D2).
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
@@ -207,10 +207,9 @@ regex = "1"
 # crate used by its parallel walk API — unavoidable, but pure Rust, so no
 # impact on the single-binary/laptop constraints. No known CVEs.
 ignore = "0.4"
-# HTML -> Markdown for the webpage source (ingestion task 1.8): the Rust
-# analogue of the legacy HTML-to-Markdown dependency — built on html5ever
-# (Servo's fault-tolerant HTML5 parser, pure Rust, the Rust counterpart of
-# golang.org/x/net/html), with structural Markdown output (ATX
+# HTML -> Markdown for the webpage source (ingestion task 1.8): built on
+# html5ever (Servo's fault-tolerant HTML5 parser, pure Rust), with structural
+# Markdown output (ATX
 # headings, links, lists, tables, code, images) that the markdown chunker
 # relies on for structure-aware splitting. Verified against the crates.io
 # index + docs.rs (task 1.8): html-to-markdown-rs 3.11.4 (xberg-io, MIT),

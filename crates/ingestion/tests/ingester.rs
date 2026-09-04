@@ -1258,7 +1258,7 @@ fn rebuild_clears_the_source_documents_before_parsing() {
 
 /// A rebuild clears only documents under the source root: a sibling
 /// directory whose name merely starts with the root's must survive
-/// (the legacy string-prefix match would have deleted it).
+/// (the old string-prefix match would have deleted it).
 #[test]
 fn rebuild_leaves_documents_outside_the_root() {
     let dir = TempDir::new();

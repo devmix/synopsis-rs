@@ -11,13 +11,13 @@ Can a Rust binary own the full SQLite/FTS5 path without CGO flags: a source-comp
 
 1. **rusqlite + libsqlite3-sys `bundled`** — SQLite is compiled from source directly into the binary; FTS5 ships with every bundled build (there is no separate feature anymore); there are no CGO flags anywhere, and an entire class of silent degradation ("no fts5 module → silently degrade") is excluded by construction.
 2. rusqlite with system SQLite (pkg-config) — rejected: build reproducibility across the 5 CI targets (musl / windows-gnu / darwin) is lost, and the "one local binary, no external dependencies" contract is violated.
-3. SQLite vector extensions (vec0 and the like) — outside the S1 seam: legacy vec0 data is not read at all in Rust (vectors are rebuilt from chunk text; data-schema / design D2).
+3. SQLite vector extensions (vec0 and the like) — outside the S1 seam: pre-existing vec0 data is not read at all (vectors are rebuilt from chunk text; data-schema / design D2).
 
 ## Measurements (spike s1_sqlite, run 2026-08-18)
 
 - Bundled SQLite: **3.53.2** (source id `d6e03d8c…`); the single libsqlite3-sys instance in Cargo.lock.
 - Fresh DB via `rusqlite_migration::from_directory` (include_dir, SQL embedded at compile time): `PRAGMA user_version == 1` ✓; the `_schema_migrations` table is NOT created.
-- Schema diff fresh vs fixture (`fixtures/knowledge.db`, v5, provenance and sha256 — fixtures/README.md), legacy artifacts excluded by an explicit list: **14 tables (63 columns), 25 indexes, 3 triggers** — identical.
+- Schema diff fresh vs fixture (`fixtures/knowledge.db`, v5, provenance and sha256 — fixtures/README.md), pre-existing artifacts excluded by an explicit list: **14 tables (63 columns), 25 indexes, 3 triggers** — identical.
 - PRAGMAs from `configs/config.default.yaml` applied without errors; read-back: `journal_mode=wal` ✓, `synchronous=NORMAL(1)`, `cache_size=-64000 KiB`, `mmap_size=268435456`.
 - bm25 parity (270 chunks copied read-only from the fixture into the fresh DB; FTS content populated by the sync triggers fixed in the init DDL):
 
@@ -35,8 +35,8 @@ The seam is proven: a source-compiled bundled SQLite with FTS5/bm25 works fully 
 ### Migration mechanism (frozen for the `db` crate)
 
 - Mechanism = `rusqlite_migration` 2.6 (`from-directory`; SQL embedded into the binary at compile time via include_dir).
-- A SINGLE init directory `migrations/1-init/up.sql` with the squashed DDL of the final v5 state: derived mechanically from the fixture schema (sqlite_master + PRAGMA table_info) minus an explicit list of legacy artifacts (`_schema_migrations`, the `chunks_vec*` vec0 family); the final v5 state corresponds to the legacy migration history 001–005 (003 drops `documents.domain` and its index; 002 adds the unique index `idx_documents_original_path`; 005 — `app_kv`).
-- `PRAGMA user_version` — the ONLY source of truth for schema state (== 1 after init). The `_schema_migrations` table is neither created nor maintained; legacy-compatible tracking is not supported.
+- A SINGLE init directory `migrations/1-init/up.sql` with the squashed DDL of the final v5 state: derived mechanically from the fixture schema (sqlite_master + PRAGMA table_info) minus an explicit list of pre-existing artifacts (`_schema_migrations`, the `chunks_vec*` vec0 family); the final v5 state corresponds to the prior migration history 001–005 (003 drops `documents.domain` and its index; 002 adds the unique index `idx_documents_original_path`; 005 — `app_kv`).
+- `PRAGMA user_version` — the ONLY source of truth for schema state (== 1 after init). The `_schema_migrations` table is neither created nor maintained; compatibility tracking for pre-existing files is not supported.
 - Future migrations: new numbered directories `<id>-<slug>/up.sql`, forward-only, no down.sql needed, shipped files are never edited.
 
 ### PRAGMA/WAL notes
@@ -58,8 +58,8 @@ FTS5 is not a separate feature — it ships with every bundled build (empiricall
 
 ## Rejected alternatives (migration mechanism)
 
-- **Copy the legacy migrations 001–005 as-is** (rejected by the human, task 1.1 revision 3): replaying dead history onto a clean DB is pointless; 002/004 are data migrations with nothing to apply on empty tables; the end state is fully described by a single init DDL.
-- **Bridge/double-write `_schema_migrations` + user_version** (rejected by the human, design D6): legacy-compatible tracking is explicitly not required — the legacy knowledge.db is never opened, upgraded, or migrated (task 1.1 revision 2: Rust always builds the DB from scratch).
+- **Copy the prior migrations 001–005 as-is** (rejected by the human, task 1.1 revision 3): replaying dead history onto a clean DB is pointless; 002/004 are data migrations with nothing to apply on empty tables; the end state is fully described by a single init DDL.
+- **Bridge/double-write `_schema_migrations` + user_version** (rejected by the human, design D6): compatibility tracking is explicitly not required — a pre-existing knowledge.db is never opened, upgraded, or migrated (task 1.1 revision 2: Rust always builds the DB from scratch).
 
 ## Open questions (closed)
 

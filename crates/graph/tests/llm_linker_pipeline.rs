@@ -119,7 +119,7 @@ fn cached_decisions(cache: &Db) -> Vec<(String, String)> {
 /// the graph crate).
 ///
 /// The prefix filter is applied in Rust (not a SQL `LIKE`) so this assertion
-/// does not reintroduce the legacy "decisions in app_kv" query shape.
+/// does not reintroduce the old "decisions in app_kv" query shape.
 fn app_kv_llm_rows(db: &Db) -> Vec<String> {
     db.with_conn(|conn| -> Result<Vec<String>, db::DbError> {
         // The knowledge DB does not even carry an `app_kv` table (task 1.9);

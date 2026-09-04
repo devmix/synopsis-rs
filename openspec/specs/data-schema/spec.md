@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The SQLite data schema and migration rules. Fixes that the v5 schema shape (5 migrations) is the structural contract of data continuity: the Rust binary builds its DB from scratch, a legacy `knowledge.db` is not opened and not migrated; the schema shape is preserved.
+The SQLite data schema and migration rules. Fixes that the v5 schema shape (5 migrations) is the structural contract of data continuity: the Rust binary builds its DB from scratch, a pre-existing `knowledge.db` is not opened and not migrated; the schema shape is preserved.
 ## Requirements
 ### Requirement: Compatibility with the v5 schema
 
@@ -34,7 +34,7 @@ The `facts` table carries a `status` column with the values `draft`, `pending`, 
 
 ### Requirement: Vector storage and rebuild
 
-Embedding vectors are NOT carried over from the old vec0 table `chunks_vec` into the new storage. The old table in the legacy file is ignored (or disabled) without errors. The vector index of the Rust version is an external HNSW store, rebuilt from the chunk text in `chunks` on rebuild; the index dimensionality matches the embedding model from the configuration.
+Embedding vectors are NOT carried over from the old vec0 table `chunks_vec` into the new storage. The old table in a pre-existing file is ignored (or disabled) without errors. The vector index of the Rust version is an external HNSW store, rebuilt from the chunk text in `chunks` on rebuild; the index dimensionality matches the embedding model from the configuration.
 
 #### Scenario: Vector rebuild
 - **WHEN** the Rust binary runs a vector rebuild on a v5 DB (no vec0 data)
@@ -53,7 +53,7 @@ The Rust binary keeps a queue of document operations in the `document_jobs` tabl
 - **THEN** the row has `status='error'`, `attempts=max_attempts`, and `last_error` is populated; `index reset-retries` moves it to `pending` with `attempts=0`
 
 ### Requirement: search_text column (explicit v5 deviation)
-The `chunks` table carries a `search_text TEXT NOT NULL` column (default = `chunk_text`) holding the search-oriented text: for Markdown chunks the heading breadcrumb (multi-line heading path) followed by the chunk body, or the body alone when the chunk has no breadcrumb. The FTS5 `chunks_fts` index is built over `search_text` (not `chunk_text`), and its `ai/ad/au` triggers reference `search_text`. This is an explicit, justified deviation from the v5 shape: the Rust database is always built from scratch (no legacy `knowledge.db` is opened or migrated), and the deviation improves RAG retrieval quality by giving both search legs the section context. The invariant-preserving `chunk_text` column and the byte offsets are unchanged.
+The `chunks` table carries a `search_text TEXT NOT NULL` column (default = `chunk_text`) holding the search-oriented text: for Markdown chunks the heading breadcrumb (multi-line heading path) followed by the chunk body, or the body alone when the chunk has no breadcrumb. The FTS5 `chunks_fts` index is built over `search_text` (not `chunk_text`), and its `ai/ad/au` triggers reference `search_text`. This is an explicit, justified deviation from the v5 shape: the Rust database is always built from scratch (no pre-existing `knowledge.db` is opened or migrated), and the deviation improves RAG retrieval quality by giving both search legs the section context. The invariant-preserving `chunk_text` column and the byte offsets are unchanged.
 
 #### Scenario: Fresh build includes search_text
 - **WHEN** a fresh knowledge database is built from the consolidated init migration
@@ -68,7 +68,7 @@ The `chunks` table carries a `search_text TEXT NOT NULL` column (default = `chun
 - **THEN** `chunk_text` remains the pure source slice and `start_offset`/`end_offset` still satisfy `content[start_offset..end_offset] == chunk_text`
 
 ### Requirement: chunk metadata_json column (explicit v5 deviation)
-The `chunks` table SHALL carry a `metadata_json TEXT` (nullable) column holding the per-chunk metadata bag as raw JSON: the chunk-specific keys the chunker computed (`section_title`, `heading_level`, `breadcrumb`, `image_paths`, …). It SHALL be stored as raw text (the `documents.metadata_json` pattern), parsed on demand, and `NULL` SHALL mean "no chunk metadata". This is an explicit, justified deviation from the v5 shape (the legacy `chunks` table has no metadata column): the Rust database is always built from scratch (no legacy `knowledge.db` is opened or migrated), and the column restores a field that was in the original Rust design and surfaces the section context in search. The invariant-preserving `chunk_text`, the byte offsets, and the `search_text` re-point are unchanged; `PRAGMA user_version` stays 1.
+The `chunks` table SHALL carry a `metadata_json TEXT` (nullable) column holding the per-chunk metadata bag as raw JSON: the chunk-specific keys the chunker computed (`section_title`, `heading_level`, `breadcrumb`, `image_paths`, …). It SHALL be stored as raw text (the `documents.metadata_json` pattern), parsed on demand, and `NULL` SHALL mean "no chunk metadata". This is an explicit, justified deviation from the v5 shape (the v5 `chunks` table has no metadata column): the Rust database is always built from scratch (no pre-existing `knowledge.db` is opened or migrated), and the column restores a field that was in the original Rust design and surfaces the section context in search. The invariant-preserving `chunk_text`, the byte offsets, and the `search_text` re-point are unchanged; `PRAGMA user_version` stays 1.
 
 #### Scenario: Fresh build includes metadata_json
 - **WHEN** a fresh knowledge database is built from the consolidated init migration

@@ -234,7 +234,7 @@ pub fn open_db(path: &Path) -> Result<Db, CliError> {
 /// first use.
 ///
 /// No-op in api mode; skips the download when an explicit `model_path` is
-/// set (legacy mode). Deliberately does NOT mutate the config: the provider
+/// set (explicit-path mode). Deliberately does NOT mutate the config: the provider
 /// factory resolves the registry model itself (with the dimension
 /// cross-check against `onnx.yaml`).
 ///

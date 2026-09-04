@@ -6,10 +6,10 @@ the executable / CWD. Without `--config` the binary uses `config.default.yaml`
 
 | File | Provenance | Notes |
 |---|---|---|
-| `onnx.yaml` | Byte-for-byte from the legacy config `configs/onnx.yaml` | `runtime.platforms[*]` + `models.entries[*]` (bge-m3-int8, bge-small-en-v1.5, paraphrase-multilingual-MiniLM-L12-v2). Unchanged. |
-| `config.default.yaml` | Based on the legacy default `configs/config.default.yaml` | Deliberate deviation: `embeddings.local.model_name` is `bge-m3-int8` with `vector_dim: 1024` (Rust default per the frozen stack) instead of the legacy default `bge-small-en-v1.5` (dim 384). All other sections follow the legacy structure. |
-| `prompts/entity-linker/{system,user}.tmpl` | Rust minijinja templates (NOT a copy of the legacy `configs/prompts/entity-linker/*.tmpl`) | The legacy prompts are Go `text/template` and do not parse under minijinja, so they were re-expressed in minijinja with the same prompt text and data shape (field paths `entity_a.*` / `entity_b.*` instead of `.EntityA.*` / `.EntityB.*`; `join`/`truncate` are minijinja functions; context numbering uses a registered `enumerate` filter). Byte-identical to the embedded defaults in `crates/graph/src/templates/entity-linker/`. |
-| `prompts/ner/{system,user}.tmpl` | Rust minijinja templates (NOT a copy of the legacy `configs/prompts/ner/*.tmpl`) | Same engine reason as above. Byte-identical to the embedded defaults in `crates/ingestion/src/ner/templates/`. |
+| `onnx.yaml` | Carried over unchanged | `runtime.platforms[*]` + `models.entries[*]` (bge-m3-int8, bge-small-en-v1.5, paraphrase-multilingual-MiniLM-L12-v2). Unchanged. |
+| `config.default.yaml` | The default preset | Deliberate deviation: `embeddings.local.model_name` is `bge-m3-int8` with `vector_dim: 1024` (Rust default per the frozen stack) instead of `bge-small-en-v1.5` (dim 384). All other sections follow the same structure. |
+| `prompts/entity-linker/{system,user}.tmpl` | Rust minijinja templates | Minijinja templates with a fixed prompt text and data shape (field paths `entity_a.*` / `entity_b.*` instead of `.EntityA.*` / `.EntityB.*`; `join`/`truncate` are minijinja functions; context numbering uses a registered `enumerate` filter). Byte-identical to the embedded defaults in `crates/graph/src/templates/entity-linker/`. |
+| `prompts/ner/{system,user}.tmpl` | Rust minijinja templates | Same minijinja engine as the entity-linker templates. Byte-identical to the embedded defaults in `crates/ingestion/src/ner/templates/`. |
 
 ## Prompt override semantics
 

@@ -49,7 +49,7 @@ fn insert_fact(db: &Db, subject: i64, predicate: &str, object: i64) {
 }
 
 /// Insert a fact with a NULL subject (allowed by the v5 schema) — the
-/// regression trigger for the legacy `NOT IN` bug.
+/// regression trigger for the historical `NOT IN` bug.
 fn insert_null_subject_fact(db: &Db, predicate: &str, object: i64) {
     db.with_conn(|conn| {
         conn.execute(
@@ -660,7 +660,7 @@ fn delete_orphaned_entity_ids() {
 }
 
 // (e1b) REGRESSION: a fact with a NULL subject must not disable
-// the whole cleanup (the legacy `NOT IN` would match nothing).
+// the whole cleanup (the old `NOT IN` would match nothing).
 #[test]
 fn delete_orphaned_entity_ids_with_null_fact_endpoint() {
     let db = in_memory_db();

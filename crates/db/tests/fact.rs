@@ -975,7 +975,7 @@ fn search_paginated_no_filter() {
 
 // (e5, search) REGRESSION: a fact whose subject AND object names both
 // match the entity-name filter must appear ONCE in the page and ONCE in
-// the total (the legacy `INNER JOIN` duplicated it in the page while its
+// the total (the old `INNER JOIN` duplicated it in the page while its
 // COUNT(DISTINCT) total did not).
 #[test]
 fn search_paginated_entity_name_both_endpoints_match_once() {

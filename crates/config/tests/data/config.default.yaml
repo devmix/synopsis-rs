@@ -14,7 +14,7 @@ embeddings:
   mode: "local"
   local:
     model_name: "bge-small-en-v1.5"  # auto-download
-    # model_path: "" # legacy: explicit path
+    # model_path: "" # explicit model path
     vector_dim: 384
   api:
     base_url: "http://localhost:1234/v1"
