@@ -1,19 +1,18 @@
 //! ONNX model registry: typed structures for the external `onnx.yaml`, plus loading and lookup.
 //!
-//! This module mirrors the Go oracle's `internal/config/config.go` ONNX half: the
-//! `ONNXConfig` / `ONNXRuntimeConfig` / `ONNXPlatformConfig` / `ONNXModelsConfig` /
-//! `ModelInfo` / `ModelFile` structures, `LoadONNXConfig`, and the `PlatformForKey` /
-//! `ModelForName` lookups. The registry is an *external* file (referenced from the main
-//! config via `paths.onnx_config`) that lists the ONNX Runtime platform archives and the
-//! embedding models available for download — performing downloads belongs to the
-//! `embedding` crate, not here.
+//! The registry types [`OnnxConfig`] / [`OnnxRuntimeConfig`] / [`OnnxPlatformConfig`] /
+//! [`OnnxModelsConfig`] / [`ModelInfo`] / [`ModelFile`], the [`load_onnx_config`] loader, and the
+//! [`platform_for_key`] / [`model_for_name`] lookups. The registry is an *external* file
+//! (referenced from the main config via `paths.onnx_config`) that lists the ONNX Runtime
+//! platform archives and the embedding models available for download — performing downloads
+//! belongs to the `embedding` crate, not here.
 //!
-//! Semantics stay faithful to the oracle: a missing or unreadable file is an
+//! A missing or unreadable file is an
 //! [`ConfigError::Io`] carrying the path, an unparseable document is
 //! [`ConfigError::Yaml`] (spec scenario "Отсутствующий onnx.yaml"), unknown keys are
-//! ignored, and [`ArchiveFormat`] is tolerant by design D7 — Go stores it as a plain string
-//! that only the downloader interprets ("zip"/"tgz", else an error at download time), so an
-//! unrecognized value must not fail config loading.
+//! ignored, and [`ArchiveFormat`] is tolerant by design D7 — the format is stored as a plain
+//! string that only the downloader interprets ("zip"/"tgz", else an error at download time),
+//! so an unrecognized value must not fail config loading.
 
 use std::path::Path;
 
@@ -23,7 +22,7 @@ use crate::error::ConfigError;
 
 // ── Root ──────────────────────────────────────────────────────────────────
 
-/// External ONNX configuration loaded from `onnx.yaml` (oracle `ONNXConfig`).
+/// External ONNX configuration loaded from `onnx.yaml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OnnxConfig {
@@ -36,8 +35,7 @@ pub struct OnnxConfig {
 impl OnnxConfig {
     /// Returns the platform entry whose `key` matches (e.g. `"linux-amd64"`).
     ///
-    /// Oracle parity (`ONNXRuntimeConfig.PlatformForKey`): first match wins; `None` for an
-    /// unknown key.
+    /// First match wins; `None` for an unknown key.
     pub fn platform_for_key(&self, key: &str) -> Option<&OnnxPlatformConfig> {
         self.runtime
             .platforms
@@ -47,8 +45,7 @@ impl OnnxConfig {
 
     /// Returns the model entry whose `name` matches (e.g. `"bge-m3-int8"`).
     ///
-    /// Oracle parity (`ONNXModelsConfig.ModelForName`): first match wins; `None` for an
-    /// unknown name.
+    /// First match wins; `None` for an unknown name.
     pub fn model_for_name(&self, name: &str) -> Option<&ModelInfo> {
         self.models.entries.iter().find(|model| model.name == name)
     }
@@ -56,7 +53,7 @@ impl OnnxConfig {
 
 // ── Runtime / platforms ───────────────────────────────────────────────────
 
-/// ONNX Runtime version and platform definitions (oracle `ONNXRuntimeConfig`).
+/// ONNX Runtime version and platform definitions.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OnnxRuntimeConfig {
@@ -66,7 +63,7 @@ pub struct OnnxRuntimeConfig {
     pub platforms: Vec<OnnxPlatformConfig>,
 }
 
-/// Download info for a single platform (oracle `ONNXPlatformConfig`).
+/// Download info for a single platform.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OnnxPlatformConfig {
@@ -86,9 +83,9 @@ pub struct OnnxPlatformConfig {
     pub library_path: String,
 }
 
-/// Archive container format for a platform entry (design D7: tolerant enum — the oracle
-/// keeps this as a plain string and only interprets `"zip"`/`"tgz"` at download time, so an
-/// unrecognized value is preserved verbatim instead of failing config loading).
+/// Archive container format for a platform entry (design D7: tolerant enum — only
+/// `"zip"`/`"tgz"` are interpreted at download time, so an unrecognized value is preserved
+/// verbatim instead of failing config loading).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArchiveFormat {
     /// ZIP archive.
@@ -96,16 +93,16 @@ pub enum ArchiveFormat {
     /// Tar-gz archive.
     Tgz,
     /// A format the schema does not recognize (kept lowercase), or an absent/empty value —
-    /// rejected later by download logic exactly like Go's "unsupported archive format".
+    /// rejected later by download logic ("unsupported archive format").
     Unknown(String),
 }
 
 impl Default for ArchiveFormat {
     fn default() -> Self {
-        // The oracle leaves this field empty when the key is absent, and there is no oracle
-        // default to fall back on (unlike D12's five normalized enums). `Unknown("")` keeps
-        // that state verbatim — same treatment as strict enums without a default
-        // (`EmbeddingsMode`) — rather than fabricating a download format.
+        // An absent key leaves this field empty, and there is no default to fall back
+        // on (unlike D12's normalized enums). `Unknown("")` keeps that state verbatim —
+        // same treatment as strict enums without a default (`EmbeddingsMode`) — rather
+        // than fabricating a download format.
         Self::Unknown(String::new())
     }
 }
@@ -129,9 +126,9 @@ impl<'de> Deserialize<'de> for ArchiveFormat {
         D: Deserializer<'de>,
     {
         let raw = String::deserialize(deserializer)?;
-        // Case-insensitive match on the known words (oracle uses lowercase); unknown values
-        // are stored lowercased like every other tolerant enum in this crate, and an empty
-        // string stays `Unknown("")` (see [`Default for ArchiveFormat`]).
+        // Case-insensitive match on the known words (lowercase in the registry format);
+        // unknown values are stored lowercased like every other tolerant enum in this crate,
+        // and an empty string stays `Unknown("")` (see [`Default for ArchiveFormat`]).
         Ok(match raw.to_ascii_lowercase().as_str() {
             "zip" => Self::Zip,
             "tgz" => Self::Tgz,
@@ -142,7 +139,7 @@ impl<'de> Deserialize<'de> for ArchiveFormat {
 
 // ── Models ────────────────────────────────────────────────────────────────
 
-/// Model registry and default model name (oracle `ONNXModelsConfig`).
+/// Model registry and default model name.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OnnxModelsConfig {
@@ -152,7 +149,7 @@ pub struct OnnxModelsConfig {
     pub entries: Vec<ModelInfo>,
 }
 
-/// A model available in the registry (oracle `ModelInfo`).
+/// A model available in the registry.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelInfo {
@@ -174,7 +171,7 @@ pub struct ModelInfo {
     pub repo: String,
 }
 
-/// A single file belonging to an embedding model (oracle `ModelFile`).
+/// A single file belonging to an embedding model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelFile {
@@ -192,11 +189,11 @@ pub struct ModelFile {
 
 /// Reads and parses the external ONNX registry at `path` into an [`OnnxConfig`].
 ///
-/// Oracle parity (`LoadONNXConfig`): a missing or unreadable file yields
+/// A missing or unreadable file yields
 /// [`ConfigError::Io`] carrying the path, and an unparseable document (including non-UTF-8
 /// bytes) yields [`ConfigError::Yaml`] — both keep the path so callers can report which
-/// registry failed. Unknown keys are ignored, matching the oracle. This performs parsing
-/// only; there is no validation phase for this file in the oracle either.
+/// registry failed. Unknown keys are ignored. This performs parsing
+/// only; there is no validation phase for this file.
 pub fn load_onnx_config(path: impl AsRef<Path>) -> Result<OnnxConfig, ConfigError> {
     crate::io_util::read_yaml_file(path.as_ref(), "onnx config")
 }
@@ -231,7 +228,7 @@ mod tests {
     fn archive_format_preserves_unknown_and_empty_values() {
         // Tolerant (D7): an unrecognized value must not fail loading. Unknown values are
         // stored lowercased like every other tolerant enum in this crate; "" stays
-        // Unknown("") because the field has no oracle default.
+        // Unknown("") because the field has no default.
         let cfg = parse(
             r#"runtime:
   platforms:
@@ -250,7 +247,7 @@ mod tests {
             ArchiveFormat::Unknown(String::new())
         );
 
-        // An absent key decodes to the same state as the oracle's empty string.
+        // An absent key decodes to the same state as an empty string.
         let absent = parse("runtime:\n  platforms:\n    - key: c\n");
         assert_eq!(
             absent.runtime.platforms[0].archive_format,
@@ -296,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_keys_are_ignored_like_in_the_oracle() {
+    fn unknown_keys_are_ignored() {
         let cfg = parse(
             r#"runtime:
   version: "9.9"

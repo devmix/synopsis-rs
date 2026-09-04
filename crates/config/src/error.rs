@@ -32,8 +32,8 @@ pub enum ConfigError {
     },
 
     /// A structurally valid config failed semantic validation (e.g. an
-    /// embeddings section missing required fields for its mode). Messages are
-    /// kept close to the oracle's wording so parity diffs stay readable.
+    /// embeddings section missing required fields for its mode). Messages
+    /// use the established wording.
     #[error("invalid configuration: {message}")]
     Validation {
         /// Human-readable description of the violated invariant.
@@ -52,8 +52,7 @@ pub enum ConfigError {
     },
 
     /// A `<regex>` extraction rule's pattern failed to compile at load time (design D5).
-    /// The oracle panics here (`regexp.MustCompile`); the typed error is a deliberate fix —
-    /// see the config-module change report.
+    /// An invalid pattern is a typed error instead of a process crash.
     #[error("invalid regex pattern for rule {rule:?} in {file}: {source}")]
     Regex {
         /// Path of the ontology file containing the offending rule.

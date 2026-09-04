@@ -10,7 +10,7 @@
 //! `spawn_blocking` workers (workspace convention). [`LlmClient::call`]
 //! performs a single chat completion and returns the model's text content.
 //!
-//! Deliberate deviation from the oracle:
+//! Design:
 //! silent defaults are replaced by fail-fast validation — a zero timeout,
 //! retry count, or token budget is a configuration bug, not a value to paper
 //! over (see [`LlmClient::new`]).

@@ -43,7 +43,7 @@ where
 ///
 /// quick-xml consumes the bytes directly (undecodable input surfaces as its parse error), so —
 /// unlike [`read_yaml_file`] — there is no separate UTF-8 step; both failure kinds land in
-/// [`ConfigError::Xml`] carrying the path. Callers that need Go-style "missing file → `None`"
+/// [`ConfigError::Xml`] carrying the path. Callers that need "missing file → `None`"
 /// semantics check existence before calling (see [`crate::ontology::load_global_config`]).
 pub(crate) fn read_xml_file<T>(path: &Path) -> Result<T, ConfigError>
 where

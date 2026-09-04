@@ -18,24 +18,22 @@
 //! sleeper is injectable (the test-only `with_sleeper` seam) so no test ever
 //! sleeps for real.
 //!
-//! Deliberate deviations from the oracle,
-//! recorded per the migration principles:
-//! - message `content` is a plain string, not the oracle's `[{type, text}]`
+//! Design decisions:
+//! - message `content` is a plain string rather than a `[{type, text}]`
 //!   parts array — for text-only prompts the wire form is equivalent, and a
 //!   string is simpler and cheaper to serialize;
-//! - `temperature` / `seed` / `max_tokens` are always serialized (the oracle
-//!   omits zero values via `omitempty`); explicit values are deterministic and
-//!   every OpenAI-compatible API accepts them;
+//! - `temperature` / `seed` / `max_tokens` are always serialized (zero values
+//!   are not omitted); explicit values are deterministic and every
+//!   OpenAI-compatible API accepts them;
 //! - silent config defaults are replaced by fail-fast validation in
 //!   [`LlmClient::new`] (a zero timeout / retry count / token budget is a
 //!   configuration bug, not a value to paper over);
-//! - backoff base is 500 ms with multiplicative ±20% jitter (the oracle uses
-//!   a 1 s base and adds a fixed 0–500 ms): a faster first retry suits the
-//!   laptop-local use case, and multiplicative jitter scales with the delay
-//!   instead of becoming negligible as the backoff grows;
-//! - the request body is built once and re-sent on every retry (the oracle
-//!   rebuilds it per attempt); the body is a pure function of the config and
-//!   the prompts, so the wire bytes are identical on each attempt;
+//! - backoff base is 500 ms with multiplicative ±20% jitter: a faster first
+//!   retry suits the laptop-local use case, and multiplicative jitter scales
+//!   with the delay instead of becoming negligible as the backoff grows;
+//! - the request body is built once and re-sent on every retry; the body is a
+//!   pure function of the config and the prompts, so the wire bytes are
+//!   identical on each attempt;
 //! - jitter draws come from a small hand-rolled splitmix64 stream instead of a
 //!   `rand` dependency (not in the frozen stack): jitter only needs to
 //!   desynchronize concurrent retry loops, not to be cryptographic.
@@ -50,7 +48,7 @@ use ureq::{Agent, http::Uri};
 
 use crate::error::LlmError;
 
-/// The first retry's backoff: 500 ms (documented choice; the oracle uses 1 s).
+/// The first retry's backoff: 500 ms (a faster first retry suits the laptop-local use case).
 const BACKOFF_BASE_MS: u64 = 500;
 /// The exponential factor: every retry doubles the previous delay.
 const BACKOFF_FACTOR: u64 = 2;
@@ -123,10 +121,8 @@ impl LlmClient {
     ///
     /// [`LlmError::Configuration`] naming the first violated invariant.
     ///
-    /// Deliberate deviation from the oracle: the Go client silently
-    /// substitutes defaults (60 s timeout, 3 retries, 2048 max tokens,
-    /// negative temperature clamped to 0); here a missing or zero value is a
-    /// configuration bug and fails fast instead.
+    /// Design: silent defaults are replaced by fail-fast validation — a
+    /// missing or zero value is a configuration bug and fails fast instead.
     pub fn new(config: &LlmConfig) -> Result<Self, LlmError> {
         let base_url = config.api_base_url.trim();
         if base_url.is_empty() {
@@ -135,8 +131,7 @@ impl LlmClient {
             ));
         }
         // Normalize away a trailing slash so "http://x" and "http://x/" yield
-        // the same endpoint. The oracle concatenates blindly, producing
-        // "http://x//chat/completions".
+        // the same endpoint (avoids a double slash in the URL).
         let base_url = base_url.trim_end_matches('/');
         let endpoint = format!("{base_url}/chat/completions");
         let uri: Uri = endpoint.parse().map_err(|err| {
@@ -187,8 +182,7 @@ impl LlmClient {
 
         let timeout = std::time::Duration::from_millis(config.timeout_ms as u64);
         // Design D2: status codes are classified by the client (task 1.2),
-        // not by ureq, so error messages can carry the response body — the
-        // oracle includes the body in its HTTP error messages.
+        // not by ureq, so error messages can carry the response body.
         let agent_config = Agent::config_builder()
             .timeout_global(Some(timeout))
             .http_status_as_error(false)
@@ -244,10 +238,10 @@ impl LlmClient {
     /// [`ResponseFormat::JsonSchema`] mode: a non-empty `schema` is parsed as
     /// JSON and embedded under `response_format.json_schema.{name, schema}`,
     /// defaulting the name to `llm_output` when `schema_name` is empty; an
-    /// empty or absent `schema` falls back to `json_object` (oracle
-    /// parity). In [`ResponseFormat::JsonObject`] mode both arguments are
-    /// ignored. The schema is embedded in every retried request (the payload
-    /// is built once and re-sent verbatim).
+    /// empty or absent `schema` falls back to `json_object`. In
+    /// [`ResponseFormat::JsonObject`] mode both arguments are ignored. The
+    /// schema is embedded in every retried request (the payload is built once
+    /// and re-sent verbatim).
     ///
     /// The per-request timeout is the config `timeout_ms`, applied globally to
     /// the connection pool in [`LlmClient::new`].
@@ -284,7 +278,7 @@ impl LlmClient {
 
         // Built once and re-sent on every retry: the body is a pure function
         // of the config and the prompts, so the wire bytes are identical on
-        // each attempt (the oracle rebuilds it per attempt — same bytes).
+        // each attempt.
         let body = self.build_request_body(system, user, schema, schema_name)?;
         let payload = serde_json::to_string(&body)
             .map_err(|err| LlmError::Parse(format!("failed to serialize request: {err}")))?;
@@ -297,8 +291,8 @@ impl LlmClient {
     /// Before every retry (never before the initial attempt) the sleeper is
     /// invoked with [`LlmClient::backoff_delay`]. A non-retryable error is
     /// returned immediately; exhausting the budget wraps the last attempt's
-    /// error in [`LlmError::RetriesExhausted`] (the oracle's
-    /// `exhausted N retries: <last>` — here `attempts` = total attempts).
+    /// error in [`LlmError::RetriesExhausted`] (here `attempts` = total
+    /// attempts).
     fn call_with_retries(&self, payload: &str) -> Result<String, LlmError> {
         let max_attempts = self.config.max_retries as u32 + 1;
         let mut attempt = 0;
@@ -393,7 +387,7 @@ impl LlmClient {
     }
 
     /// The structured-output mode. Callers in `JsonSchema` mode must supply a
-    /// schema per call (the oracle's `IsRequiresSchema`).
+    /// schema per call.
     #[must_use]
     pub fn response_format(&self) -> &ResponseFormat {
         &self.config.response_format
@@ -451,7 +445,7 @@ impl LlmClient {
             });
         }
         // `json_object` mode, or `json_schema` mode without a usable schema
-        // (the oracle falls through to `json_object` in that case).
+        // (falls through to `json_object` in that case).
         Ok(ResponseFormatBody {
             kind: "json_object".to_string(),
             json_schema: None,
@@ -511,18 +505,18 @@ fn parse_chat_completion(body: &str) -> Result<String, LlmError> {
 // ── Request types ────────────────────────────────────────────────────────────
 
 /// The chat-completions request body (wire shape; see the module docs for the
-/// deliberate deviations from the oracle).
+/// design decisions).
 #[derive(Debug, Serialize)]
 struct RequestBody {
     /// The model identifier.
     model: String,
     /// The conversation: `system` then `user`.
     messages: Vec<RequestMessage>,
-    /// Sampling temperature (always sent; the oracle omits zero).
+    /// Sampling temperature (always sent).
     temperature: f64,
-    /// Sampling seed (always sent; the oracle omits zero).
+    /// Sampling seed (always sent).
     seed: i64,
-    /// Maximum tokens (always sent; the oracle omits zero).
+    /// Maximum tokens (always sent).
     max_tokens: i32,
     /// Structured-output mode.
     response_format: ResponseFormatBody,
@@ -533,7 +527,7 @@ struct RequestBody {
 struct RequestMessage {
     /// The role: `system` or `user`.
     role: String,
-    /// The message text (a plain string, not the oracle's parts array).
+    /// The message text (a plain string).
     content: String,
 }
 

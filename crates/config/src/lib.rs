@@ -1,6 +1,6 @@
-//! Configuration loading and validation for Synopsis (Rust).
+//! Configuration loading and validation for Synopsis.
 //!
-//! This crate ports the Go oracle's `internal/config` package: YAML presets
+//! This crate loads and validates the application configuration: YAML presets
 //! ([`preset`]), the external ONNX model registry (`onnx.yaml`, task 2.1) and
 //! the XML ontologies (task 3.x).
 //!

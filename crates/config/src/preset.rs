@@ -1,32 +1,32 @@
 //! Main YAML preset: typed [`Config`] structures plus load / validate / defaults.
 //!
-//! This module mirrors the Go oracle's `internal/config/config.go`: YAML
-//! structures, `Load` and `Validate`, and `ApplyDefaults` with the derived
-//! helpers `vector_dim` / `cache_db_path`. The knowledge-DB path is NOT a
-//! config field: it is derived from `workspace_dir` + `dataset.name` via
-//! [`DatasetConfig::db_path`]. Field names, YAML keys
-//! and validation semantics stay faithful to the oracle; defaulting follows
-//! design D12/D13 (revision of task 1.2):
+//! [`Config`] structures, [`load`], [`Config::validate`] and
+//! [`Config::apply_defaults`] with the derived helpers [`Config::vector_dim`]
+//! / [`Config::cache_db_path`]. The knowledge-DB path is NOT a config field:
+//! it is derived from `workspace_dir` + `dataset.name` via
+//! [`DatasetConfig::db_path`]. Defaulting follows design D12/D13 (revision of
+//! task 1.2):
 //!
 //! * **YAML artifacts are normalized at deserialization** ("parse, don't
-//!   validate"): an absent key on a defaulted field yields that field's oracle
-//!   default, and an explicit `""` on the five tolerant enums / eight string
-//!   fields normalizes to the same default. After [`load`](crate::load) those
-//!   values are always valid — no runtime code ever sees an empty artifact.
+//!   validate"): an absent key on a defaulted field yields that field's
+//!   documented default, and an explicit `""` on the five tolerant enums /
+//!   eight string fields normalizes to the same default. After
+//!   [`load`](crate::load) those values are always valid — no runtime code
+//!   ever sees an empty artifact.
 //! * **Semantic rules live in [`Config::apply_defaults`]**: numeric `<= 0`
 //!   fallbacks (`overlap_size`: `< 0`, so a configured `0` survives), conditional
 //!   pairs (both search legs off → both on; no local model set → `"bge-m3-int8"`),
 //!   maps/lists (`text_fields`, `authority_boost`, scheduler jobs) and the
 //!   `auto_update:` section-presence rule (design D8).
-//! * **Go's buggy bool defaults are fixed** (D13, BREAKING): `enable_graph`,
+//! * **Buggy bool defaults are fixed** (D13, BREAKING): `enable_graph`,
 //!   `load_on_startup` and `watch_sources` use presence semantics — absent →
 //!   true, an explicit `false` is respected.
-//! * **`vectors:` is an additive extension with no oracle counterpart** (design
-//!   D7, human decision 2026-08-21): the oracle's vec0 brute-force had no ANN
+//! * **`vectors:` is an additive extension** (design D7, human decision
+//!   2026-08-21): the previous vector search (vec0 brute-force) had no ANN
 //!   parameters to tune, so the section stores raw fields with ADR 0003
-//!   defaults and Go's ignore-unknown-keys behavior keeps old presets
-//!   compatible. An absent section stays `None` (and is skipped on
-//!   re-serialization); [`Config::vectors_config`] resolves it to the defaults.
+//!   defaults and unknown-key tolerance keeps old presets compatible. An
+//!   absent section stays `None` (and is skipped on re-serialization);
+//!   [`Config::vectors_config`] resolves it to the defaults.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,16 +42,17 @@ use crate::error::ConfigError;
 /// variants, any other value is captured verbatim in `Unknown(String)` instead
 /// of failing the parse. Serializes back to its canonical lowercase word (or the
 /// original text for unknowns), so round-tripping preserves intent. The second
-/// token names the variant used by [`Default`], chosen as that field's oracle
-/// default so an absent YAML key deserializes straight to the intended value.
+/// token names the variant used by [`Default`], chosen as that field's
+/// documented default so an absent YAML key deserializes straight to the
+/// intended value.
 ///
 /// A trailing clause selects how an explicit empty string is handled (design D12):
 /// * `empty_to_default` — `""` normalizes to the Default variant at parse time;
-///   used by every enum whose field has an unconditional oracle default (`strategy`,
+///   used by every enum whose field has an unconditional default (`strategy`,
 ///   `level`, `format`, `output`, `response_format`).
-/// * *(clause absent)* — `""` stays `Unknown("")`; used by strict enums without an
-///   oracle default ([`EmbeddingsMode`]): an empty mode must still be rejected by
-///   [`Config::validate`] with the oracle's message, like any other bogus value.
+/// * *(clause absent)* — `""` stays `Unknown("")`; used by strict enums without a
+///   default ([`EmbeddingsMode`]): an empty mode must still be rejected by
+///   [`Config::validate`] with the established message, like any other bogus value.
 macro_rules! tolerant_enum {
     ($(#[$doc:meta])* $name:ident, $default:ident { $($variant:ident => $value:expr),* $(,)? } empty_to_default) => {
         __tolerant_enum_impl__!($(#[$doc])* $name, $default { $($variant => $value),* }, Self::$default);
@@ -63,7 +64,7 @@ macro_rules! tolerant_enum {
 
 // Shared body of [`tolerant_enum`]; `$empty_fallback` is the expression produced for an
 // explicit empty string (design D12): `Self::$default` for enums that normalize to their
-// oracle default, or `Self::Unknown(String::new())` for strict enums without one. It must
+// default, or `Self::Unknown(String::new())` for strict enums without one. It must
 // not reference local variables — tokens passed through fragment slots keep their
 // definition-site span and cannot see locals of the generated function (macro hygiene).
 macro_rules! __tolerant_enum_impl__ {
@@ -84,7 +85,7 @@ macro_rules! __tolerant_enum_impl__ {
 
         impl Default for $name {
             fn default() -> Self {
-                // The zero value equals this field's oracle default, so an absent
+                // The zero value equals this field's default, so an absent
                 // YAML key deserializes straight to the intended value.
                 Self::$default
             }
@@ -108,10 +109,11 @@ macro_rules! __tolerant_enum_impl__ {
                 D: Deserializer<'de>,
             {
                 let raw = String::deserialize(deserializer)?;
-                // Case-insensitive match on known words (oracle uses lowercase); unknown
-                // values are preserved verbatim for diagnostics. An explicit "" is a YAML
-                // artifact of an unset field: `$empty_fallback` normalizes it to the
-                // oracle default (design D12) or keeps it as Unknown("") for strict enums.
+                // Case-insensitive match on known words (lowercase in the config
+                // format); unknown values are preserved verbatim for diagnostics.
+                // An explicit "" is a YAML artifact of an unset field:
+                // `$empty_fallback` normalizes it to the field's default (design D12)
+                // or keeps it as Unknown("") for strict enums.
                 Ok(match raw.to_ascii_lowercase().as_str() {
                     $($value => Self::$variant,)*
                     "" => $empty_fallback,
@@ -129,18 +131,18 @@ fn default_true() -> bool {
 }
 
 /// Declares the serde helper pair for a config string field with an unconditional
-/// oracle default (design D12): `default_*()` supplies the value when the YAML key is
+/// default (design D12): `default_*()` supplies the value when the YAML key is
 /// absent, and `de_*()` normalizes an explicit empty string to it. serde's
 /// `deserialize_with` accepts only a zero-argument path, so each field gets its own
 /// pair even though the logic is identical (the D12 "de_empty_to_default" pattern).
 macro_rules! empty_string_default {
     ($default_fn:ident, $de_fn:ident, $value:expr) => {
-        /// Oracle default for a config string field (design D12).
+        /// Default for a config string field (design D12).
         fn $default_fn() -> String {
             $value.to_string()
         }
 
-        /// Deserialize a config string; an explicit `""` becomes the field's oracle
+        /// Deserialize a config string; an explicit `""` becomes the field's
         /// default so runtime code never sees it (design D12, "parse, don't validate").
         fn $de_fn<'de, D>(deserializer: D) -> Result<String, D::Error>
         where
@@ -224,13 +226,12 @@ pub struct Config {
 impl Config {
     /// Validates the required-fields invariants of a fully-loaded config.
     ///
-    /// Mirrors `config.go Validate`: exactly one embeddings mode is legal and
-    /// each mode has its own set of mandatory fields. Returns [`ConfigError::Validation`]
-    /// on the first violated invariant.
+    /// Exactly one embeddings mode is legal and each mode has its own set of
+    /// mandatory fields. Returns [`ConfigError::Validation`] on the first
+    /// violated invariant.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // Oracle parity (config.go `Validate` switch): the mode itself is checked
-        // here, not at parse time. An unrecognized value yields a Validation error
-        // with the oracle's exact message rather than a YAML/parse failure.
+        // The mode itself is checked here, not at parse time: an unrecognized
+        // value yields a Validation error rather than a YAML/parse failure.
         match &self.embeddings.mode {
             EmbeddingsMode::Local => {
                 let local = &self.embeddings.local;
@@ -268,28 +269,27 @@ impl Config {
         Ok(())
     }
 
-    /// Fills zero-value fields with the oracle's defaults — the **semantic** half of
+    /// Fills zero-value fields with the documented defaults — the **semantic** half of
     /// the defaulting split (design D12). YAML artifacts are already normalized by
     /// deserialization: absent keys and explicit `""` on defaulted string/enum fields,
     /// plus presence-semantics bools (`enable_graph`, `load_on_startup`,
     /// `watch_sources`, design D13) never reach this method empty or false-by-default.
-    /// What remains here are the oracle's semantic rules:
+    /// What remains here are the semantic rules:
     ///
-    /// * Numeric `<= 0` fallbacks — except `markdown.overlap_size`, which Go checks
+    /// * Numeric `<= 0` fallbacks — except `markdown.overlap_size`, which is checked
     ///   with `< 0`, so a configured `0` survives.
     /// * Conditional pairs: both search legs force-enabled only when **both** are
     ///   disabled (an explicit single-leg disable is respected); and the local model
     ///   fallback — `embeddings.local.model_name` becomes `"bge-m3-int8"` in **both**
-    ///   modes, exactly as Go applies it regardless of `mode`.
-    /// * Maps / lists: an empty `json.text_fields` gains the oracle's four fields; an
+    ///   modes, applied regardless of `mode`.
+    /// * Maps / lists: an empty `json.text_fields` gains the four default fields; an
     ///   empty `authority_boost` map gains `"default": 1.0`; the scheduler always
     ///   gains an `orphan_cleanup` job — **disabled** with a 3600 s interval unless
-    ///   explicitly configured (Go defaults it disabled, not enabled: the job performs
+    ///   explicitly configured (disabled by default, not enabled: the job performs
     ///   full-table scans).
     /// * Section presence: an `auto_update:` section missing from YAML is materialized
     ///   fully enabled (`enabled = initial_sync = true`); a present one is respected as
-    ///   parsed. Presence rides on the [`Option`] itself (design D8) instead of Go's
-    ///   hidden `autoUpdateConfigured` flag that scans YAML nodes.
+    ///   parsed. Presence rides on the [`Option`] itself (design D8).
     pub fn apply_defaults(&mut self) {
         // Ingestion ------------------------------------------------------------------
         if self.ingestion.batch_size <= 0 {
@@ -304,7 +304,7 @@ impl Config {
         if md.max_chunk_size <= 0 {
             md.max_chunk_size = 1000;
         }
-        // Go checks `< 0`, not `<= 0`: a configured overlap of 0 is preserved.
+        // Checked with `< 0`, not `<= 0`: a configured overlap of 0 is preserved.
         if md.overlap_size < 0 {
             md.overlap_size = 100;
         }
@@ -370,7 +370,7 @@ impl Config {
         }
         // `watch_sources` is normalized at deserialization time (design D13).
         // Absent section defaults to fully enabled; a present one is respected as
-        // parsed (Go: the hidden `autoUpdateConfigured` flag skips this branch).
+        // parsed (this branch is skipped for a present section).
         if !auto_update_configured {
             auto.enabled = true;
             auto.initial_sync = true;
@@ -378,7 +378,7 @@ impl Config {
 
         // Scheduler ------------------------------------------------------------------------
         // An entry missing from YAML decodes to the zero value, so `entry` + default
-        // reproduces Go's nil-map handling. The job is disabled by default (full-table
+        // covers the absent-entry case. The job is disabled by default (full-table
         // scans on large databases); a zero-value entry already has `enabled == false`,
         // so only the interval needs its default and any explicit configuration wins.
         let orphan_cleanup = self
@@ -393,7 +393,7 @@ impl Config {
         // Logging, paths and dataset name are normalized at deserialization
         // time (design D12) — nothing to do here.
 
-        // NER LLM (Go applies these to the NER provider only; `linker.llm` is untouched) ----
+        // NER LLM (these defaults apply to the NER provider only; `linker.llm` untouched) ----
         let llm = &mut self.ingestion.ner.llm;
         if llm.timeout_ms <= 0 {
             llm.timeout_ms = 60_000;
@@ -407,7 +407,7 @@ impl Config {
             self.ingestion.resolver.similarity_threshold = 0.8;
         }
 
-        // Local embedding (Go applies this fallback in both modes) ---------------------------------
+        // Local embedding (this fallback applies in both modes) -------------------------------------
         let local = &mut self.embeddings.local;
         if local.model_name.is_empty() && local.model_path.is_empty() {
             local.model_name = "bge-m3-int8".to_string();
@@ -431,8 +431,8 @@ impl Config {
         if self.search.recent_days <= 0 {
             self.search.recent_days = 90;
         }
-        // Go checks `nil`; an explicit empty map is indistinguishable from an absent one here,
-        // so `is_empty` is the closest faithful check.
+        // An explicit empty map is indistinguishable from an absent one here,
+        // so `is_empty` is the closest check.
         if self.search.authority_boost.is_empty() {
             self.search
                 .authority_boost
@@ -440,9 +440,8 @@ impl Config {
         }
     }
 
-    /// Returns the configured embedding vector dimension for the active mode
-    /// (Go `VectorDim`): local → `local.vector_dim`, api → `api.vector_dim`,
-    /// any unrecognized mode → 0.
+    /// Returns the configured embedding vector dimension for the active mode:
+    /// local → `local.vector_dim`, api → `api.vector_dim`, any unrecognized mode → 0.
     pub fn vector_dim(&self) -> i32 {
         match self.embeddings.mode {
             EmbeddingsMode::Local => self.embeddings.local.vector_dim,
@@ -494,14 +493,15 @@ pub struct DatabaseConfig {
 
 tolerant_enum! {
     /// Embedding provider mode (design D7): `"local"` or `"api"`. It deserializes
-    /// leniently so an unrecognized value does NOT fail parsing — the oracle keeps
-    /// `mode` as a plain string and checks it in `Validate()`, so a config that loads
-    /// there must load here too. [`Config::validate`] then rejects any non-`local`/
-    /// non-`api` value with the oracle's message, which is what makes this "strict"
-    /// (invalid values error at validation) versus the purely tolerant enums that are
-    /// preserved without ever failing. `mode` has no oracle default, so it does NOT
-    /// opt into D12 empty-string normalization: an explicit `""` stays `Unknown("")`
-    /// and is rejected by [`Config::validate`] exactly like Go rejects it.
+    /// leniently so an unrecognized value does NOT fail parsing — the value is
+    /// checked by [`Config::validate`] instead, so a config that loads can still be
+    /// rejected at validation. [`Config::validate`] then rejects any non-`local`/
+    /// non-`api` value with the established message, which is what makes this
+    /// "strict" (invalid values error at validation) versus the purely tolerant
+    /// enums that are preserved without ever failing. `mode` has no default, so it
+    /// does NOT opt into D12 empty-string normalization: an explicit `""` stays
+    /// `Unknown("")` and is rejected by [`Config::validate`] like any other bogus
+    /// value.
     EmbeddingsMode, Local {
         Local => "local",
         Api   => "api",
@@ -730,9 +730,9 @@ pub struct SearchConfig {
 // ── Vectors (ANN index) ───────────────────────────────────────────────────
 //
 // Additive extension of the frozen config format (design D7, human decision
-// 2026-08-21): the oracle has no ANN parameters (vec0 brute-force had nothing
-// to tune) and Go ignores unknown keys, so presets without the section stay
-// compatible. Defaults are the ADR 0003 configuration.
+// 2026-08-21): the previous vector search (vec0 brute-force) had no ANN
+// parameters to tune, and unknown keys are ignored, so presets without the
+// section stay compatible. Defaults are the ADR 0003 configuration.
 
 /// Declares the serde default helper for a `vectors:` section field (design
 /// D7): a key missing inside a present section resolves to the ADR 0003 value,
@@ -982,8 +982,8 @@ impl Default for VectorsConfig {
 #[serde(default)]
 pub struct GraphConfig {
     /// Enable graph traversal in queries. Presence semantics (design D13): absent →
-    /// true; an explicit `false` is respected — Go's `if !x { x = true }` pattern that
-    /// forced it back to true was a bug (and its doc comment always said "default true").
+    /// true; an explicit `false` is respected — the old force-back-to-true pattern was
+    /// a bug (the documented intent was "default true").
     #[serde(default = "default_true")]
     pub enable_graph: bool,
     /// Maximum BFS depth.
@@ -991,15 +991,16 @@ pub struct GraphConfig {
     /// Maximum nodes returned per query.
     pub max_nodes: i32,
     /// Load the graph into memory on startup. Presence semantics (design D13): absent →
-    /// true; an explicit `false` is respected (Go forced it back to true — bug fixed).
+    /// true; an explicit `false` is respected (a silent force-back-to-true was a bug —
+    /// fixed).
     #[serde(default = "default_true")]
     pub load_on_startup: bool,
 }
 
 impl Default for GraphConfig {
     fn default() -> Self {
-        // Absent section means enabled / loaded-on-startup: the documented Go intent
-        // ("default true") without its buggy force-enable (design D13). Depth/node
+        // Absent section means enabled / loaded-on-startup: the documented intent
+        // ("default true") without the buggy force-enable (design D13). Depth/node
         // bounds stay zero here; `apply_defaults` fills them.
         Self {
             enable_graph: true,
@@ -1054,13 +1055,14 @@ pub struct AutoUpdateConfig {
     /// Enable filesystem monitoring. Governed by section presence (design D8): an absent
     /// `auto_update:` section is materialized with `enabled = true` by
     /// [`Config::apply_defaults`](crate::preset::Config::apply_defaults), while a present
-    /// section keeps its parsed value — a key missing inside a present section stays false,
-    /// matching the oracle.
+    /// section keeps its parsed value — a key missing inside a present section stays
+    /// false.
     pub enabled: bool,
     /// Minimum interval between re-indexings in seconds.
     pub debounce_seconds: i32,
     /// Watch all sources listed under ingestion. Presence semantics (design D13): absent →
-    /// true; an explicit `false` is respected (Go forced it back to true — bug fixed).
+    /// true; an explicit `false` is respected (a silent force-back-to-true was a bug —
+    /// fixed).
     #[serde(default = "default_true")]
     pub watch_sources: bool,
     /// Run a full source scan on startup. Same presence rule as [`Self::enabled`].
@@ -1302,7 +1304,7 @@ impl Default for ServerConfig {
 
 /// Reads and parses the YAML config at `path` into a [`Config`].
 ///
-/// Unknown keys are ignored (matching the oracle). This performs parsing only —
+/// Unknown keys are ignored. This performs parsing only —
 /// it does **not** apply defaults or validate; call
 /// [`Config::validate`](Config::validate) and
 /// [`Config::apply_defaults`](Config::apply_defaults) as separate phases.

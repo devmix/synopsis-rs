@@ -9,28 +9,26 @@
 //! `<confidence auto_publish_threshold= review_threshold= reject_threshold=>`.
 //!
 //! [`load_domain_config`] is the single entry point: read → parse → per-file validation + regex
-//! compilation (design D5) in one pass — the oracle's `LoadDomainConfig` + `Validate` startup
-//! sequence (`domain_registry.go::DiscoveryWithLogger`) as one call. A missing file, malformed
-//! XML, a violated invariant or an uncompilable pattern are all start errors; unlike the global
-//! pool there is no "absent → empty" state — every domain file that exists must load cleanly.
+//! compilation (design D5) in one pass — the load + validate startup sequence as one call. A
+//! missing file, malformed XML, a violated invariant or an uncompilable pattern are all start
+//! errors; unlike the global pool there is no "absent → empty" state — every domain file that
+//! exists must load cleanly.
 //!
 //! Entity/relation/extraction types are shared with the global pool ([`crate::ontology`], design
 //! D6: one parser model for both layers); this module adds only [`DomainConfig`] and its
 //! confidence policy. Cross-layer resolution (a domain definition shadowing a pooled one) is a
 //! `graph` concern, not this crate's.
 //!
-//! Deliberate deviations from the oracle (recorded in the change report):
+//! Design decisions:
 //! - The copy-paste messages "entity Predicate is required" / "duplicate entity Predicate: %s"
 //!   name a field `EntityDef` does not have; fixed to "entity id …", exactly like task 3.1b did
-//!   for the pool's twin checks. All other validation messages keep byte-parity with
-//!   `domain_config.go`.
-//! - An uncompilable pattern is a typed [`ConfigError::Regex`] (file + rule id) instead of the
-//!   oracle's `regexp.MustCompile` panic — same fail-fast semantics, no process crash (the fix
-//!   established in task 3.1b; the shared compile step lives on
-//!   [`crate::ontology::RegexRuleDef::validate_and_compile`]).
-//! - Confidence defaults are not applied at load time: the oracle keeps raw attribute values and
-//!   resolves zero → 0.85/0.60/0.40 only when a consumer asks via `DefaultConfidencePolicy`.
-//!   [`DomainConfig::effective_confidence`] mirrors that split instead of mutating parsed fields.
+//!   for the pool's twin checks. All other validation messages keep their established wording.
+//! - An uncompilable pattern is a typed [`ConfigError::Regex`] (file + rule id) — fail-fast at
+//!   load time, no process crash (the fix established in task 3.1b; the shared compile step
+//!   lives on [`crate::ontology::RegexRuleDef::validate_and_compile`]).
+//! - Confidence defaults are not applied at load time: parsed attributes keep their raw values
+//!   and zero → 0.85/0.60/0.40 is resolved on demand by
+//!   [`DomainConfig::effective_confidence`] instead of mutating parsed fields.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -41,7 +39,7 @@ use crate::error::ConfigError;
 use crate::ontology::{AttributeType, EntityDef, ExtractionDef, RelationDef};
 
 /// Default for `auto_publish_threshold` when the attribute is absent (zero value). Applied by
-/// [`DomainConfig::effective_confidence`] — domain_config.go `DefaultConfidencePolicy`.
+/// [`DomainConfig::effective_confidence`].
 const DEFAULT_AUTO_PUBLISH_THRESHOLD: f64 = 0.85;
 /// Default for `review_threshold` when the attribute is absent (zero value). See above.
 const DEFAULT_REVIEW_THRESHOLD: f64 = 0.60;
@@ -85,16 +83,17 @@ pub struct DomainConfig {
     /// every rule has been validated and its pattern compiled (design D5).
     #[serde(default)]
     pub extraction: ExtractionDef,
-    /// Confidence thresholds as written in the file; absent attributes stay `0.0` — the oracle's
-    /// defaults are resolved on demand by [`DomainConfig::effective_confidence`], not here.
+    /// Confidence thresholds as written in the file; absent attributes stay `0.0` — the
+    /// documented defaults are resolved on demand by [`DomainConfig::effective_confidence`], not
+    /// here.
     #[serde(default)]
     pub confidence: ConfidencePolicy,
 }
 
 /// Raw `<confidence>` element of a domain file (`auto_publish_threshold`, `review_threshold`,
 /// `reject_threshold` attributes). Values are kept exactly as parsed — an absent attribute is
-/// the XML zero value `0.0`; [`DomainConfig::effective_confidence`] maps zeros to the oracle's
-/// defaults (same split as Go's field + `DefaultConfidencePolicy` pair).
+/// the XML zero value `0.0`; [`DomainConfig::effective_confidence`] maps zeros to the
+/// documented defaults (same split as the raw-field + on-demand-resolution pair).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
 pub struct ConfidencePolicy {
     /// Auto-publish threshold (`auto_publish_threshold` attribute); must lie in `[0, 1]` —
@@ -111,9 +110,8 @@ pub struct ConfidencePolicy {
     pub reject_threshold: f64,
 }
 
-/// Confidence thresholds with the oracle defaults applied to zero values (domain_config.go
-/// `DefaultConfidencePolicy`). All three lie in `[0, 1]`: either a validated file value or one of
-/// the documented defaults.
+/// Confidence thresholds with the documented defaults applied to zero values. All three lie in
+/// `[0, 1]`: either a validated file value or one of the defaults.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EffectiveConfidence {
     /// Threshold above which extracted items are published without review (default 0.85).
@@ -125,12 +123,10 @@ pub struct EffectiveConfidence {
 }
 
 impl DomainConfig {
-    /// Effective confidence thresholds with the oracle's defaults applied to zero values — a
-    /// direct port of `DefaultConfidencePolicy` (domain_config.go): an absent attribute parses to
-    /// `0.0`, so "absent" and explicit `"0"` both resolve to the default, exactly like the oracle
-    /// (`if c.Confidence.X == 0 { X = default }`). The parsed [`confidence`](Self::confidence)
-    /// fields are never mutated — Go applies these defaults at use time (the NER pipeline), not
-    /// in `LoadDomainConfig`/`Validate`.
+    /// Effective confidence thresholds with the documented defaults applied to zero values: an
+    /// absent attribute parses to `0.0`, so "absent" and explicit `"0"` both resolve to the
+    /// default (zero → default). The parsed [`confidence`](Self::confidence) fields are never
+    /// mutated — the defaults are applied at use time (the NER pipeline), not at load time.
     pub fn effective_confidence(&self) -> EffectiveConfidence {
         EffectiveConfidence {
             auto_publish: if self.confidence.auto_publish_threshold == 0.0 {
@@ -151,13 +147,13 @@ impl DomainConfig {
         }
     }
 
-    /// Validates every section in the oracle's error precedence and compiles the regex rules in
-    /// place (design D5): name/version presence, entity pool (ids, attribute names, ref targets),
+    /// Validates every section in a fixed error precedence and compiles the regex rules in place
+    /// (design D5): name/version presence, entity pool (ids, attribute names, ref targets),
     /// relations (predicates, endpoints existing among **this domain's** entities, relation
     /// attributes), extraction rules via
     /// [`RegexRuleDef::validate_and_compile`](crate::ontology::RegexRuleDef::validate_and_compile)
-    /// with the oracle's shared messages, then confidence threshold ranges. `file` names the
-    /// document in [`ConfigError::Regex`].
+    /// with the shared messages, then confidence threshold ranges. `file` names the document in
+    /// [`ConfigError::Regex`].
     fn validate(&mut self, file: &str) -> Result<(), ConfigError> {
         if self.name.is_empty() {
             return Err(validation("domain name is required"));
@@ -168,7 +164,7 @@ impl DomainConfig {
 
         let mut entity_ids = HashSet::new();
         for entity in &self.entities {
-            // Oracle message bug fixed (task-mandated): the Go code says "entity Predicate is
+            // Message bug fixed (task-mandated): the wording said "entity Predicate is
             // required" — a copy-paste from the relation check; `EntityDef` has no such field.
             if entity.id.is_empty() {
                 return Err(validation("entity id is required"));
@@ -192,8 +188,8 @@ impl DomainConfig {
                         attribute.name, entity.id
                     )));
                 }
-                // The oracle compares the raw word `attr.Type == "ref"`; the tolerant enum's
-                // case-sensitive derived match yields `Ref` for exactly that spelling.
+                // The check compares the raw word `ref`; the tolerant enum's case-sensitive
+                // derived match yields `Ref` for exactly that spelling.
                 if attribute.attr_type == AttributeType::Ref && attribute.target.is_empty() {
                     return Err(validation(format!(
                         "attribute {} in entity {} has type 'ref' but no target specified",
@@ -205,8 +201,8 @@ impl DomainConfig {
 
         let mut predicates = HashSet::new();
         for relation in &self.relations {
-            // Kept verbatim from the oracle: it checks `Predicate` and calls it "name" — its own
-            // docs call the predicate a relation's identifier, so this is wording, not a bug.
+            // Message kept verbatim: the check is on the predicate while the wording says
+            // "name" — the predicate is the relation's identifier, so this is wording, not a bug.
             if relation.predicate.is_empty() {
                 return Err(validation("relation name is required"));
             }
@@ -281,13 +277,12 @@ impl DomainConfig {
 // ── Loader ─────────────────────────────────────────────────────────────────
 
 /// Loads a domain ontology from `path`: parse → per-file validation + regex compilation (design
-/// D5) in one pass — the oracle's `LoadDomainConfig` + `Validate` startup sequence as a single
-/// entry point. A missing file is [`ConfigError::Io`] carrying the path; malformed XML or an
-/// unexpected document shape is [`Xml`](ConfigError::Xml); a violated invariant is
-/// [`Validation`](ConfigError::Validation); an uncompilable pattern is
-/// [`Regex`](ConfigError::Regex) naming both the file and the rule id. The returned config is
-/// fully normalized: validated, every rule compiled; confidence thresholds still raw (resolve
-/// them through [`DomainConfig::effective_confidence`]).
+/// D5) in one pass — the load + validate startup sequence as a single entry point. A missing
+/// file is [`ConfigError::Io`] carrying the path; malformed XML or an unexpected document shape
+/// is [`Xml`](ConfigError::Xml); a violated invariant is [`Validation`](ConfigError::Validation);
+/// an uncompilable pattern is [`Regex`](ConfigError::Regex) naming both the file and the rule id.
+/// The returned config is fully normalized: validated, every rule compiled; confidence
+/// thresholds still raw (resolve them through [`DomainConfig::effective_confidence`]).
 pub fn load_domain_config(path: impl AsRef<Path>) -> Result<DomainConfig, ConfigError> {
     let path = path.as_ref();
     let mut config = crate::io_util::read_xml_file::<DomainConfig>(path)?;
@@ -336,7 +331,7 @@ mod tests {
         .unwrap();
         assert!((cfg.confidence.auto_publish_threshold - 0.9).abs() < f64::EPSILON);
         assert!((cfg.confidence.review_threshold - 0.7).abs() < f64::EPSILON);
-        // Absent attribute stays the XML zero value (oracle shape, Go test "empty XML domain").
+        // Absent attribute stays the XML zero value.
         assert_eq!(cfg.confidence.reject_threshold, 0.0);
 
         let cfg = parse(r#"<domain name="x" version="1.0"><confidence/></domain>"#).unwrap();
@@ -344,11 +339,10 @@ mod tests {
     }
 
     #[test]
-    fn extraction_ignores_unknown_children_like_the_oracle() {
-        // The oracle's own "valid XML" test document (domain_config_test.go) carries <method>,
-        // <dictionary> and <llm> children in <extraction> plus an extra `attribute` attribute on
-        // the rule; encoding/xml ignores all of them, so quick-xml must too — the wrapper-format
-        // spelling of that same document loads with just the rule.
+    fn extraction_ignores_unknown_children() {
+        // A document with extra <method>, <dictionary> and <llm> children in <extraction> plus
+        // an extra `attribute` attribute on the rule: the deserializer ignores unknown children,
+        // so the wrapper-format spelling of that same document loads with just the rule.
         let cfg = parse(
             r#"<domain name="product" version="1.0">
                <extraction>
@@ -370,8 +364,8 @@ mod tests {
     }
 
     #[test]
-    fn effective_confidence_maps_zero_values_to_oracle_defaults() {
-        // Go TestDefaultConfidencePolicy: all-zero policy → 0.85 / 0.60 / 0.40.
+    fn effective_confidence_maps_zero_values_to_defaults() {
+        // All-zero policy → 0.85 / 0.60 / 0.40.
         let cfg = parse(r#"<domain name="x" version="1.0"><confidence/></domain>"#).unwrap();
         assert_eq!(
             cfg.effective_confidence(),
@@ -382,8 +376,7 @@ mod tests {
             }
         );
 
-        // Custom values are used verbatim; a partial policy fills only the zeros (Go's "partial"
-        // subtest).
+        // Custom values are used verbatim; a partial policy fills only the zeros.
         let cfg = parse(
             r#"<domain name="x" version="1.0">
                <confidence auto_publish_threshold="0.95"/>
@@ -441,8 +434,8 @@ mod tests {
 
     #[test]
     fn loader_validates_and_compiles_in_place() {
-        // The loader is read → parse → validate → compile (the oracle's startup sequence); a bad
-        // pattern never escapes as an uncompiled placeholder.
+        // The loader is read → parse → validate → compile; a bad pattern never escapes as an
+        // uncompiled placeholder.
         let dir =
             std::env::temp_dir().join(format!("synopsis-domain-compile-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
