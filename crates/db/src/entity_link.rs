@@ -1,22 +1,21 @@
 //! Cross-domain entity link storage over the `entity_links` table.
 //!
-//! **Go bug fixes / conscious deviations:**
+//! **Design:**
 //! - `delete_by_entity_ids` batches its `IN` lists in chunks of
-//!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
-//!   placeholder list (potential 32766 bound-parameter violation). The two
-//!   lists are bound full-list-then-full-list (the oracle's
-//!   `append(args, args...)`), and the input ids are de-duplicated.
+//!   [`config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
+//!   could hit SQLite's 32766 bound-parameter limit. The two lists are
+//!   bound full-list-then-full-list, and the input ids are de-duplicated.
 //! - `create` rejects self-links with an explicit pre-check returning
 //!   `false` (house `bool` convention): the schema's
 //!   `CHECK (subject_entity_id != target_entity_id)` alone is NOT
 //!   sufficient, because `INSERT OR IGNORE` (the idempotency mechanism)
-//!   silently swallows CHECK violations too — the oracle's pre-check is
-//!   therefore kept.
+//!   silently swallows CHECK violations too — the pre-check is therefore
+//!   kept.
 //! - `delete` returns `bool` (`false` = no link in either direction)
-//!   instead of the oracle's "not found" error (house convention, as in
+//!   instead of a "not found" error (house convention, as in
 //!   `entity.rs`/`fact.rs`).
-//! - `list_by_method` carries a deterministic `ORDER BY` (the oracle had
-//!   none); the other listings keep the oracle's order.
+//! - `list_by_method` carries a deterministic `ORDER BY`; the other
+//!   listings keep a stable order.
 //!
 //! Note: the v5 `entity_links` table has NO row id — the composite primary
 //! key `(subject_entity_id, target_entity_id, relation_type)` identifies a
@@ -61,8 +60,7 @@ pub struct EntityLink {
 /// CRUD over the `entity_links` table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewEntityLinkDAO(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///
@@ -120,9 +118,9 @@ impl<'conn> EntityLinkDao<'conn> {
         Ok(changed > 0)
     }
 
-    /// All links in which `entity_id` appears as subject OR target, in the
-    /// oracle's order (`target_entity_id, subject_entity_id`). The caller
-    /// determines direction by comparing with `subject_entity_id`.
+    /// All links in which `entity_id` appears as subject OR target, ordered
+    /// by (`target_entity_id, subject_entity_id`). The caller determines
+    /// direction by comparing with `subject_entity_id`.
     pub fn list_by_entity(&self, entity_id: i64) -> Result<Vec<EntityLink>, DbError> {
         self.exec.query(
             &format!(
@@ -353,8 +351,7 @@ mod tests {
         .unwrap();
     }
 
-    // Every field round-trips, including evidence and confidence (oracle
-    // Provenance case).
+    // Every field round-trips, including evidence and confidence.
     #[test]
     fn create_round_trips_all_fields() {
         let db = in_memory_db();
@@ -378,8 +375,8 @@ mod tests {
         .unwrap();
     }
 
-    // (f) list_by_entity: outgoing AND incoming, in the oracle's
-    // (target, subject) order; unknown entity → empty.
+    // (f) list_by_entity: outgoing AND incoming, in (target, subject)
+    // order; unknown entity → empty.
     #[test]
     fn list_by_entity_both_directions_ordered() {
         let db = in_memory_db();

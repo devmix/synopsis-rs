@@ -68,10 +68,10 @@ impl Db {
     /// parent directories if absent), apply the D8 PRAGMAs to every pooled
     /// connection and run the knowledge migrations once.
     ///
-    /// Only Rust-created databases are supported: reopening one re-checks
-    /// `PRAGMA user_version` and applies nothing further (design D3). Legacy
-    /// Go-created `knowledge.db` is never opened, upgraded or migrated
-    /// (decision 2026-08-18).
+    /// Only databases created by this codebase are supported: reopening one
+    /// re-checks `PRAGMA user_version` and applies nothing further (design
+    /// D3). Pre-existing foreign databases are never opened, upgraded or
+    /// migrated (decision 2026-08-18).
     pub fn open_knowledge<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
         Self::open_with(path, &KNOWLEDGE_MIGRATIONS)
     }
@@ -115,7 +115,7 @@ impl Db {
         migrations: &'static Dir<'static>,
     ) -> Result<Self, DbError> {
         let path = path.as_ref();
-        // SQLite does not create parent directories; the oracle does it in Open().
+        // SQLite does not create parent directories; create them here.
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
             && !parent.is_dir()
@@ -243,10 +243,8 @@ fn apply_migrations(
     Ok(())
 }
 
-/// D8 PRAGMA parity with the Go oracle (`database.go`: applyPRAGMAs plus the
-/// DSN-level `busy_timeout`), in this FIXED order — the oracle iterates a Go
-/// map, whose order is non-deterministic (conscious deviation, task 1.1
-/// report).
+/// D8 PRAGMAs (including `busy_timeout`), applied in this FIXED order —
+/// deterministic by construction (conscious decision, task 1.1 report).
 ///
 /// Applied to EVERY pooled connection via the manager init callback (design
 /// D1, re-decided 2026-08-20): `journal_mode=WAL` persists in the database

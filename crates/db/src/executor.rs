@@ -27,7 +27,7 @@ mod sealed {
 }
 
 /// The minimal command surface a DAO needs, satisfied by [`Connection`],
-/// [`Transaction`] and [`ConnectionOrTx`] (oracle analogue: `DBTX`).
+/// [`Transaction`] and [`ConnectionOrTx`].
 ///
 /// All methods take `&self`: both rusqlite types run their commands behind a
 /// shared connection lock, so no exclusive borrow is required.
@@ -52,8 +52,7 @@ pub trait DbExecutor: sealed::Sealed {
 }
 
 /// A non-owning handle to either the pooled connection or an in-flight
-/// transaction, so DAO methods can accept one type in both cases
-/// (oracle analogue: `DBTX`).
+/// transaction, so DAO methods can accept one type in both cases.
 #[derive(Debug, Clone, Copy)]
 pub enum ConnectionOrTx<'a> {
     /// the pooled connection, used outside a transaction.

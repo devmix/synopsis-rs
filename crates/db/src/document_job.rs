@@ -10,10 +10,6 @@
 //! retries and backoff via [`DocumentJobDao::record_failure`], manual
 //! re-queue via [`DocumentJobDao::reset_retries`]).
 //!
-//! New Rust operational construct: the Go oracle has no equivalent queue
-//! (it ingests synchronously), so there is no oracle mapping and no parity
-//! requirement.
-//!
 //! Statuses: `pending` (queued; due when `next_attempt_at <= now`),
 //! `processing` (claimed by the worker), `done` (the index op succeeded),
 //! `error` (retries exhausted; `last_error` holds the reason). Ops:

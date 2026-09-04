@@ -1,26 +1,25 @@
 //! Document storage over the `documents` table.
 //!
-//! The v5 schema has NO `domain` column on `documents` (dropped by Go
-//! migration 003): a document's domain(s) live in `metadata_json` under
-//! `$.domain` as a string or an array of strings, and are filtered/counted
-//! with `json_each`. The `ner_status` operations of the oracle
-//! (`ListByNERStatus`/`UpdateNERStatus`) are deliberately NOT ported: the
-//! column does not exist in any Go migration, so those methods could only
-//! ever fail at runtime (dead code in the oracle; YAGNI).
+//! The v5 schema has NO `domain` column on `documents`: a document's
+//! domain(s) live in `metadata_json` under `$.domain` as a string or an
+//! array of strings, and are filtered/counted with `json_each`. The
+//! `ner_status` operations are deliberately absent: the column does not
+//! exist in any migration, so those methods could only ever fail at
+//! runtime (dead code; YAGNI).
 //!
-//! **Conscious deviations from the oracle:**
-//! - `get_by_ids` returns a `Vec<Document>` instead of a `map[int]*Document`
-//!   (Rust idiom; callers that need lookup build a map themselves);
+//! **Design:**
+//! - `get_by_ids` returns a `Vec<Document>` (Rust idiom; callers that need
+//!   lookup build a map themselves);
 //! - `update`/`update_hash`/`delete` return `bool` (`false` = no such id)
 //!   instead of a "document not found" error — the caller decides the
 //!   semantics, and no per-DAO error variant is needed;
 //! - `unique_domains` is ordered (`ORDER BY` value) for a deterministic
-//!   API; the oracle returned an unordered slice;
+//!   API;
 //! - the domain filter checks `metadata_json IS NOT NULL AND
 //!   json_valid(metadata_json)` in the outer `WHERE` before the
 //!   `json_each` subquery, so a malformed-metadata row can never make the
-//!   query fail (in the oracle the same check sits inside the `EXISTS`
-//!   where it cannot protect the `FROM` evaluation).
+//!   query fail (a check inside the `EXISTS` cannot protect the `FROM`
+//!   evaluation).
 
 use std::collections::HashMap;
 
@@ -66,8 +65,8 @@ pub struct Document {
 }
 
 /// Optional filters for [`DocumentDao::list_paginated`] and
-/// [`DocumentDao::count`]; a `None` (or empty) member is not applied — the
-/// same "empty string = no filter" semantics as the oracle.
+/// [`DocumentDao::count`]; a `None` (or empty) member is not applied
+/// ("empty string = no filter" semantics).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DocumentFilter {
     /// Match documents whose `metadata_json` `$.domain` equals this value
@@ -99,8 +98,7 @@ impl DocumentFilter {
 /// CRUD + pagination + domain operations over the `documents` table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewDocumentDAO(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///
@@ -212,7 +210,7 @@ impl<'conn> DocumentDao<'conn> {
         Ok(changed > 0)
     }
 
-    /// All documents, newest first (oracle `List` semantics).
+    /// All documents, newest first.
     pub fn list(&self) -> Result<Vec<Document>, DbError> {
         self.exec.query(
             &format!("{SELECT_DOCUMENT} ORDER BY created_at DESC"),
@@ -332,9 +330,8 @@ mod tests {
         ids
     }
 
-    /// The three-document fixture of the oracle's
-    /// `TestDocumentDAO_ListPaginated_DomainFromMetadata` (array domain,
-    /// scalar domain, no metadata).
+    /// The three-document fixture for the domain filter: array domain,
+    /// scalar domain, no metadata.
     fn seed_domain_fixtures(docs: &DocumentDao<'_>) {
         docs.create(
             "markdown",

@@ -115,15 +115,15 @@ fn repo_root() -> PathBuf {
         .expect("crates/db must live two levels below the repo root")
 }
 
-/// Open the v5 parity fixture `fixtures/knowledge.db` (a Go-oracle-created
-/// database; provenance in `fixtures/README.md`) strictly read-only and
-/// immutable: `file:...?mode=ro&immutable=1`, never mutated, no `-wal`/`-shm`
-/// sidecars created next to it.
+/// Open the v5 parity fixture `fixtures/knowledge.db` (a pre-built database;
+/// provenance in `fixtures/README.md`) strictly read-only and immutable:
+/// `file:...?mode=ro&immutable=1`, never mutated, no `-wal`/`-shm` sidecars
+/// created next to it.
 ///
 /// A single-connection pool (design D12): the fixture is read-only and
 /// immutable, so one connection suffices and busy contention is impossible.
 /// The fixture skips migration and PRAGMA setup by construction: it is
-/// already at the v5 schema, and the Go oracle tracked schema state in the
+/// already at the v5 schema, and its schema state is tracked in the
 /// `_schema_migrations` table, leaving `PRAGMA user_version` at 0. Tests
 /// must not write through the returned handle.
 #[allow(clippy::unwrap_used, clippy::expect_used)]

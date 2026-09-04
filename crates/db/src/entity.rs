@@ -1,39 +1,35 @@
 //! Entity storage over the `entities` table.
 //!
-//! **Go bug fixes (conscious deviations):**
+//! **Design:**
 //! - `get_or_create` is atomic: `INSERT ... ON CONFLICT (type, name, domain)
-//!   DO NOTHING` + `RETURNING id` (design D5). The oracle did
-//!   select-then-insert — a TOCTOU race under concurrent access.
-//! - `get_by_name` matches the FULL unique key (type, name, domain); the
-//!   oracle matched name+domain only, which is ambiguous when two types share
-//!   a name in one domain (and the oracle's `QueryRow` would then fail with
-//!   "multiple rows").
-//! - `get_or_create` therefore also matches the full triple: the oracle
-//!   returned an existing entity of a DIFFERENT type for the same name+domain;
-//!   the Rust version creates the requested type (the unique key is the
-//!   contract).
+//!   DO NOTHING` + `RETURNING id` (design D5) — select-then-insert is a
+//!   TOCTOU race under concurrent access.
+//! - `get_by_name` matches the FULL unique key (type, name, domain);
+//!   matching name+domain only is ambiguous when two types share a name in
+//!   one domain (and would then fail with "multiple rows").
+//! - `get_or_create` therefore also matches the full triple: an existing
+//!   entity of a DIFFERENT type for the same name+domain is NOT returned —
+//!   the requested type is created (the unique key is the contract).
 //! - `delete_orphaned_entity_ids`/`delete_orphaned_by_ids` use `NOT EXISTS`
-//!   instead of the oracle's `id NOT IN (SELECT subject_entity_id FROM facts
+//!   instead of `id NOT IN (SELECT subject_entity_id FROM facts
 //!   UNION ...)`: both fact FK columns are nullable, and `NOT IN` against a
 //!   list containing NULL matches NOTHING under SQL three-valued logic — one
-//!   fact with a NULL endpoint would silently disable the whole cleanup (Go
-//!   bug; regression test below).
+//!   fact with a NULL endpoint would silently disable the whole cleanup
+//!   (regression test below).
 //! - `delete_orphaned_by_ids`/`get_by_ids` batch the `IN` list in chunks of
-//!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
-//!   placeholder list (potential 32766 bound violation).
+//!   [`config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
+//!   could hit the 32766 bound-parameter limit.
 //!
-//! **Other deviations (house conventions, as in `document.rs`/`chunk.rs`):**
+//! **House conventions (as in `document.rs`/`chunk.rs`):**
 //! - `update`/`update_name`/`delete` return `bool` (`false` = no such id)
 //!   instead of a "not found" error;
 //! - `get_by_name_fold`/`list_by_name_fold` normalize the input with
 //!   [`crate::utils::normalize`] (trim + collapse + lowercase) and compare
-//!   with `lower(trim(name))` — case- AND surrounding-whitespace-insensitive
-//!   (oracle: SQL `lower()` only);
-//! - `list_paginated` unifies the oracle's `ListPaginated` and
-//!   `ListPaginatedWithName` into one [`EntityFilter`] (DRY); the name filter
-//!   is `LIKE` with `\`/`%`/`_` escaped; `count` takes the same filter
-//!   (oracle `Count()` with no arguments = empty filter);
-//! - `get_by_ids` returns a `Vec<Entity>` (Rust idiom; oracle: a map).
+//!   with `lower(trim(name))` — case- AND surrounding-whitespace-insensitive;
+//! - `list_paginated` unifies plain and name-filtered listing into one
+//!   [`EntityFilter`] (DRY); the name filter is `LIKE` with `\`/`%`/`_`
+//!   escaped; `count` takes the same filter (empty filter = total count);
+//! - `get_by_ids` returns a `Vec<Entity>` (Rust idiom).
 //!
 //! Note: the task body's `Entity` field list (…`updated_at`) does not match
 //! the frozen v5 schema, which has NO `updated_at` on `entities` and DOES
@@ -84,8 +80,8 @@ pub struct Entity {
 }
 
 /// Optional filters for [`EntityDao::list_paginated`] and
-/// [`EntityDao::count`]; a `None` (or empty) member is not applied — the
-/// same "empty string = no filter" semantics as the oracle.
+/// [`EntityDao::count`]; a `None` (or empty) member is not applied
+/// ("empty string = no filter" semantics).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntityFilter {
     /// Match entities of exactly this type.
@@ -113,12 +109,11 @@ impl EntityFilter {
     }
 }
 
-/// CRUD + atomic GetOrCreate + orphan cleanup + pagination over the
+/// CRUD + atomic get-or-create + orphan cleanup + pagination over the
 /// `entities` table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewEntityDAO(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///
@@ -199,8 +194,7 @@ impl<'conn> EntityDao<'conn> {
     /// Retrieve an entity by name and domain, case- and
     /// surrounding-whitespace-insensitively (input normalized with
     /// [`crate::utils::normalize`]). If several types share the same
-    /// normalized name+domain, the smallest id wins (the oracle's
-    /// `QueryRow` would have failed on multiple rows).
+    /// normalized name+domain, the smallest id wins (deterministic).
     pub fn get_by_name_fold(&self, name: &str, domain: &str) -> Result<Option<Entity>, DbError> {
         let rows = self.exec.query(
             &format!(
@@ -245,9 +239,9 @@ impl<'conn> EntityDao<'conn> {
     }
 
     /// Update type, description and metadata of an existing entity. Name and
-    /// domain are NOT changeable via this method (the oracle's contract; a
-    /// rename goes through [`Self::update_name`]). Returns `true` if a row
-    /// was updated, `false` if no entity has `id`.
+    /// domain are NOT changeable via this method (a rename goes through
+    /// [`Self::update_name`]). Returns `true` if a row was updated, `false`
+    /// if no entity has `id`.
     pub fn update(
         &self,
         id: i64,
@@ -284,8 +278,7 @@ impl<'conn> EntityDao<'conn> {
     }
 
     /// Number of entities matching `filter` (same semantics as
-    /// [`Self::list_paginated`]; empty filter = total count, the oracle's
-    /// `Count()`).
+    /// [`Self::list_paginated`]; empty filter = total count).
     pub fn count(&self, filter: &EntityFilter) -> Result<i64, DbError> {
         let (entity_type, domain, name) = filter.args();
         self.exec.query_row(
@@ -320,14 +313,13 @@ impl<'conn> EntityDao<'conn> {
     /// Atomically fetch or create the entity with the unique key
     /// (type, name, domain) and return its id (design D5):
     /// `INSERT ... ON CONFLICT (type, name, domain) DO NOTHING RETURNING id`
-    /// — no select-then-insert TOCTOU window (the oracle's race). The
+    /// — no select-then-insert TOCTOU window. The
     /// `description`/`confidence`/`metadata_json` arguments apply only when
     /// the row is actually inserted; on conflict the existing row is left
     /// untouched and its id is returned.
     ///
     /// Parameter order matches [`Self::create`] (entity_type, name, domain,
-    /// description, confidence, metadata_json); the oracle's
-    /// `GetOrCreate(name, type, domain, ...)` order was not carried over.
+    /// description, confidence, metadata_json).
     pub fn get_or_create(
         &self,
         entity_type: &str,

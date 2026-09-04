@@ -5,11 +5,11 @@
 //! migration) and kept in sync by the `chunks_fts_ai/ad/au` triggers, so
 //! plain CRUD automatically keeps the search index correct.
 //!
-//! **Conscious deviations from the oracle:**
+//! **Design:**
 //! - `search_text` column + FTS over it (search-text-embedding design
-//!   D1/D2): the oracle overwrote `chunk_text` with the breadcrumb-prefixed
-//!   text, breaking its offset semantics; Rust keeps `chunk_text` pure (the
-//!   byte-offset invariant) and stores the search text separately.
+//!   D1/D2): `chunk_text` stays pure (the byte-offset invariant) and the
+//!   breadcrumb-prefixed search text is stored separately — overwriting
+//!   `chunk_text` with the prefixed text would break its offset semantics.
 //!   [`ChunkDao::create`] defaults `search_text` to `chunk_text` (source-
 //!   compatible with the pre-v5 call sites);
 //!   [`ChunkDao::create_with_search_text`] stores a distinct search text;
@@ -18,26 +18,23 @@
 //!   of a transient `Score` field on the chunk (Rust idiom);
 //! - `search_fts` takes `domain: Option<&str>` instead of a
 //!   `""`-means-absent string;
-//! - the result is `ORDER BY bm25(chunks_fts)` — the oracle's `SearchFTS` has
-//!   NO `ORDER BY`, so its "bm25 ranking" actually came back in rowid order
-//!   (Go bug; spike S1 records the intended ranked order 247, 30, 106);
+//! - the result is `ORDER BY bm25(chunks_fts)` — a deterministic bm25
+//!   ranking (spike S1 records the intended ranked order 247, 30, 106);
 //! - the domain filter checks `metadata_json IS NOT NULL AND
 //!   json_valid(metadata_json)` in the outer `WHERE` before the `json_each`
 //!   subquery, so a malformed-metadata row can never fail the query (same
 //!   deviation as `document.rs`);
 //! - `update`/`delete` return `bool` (`false` = no such id) instead of a
 //!   "chunk not found" error (consistent with `DocumentDao`);
-//! - `delete_by_ids` returns the number of rows deleted (oracle: none) and
-//!   batches the `IN` list in chunks of [`config::ID_BATCH_SIZE`] (design D9);
-//! - the legacy vector-store operations of the oracle (`SearchVector`,
-//!   `UpsertVector`, `FormatVector`, `DeleteVectorsByChunkIDs`,
-//!   `DeleteOrphanedVectors`) are deliberately NOT ported — vector search
-//!   moves to the `vectors` change (design D7);
+//! - `delete_by_ids` returns the number of rows deleted and batches the `IN`
+//!   list in chunks of [`config::ID_BATCH_SIZE`] (design D9);
+//! - the legacy vector-store operations are deliberately absent — vector
+//!   search moves to the `vectors` change (design D7);
 //! - `metadata_json` column (chunk-metadata-persistence design D1): the
 //!   chunk's own metadata bag as raw JSON (`Option<String>`, parsed on
 //!   demand — the `documents.metadata_json` pattern; `NULL` = no metadata).
-//!   The oracle v5 `chunks` table has no such column; this restores the
-//!   field from the original Rust design.
+//!   The v5 `chunks` table has no such column; this restores the field
+//!   from the Rust design.
 //!
 //! Note: the task body's `Chunk` field list (token_count, updated_at) does
 //! not match the frozen v5 schema, which has exactly the columns of
@@ -50,10 +47,10 @@ use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
 
 /// Default page size applied when `search_fts` gets an out-of-range limit
-/// (oracle parity: `limit <= 0 || limit > 100 → 20`).
+/// (`limit <= 0 || limit > 100 → 20`).
 const FTS_DEFAULT_LIMIT: i64 = 20;
 
-/// Maximum page size for `search_fts` (oracle parity).
+/// Maximum page size for `search_fts`.
 const FTS_MAX_LIMIT: i64 = 100;
 
 /// Shared `SELECT` list for the `chunks` row queries (column order is the
@@ -123,8 +120,7 @@ pub struct FtsHit {
 /// CRUD + FTS5 search over the `chunks` table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewChunkDAO(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///
@@ -219,8 +215,7 @@ impl<'conn> ChunkDao<'conn> {
         Ok(rows.into_iter().next())
     }
 
-    /// All chunks of one document, ordered by `sequence_num`
-    /// (oracle `ListByDocID` semantics).
+    /// All chunks of one document, ordered by `sequence_num`.
     pub fn list_by_doc_id(&self, doc_id: i64) -> Result<Vec<Chunk>, DbError> {
         self.exec.query(
             &format!("{SELECT_CHUNK} WHERE doc_id = ? ORDER BY sequence_num"),
@@ -229,7 +224,7 @@ impl<'conn> ChunkDao<'conn> {
         )
     }
 
-    /// All chunks, ordered by id (oracle `ListAll` semantics).
+    /// All chunks, ordered by id.
     pub fn list_all(&self) -> Result<Vec<Chunk>, DbError> {
         self.exec
             .query(&format!("{SELECT_CHUNK} ORDER BY id"), [], row_to_chunk)
@@ -314,7 +309,7 @@ impl<'conn> ChunkDao<'conn> {
     /// `metadata_json` `$.domain` (string or array member) equals it are
     /// returned — the filter is applied before the `LIMIT`.
     ///
-    /// `limit` is clamped to the oracle's page contract: values `<= 0` or
+    /// `limit` is clamped to the page contract: values `<= 0` or
     /// `> 100` fall back to 20.
     ///
     /// `query` is an FTS5 MATCH expression (plain term, `"phrase"`,
@@ -333,7 +328,7 @@ impl<'conn> ChunkDao<'conn> {
     }
 }
 
-/// Oracle limit contract: `limit <= 0 || limit > 100 → 20`.
+/// Limit contract: `limit <= 0 || limit > 100 → 20`.
 fn normalize_fts_limit(limit: i64) -> i64 {
     if (1..=FTS_MAX_LIMIT).contains(&limit) {
         limit
@@ -811,7 +806,7 @@ mod tests {
                 assert!(cur.score <= next.score, "results must be bm25-ranked");
             }
 
-            // Limit normalization (oracle parity): 0 and 1000 → default 20.
+            // Limit normalization: 0 and 1000 → default 20.
             assert_eq!(chunks.search_fts("alpha", 0, None).unwrap().len(), 3);
             assert_eq!(chunks.search_fts("alpha", 1000, None).unwrap().len(), 3);
             // In-range limit is honored and preserves rank order.
@@ -830,8 +825,7 @@ mod tests {
         });
     }
 
-    // (д) domain filter — port of the oracle's
-    //     TestChunkDAOSearchFTS_DomainFilter fixture.
+    // (д) domain filter — the fixture covers scalar and array domains.
     #[test]
     fn search_fts_domain_filter() {
         let db = in_memory_db();

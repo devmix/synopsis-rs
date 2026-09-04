@@ -4,7 +4,7 @@
 
 /// Prepare arbitrary text for matching: trim surrounding whitespace,
 /// collapse internal whitespace runs to single spaces, lowercase
-/// (Unicode-aware, as in the Go oracle's `Normalize`).
+/// (Unicode-aware).
 pub fn normalize(s: &str) -> String {
     s.split_whitespace()
         .collect::<Vec<_>>()
@@ -13,8 +13,7 @@ pub fn normalize(s: &str) -> String {
 }
 
 /// Escape `\`, `%` and `_` in user input for use in `LIKE ... ESCAPE '\'`
-/// patterns (the backslash is escaped first, exactly as in the Go oracle's
-/// `EscapeLike`).
+/// patterns (the backslash is escaped first).
 pub fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")

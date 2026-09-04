@@ -1,32 +1,28 @@
 //! Fact provenance storage over the `fact_sources` table (fact →
 //! source document + quote links).
 //!
-//! **Go bug fixes / conscious deviations:**
+//! **Design:**
 //! - `document_id` is an `i64` end to end (human decision 2026-08-20, task
-//!   1.14 revision 2): the oracle is self-inconsistent — its schema
-//!   declared `fact_sources.document_id TEXT NOT NULL` while the Go code
-//!   typed the field `int` (relying on SQLite type affinity). The model is
-//!   corrected: the squashed init migration now declares
+//!   1.14 revision 2): the squashed init migration declares
 //!   `INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE`, exactly
-//!   like the neighbouring `entity_sources.document_id`.
+//!   like the neighbouring `entity_sources.document_id` (a `TEXT` column
+//!   paired with an `int`-typed field would rely on SQLite type affinity).
 //! - `delete` and `delete_by_fact_id` return `bool` (`false` = no such
-//!   row) instead of the oracle's "not found" error (house convention, as
-//!   in `fact.rs`/`entity.rs`).
+//!   row) instead of a "not found" error (house convention, as in
+//!   `fact.rs`/`entity.rs`).
 //! - `create` takes `quote` and `extracted_at` as `Option`s: `None`
-//!   leaves the column `NULL` / at its `CURRENT_TIMESTAMP` default. The
-//!   oracle inserted `extracted_at` unconditionally, and callers that
-//!   passed the zero value produced empty timestamps that only a data
-//!   backfill migration (`004`) repaired after the fact.
-//! - The oracle's `fact_id == 0` guard in `create` is a Go zero-value
-//!   idiom (it has no `Option<i64>`); the id is a required parameter and
-//!   the real invariant is the schema FK, so the guard is dropped.
+//!   leaves the column `NULL` / at its `CURRENT_TIMESTAMP` default (an
+//!   unconditional insert with a zero value would produce empty
+//!   timestamps).
+//! - `fact_id` in `create` is a required parameter: the real invariant is
+//!   the schema FK, so no zero-value guard is needed.
 //! - `delete_by_document_id` orders its affected fact ids by fact id
-//!   (the oracle returned them in arbitrary row order).
-//! - `create` returns the generated row id via `RETURNING` (the oracle
-//!   read `LastInsertId` — same value, one round-trip less).
+//!   (deterministic, not arbitrary row order).
+//! - `create` returns the generated row id via `RETURNING` (one round-trip
+//!   less than a separate id read).
 //!
 //! Deleting a fact or a document cascades to its `fact_sources` rows per
-//! the schema FKs (no explicit cleanup needed, as in the oracle).
+//! the schema FKs (no explicit cleanup needed).
 
 use rusqlite::{Row, params};
 
@@ -59,8 +55,7 @@ pub struct FactSource {
 /// CRUD + scoped cleanup over the `fact_sources` table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewFactSourceDAO(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///
@@ -304,7 +299,7 @@ mod tests {
     // (a3) create: the schema FKs are enforced (foreign_keys=ON) — a missing
     // fact or a missing document is a Sqlite error. This pins the i64
     // `document_id` contract (human decision 2026-08-20): the column is an
-    // INTEGER FK to documents(id), not the oracle's TEXT.
+    // INTEGER FK to documents(id).
     #[test]
     fn create_rejects_missing_fact_or_document() {
         let db = in_memory_db();

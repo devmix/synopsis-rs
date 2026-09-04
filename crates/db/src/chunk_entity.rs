@@ -1,31 +1,30 @@
 //! Chunk↔entity link storage over the `chunk_entities` junction table.
 //!
-//! **Go bug fixes / conscious deviations:**
+//! **Design:**
 //! - `get_entities_by_chunks` batches the `IN` list in chunks of
-//!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
-//!   placeholder list (potential 32766 bound-parameter violation). It also
+//!   [`config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
+//!   could hit SQLite's 32766 bound-parameter limit. It also
 //!   de-duplicates the input chunk ids and reuses
 //!   [`crate::entity::EntityDao::get_by_ids`] for the entity rows (DRY).
 //! - `get_entities_by_chunks` scans the FULL `entities` row including
-//!   `confidence`: the oracle's hand-rolled `SELECT` omitted the column,
-//!   silently zeroing the confidence of every returned entity.
+//!   `confidence` (an omitted column would silently zero the confidence of
+//!   every returned entity).
 //! - `link`/`unlink`/`unlink_chunk`/`unlink_entity` return `bool`
 //!   (`false` = nothing to do) instead of "not found" errors (house
 //!   convention, as in `entity.rs`/`fact.rs`); `link` additionally reports
-//!   whether a new row was inserted (the oracle always returned `nil`).
+//!   whether a new row was inserted.
 //! - `get_entities_by_chunk` selects `entity_id` straight from
-//!   `chunk_entities` ordered by id: the oracle's `INNER JOIN entities` is
-//!   redundant (the FK guarantees the entity exists) and its
-//!   `ORDER BY e.name` is not deterministic when names collide.
+//!   `chunk_entities` ordered by id: an `INNER JOIN entities` is redundant
+//!   (the FK guarantees the entity exists), and an `ORDER BY name` is not
+//!   deterministic when names collide.
 //! - `get_chunk_texts_by_entity` returns an empty `Vec` when the entity has
-//!   no chunks (or `limit == 0`); the oracle injected a
-//!   `"<no context available>"` placeholder — a presentation concern that
-//!   belongs to the caller, not the DAO. Its `ORDER BY` gains an `id`
-//!   tie-break (the oracle ordered by `sequence_num` alone, which ties
-//!   across documents).
+//!   no chunks (or `limit == 0`); the `"<no context available>"`
+//!   placeholder is a presentation concern that belongs to the caller, not
+//!   the DAO. Its `ORDER BY` carries an `id` tie-break (`sequence_num`
+//!   alone ties across documents).
 //! - Deletion of a chunk, its document or the entity cascades to
-//!   `chunk_entities` per the schema FKs (no explicit cleanup method needed,
-//!   as in the oracle).
+//!   `chunk_entities` per the schema FKs (no explicit cleanup method
+//!   needed).
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,8 +38,7 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 /// Link management over the `chunk_entities` junction table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewChunkEntityDAO(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///
@@ -156,8 +154,7 @@ impl<'conn> ChunkEntityDao<'conn> {
     /// Full [`Entity`] records for each of `chunk_ids`, grouped by chunk id.
     /// Chunk ids without links are absent from the map; empty `chunk_ids`
     /// yields an empty map. Within one chunk the entities are sorted by
-    /// name, `id` as the tie-break (the oracle's `ORDER BY e.name`, made
-    /// deterministic).
+    /// name, `id` as the tie-break (deterministic).
     ///
     /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`]
     /// (design D9); input ids are de-duplicated, and the entity rows come
@@ -397,8 +394,7 @@ mod tests {
 
     // (d) get_chunk_texts_by_entity: ordered by sequence_num (id tie-break,
     // NOT by chunk id), limit, and an empty Vec for limit == 0 or an entity
-    // without chunks (conscious deviation: the oracle injected a
-    // "<no context available>" placeholder).
+    // without chunks (no placeholder injection).
     #[test]
     fn chunk_texts_ordered_by_sequence_with_limit() {
         let db = in_memory_db();
@@ -407,8 +403,8 @@ mod tests {
         db.with_conn(|conn| -> Result<(), DbError> {
             let links = ChunkEntityDao::new(ConnectionOrTx::Connection(conn));
             let chunks = ChunkDao::new(ConnectionOrTx::Connection(conn));
-            // Out-of-order ids with sequential sequence numbers (the oracle's
-            // ordering test): chunk ids do NOT follow sequence order.
+            // Out-of-order ids with sequential sequence numbers: chunk ids
+            // do NOT follow sequence order.
             let c2 = chunks.create(doc_id, "seq_2", 2, None, None)?;
             let c0 = chunks.create(doc_id, "seq_0", 0, None, None)?;
             let c1 = chunks.create(doc_id, "seq_1", 1, None, None)?;
@@ -440,8 +436,7 @@ mod tests {
         .unwrap();
     }
 
-    // (d, cont.) texts of two entities stay isolated (oracle
-    // MultipleEntities case).
+    // (d, cont.) texts of two entities stay isolated.
     #[test]
     fn chunk_texts_isolated_per_entity() {
         let db = in_memory_db();
@@ -512,8 +507,8 @@ mod tests {
     }
 
     // get_entities_by_chunks: full Entity records (the confidence column
-    // survives — Go bug fix), name-sorted with id tie-break, unlinked chunk
-    // ids absent, empty input → empty map.
+    // survives), name-sorted with id tie-break, unlinked chunk ids absent,
+    // empty input → empty map.
     #[test]
     fn entities_by_chunks_full_records_sorted() {
         let db = in_memory_db();
@@ -546,7 +541,7 @@ mod tests {
                 (entity_b, entity_c),
                 "name tie broken by id"
             );
-            // Full row: the confidence column must survive (Go bug fix).
+            // Full row: the confidence column must survive.
             assert_eq!(first[1].confidence, Some(0.5));
             assert_eq!(first[2].confidence, Some(0.7));
 

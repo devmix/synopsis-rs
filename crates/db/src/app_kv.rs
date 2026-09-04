@@ -13,11 +13,10 @@
 //! live here: since task 1.10 they are stored in the dedicated
 //! `llm_linker_cache` table (see `graph::linker::LlmLinkerCache`).
 //!
-//! **Conscious deviation from the oracle:** the Go `Get` swallows driver
-//! errors and reports "missing key" (best-effort semantics); the Rust `get`
-//! propagates them as [`DbError`]. A broken database must not look empty —
-//! silently reporting "no value" would mask real failures in a process that
-//! runs unattended.
+//! **Design:** driver errors are propagated as [`DbError`] rather than
+//! swallowed and reported as a missing key (best-effort semantics). A
+//! broken database must not look empty — silently reporting "no value"
+//! would mask real failures in a process that runs unattended.
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
@@ -25,9 +24,8 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 /// Key-value storage over the `app_kv` table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewAppKV(db DBTX)`. The instance borrows from
-/// the handle it is given, so the handle must outlive it.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`]. The instance
+/// borrows from the handle it is given, so the handle must outlive it.
 ///
 /// # Examples
 ///
@@ -55,8 +53,7 @@ impl<'conn> AppKv<'conn> {
 
     /// Return the value stored under `key`, or `None` if the key is absent.
     ///
-    /// A stored `NULL` value reads back as an empty string, matching the
-    /// oracle (`sql.NullString` zero value).
+    /// A stored `NULL` value reads back as an empty string.
     pub fn get(&self, key: &str) -> Result<Option<String>, DbError> {
         self.ensure_table()?;
         let value = self
@@ -73,7 +70,7 @@ impl<'conn> AppKv<'conn> {
     }
 
     /// Store `value` under `key`, creating the row or overwriting an
-    /// existing one, and refresh `updated_at` (oracle upsert semantics).
+    /// existing one, and refresh `updated_at` (upsert semantics).
     pub fn set(&self, key: &str, value: &str) -> Result<(), DbError> {
         self.ensure_table()?;
         self.exec.execute(
@@ -154,7 +151,7 @@ mod tests {
         });
     }
 
-    // An empty value is a stored value, not a missing key (oracle EmptyValue).
+    // An empty value is a stored value, not a missing key.
     #[test]
     fn set_empty_value_reads_back_as_empty_string() {
         let db = in_memory_db();

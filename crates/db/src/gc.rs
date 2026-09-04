@@ -2,27 +2,25 @@
 //! document removal.
 //!
 //! `GcDao` composes the existing DAOs (entity sources, fact sources,
-//! chunks, facts, entities) instead of re-stating their SQL (DRY); the
-//! oracle's `DocumentGC` wrapper did the same.
+//! chunks, facts, entities) instead of re-stating their SQL (DRY).
 //!
-//! **Conscious deviations / Go bug fixes:**
-//! - Vector deletion is NOT part of this module (oracle step 5,
-//!   `DeleteVectorsByChunkIDs`): vectors live in the `vectors` engine, not in
-//!   SQLite (ingestion-pipeline design D5). The caller reconciles vector
-//!   orphans through the engine after the chunk rows are gone — eventual
-//!   consistency instead of the oracle's in-transaction atomicity.
-//! - `delete_orphaned_documents` fixes an oracle SQL bug: the oracle's
-//!   `entity_sources` subquery selected `entity_id` instead of
-//!   `document_id`, so a document referenced through `entity_sources`
-//!   survived only when its id coincidentally equaled one of the linked
-//!   entity ids. The `CAST(...) AS INTEGER` / `IS NOT NULL` guards on the
-//!   `fact_sources` subquery are dropped: `fact_sources.document_id` is
+//! **Design:**
+//! - Vector deletion is NOT part of this module: vectors live in the
+//!   `vectors` engine, not in SQLite (ingestion-pipeline design D5). The
+//!   caller reconciles vector orphans through the engine after the chunk
+//!   rows are gone — eventual consistency instead of in-transaction
+//!   atomicity.
+//! - `delete_orphaned_documents` matches documents against the
+//!   `entity_sources.document_id` column: a document referenced through
+//!   `entity_sources` must not survive on a coincidental id match with a
+//!   linked entity id. The `CAST(...) AS INTEGER` / `IS NOT NULL` guards on
+//!   the `fact_sources` subquery are dropped: `fact_sources.document_id` is
 //!   `INTEGER NOT NULL` in the v5 schema (human decision 2026-08-20).
-//! - `NOT EXISTS` instead of the oracle's `NOT IN` subqueries (house style,
-//!   NULL-safe, as in `entity.rs`).
+//! - `NOT EXISTS` instead of `NOT IN` subqueries (house style, NULL-safe,
+//!   as in `entity.rs`).
 //!
-//! The deletion order of [`GcDao::full_clear_doc_by_id`] mirrors the oracle;
-//! it is the FK-safe order for the v5 schema with `foreign_keys=ON` (D8):
+//! The deletion order of [`GcDao::full_clear_doc_by_id`] is the FK-safe
+//! order for the v5 schema with `foreign_keys=ON` (D8):
 //! 1. `entity_sources` rows of the document (collect the affected entity ids);
 //! 2. `fact_sources` rows of the document (collect the affected fact ids);
 //! 3. scoped orphan-fact cleanup — facts whose sources all came from this
@@ -51,8 +49,7 @@ use crate::fact_source::FactSourceDao;
 /// orphan removal.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewDocumentGC(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///
@@ -136,16 +133,14 @@ impl<'conn> GcDao<'conn> {
 
     /// Batch-delete entities with no `entity_sources` links, excluding
     /// `'EntityType'` entities and entities referenced by any fact. Thin
-    /// delegation to [`EntityDao::delete_orphaned_entity_ids`] (the
-    /// oracle's `DocumentGC.DeleteOrphanedEntityIDs`).
+    /// delegation to [`EntityDao::delete_orphaned_entity_ids`].
     pub fn delete_orphaned_entity_ids(&self) -> Result<i64, DbError> {
         EntityDao::new(self.exec).delete_orphaned_entity_ids()
     }
 
     /// Batch-delete facts with no `fact_sources` rows, excluding approved
     /// facts. Thin delegation to [`FactDao::find_orphaned_fact_ids`] +
-    /// [`FactDao::delete_orphaned_facts`] (the oracle's
-    /// `DocumentGC.DeleteOrphanedFacts`).
+    /// [`FactDao::delete_orphaned_facts`].
     pub fn delete_orphaned_facts(&self) -> Result<i64, DbError> {
         let facts = FactDao::new(self.exec);
         let orphaned = facts.find_orphaned_fact_ids(true, &[])?;
@@ -157,9 +152,8 @@ impl<'conn> GcDao<'conn> {
 
     /// Scoped orphan-fact cleanup: among `candidate_fact_ids`, delete the
     /// facts with no remaining `fact_sources` rows — regardless of status
-    /// (oracle `FindAndDeleteOrphanedFacts`: the document-refresh path must
-    /// not preserve facts whose only sources were just removed). Returns the
-    /// number of facts deleted.
+    /// (the document-refresh path must not preserve facts whose only
+    /// sources were just removed). Returns the number of facts deleted.
     fn delete_orphaned_facts_scoped(&self, candidate_fact_ids: &[i64]) -> Result<i64, DbError> {
         let facts = FactDao::new(self.exec);
         let orphaned = facts.find_orphaned_fact_ids(false, candidate_fact_ids)?;
@@ -282,8 +276,7 @@ mod tests {
         .unwrap();
     }
 
-    // (a) full_clear removes exactly the document's data and nothing else
-    // (oracle TestFullClearDocByID_RemovesAllData).
+    // (a) full_clear removes exactly the document's data and nothing else.
     #[test]
     fn full_clear_removes_only_the_document_data() {
         let db = in_memory_db();
@@ -345,8 +338,7 @@ mod tests {
     }
 
     // (b) weight decrease: a surviving fact's weight drops as its sources
-    // are cleared document by document (oracle
-    // TestFullClearDocByID_WeightDecrease).
+    // are cleared document by document.
     #[test]
     fn full_clear_decreases_weights() {
         let db = in_memory_db();
@@ -399,8 +391,7 @@ mod tests {
 
     // (c) both endpoint entities are linked ONLY to doc1 and have no
     // remaining entity_sources after the clear, but they survive because a
-    // surviving fact references them (oracle
-    // TestFullClearDocByID_EntityReferencedByFactSurvives).
+    // surviving fact references them.
     #[test]
     fn full_clear_keeps_fact_referenced_entities() {
         let db = in_memory_db();
@@ -513,9 +504,8 @@ mod tests {
 
     // (f) delete_orphaned_documents: documents with no chunks, no
     // entity_sources and no fact_sources are deleted; a document referenced
-    // through ANY of the three tables survives (oracle
-    // TestDeleteOrphanedDocuments, extended with the entity_sources and
-    // fact_sources paths — the regression surface of the oracle's
+    // through ANY of the three tables survives (extended with the
+    // entity_sources and fact_sources paths — the regression surface of the
     // `entity_id`-instead-of-`document_id` subquery bug).
     #[test]
     fn delete_orphaned_documents() {

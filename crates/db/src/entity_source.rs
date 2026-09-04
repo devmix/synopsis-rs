@@ -1,20 +1,20 @@
 //! Entity provenance storage over the `entity_sources` table (entity →
 //! document links).
 //!
-//! **Go bug fixes / conscious deviations:**
-//! - `link_batch` keeps the oracle's single multi-row `INSERT OR IGNORE`
-//!   shape, batched in rows of [`config::LINK_BATCH_SIZE`]: 500 × 2 = 1000
-//!   parameters per statement stay far below SQLite's 32766 bound (design
-//!   D9). Duplicates in the input (across or inside a batch) are skipped by
-//!   `OR IGNORE`, so no pre-de-duplication is needed.
+//! **Design:**
+//! - `link_batch` uses a single multi-row `INSERT OR IGNORE` shape, batched
+//!   in rows of [`config::LINK_BATCH_SIZE`]: 500 × 2 = 1000 parameters per
+//!   statement stay far below SQLite's 32766 bound (design D9). Duplicates
+//!   in the input (across or inside a batch) are skipped by `OR IGNORE`, so
+//!   no pre-de-duplication is needed.
 //! - `delete_by_document_id`, `get_documents_by_entity_id` and
-//!   `find_orphaned_entity_ids` order their results (the oracle returned
-//!   them in arbitrary row order).
-//! - `create` returns the generated row id via `RETURNING` (the oracle read
-//!   `LastInsertId` — same value, one round-trip less).
+//!   `find_orphaned_entity_ids` order their results (deterministic, not
+//!   arbitrary row order).
+//! - `create` returns the generated row id via `RETURNING` (one round-trip
+//!   less than a separate id read).
 //!
 //! Deletion of an entity or a document cascades to `entity_sources` per the
-//! schema FKs (no explicit cleanup method needed, as in the oracle).
+//! schema FKs (no explicit cleanup method needed).
 
 use config::LINK_BATCH_SIZE;
 use rusqlite::params_from_iter;
@@ -26,8 +26,7 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 /// from (`entity_sources` table).
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewEntitySourceDAO(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///

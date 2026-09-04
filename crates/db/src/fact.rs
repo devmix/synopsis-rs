@@ -1,52 +1,50 @@
 //! Fact storage over the `facts` table.
 //!
-//! **Go bug fixes / conscious deviations:**
+//! **Design:**
 //! - `create_or_ignore` is atomic via
 //!   `INSERT ... ON CONFLICT (subject_entity_id, object_entity_id, predicate)
 //!   DO NOTHING` + `RETURNING id` with a fallback `SELECT` on conflict
 //!   (design D5, same pattern as
-//!   [`crate::entity::EntityDao::get_or_create`]). The oracle's
-//!   `DO UPDATE SET subject_entity_id = subject_entity_id` performs a
-//!   pointless self-assignment write on every conflict.
+//!   [`crate::entity::EntityDao::get_or_create`]). A `DO UPDATE` variant
+//!   would perform a pointless self-assignment write on every conflict.
 //! - `recompute_weights`, `find_orphaned_fact_ids`, `delete_orphaned_facts`
 //!   and `get_by_ids` batch their `IN` lists in chunks of
-//!   [`config::ID_BATCH_SIZE`] (design D9); the oracle built one unbounded
-//!   placeholder list (potential 32766 bound-parameter violation).
-//! - `list_by_entity_ids` de-duplicates its input ids: the oracle returned
-//!   the same fact twice in one map slice when the same id appeared twice in
+//!   [`config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
+//!   could hit SQLite's 32766 bound-parameter limit.
+//! - `list_by_entity_ids` de-duplicates its input ids: the same fact would
+//!   be returned twice in one map slice when the same id appears twice in
 //!   the input.
 //! - `list_by_entity_ids` binds the two `IN` lists as full-list-then-full-list
-//!   (the oracle's `append(args, args...)`) and de-duplicates facts across
-//!   `IN`-list batches by fact id: a fact whose endpoints land in different
-//!   batches is selected by both queries and is attached to the map exactly
-//!   once. (The first port interleaved the batch parameters —
+//!   and de-duplicates facts across `IN`-list batches by fact id: a fact
+//!   whose endpoints land in different batches is selected by both queries
+//!   and is attached to the map exactly once. (The first implementation
+//!   interleaved the batch parameters —
 //!   `flat_map(|id| [*id, *id])` — which positionally filled the subject list
 //!   with half the batch and the object list with the other half, and it
 //!   double-attached cross-batch facts; both regressions were fixed in task
 //!   1.17.)
 //! - `search_paginated`'s entity-name filter is a correlated `EXISTS`
-//!   subquery instead of the oracle's `INNER JOIN entities`: the join
-//!   returned a fact TWICE in the page when both the subject's and the
-//!   object's names matched the filter, while its `COUNT(DISTINCT ...)`
-//!   total counted it once — page and total disagreed.
-//! - A missing endpoint is stored as `NULL` (the v5 schema allows it); the
-//!   oracle stored Go's zero value `0` — a dangling reference to a
-//!   non-existent entity id. Consequence: SQLite unique indexes treat
-//!   `NULL`s as distinct, so `create_or_ignore` de-duplication applies to
-//!   facts with non-`NULL` endpoints only.
+//!   subquery instead of an `INNER JOIN entities`: the join returned a fact
+//!   TWICE in the page when both the subject's and the object's names
+//!   matched the filter, while its `COUNT(DISTINCT ...)` total counted it
+//!   once — page and total disagreed.
+//! - A missing endpoint is stored as `NULL` (the v5 schema allows it); a
+//!   zero value `0` would be a dangling reference to a non-existent entity
+//!   id. Consequence: SQLite unique indexes treat `NULL`s as distinct, so
+//!   `create_or_ignore` de-duplication applies to facts with non-`NULL`
+//!   endpoints only.
 //! - `validate_fact_domain` returns `bool` (`false` = missing endpoint
-//!   entity or domain mismatch) instead of the oracle's descriptive error —
-//!   the house convention (see `entity.rs`/`document.rs`), and no per-DAO
-//!   `DbError` variant exists for it.
+//!   entity or domain mismatch) instead of a descriptive error — the house
+//!   convention (see `entity.rs`/`document.rs`), and no per-DAO `DbError`
+//!   variant exists for it.
 //! - `delete` returns `bool` (`false` = no such id) — house convention. The
-//!   oracle has no fact `Delete` at all; the method is added per the task
-//!   body.
-//! - `create`/`create_or_ignore` store `status = 'approved'` exactly as the
-//!   oracle's constructors hard-code it (the schema default is `'draft'`).
-//!   The oracle's empty-predicate guard is dropped: the predicate is a
-//!   required parameter and no validation `DbError` variant is in scope.
-//! - All listings carry a deterministic `ORDER BY` (the oracle ordered by
-//!   `created_at` alone, which ties at second-resolution timestamps).
+//!   method is added per the task body.
+//! - `create`/`create_or_ignore` store `status = 'approved'` as the
+//!   hard-coded constructor status (the schema default is `'draft'`). The
+//!   empty-predicate guard is dropped: the predicate is a required
+//!   parameter and no validation `DbError` variant is in scope.
+//! - All listings carry a deterministic `ORDER BY` (ordering by `created_at`
+//!   alone ties at second-resolution timestamps).
 //!
 //! Note: the task body's `Fact` field list (…`confidence`) does not match
 //! the frozen v5 schema, which has `domain`, `status`, `valid_from`,
@@ -74,9 +72,8 @@ const SELECT_FACT: &str = "SELECT f.id, f.subject_entity_id, f.predicate, f.obje
 /// is never assembled from user input and the same clause serves the page
 /// and the total (DRY, as in `entity.rs`/`document.rs`). The entity-name
 /// filter is a correlated `EXISTS` (no `JOIN`): a fact whose subject AND
-/// object names both match appears exactly once — the oracle's
-/// `INNER JOIN` duplicated it in the page while its `COUNT(DISTINCT ...)`
-/// total did not.
+/// object names both match appears exactly once — an `INNER JOIN` would
+/// duplicate it in the page while the `COUNT(DISTINCT ...)` total would not.
 const SEARCH_WHERE: &str = "WHERE (?1 IS NULL OR lower(f.predicate) LIKE lower(?1) ESCAPE '\\') \
      AND (?2 IS NULL OR f.status = ?2) \
      AND (?3 IS NULL OR f.domain = ?3) \
@@ -115,8 +112,7 @@ pub struct Fact {
 }
 
 /// Optional filters for [`FactDao::search_paginated`]; a `None` (or empty)
-/// member is not applied — the same "empty string = no filter" semantics as
-/// the oracle.
+/// member is not applied ("empty string = no filter" semantics).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FactFilter {
     /// Case-insensitive substring match on the predicate (`LIKE`, with
@@ -157,12 +153,11 @@ impl FactFilter {
     }
 }
 
-/// CRUD + atomic CreateOrIgnore + orphan cleanup + pagination over the
+/// CRUD + atomic create-or-ignore + orphan cleanup + pagination over the
 /// `facts` table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the Rust
-/// analogue of the oracle's `NewFactDAO(db DBTX)`.
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 ///
 /// # Examples
 ///
@@ -188,8 +183,8 @@ impl<'conn> FactDao<'conn> {
         Self { exec }
     }
 
-    /// Insert a new fact with `status = 'approved'` (the oracle's
-    /// hard-coded constructor status) and return its generated id.
+    /// Insert a new fact with `status = 'approved'` (hard-coded
+    /// constructor status) and return its generated id.
     /// `subject_entity_id`/`object_entity_id` are stored as `NULL` when
     /// `None`, as are `metadata_json`, `valid_from` and `valid_to`.
     // The seven data parameters mirror the `facts` column set (house style:
@@ -318,14 +313,13 @@ impl<'conn> FactDao<'conn> {
     /// Ids that do not exist are simply absent from the map. Empty `ids`
     /// yields an empty map.
     ///
-    /// Input ids are de-duplicated (the oracle returned a fact twice when an
+    /// Input ids are de-duplicated (a fact would be returned twice when an
     /// id appeared twice in the input), and the two `IN` lists are batched
     /// in chunks of [`config::ID_BATCH_SIZE`] (design D9: 500 × 2 = 1000
     /// parameters per statement). The parameters are bound
-    /// full-list-then-full-list
-    /// (the oracle's `append(args, args...)`), and a fact selected by more
-    /// than one batch query (endpoints in different batches) is attached to
-    /// the map exactly once, de-duplicated by fact id.
+    /// full-list-then-full-list, and a fact selected by more than one batch
+    /// query (endpoints in different batches) is attached to the map exactly
+    /// once, de-duplicated by fact id.
     pub fn list_by_entity_ids(
         &self,
         entity_ids: &[i64],
@@ -440,8 +434,7 @@ impl<'conn> FactDao<'conn> {
     /// (compared after [`crate::utils::normalize`], case- and
     /// whitespace-insensitive). Returns `true` when the fact's domain is
     /// consistent, `false` when an endpoint entity is missing or its domain
-    /// differs (house convention: `bool` instead of the oracle's
-    /// descriptive error).
+    /// differs (house convention: `bool` instead of a descriptive error).
     pub fn validate_fact_domain(
         &self,
         subject_id: i64,
@@ -459,7 +452,7 @@ impl<'conn> FactDao<'conn> {
         let (Some(subject_domain), Some(object_domain)) =
             (domain_of(subject_id)?, domain_of(object_id)?)
         else {
-            // A missing endpoint entity fails the check (oracle: an error).
+            // A missing endpoint entity fails the check (→ false).
             return Ok(false);
         };
         let want = normalize(domain);
@@ -485,7 +478,7 @@ impl<'conn> FactDao<'conn> {
         Ok(facts)
     }
 
-    /// Total number of facts, all statuses (the oracle's `Count()`).
+    /// Total number of facts, all statuses.
     pub fn count(&self) -> Result<i64, DbError> {
         self.exec
             .query_row("SELECT COUNT(*) FROM facts", [], |row| row.get(0))
@@ -494,8 +487,8 @@ impl<'conn> FactDao<'conn> {
     /// One page of facts matching `filter` (see [`FactFilter`]), ordered by
     /// id; returns the page and the total number of matching facts. A fact
     /// whose subject AND object names both match the entity-name filter
-    /// appears ONCE (the oracle's `INNER JOIN` duplicated it in the page
-    /// while its total count did not).
+    /// appears ONCE (an `INNER JOIN` would duplicate it in the page while
+    /// the total count would not).
     pub fn search_paginated(
         &self,
         offset: i64,
