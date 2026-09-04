@@ -181,7 +181,7 @@ mention "oracle".
 crates/mcp/Cargo.toml` → **0** (WHOLE crate, final verify). Gates green. No
 behavior change.
 
-- [ ] 1.8 Clean `cli` crate + Cargo.toml (~195 mentions)
+- [x] 1.8 Clean `cli` crate + Cargo.toml (~195 mentions)
 
 **Scope.** all of `crates/cli/src/` (14+ files: `loadtest/*`, `serve/*`,
 `cli.rs`, `config_resolver.rs`, `lib.rs`, `model.rs`, `onnx_runtime.rs`) and
