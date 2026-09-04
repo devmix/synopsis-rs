@@ -2,111 +2,111 @@
 
 ## Purpose
 
-Локальный ANN-индекс эмбеддингов на disk-backed/квантованном движке: хранение векторов чанков, kNN-поиск в RAM-бюджете ноутбука, каскадная согласованность с SQLite-хранилищем чанков и формат фикстур для машинного паритета.
+A local ANN index of embeddings on a disk-backed/quantized engine: storing chunk vectors, kNN search within a laptop RAM budget, cascading consistency with the SQLite chunk store, and the fixture format for machine parity.
 
 ## Requirements
 
-### Requirement: Жизненный цикл индекса
+### Requirement: Index lifecycle
 
-Крейт `vectors` обеспечивает создание, открытие, персистентность и пересоздание ANN-индекса в каталоге данных. Индекс создаётся под фиксированную размерность (по умолчанию 1024 для bge-m3); открытие несуществующего индекса — различимая ошибка; пересоздание атомарно заменяет содержимое. Повторное открытие существующего индекса не перестраивает его. UsearchEngine поддерживает двухслойную архитектуру RAM/DISK с per-segment WAL в SQLite для durability вставок между rebuild (ADR 0004).
+The `vectors` crate provides creation, opening, persistence, and recreation of the ANN index in the data directory. The index is created for a fixed dimensionality (1024 by default for bge-m3); opening a non-existent index is a distinguishable error; recreation atomically replaces the contents. Re-opening an existing index does not rebuild it. UsearchEngine supports a two-layer RAM/DISK architecture with per-segment WAL in SQLite for insert durability between rebuilds (ADR 0004).
 
-#### Scenario: Создание нового индекса
-- **WHEN** создаётся индекс в пустом каталоге данных
-- **THEN** создаётся пустое хранилище с заданной размерностью, готовое к вставке векторов
+#### Scenario: Creating a new index
+- **WHEN** an index is created in an empty data directory
+- **THEN** an empty store with the given dimensionality is created, ready to accept vectors
 
-#### Scenario: Открытие существующего индекса
-- **WHEN** открывается ранее сохранённый индекс
-- **THEN** RAM-слой восстанавливается из снапшота, DISK-слои — как read-only mmap-виды, все вставленные векторы доступны поиску
+#### Scenario: Opening an existing index
+- **WHEN** a previously saved index is opened
+- **THEN** the RAM layer is restored from the snapshot, the DISK layers as read-only mmap views, and all inserted vectors are available to search
 
-#### Scenario: Открытие несуществующего индекса
-- **WHEN** открывается индекс, отсутствующий в каталоге данных
-- **THEN** возвращается явная ошибка «индекс не существует»
+#### Scenario: Opening a non-existent index
+- **WHEN** an index absent from the data directory is opened
+- **THEN** an explicit "index does not exist" error is returned
 
-#### Scenario: Пересоздание индекса
-- **WHEN** выполняется пересоздание индекса
-- **THEN** WAL очищается, файлы DISK-слоёв удаляются, RAM заменяется новым набором векторов — без накопления мусора
+#### Scenario: Recreating the index
+- **WHEN** an index recreation is performed
+- **THEN** the WAL is cleared, the DISK layer files are removed, and the RAM is replaced by a new set of vectors — with no garbage accumulation
 
-#### Scenario: Flush при переполнении RAM
-- **WHEN** размер RAM-индекса достигает `vectors.usearch.max_segment_vectors`
-- **THEN** RAM-слой сохраняется как новый DISK-сегмент (read-only mmap), WAL сегмента RAM очищается, RAM сбрасывается в пустой
+#### Scenario: Flush on RAM overflow
+- **WHEN** the size of the RAM index reaches `vectors.usearch.max_segment_vectors`
+- **THEN** the RAM layer is saved as a new DISK segment (read-only mmap), the WAL of the RAM segment is cleared, and the RAM is reset to empty
 
-#### Scenario: Поиск с WAL-фильтрацией
-- **WHEN** выполняется поиск по индексу с DISK-слоями
-- **THEN** результаты каждого слоя фильтруются по stale-множеству (DEL-записи WAL: удалённые и superseded ключи); дубликаты между слоями разрешаются в пользу свежего слоя
+#### Scenario: Search with WAL filtering
+- **WHEN** a search is performed on an index with DISK layers
+- **THEN** the results of each layer are filtered by the stale set (WAL DEL records: removed and superseded keys); duplicates between layers are resolved in favor of the fresher layer
 
-#### Scenario: Компактификация
-- **WHEN** доля устаревших векторов в DISK-слоях превышает `vectors.usearch.compaction_stale_threshold`
-- **THEN** фоновая компакция упаковывает live-векторы в новые сегменты (монотонные id), каталог сегментов меняется атомарно, WAL очищается после смены
+#### Scenario: Compaction
+- **WHEN** the share of stale vectors in the DISK layers exceeds `vectors.usearch.compaction_stale_threshold`
+- **THEN** a background compaction packs the live vectors into new segments (monotonic ids), the segment catalog is changed atomically, and the WAL is cleared after the switch
 
-#### Scenario: Persistence при restart
-- **WHEN** индекс перезапускается после краша
-- **THEN** WAL-строки несуществующих сегментов удаляются (self-healing), мусорные файлы каталога очищаются; вставки RAM с последнего flush/shutdown-save теряются (документированное окно, repair — consumer-реконсиляция или `rebuild`)
+#### Scenario: Persistence across restart
+- **WHEN** the index is restarted after a crash
+- **THEN** WAL rows of non-existent segments are removed (self-healing), and garbage files in the catalog are cleaned up; RAM inserts since the last flush/shutdown-save are lost (a documented window, repair — consumer reconciliation or `rebuild`)
 
-### Requirement: Вставка и kNN-поиск
+### Requirement: Insertion and kNN search
 
-Крейт `vectors` принимает готовые пары `(chunk_id, вектор)` — крейт НЕ вызывает модель эмбеддингов (запросный путь и путь вставки не загружают модель). Вставка стриминговая (батчами). Поиск возвращает top-k ближайших `(chunk_id, distance)` по метрике L2; ранжирование — по distance. Параметр поиска efSearch — runtime-настройка с дефолтом из ADR 0003 (efSearch=200); IVF-only-поле nprobes удалено вместе с lance-движком (`post-migration-lance-removal`, 2026-08-31).
+The `vectors` crate accepts ready-made `(chunk_id, vector)` pairs — the crate does NOT call the embedding model (neither the query path nor the insert path loads the model). Insertion is streaming (in batches). Search returns the top-k nearest `(chunk_id, distance)` by the L2 metric; ranking is by distance. The efSearch search parameter is a runtime setting with a default from ADR 0003 (efSearch=200); the IVF-only field nprobes was removed together with the lance engine (`post-migration-lance-removal`, 2026-08-31).
 
-#### Scenario: Вставка и поиск
-- **WHEN** вставлен набор векторов и выполняется поиск по запросному вектору
-- **THEN** возвращается до k пар `(chunk_id, distance)`, отсортированных по возрастанию distance
+#### Scenario: Insertion and search
+- **WHEN** a set of vectors is inserted and a search is performed with a query vector
+- **THEN** up to k `(chunk_id, distance)` pairs are returned, sorted by distance ascending
 
-#### Scenario: Размерность не совпадает
-- **WHEN** вставляется или ищется вектор размерности, отличной от размерности индекса
-- **THEN** возвращается явная ошибка размерности
+#### Scenario: Dimension mismatch
+- **WHEN** a vector of a dimensionality different from the index's is inserted or searched
+- **THEN** an explicit dimension error is returned
 
-#### Scenario: Пустой индекс
-- **WHEN** поиск выполняется по пустому индексу
-- **THEN** возвращается пустой результат без ошибки
+#### Scenario: Empty index
+- **WHEN** a search is performed on an empty index
+- **THEN** an empty result is returned without an error
 
-### Requirement: Каскадное удаление и синхронизация с SQLite
+### Requirement: Cascading deletion and synchronization with SQLite
 
-Векторы соответствуют чанкам SQLite один-к-одному по chunk_id; обе БД (SQLite, векторный индекс) должны быть синхронны всегда (решение человека 2026-08-21). Крейт `vectors` предоставляет удаление векторов по списку chunk_id (батчево, идемпотентно к отсутствующим id) и перечисление всех chunk_id индекса для сверки. Протокол каскада при удалении чанков: сначала удаляются векторы по chunk_id, затем строки чанков в SQLite — сбой между шагами оставляет восстановимое состояние (осиротевшие векторы вычищаются сверкой; недостающие векторы восстанавливаются ре-эмбеддингом).
+Vectors correspond to SQLite chunks one-to-one by chunk_id; both DBs (SQLite, the vector index) must always be in sync (human decision 2026-08-21). The `vectors` crate provides deletion of vectors by a list of chunk_ids (batched, idempotent to missing ids) and enumeration of all chunk_ids of the index for reconciliation. The cascade protocol on chunk deletion: first the vectors are deleted by chunk_id, then the chunk rows in SQLite — a failure between the steps leaves a recoverable state (orphan vectors are cleaned up by reconciliation; missing vectors are restored by re-embedding).
 
-#### Scenario: Удаление векторов чанка
-- **WHEN** удаляются векторы по chunk_id удалённого чанка
-- **THEN** векторы исчезают из индекса и не возвращаются поиском; повторный вызов с теми же id не является ошибкой
+#### Scenario: Deleting chunk vectors
+- **WHEN** vectors are deleted by the chunk_id of a deleted chunk
+- **THEN** the vectors disappear from the index and are not returned by search; a repeat call with the same ids is not an error
 
-#### Scenario: Порядок каскада
-- **WHEN** потребитель удаляет документ с чанками
-- **THEN** удаление векторов выполняется ДО удаления строк чанков в SQLite (контракт порядка фиксируется в документации крейта)
+#### Scenario: Cascade order
+- **WHEN** a consumer deletes a document with chunks
+- **THEN** vector deletion is performed BEFORE deleting the chunk rows in SQLite (the ordering contract is fixed in the crate documentation)
 
-#### Scenario: Сверка индекса с SQLite
-- **WHEN** выполняется сверка (reconciliation)
-- **THEN** перечисление chunk_id индекса позволяет найти осиротевшие векторы (id отсутствуют в SQLite) для их удаления
+#### Scenario: Index reconciliation with SQLite
+- **WHEN** a reconciliation is performed
+- **THEN** enumerating the chunk_ids of the index makes it possible to find orphan vectors (ids absent from SQLite) for their deletion
 
-### Requirement: Производственные гейты
+### Requirement: Production gates
 
 The ADR 0003 machine gates (search p95 latency < 10 ms, recall@10 ≥ 0.95 against exact-L2 brute force, RSS-delta ≤ ~2 GB) SHALL be confirmed by machine on corpora up to the N≈250K × 1024-dim class (s3b spike and CI-scale integration gates). At the extrapolation point N=1M the measured deviation was accepted by the human as a documented worst-case (decision 2026-08-21, option 1): p95 32–55 ms, recall@10 0.911–0.933 at default parameters; recall is limited by efSearch (the HNSW beam), not by partition coverage. efSearch remains a runtime setting for the accuracy/latency balance without index rebuild. The index is quantized and disk-backed (usearch HNSW, scalar quantization default bf16), parameters: M=16, efConstruction=100, metric L2sq.
 
-#### Scenario: Гейт recall на синтетике
+#### Scenario: Recall gate on synthetic data
 - **WHEN** a batch of queries with known brute-force ground truth is run on a seeded CI-scale synthetic corpus
 - **THEN** recall@10 ≥ 0.95
 
-#### Scenario: Гейт латентности
+#### Scenario: Latency gate
 - **WHEN** search latency is measured on a warmed index in the release profile
 - **THEN** p95 < 10 ms
 
-### Requirement: Формат фикстур SYNX (vectors.bin)
+### Requirement: SYNX fixture format (vectors.bin)
 
-Крейт `vectors` читает и пишет бинарный формат фикстур vectors.bin (контракт fixture-формата): magic "SYNX", version u32 LE = 1, dim u32 LE, count u64 LE, далее count строк `[u32 LE chunk_id][f32 LE × dim]`, отсортированных по возрастанию chunk_id. Чтение поддерживает потоковую обработку без полной загрузки в память; нарушение формата (magic/version/обрыв файла) — явная ошибка.
+The `vectors` crate reads and writes the binary fixture format vectors.bin (the fixture format contract): magic "SYNX", version u32 LE = 1, dim u32 LE, count u64 LE, then count rows of `[u32 LE chunk_id][f32 LE × dim]`, sorted by chunk_id ascending. Reading supports streaming without loading the whole file into memory; a format violation (magic/version/truncated file) is an explicit error.
 
-#### Scenario: Цикл записи и чтения
-- **WHEN** набор векторов записан в формат SYNX и прочитан обратно
-- **THEN** данные идентичны, строки отсортированы по возрастанию chunk_id
+#### Scenario: Write/read round-trip
+- **WHEN** a set of vectors is written in the SYNX format and read back
+- **THEN** the data is identical and the rows are sorted by chunk_id ascending
 
-#### Scenario: Повреждённый файл
-- **WHEN** файл имеет неверный magic, версию или обрыв посреди строки
-- **THEN** возвращается явная ошибка формата с указанием причины
+#### Scenario: Corrupted file
+- **WHEN** a file has a wrong magic, version, or a truncation in the middle of a row
+- **THEN** an explicit format error indicating the reason is returned
 
-### Requirement: Конфигурация индекса
+### Requirement: Index configuration
 
 Index parameters SHALL be configurable: a config struct in the `vectors` crate with defaults (M=16, efConstruction=100, efSearch=200, scalar quantization default bf16, metric L2sq, dimension 1024); the optional `vectors:` section in the config preset (additive config-format extension, decision 2026-08-21) passes overrides; a preset without the section gets the defaults. The IVF-only fields `num_partitions`/`nprobes` were removed with the lance engine (they do not apply to pure HNSW). The `vectors.usearch:` section holds the two-layer persistence parameters of UsearchEngine (ADR 0004): `max_segment_vectors` (default 1000000), `compaction_stale_threshold` (default 30), `search_threads` (default 4).
 
-#### Scenario: Дефолты без секции
+#### Scenario: Defaults without the section
 - **WHEN** the config preset has no `vectors` section
 - **THEN** the defaults above apply
 
-#### Scenario: Переопределение runtime-параметров
+#### Scenario: Runtime parameter override
 - **WHEN** the `vectors` section sets efSearch
 - **THEN** search uses the overridden value without rebuilding the index
 

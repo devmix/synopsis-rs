@@ -2,103 +2,103 @@
 
 ## Purpose
 
-Слой хранения данных Synopsis: соединение с SQLite (WAL, зафиксированный набор PRAGMA), миграции через `PRAGMA user_version` (единственный источник истины), транзакции, DAO-операции над таблицами v5-схемы и FTS5-поиск по чанкам с bm25-ранжированием.
+The Synopsis data storage layer: the SQLite connection (WAL, a fixed set of PRAGMAs), migrations via `PRAGMA user_version` (the sole source of truth), transactions, DAO operations over the v5-schema tables, and FTS5 search over chunks with bm25 ranking.
 
 ## Requirements
 
-### Requirement: Соединение и миграции
+### Requirement: Connection and migrations
 
-Крейт `db` открывает SQLite-базу с PRAGMA-настройками: WAL, synchronous=NORMAL, cache_size=-64000, mmap_size=268435456, foreign_keys=ON, busy_timeout=5000. Схема создаётся одной squashed init-миграцией (финальное v5-состояние), встроенной в бинарь на compile-time; `PRAGMA user_version` — единственный источник истины о состоянии схемы (=1 после init); таблица `_schema_migrations` НЕ создаётся; legacy knowledge.db НЕ открывается и НЕ мигрируется. Будущие миграции — нумерованные каталоги `<id>-<slug>/up.sql`, forward-only, shipped-миграции не редактируются.
+The `db` crate opens the SQLite database with the PRAGMA settings: WAL, synchronous=NORMAL, cache_size=-64000, mmap_size=268435456, foreign_keys=ON, busy_timeout=5000. The schema is created by a single squashed init migration (the final v5 state), embedded into the binary at compile time; `PRAGMA user_version` is the sole source of truth about the schema state (=1 after init); the `_schema_migrations` table is NOT created; a legacy knowledge.db is NOT opened and NOT migrated. Future migrations are numbered directories `<id>-<slug>/up.sql`, forward-only; shipped migrations are never edited.
 
-#### Scenario: Инициализация свежей базы
-- **WHEN** db открывает несуществующий файл базы
-- **THEN** создаётся полная v5-схема (все таблицы, индексы, FTS5-индекс и триггеры), `PRAGMA user_version` = 1, `_schema_migrations` отсутствует
+#### Scenario: Fresh-database initialization
+- **WHEN** the db opens a nonexistent database file
+- **THEN** the full v5 schema is created (all tables, indexes, the FTS5 index and triggers), `PRAGMA user_version` = 1, and `_schema_migrations` is absent
 
 #### Scenario: PRAGMA-parity
-- **WHEN** db открывает базу
-- **THEN** journal_mode=wal, synchronous=NORMAL, foreign_keys=ON, busy_timeout=5000, cache_size=-64000, mmap_size=268435456 (проверяется тестом)
+- **WHEN** the db opens a database
+- **THEN** journal_mode=wal, synchronous=NORMAL, foreign_keys=ON, busy_timeout=5000, cache_size=-64000, mmap_size=268435456 (verified by a test)
 
-#### Scenario: Повторное открытие
-- **WHEN** db открывает уже инициализированную базу (user_version=1)
-- **THEN** миграции не перезапускаются, схема не пересоздаётся, данные сохраняются
+#### Scenario: Reopening
+- **WHEN** the db opens an already-initialized database (user_version=1)
+- **THEN** the migrations are not re-run, the schema is not recreated, and the data is preserved
 
-### Requirement: Транзакции
+### Requirement: Transactions
 
-Транзакции выполняются через нативный API rusqlite (`Connection::transaction()`), closure-паттерн с автоматическим rollback при ошибке или панике внутри блока; ручные `BEGIN`/`COMMIT` строки не используются. DAO-методы работают единообразно с соединением и транзакцией через общую абстракцию исполнителя.
+Transactions are executed through the native rusqlite API (`Connection::transaction()`), the closure pattern with automatic rollback on an error or a panic inside the block; manual `BEGIN`/`COMMIT` statements are not used. DAO methods work uniformly with a connection and a transaction through a common executor abstraction.
 
-#### Scenario: Успешная транзакция
-- **WHEN** closure-блок транзакции завершается успешно
-- **THEN** изменения фиксируются (COMMIT)
+#### Scenario: Successful transaction
+- **WHEN** the transaction closure block completes successfully
+- **THEN** the changes are committed (COMMIT)
 
-#### Scenario: Ошибка в транзакции
-- **WHEN** closure-блок возвращает ошибку
-- **THEN** все изменения откатываются (ROLLBACK), база остаётся в исходном состоянии
+#### Scenario: Error in a transaction
+- **WHEN** the closure block returns an error
+- **THEN** all changes are rolled back (ROLLBACK) and the database remains in its original state
 
-#### Scenario: Паника в транзакции
-- **WHEN** closure-блок паникует
-- **THEN** транзакция откатывается автоматически (Drop-семантика rusqlite), паника распространяется наружу
+#### Scenario: Panic in a transaction
+- **WHEN** the closure block panics
+- **THEN** the transaction is rolled back automatically (rusqlite Drop semantics) and the panic propagates outward
 
-### Requirement: DAO-операции над v5-схемой
+### Requirement: DAO operations over the v5 schema
 
-DAO-слой покрывает таблицы v5-схемы: documents, chunks, entities, facts, связи (chunk_entities, entity_links, entity_sources, fact_sources), app_kv. Поведение операций зафиксировано по семантике: CRUD, пагинация с фильтрами (domain через json_each, source_type, name), batch-операции (IN-списки с плейсхолдерами, батчи ≤ 500 строк), orphan-cleanup (не удаляет EntityType и факт-референсы), GetOrCreate/CreateOrIgnore — атомарные через UNIQUE-констрейнты и `ON CONFLICT` (исправление TOCTOU-гонки). Параметр-лимит SQLite (32766) не нарушается (батчи ≤ 500×2 параметров).
+The DAO layer covers the v5-schema tables: documents, chunks, entities, facts, links (chunk_entities, entity_links, entity_sources, fact_sources), app_kv. Operation behavior is fixed by semantics: CRUD, pagination with filters (domain via json_each, source_type, name), batch operations (IN-lists with placeholders, batches ≤ 500 rows), orphan cleanup (does not delete EntityType or fact references), GetOrCreate/CreateOrIgnore — atomic via UNIQUE constraints and `ON CONFLICT` (fixing the TOCTOU race). The SQLite parameter limit (32766) is not exceeded (batches ≤ 500×2 parameters).
 
-#### Scenario: CRUD документа
-- **WHEN** DAO создаёт, читает, обновляет и удаляет документ
-- **THEN** все операции возвращают корректные данные; повторное чтение удалённого документа даёт None
+#### Scenario: Document CRUD
+- **WHEN** the DAO creates, reads, updates, and deletes a document
+- **THEN** all operations return correct data; re-reading a deleted document yields None
 
-#### Scenario: Пагинация с фильтрами
-- **WHEN** DAO запрашивает страницу документов/сущностей с фильтрами domain/source_type/name
-- **THEN** возвращаются только элементы, удовлетворяющие фильтрам, в зафиксированном порядке, с корректным offset/limit
+#### Scenario: Pagination with filters
+- **WHEN** the DAO requests a page of documents/entities with domain/source_type/name filters
+- **THEN** only the items satisfying the filters are returned, in the fixed order, with correct offset/limit
 
-#### Scenario: Атомарный GetOrCreate
-- **WHEN** два вызова GetOrCreate с одинаковыми ключами (type, name, domain) выполняются конкурентно
-- **THEN** создаётся ровно одна запись, оба вызова возвращают один и тот же ID (без гонки)
+#### Scenario: Atomic GetOrCreate
+- **WHEN** two GetOrCreate calls with identical keys (type, name, domain) run concurrently
+- **THEN** exactly one record is created and both calls return the same ID (no race)
 
-#### Scenario: Batch-операции
-- **WHEN** DAO выполняет batch-операцию (GetByIDs, LinkBatch, DeleteByIDs) с большим списком
-- **THEN** операция выполняется корректно без превышения параметр-лимита SQLite (батчи ≤ 500 строк)
+#### Scenario: Batch operations
+- **WHEN** the DAO performs a batch operation (GetByIDs, LinkBatch, DeleteByIDs) with a large list
+- **THEN** the operation completes correctly without exceeding the SQLite parameter limit (batches ≤ 500 rows)
 
-#### Scenario: Orphan-cleanup
-- **WHEN** DAO удаляет осиротевшие сущности/факты
-- **THEN** EntityType и сущности/факты, на которые ссылаются другие записи, не удаляются
+#### Scenario: Orphan cleanup
+- **WHEN** the DAO deletes orphaned entities/facts
+- **THEN** EntityType and the entities/facts referenced by other records are not deleted
 
-### Requirement: FTS5-поиск по чанкам
+### Requirement: FTS5 search over chunks
 
-Поиск по чанкам использует FTS5-индекс (встроенный в bundled SQLite, без cgo) с ранжированием bm25 и опциональным domain-фильтром через json_each. Результаты возвращаются с корректными bm25-скорами и chunk_id, отсортированные по релевантности. Поведение зафиксировано (проверяется на фикстуре knowledge.db).
+Chunk search uses the FTS5 index (built into the bundled SQLite, no cgo) with bm25 ranking and an optional domain filter via json_each. Results are returned with correct bm25 scores and chunk_id, sorted by relevance. Behavior is fixed (verified against the knowledge.db fixture).
 
-#### Scenario: FTS5-поиск без фильтра
-- **WHEN** выполняется поиск 'knowledge' по всем чанкам
-- **THEN** возвращается 17 хитов, top-3 chunk_id совпадают с записанной фикстурой (проверка на фикстуре knowledge.db)
+#### Scenario: FTS5 search without a filter
+- **WHEN** the search for 'knowledge' runs over all chunks
+- **THEN** 17 hits are returned and the top-3 chunk_ids match the recorded fixture (checked against the knowledge.db fixture)
 
-#### Scenario: FTS5-поиск с domain-фильтром
-- **WHEN** выполняется поиск с ограничением по домену
-- **THEN** возвращаются только чанки документов указанного домена, ранжированные по bm25
+#### Scenario: FTS5 search with a domain filter
+- **WHEN** a search runs with a domain restriction
+- **THEN** only chunks of documents in the given domain are returned, ranked by bm25
 
-#### Scenario: Синхронизация индекса
-- **WHEN** чанк создаётся, обновляется или удаляется
-- **THEN** FTS5-индекс синхронизируется автоматически (триггеры ai/ad/au), поиск отражает актуальное состояние
+#### Scenario: Index synchronization
+- **WHEN** a chunk is created, updated, or deleted
+- **THEN** the FTS5 index is synchronized automatically (the ai/ad/au triggers) and the search reflects the current state
 
-### Requirement: Конкурентный доступ
+### Requirement: Concurrent access
 
-Крейт `db` поддерживает конкурентные чтения и не блокирует их write-транзакциями: пул соединений + WAL (несколько соединений разделяют одну БД). Чтения выполняются параллельно; write-транзакция на одном соединении не блокирует чтения на других. Вложенный `exec_tx` (транзакция внутри транзакции на том же потоке) возвращает явную ошибку, а не деадлок и не молчаливую независимую транзакцию.
+The `db` crate supports concurrent reads and does not block them with write transactions: connection pool + WAL (several connections share one DB). Reads run in parallel; a write transaction on one connection does not block reads on others. A nested `exec_tx` (a transaction inside a transaction on the same thread) returns an explicit error, not a deadlock and not a silent independent transaction.
 
-#### Scenario: Параллельные чтения
-- **WHEN** несколько потоков одновременно выполняют read-запросы через `with_conn`
-- **THEN** все запросы завершаются корректно, без деадлоков и без взаимной блокировки
+#### Scenario: Parallel reads
+- **WHEN** several threads simultaneously execute read queries through `with_conn`
+- **THEN** all queries complete correctly, without deadlocks and without blocking each other
 
-#### Scenario: Чтение во время write-транзакции
-- **WHEN** один поток выполняет write-транзакцию через `exec_tx`, а другой поток выполняет чтение
-- **THEN** чтение не блокируется на время транзакции (WAL + отдельное соединение пула)
+#### Scenario: Read during a write transaction
+- **WHEN** one thread performs a write transaction through `exec_tx` while another thread performs a read
+- **THEN** the read is not blocked for the duration of the transaction (WAL + a separate pooled connection)
 
-#### Scenario: Вложенная транзакция
-- **WHEN** `exec_tx` вызывается внутри closure другого `exec_tx` на том же потоке
-- **THEN** возвращается `DbError::NestedTransaction`, деадлока нет
+#### Scenario: Nested transaction
+- **WHEN** `exec_tx` is called inside the closure of another `exec_tx` on the same thread
+- **THEN** `DbError::NestedTransaction` is returned and there is no deadlock
 
-### Requirement: vec0 исключён
+### Requirement: vec0 excluded
 
 The `db` crate SHALL contain no vec0-table operations (SearchVector, UpsertVector, FormatVector, DeleteVectorsByChunkIDs, etc.) — vector search lives in the `vectors` crate (ADR 0003/0004, usearch engine); vectors are rebuilt from chunk text, the old vec0 is never read.
 
-#### Scenario: Отсутствие vec0-кода
+#### Scenario: Absence of vec0 code
 - **WHEN** the db crate source is checked
 - **THEN** it contains no references to vec0 tables or vec0 operations (grep check in CI)
 

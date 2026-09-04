@@ -2,55 +2,55 @@
 
 ## Purpose
 
-Схема данных SQLite и правила миграций. Фиксирует, что v5-форма схемы (5 миграций) — структурный контракт непрерывности данных: Rust-бинарь строит свою БД с нуля, legacy `knowledge.db` не открывается и не мигрируется; сохраняется форма схемы.
+The SQLite data schema and migration rules. Fixes that the v5 schema shape (5 migrations) is the structural contract of data continuity: the Rust binary builds its DB from scratch, a legacy `knowledge.db` is not opened and not migrated; the schema shape is preserved.
 ## Requirements
-### Requirement: Совместимость со схемой v5
+### Requirement: Compatibility with the v5 schema
 
-Rust-бинарь строит knowledge.db с нуля (схема v5 после миграций 001–005). Таблицы `documents`, `chunks`, `entities`, `chunk_entities`, `facts`, `fact_sources`, `entity_sources`, `entity_links`, `app_kv`, FTS5-таблица `chunks_fts` и индексы присутствуют и используются идентично: те же запросы дают те же результаты.
+The Rust binary builds knowledge.db from scratch (v5 schema after migrations 001–005). The tables `documents`, `chunks`, `entities`, `chunk_entities`, `facts`, `fact_sources`, `entity_sources`, `entity_links`, `app_kv`, the FTS5 table `chunks_fts`, and the indexes are present and used identically: the same queries yield the same results.
 
-#### Scenario: Старт со свежей БД
-- **WHEN** Rust-сервер стартует со свежей knowledge.db, созданной с нуля (sync завершён)
-- **THEN** миграции не переписывают данные; catalog_overview возвращает счётчики, вычисленные из данных той же БД
+#### Scenario: Fresh-DB startup
+- **WHEN** the Rust server starts with a fresh knowledge.db built from scratch (sync finished)
+- **THEN** the migrations do not rewrite data; catalog_overview returns counters computed from the same DB's data
 
-#### Scenario: Повторяемость read-запросов
-- **WHEN** к Rust-бинарю (одна и та же БД-копия) послать одинаковые read-запросы через MCP tools
-- **THEN** результаты совпадают с записанными фикстурами (кроме ANN-полей, см. recall-гейты)
+#### Scenario: Read-query repeatability
+- **WHEN** the same read queries are sent to the Rust binary (the same DB copy) through the MCP tools
+- **THEN** the results match the recorded fixtures (except the ANN fields, see the recall gates)
 
-### Requirement: Дисциплина миграций
+### Requirement: Migration discipline
 
-Миграции применяются при старте в нумерованном порядке и идемпотентны (IF NOT EXISTS). Shipped-файлы 001–005 никогда не редактируются; изменения схемы в Rust-версии добавляются только новыми файлами с продолжением нумерации (006+), которые корректно применяются к БД версии v5.
+Migrations are applied at startup in numbered order and are idempotent (IF NOT EXISTS). The shipped files 001–005 are never edited; schema changes in the Rust version are added only as new files continuing the numbering (006+), which are applied correctly to a v5 DB.
 
-#### Scenario: Новая миграция
-- **WHEN** в Rust-репо добавлена migration 006 и бинарь стартует на БД v5
-- **THEN** 006 применяется один раз, данные не повреждены; повторный старт — безоперационен
+#### Scenario: New migration
+- **WHEN** migration 006 is added to the Rust repo and the binary starts on a v5 DB
+- **THEN** 006 is applied once and the data is not corrupted; a subsequent startup is a no-op
 
-### Requirement: Цикл статусов facts
+### Requirement: facts status lifecycle
 
-Таблица `facts` несёт колонку `status` со значениями `draft`, `pending`, `approved`, `rejected` (CHECK-констрейнт). Только `approved` факты участвуют в read-расширениях (search expansion, dossiers).
+The `facts` table carries a `status` column with the values `draft`, `pending`, `approved`, `rejected` (CHECK constraint). Only `approved` facts participate in read expansions (search expansion, dossiers).
 
-#### Scenario: CHECK-констрейнт
-- **WHEN** попытаться записать fact со status 'weird'
-- **THEN** запись отклоняется констрейнтом
+#### Scenario: CHECK constraint
+- **WHEN** writing a fact with status 'weird' is attempted
+- **THEN** the write is rejected by the constraint
 
-### Requirement: Хранение векторов и пересборка
+### Requirement: Vector storage and rebuild
 
-Векторы эмбеддингов НЕ переносятся из старой vec0-таблицы `chunks_vec` в новое хранилище. Старая таблица в legacy-файле игнорируется (или отключается) без ошибок. Векторный индекс Rust-версии — внешнее HNSW-хранилище, пересобираемое по тексту чанков из `chunks` при rebuild; размерность индекса соответствует модели эмбеддингов из конфигурации.
+Embedding vectors are NOT carried over from the old vec0 table `chunks_vec` into the new storage. The old table in the legacy file is ignored (or disabled) without errors. The vector index of the Rust version is an external HNSW store, rebuilt from the chunk text in `chunks` on rebuild; the index dimensionality matches the embedding model from the configuration.
 
-#### Scenario: Пересборка векторов
-- **WHEN** Rust-бинарь запускает rebuild векторов на БД v5 (без vec0-данных)
-- **THEN** индекс построен по тексту чанков; семантический поиск возвращает recall@10 ≥ 0.95 относительно brute-force ground truth на той же модели эмбеддингов
+#### Scenario: Vector rebuild
+- **WHEN** the Rust binary runs a vector rebuild on a v5 DB (no vec0 data)
+- **THEN** the index is built from the chunk text; semantic search returns recall@10 ≥ 0.95 against a brute-force ground truth on the same embedding model
 
-### Requirement: Таблица document_jobs (очередь индексации)
+### Requirement: document_jobs table (indexing queue)
 
-Rust-бинарь ведёт очередь операций над документами в таблице `document_jobs` (knowledge DB), создаваемой consolidated init-миграцией `migrations/knowledge/1-init/up.sql` (таблица свёрнута в init-миграцию при squash, design D6; отдельной forward-only миграции `2-document-jobs` не существует). Таблица — единая state-machine для вотчера, стартового сканирования и фонового worker'а. Колонки: `path TEXT PRIMARY KEY`, `source_path TEXT NOT NULL`, `op TEXT NOT NULL DEFAULT 'index'` (`index` | `delete`), `status TEXT NOT NULL DEFAULT 'pending'` (`pending` | `processing` | `done` | `error`), `content_hash TEXT`, `attempts INTEGER NOT NULL DEFAULT 0`, `max_attempts INTEGER NOT NULL DEFAULT 3`, `last_error TEXT`, `next_attempt_at INTEGER NOT NULL DEFAULT 0`, `created_at INTEGER`, `updated_at INTEGER`. Индекс `idx_document_jobs_due (status, next_attempt_at)` для due-запросов. Миграция идемпотентна (`IF NOT EXISTS`); повторный старт — безоперационен.
+The Rust binary keeps a queue of document operations in the `document_jobs` table (knowledge DB), created by the consolidated init migration `migrations/knowledge/1-init/up.sql` (the table was folded into the init migration at squash time, design D6; a separate forward-only migration `2-document-jobs` does not exist). The table is a single state machine for the watcher, the startup scan, and the background worker. Columns: `path TEXT PRIMARY KEY`, `source_path TEXT NOT NULL`, `op TEXT NOT NULL DEFAULT 'index'` (`index` | `delete`), `status TEXT NOT NULL DEFAULT 'pending'` (`pending` | `processing` | `done` | `error`), `content_hash TEXT`, `attempts INTEGER NOT NULL DEFAULT 0`, `max_attempts INTEGER NOT NULL DEFAULT 3`, `last_error TEXT`, `next_attempt_at INTEGER NOT NULL DEFAULT 0`, `created_at INTEGER`, `updated_at INTEGER`. Index `idx_document_jobs_due (status, next_attempt_at)` for due queries. The migration is idempotent (`IF NOT EXISTS`); a subsequent startup is a no-op.
 
-#### Scenario: Применение миграции
-- **WHEN** бинарь стартует на knowledge.db без таблицы `document_jobs`
-- **THEN** init-миграция `1-init` создаёт таблицу и индекс один раз; повторный старт не меняет схему
+#### Scenario: Migration application
+- **WHEN** the binary starts on a knowledge.db without the `document_jobs` table
+- **THEN** the init migration `1-init` creates the table and the index once; a subsequent startup does not change the schema
 
-#### Scenario: Состояние задания
-- **WHEN** документ не проиндексировался после `max_attempts` повторов
-- **THEN** строка имеет `status='error'`, `attempts=max_attempts`, `last_error` заполнен; `index reset-retries` переводит её в `pending` с `attempts=0`
+#### Scenario: Job state
+- **WHEN** a document has not been indexed after `max_attempts` attempts
+- **THEN** the row has `status='error'`, `attempts=max_attempts`, and `last_error` is populated; `index reset-retries` moves it to `pending` with `attempts=0`
 
 ### Requirement: search_text column (explicit v5 deviation)
 The `chunks` table carries a `search_text TEXT NOT NULL` column (default = `chunk_text`) holding the search-oriented text: for Markdown chunks the heading breadcrumb (multi-line heading path) followed by the chunk body, or the body alone when the chunk has no breadcrumb. The FTS5 `chunks_fts` index is built over `search_text` (not `chunk_text`), and its `ai/ad/au` triggers reference `search_text`. This is an explicit, justified deviation from the v5 shape: the Rust database is always built from scratch (no legacy `knowledge.db` is opened or migrated), and the deviation improves RAG retrieval quality by giving both search legs the section context. The invariant-preserving `chunk_text` column and the byte offsets are unchanged.
@@ -77,4 +77,3 @@ The `chunks` table SHALL carry a `metadata_json TEXT` (nullable) column holding 
 #### Scenario: Round-trip
 - **WHEN** a chunk is created with a `metadata_json` value
 - **THEN** a row read returns the same value, and a chunk created without one returns `NULL`
-

@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn loader_rejects_missing_file_with_the_path() {
-        // Criterion (б) via the real loader: no existence pre-check — the read failure carries
+        // Criterion (b) via the real loader: no existence pre-check — the read failure carries
         // the full path in ConfigError::Io. The pid keeps the probe name unique per process.
         let missing = std::env::temp_dir().join(format!(
             "synopsis-domain-missing-{}.xml",

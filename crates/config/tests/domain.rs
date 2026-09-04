@@ -7,8 +7,8 @@
 //! (`<entities>`, `<relations>`, `<attributes>`, `<synonyms>`, `<regex-rules>`) and changes
 //! nothing else — see `tests/data/README.md` for provenance, SHA-256 and the adaptation recipe.
 //! These tests assert that every document **loads** with its exact values (entities, relations,
-//! extraction, confidence — criteria а) and that the validation matrix rejects the same
-//! documents with the expected messages (criteria б–е; the two copy-paste "entity Predicate"
+//! extraction, confidence — criteria a) and that the validation matrix rejects the same
+//! documents with the expected messages (criteria b–f; the two copy-paste "entity Predicate"
 //! messages are fixed to "entity id").
 
 // Test target: unwrap/expect on fixture loading is intentional (the files always exist).
@@ -58,7 +58,7 @@ fn assert_validation_error(name: &str, document: &str, expected_message: &str) {
 
 #[test]
 fn fixture_hr_parses_complete_domain() {
-    // Criterion (а): every block of the fixture loads with its exact values.
+    // Criterion (a): every block of the fixture loads with its exact values.
     let cfg =
         load_domain_config(fixture_dir().join("domain_hr.xml")).expect("domain_hr.xml must load");
 
@@ -115,7 +115,7 @@ fn fixture_hr_parses_complete_domain() {
 
 #[test]
 fn fixture_it_parses_with_compiled_regex() {
-    // Criterion (а): the only fixture with a regex rule — it loads and the pattern is compiled
+    // Criterion (a): the only fixture with a regex rule — it loads and the pattern is compiled
     // in place (design D5).
     let cfg =
         load_domain_config(fixture_dir().join("domain_it.xml")).expect("domain_it.xml must load");
@@ -169,7 +169,7 @@ fn fixture_it_parses_with_compiled_regex() {
 
 #[test]
 fn fixture_product_parses_complete_domain() {
-    // Criterion (а): the largest entity/relation set, empty extraction.
+    // Criterion (a): the largest entity/relation set, empty extraction.
     let cfg = load_domain_config(fixture_dir().join("domain_product.xml"))
         .expect("domain_product.xml must load");
 
@@ -215,7 +215,7 @@ fn fixture_product_parses_complete_domain() {
 
 #[test]
 fn missing_file_is_an_io_error_carrying_the_path() {
-    // Criterion (б): no existence pre-check — the read failure carries the full path.
+    // Criterion (b): no existence pre-check — the read failure carries the full path.
     let missing = fixture_dir().join("domain_missing.xml");
     match load_domain_config(&missing) {
         Err(ConfigError::Io { path, .. }) => {
@@ -230,7 +230,7 @@ fn missing_file_is_an_io_error_carrying_the_path() {
 
 #[test]
 fn malformed_xml_is_an_xml_error_carrying_the_path() {
-    // Criterion (в): an "invalid XML" document (unclosed tag) is a parse error.
+    // Criterion (c): an "invalid XML" document (unclosed tag) is a parse error.
     let dir = TempDomain::new(
         "malformed",
         "<domain name=\"invalid\" version=\"1.0\">\n    <entity id=\"test\" <!-- missing closing bracket -->\n</domain>",
@@ -245,7 +245,7 @@ fn malformed_xml_is_an_xml_error_carrying_the_path() {
 
 #[test]
 fn invalid_regex_pattern_is_a_typed_error_with_file_and_rule() {
-    // Criterion (г): an uncompilable pattern is a typed error naming both the file and the rule
+    // Criterion (d): an uncompilable pattern is a typed error naming both the file and the rule
     // id.
     let dir = TempDomain::new(
         "bad_regex",
@@ -267,7 +267,7 @@ fn invalid_regex_pattern_is_a_typed_error_with_file_and_rule() {
 
 #[test]
 fn duplicate_entity_id_fails_validation() {
-    // Criterion (д). The message names the id, not the predicate — the same fix as
+    // Criterion (e). The message names the id, not the predicate — the same fix as
     // task 3.1b's pool twin.
     assert_validation_error(
         "dup_entity",
@@ -283,7 +283,7 @@ fn duplicate_entity_id_fails_validation() {
 
 #[test]
 fn relation_to_missing_entity_fails_validation() {
-    // Criterion (е): endpoints are resolved against the domain's own entities (per-file
+    // Criterion (f): endpoints are resolved against the domain's own entities (per-file
     // validation; the global pool is a fallback layer resolved in `graph`).
     assert_validation_error(
         "missing_source",

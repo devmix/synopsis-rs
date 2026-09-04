@@ -1,177 +1,177 @@
-# ADR 0004 — usearch: двухслойная RAM/DISK-архитектура с per-segment WAL
+# ADR 0004 — usearch: a two-tier RAM/DISK architecture with per-segment WAL
 
-**Статус:** принято (решения по целевой архитектуре — человек, 2026-08-31; детализация — ниже).
-**Дата:** 2026-08-31 · **Change:** usearch-wal-persistence
+**Status:** accepted (target architecture decisions — the human, 2026-08-31; details — below).
+**Date:** 2026-08-31 · **Change:** usearch-wal-persistence
 
-## Вопрос
+## Question
 
-`UsearchEngine` должен дать устойчивый (durable) и корректный поиск при неограниченном росте корпуса: слой RAM (оперативные данные) + слои DISK[n] (исторические, read-only), параллельный поиск по всем слоям с слиянием, per-segment WAL в SQLite, переполнение RAM → новый DISK[n], фоновая компакция (vacuum) при превышении порога устаревших векторов. Текущая частичная реализация (коммиты до 708f76c) не является истиной — она аудирована ниже и переписывается по этому ADR.
+`UsearchEngine` must provide durable and correct search under unbounded corpus growth: a RAM tier (working data) + DISK[n] tiers (historical, read-only), parallel search across all tiers with merging, a per-segment WAL in SQLite, RAM overflow → a new DISK[n], and background compaction (vacuum) when the stale-vector threshold is exceeded. The current partial implementation (commits up to 708f76c) is not the truth — it is audited below and rewritten per this ADR.
 
-## Аудит текущего состояния (почему текущий код переписывается)
+## Audit of the current state (why the current code is rewritten)
 
-| # | Дефект | Где |
+| # | Defect | Where |
 |---|---|---|
-| 1 | **DISK-слой — мёртвый код**: `disk_segments` всегда пуст (`Vec::new()` во всех конструкторах), пути flush RAM→DISK[n] не существует, `open` не восстанавливает сегменты, файлов сегментов нет | `usearch_engine.rs:162,192,226` |
-| 2 | **WAL не подключён в проде**: `with_wal_db` не имеет ни одного вызывающего; фабрика `create_vector_engine` не передаёт ни WAL, ни `UsearchConfig` | `usearch_engine.rs:246`, `lib.rs:428-476`, `cli/src/serve/bootstrap.rs:418-432` |
-| 3 | **`cargo test -p db` красный**: миграция 4 добавлена, но тесты ждут `user_version = 3` и вставляют строки без `segment_id` (в новой таблице нет DEFAULT) — 6 падений | `db/src/connection.rs:347-491`, `db/src/test_util.rs` |
-| 4 | **`maybe_compact(&mut self)`** неcallable через `Arc<dyn VectorIndex>`; вызывающих нет | `usearch_engine.rs:587` |
-| 5 | **`count()`/`chunk_ids()` видят только RAM** — DISK-сегменты невидимы для reconcile/GC | `usearch_engine.rs:410,434` |
-| 6 | **`compact` не сохраняет новые сегменты на диск** (только in-memory `Index`), старые файлы не удаляет; дедуп-комментарий «later segment wins» противоречит коду (выигрывает **ранний** сегмент) | `usearch_engine.rs:601-654` |
-| 7 | **`load_live_keys_per_segment` всегда пуст**: ищет ADD-строки с `segment_id > 0`, а write-путь их никогда не пишет (ADD только в segment 0) → компакция, если бы сработала, **стёрла бы все данные** | `usearch_engine.rs:664-702` |
-| 8 | **`rebuild` оставляет старые DISK-сегменты и чистит весь WAL** → после rebuild поиск вернул бы устаревшие векторы как live | `usearch_engine.rs:472-510` |
-| 9 | **Поиск: SQL-запрос к WAL на каждый search** (полный скан DEL-строк), флаг UPD определён, но нигде не пишется и не читается; `search_threads` из конфига игнорируется | `usearch_engine.rs:321-367,749-779` |
-| 10 | **Нет ни одного теста** WAL/compaction/search-путей (commit 2063842 заявляет «5 compaction tests» — их нет в дереве) | `crates/vectors/` |
-| 11 | **Нет crash-восстановления**: ни реплей WAL, ни reconciliation сегментов при старте, ни именование/реестр файлов сегментов | — |
-| 12 | **Док-комментарий неверен**: `Index::restore` — это **mmap read-write**, а не «loads the file into memory». Проверено экспериментально: `add` через mmap-`restore` **не persists в файл** без явного `save()` (size после повторного restore = 0) | `usearch_engine.rs:20-25` |
+| 1 | **The DISK tier is dead code**: `disk_segments` is always empty (`Vec::new()` in every constructor), no RAM→DISK[n] flush path exists, `open` does not restore segments, no segment files exist | `usearch_engine.rs:162,192,226` |
+| 2 | **WAL is not wired in production**: `with_wal_db` has no callers; the `create_vector_engine` factory passes neither WAL nor `UsearchConfig` | `usearch_engine.rs:246`, `lib.rs:428-476`, `cli/src/serve/bootstrap.rs:418-432` |
+| 3 | **`cargo test -p db` is red**: migration 4 was added, but the tests expect `user_version = 3` and insert rows without `segment_id` (no DEFAULT in the new table) — 6 failures | `db/src/connection.rs:347-491`, `db/src/test_util.rs` |
+| 4 | **`maybe_compact(&mut self)`** is not callable through `Arc<dyn VectorIndex>`; there are no callers | `usearch_engine.rs:587` |
+| 5 | **`count()`/`chunk_ids()` see only RAM** — DISK segments are invisible to reconcile/GC | `usearch_engine.rs:410,434` |
+| 6 | **`compact` does not persist new segments to disk** (only the in-memory `Index`); it does not remove old files; the dedup comment "later segment wins" contradicts the code (the **earlier** segment wins) | `usearch_engine.rs:601-654` |
+| 7 | **`load_live_keys_per_segment` is always empty**: it looks for ADD rows with `segment_id > 0`, but the write path never writes them (ADDs only in segment 0) → compaction, if it had run, would have **erased all data** | `usearch_engine.rs:664-702` |
+| 8 | **`rebuild` leaves old DISK segments and wipes the whole WAL** → after a rebuild, search would have returned stale vectors as live | `usearch_engine.rs:472-510` |
+| 9 | **Search: a SQL query to the WAL on every search** (a full DEL-row scan); the UPD flag is defined but never written or read anywhere; `search_threads` from the config is ignored | `usearch_engine.rs:321-367,749-779` |
+| 10 | **Not a single test** of the WAL/compaction/search paths (commit 2063842 claims "5 compaction tests" — they are not in the tree) | `crates/vectors/` |
+| 11 | **No crash recovery**: no WAL replay, no segment reconciliation on start, no segment-file naming/registry | — |
+| 12 | **Doc comment is wrong**: `Index::restore` is **mmap read-write**, not "loads the file into memory". Verified experimentally: `add` through mmap `restore` **does not persist to the file** without an explicit `save()` (size after a re-restore = 0) | `usearch_engine.rs:20-25` |
 
-Вывод: целевая архитектура (RAM + DISK[n] + WAL + vacuum) на текущем коде не существует; существует только WAL-запись в segment 0 и параллельный merge по пустому списку сегментов. Переписываем `UsearchEngine` целиком, сохраняя публичный контракт трейта `VectorIndex` и схему WAL-таблицы.
+Conclusion: the target architecture (RAM + DISK[n] + WAL + vacuum) does not exist in the current code; only WAL writes to segment 0 and a parallel merge over an empty segment list exist. We rewrite `UsearchEngine` wholesale, preserving the public `VectorIndex` trait contract and the WAL table schema.
 
-## Ключевые факты о usearch 2.26 (проверено экспериментально)
+## Key facts about usearch 2.26 (verified experimentally)
 
-- `Index::restore(path)` — mmap **read-write**; `Index::restore_view(path)` — mmap **read-only** (view); `Index::restore_from_buffer(bytes)` — **копия в память**, полностью мутабельна.
-- `add`/`remove` через mmap-`restore` **не сохраняются в файл** без явного `save()` → персистентность только через `save()`.
-- `remove` на read-only view молча возвращает `Ok(0)` (без ошибки) — DISK-сегменты никогда не мутируем, это безопасно.
-- `filtered_search(query, k, |key| bool)` — фильтр вызывается внутри HNSW-обхода (не post-filter) ✓.
-- `contains(key)` — O(1), работает на view ✓. `get(key)` — работает на view ✓.
-- API перечисления ключей **нет** (`exact_search`-хаки не используем; ключи храним в sidecar-манифестах, см. ниже).
-- Методы `Index` принимают `&self` (C++-ядро конкурентно) → `Mutex` вокруг индекса не нужен.
+- `Index::restore(path)` — mmap **read-write**; `Index::restore_view(path)` — mmap **read-only** (view); `Index::restore_from_buffer(bytes)` — **an in-memory copy**, fully mutable.
+- `add`/`remove` through mmap `restore` **do not persist to the file** without an explicit `save()` → persistence only via `save()`.
+- `remove` on a read-only view silently returns `Ok(0)` (no error) — DISK segments are never mutated, which is safe.
+- `filtered_search(query, k, |key| bool)` — the filter is called inside the HNSW walk (not a post-filter) ✓.
+- `contains(key)` — O(1), works on a view ✓. `get(key)` — works on a view ✓.
+- There is **no key-enumeration API** (no `exact_search` hacks; keys are stored in sidecar manifests, see below).
+- `Index` methods take `&self` (the C++ core is concurrent) → no `Mutex` around the index is needed.
 
-## Варианты
+## Options
 
-1. **Глобальный кумулятивный WAL** (текущий design.md change): PK `(segment_id, chunk_id)`, ADD/DEL/UPD, DISK[n] фильтруется строками `segment_id <= n`, при flush — «перепривязка» строк segment 0 в новый сегмент, манифест ключей — в самих ADD-строках WAL.
-   *Отклонён.* (а) WAL разрастается на весь корпус (1M+ ADD-строк) и раздувается каждой вставкой; (б) «перепривязка» при flush — хрупкая SQL-танцевальная логика с множеством краш-случаев; (в) кумулятивные запросы `segment_id <= n` на пути поиска; (г) UPD-флаг не покрывает кейс re-insert (старая копия в DISK[n] «оживает», т.к. DEL-строки нет); (д) манифест ключей в WAL требует `NOT IN`-подзапросов и не переживает частичные краши.
-2. **Самодостаточный per-segment WAL (только DEL) + sidecar-манифесты ключей** — **принят** (ниже).
-3. **Бинарные WAL-файлы на сегмент** (вместо SQLite). *Отклонён:* решение человека — WAL в SQLite (транзакционная целостность с chunks, единый store, уже зашитая миграция).
-4. **Периодический полный save** (без сегментов). *Отклонён:* write amplification O(N²) — уже отклонён в proposal.
-5. **mmap-`restore` для RAM-слоя** («файл сам персистит»). *Отклонён:* эксперимент показал, что `add` через mmap не доходит до файла — ложное чувство персистентности. RAM = `restore_from_buffer` (копия в памяти) + явные `save()`.
+1. **A global cumulative WAL** (the current design.md change): PK `(segment_id, chunk_id)`, ADD/DEL/UPD, DISK[n] is filtered by rows with `segment_id <= n`, on flush — "rebinding" of segment 0 rows into the new segment, the key manifest — inside the WAL ADD rows themselves.
+   *Rejected.* (a) the WAL grows over the whole corpus (1M+ ADD rows) and balloons with every insert; (b) the flush-time "rebinding" is fragile SQL dance logic with many crash cases; (c) cumulative `segment_id <= n` queries on the search path; (d) the UPD flag does not cover the re-insert case (an old copy in DISK[n] "comes back to life" because there is no DEL row); (e) a key manifest in the WAL requires `NOT IN` subqueries and does not survive partial crashes.
+2. **Self-contained per-segment WAL (DEL only) + sidecar key manifests** — **accepted** (below).
+3. **Per-segment binary WAL files** (instead of SQLite). *Rejected:* human decision — WAL in SQLite (transactional integrity with chunks, a single store, the migration already in place).
+4. **Periodic full saves** (no segments). *Rejected:* O(N²) write amplification — already rejected in the proposal.
+5. **mmap `restore` for the RAM tier** ("the file persists itself"). *Rejected:* the experiment showed that `add` through mmap does not reach the file — a false sense of persistence. RAM = `restore_from_buffer` (an in-memory copy) + explicit `save()`.
 
-## Решение
+## Decision
 
-### 1. Layout на диске
+### 1. On-disk layout
 
 ```
 <vectors_path>/usearch/
-├── ram.usearch              # файл RAM-сегмента (снапшот)
-├── ram.keys                 # sidecar-манифест ключей RAM
+├── ram.usearch              # RAM segment file (snapshot)
+├── ram.keys                 # RAM key sidecar manifest
 └── segments/
-    ├── segment-1.usearch    # DISK[n], n монотонно растёт, 1 = самый ранний
+    ├── segment-1.usearch    # DISK[n], n grows monotonically, 1 = the earliest
     ├── segment-1.keys
     ├── segment-2.usearch
     └── ...
 ```
 
-- **RAM**: `restore_from_buffer(ram.usearch)` — копия в памяти, read-write. Персистится явным `save()`: (а) при `create` — пустой снапшот (заголовок файла несёт размерность: пустой индекс различим по dim ещё до первой вставки — без снапшота 8-dim и 4-dim индексы байт-в-байт неразличимы на диске и проверка dim при `open` не срабатывала; уточнение 2026-08-31, ревизия задачи 3.3); (б) при flush — содержимое становится файлом нового DISK[n]; (в) при graceful shutdown / `build_index()` — снапшот текущего состояния.
-- **DISK[n]**: `restore_view` — read-only mmap, zero-copy, page cache. Никогда не мутируются.
-- **Sidecar `.keys`** (формат): `magic u32 LE = 0x534B4559`, `count u32 LE`, `count × chunk_id u32 LE`. Пишется атомарно (tmp + rename) рядом с индексным файлом. Манифест ключей вынесен из WAL в sidecar — WAL остаётся маленьким (только инвалидации), а перечисление ключей не требует `exact_search`.
-- Именование жёсткое: `segment-<n>.usearch`/`.keys`, n = десятичный. Реестр сегментов = скан каталога (протокол D3 db-краты: самовосстановление из файлов, без внешнего реестра).
+- **RAM**: `restore_from_buffer(ram.usearch)` — an in-memory copy, read-write. Persisted by explicit `save()`: (a) on `create` — an empty snapshot (the file header carries the dimension: an empty index is distinguishable by dim before the first insert — without a snapshot an 8-dim and a 4-dim index are byte-for-byte indistinguishable on disk and the dim check on `open` did not fire; clarification 2026-08-31, task 3.3 revision); (b) on flush — the content becomes the new DISK[n] file; (c) on graceful shutdown / `build_index()` — a snapshot of the current state.
+- **DISK[n]**: `restore_view` — read-only mmap, zero-copy, page cache. Never mutated.
+- **Sidecar `.keys`** (format): `magic u32 LE = 0x534B4559`, `count u32 LE`, `count × chunk_id u32 LE`. Written atomically (tmp + rename) next to the index file. The key manifest is moved out of the WAL into a sidecar — the WAL stays small (invalidations only), and key enumeration does not require `exact_search`.
+- Naming is fixed: `segment-<n>.usearch`/`.keys`, n = decimal. The segment registry = a directory scan (the db crate's D3 protocol: self-recovery from files, no external registry).
 
-### 2. Нумерация сегментов
+### 2. Segment numbering
 
-- `0` = RAM (самый свежий слой). DISK: `1..N`, **монотонно возрастающие, без перенумерации**: flush добавляет `N+1`; компакция создаёт новые `N+1..N+M` (старые id исчезают с файлами). Больше id = свежее. Перенумерация отклонена: она ломает соответствие WAL-строк файлам в краш-окне (см. 6).
-- Слияние результатов: дубликат chunk_id из нескольких слоёв разрешается **в пользу самого свежего слоя** (RAM > больший id). Дубликаты возможны только в краш-окне (см. инвариант 3) — это защита на чит-пути.
+- `0` = RAM (the freshest tier). DISK: `1..N`, **monotonically increasing, no renumbering**: flush appends `N+1`; compaction creates new `N+1..N+M` (old ids disappear with the files). Higher id = fresher. Renumbering is rejected: it breaks the correspondence of WAL rows to files inside the crash window (see section 6).
+- Merging results: a duplicate chunk_id from multiple tiers is resolved **in favor of the freshest tier** (RAM > higher id). Duplicates are possible only in a crash window (see invariant 3) — this is a read-path safeguard.
 
-### 3. WAL: семантика
+### 3. WAL: semantics
 
-Таблица `usearch_vectors_log` (миграции 3+4) **без изменения схемы**: `PK (segment_id, chunk_id)`, `flags`, `created_at`. Семантика фиксируется:
+Table `usearch_vectors_log` (migrations 3+4) **with no schema change**: `PK (segment_id, chunk_id)`, `flags`, `created_at`. Semantics are fixed:
 
-- **Пишется только `flags = DEL (2)`** — «ключ недействителен в этом сегменте» (удалён **или** заменён более свежей версией). `ADD (1)` и `UPD (4)` зарезервированы, не пишутся (манифест — в sidecar).
-- **Каждый сегмент самодостаточен**: поиск по сегменту s фильтрует только строки `segment_id = s`. Кумулятивные запросы «по предыдущим WAL» не нужны: замена/удаление **немедленно** пишет `(s, k, DEL)` в WAL каждого старшего сегмента, содержащего k (инвариант 3). Формулировка «отбрасываются удалённые или обновлённые из предыдущих WAL» из целевой архитектуры выполняется этим инвариантом.
-- **Инвариант 3 (атомичность supersession):** одна операция (insert/delete) пишет все свои DEL-строки в **одной SQLite-транзакции** (атомарно), **до** физической мутации RAM (WAL-first). Краш между транзакцией и мутацией → ключ временно невидим (self-healing: consumer-реконсиляция); «половина строк» невозможна.
-- **Write-правила:**
-  - `insert(k)`: для каждого DISK-сегмента с `contains(k)` — upsert `(s, k, DEL)`. (Одна транзакция на batch.)
-  - `delete(k)`: upsert `(0, k, DEL)` (файл RAM-снапшота может содержать k — см. 5) + для каждого DISK-сегмента с `contains(k)` — upsert `(s, k, DEL)`. (Одна транзакция.)
-  - `flush`: `DELETE FROM usearch_vectors_log WHERE segment_id = 0` (все строки segment 0 становятся избыточными: DEL-строки — для ключей, физически отсутствующих в flushed-файле; supersession старших сегментов уже записана в их собственные строки).
-- **Кэш stale-множеств в памяти:** `HashMap<segment_id, HashSet<u32>>` + `AtomicU64` версия. Перезагрузка одной SQL-выборкой (`WHERE flags = 2`) только при изменении версии (все записи WAL идут через engine → bump версии). **В стационарном режиме на пути поиска — ноль SQL.**
+- **Only `flags = DEL (2)` is written** — "the key is invalid in this segment" (deleted **or** replaced by a newer version). `ADD (1)` and `UPD (4)` are reserved, not written (the manifest is in the sidecar).
+- **Each segment is self-contained**: search on segment s filters only rows with `segment_id = s`. Cumulative "over previous WALs" queries are not needed: replacement/deletion **immediately** writes `(s, k, DEL)` to the WAL of every older segment containing k (invariant 3). The target architecture's wording "discarding those deleted or updated in previous WALs" is satisfied by this invariant.
+- **Invariant 3 (atomicity of supersession):** one operation (insert/delete) writes all its DEL rows in **one SQLite transaction** (atomically), **before** the physical mutation of RAM (WAL-first). A crash between the transaction and the mutation → the key is temporarily invisible (self-healing: consumer reconciliation); "half the rows" is impossible.
+- **Write rules:**
+  - `insert(k)`: for every DISK segment with `contains(k)` — upsert `(s, k, DEL)`. (One transaction per batch.)
+  - `delete(k)`: upsert `(0, k, DEL)` (the RAM snapshot file may contain k — see section 5) + for every DISK segment with `contains(k)` — upsert `(s, k, DEL)`. (One transaction.)
+  - `flush`: `DELETE FROM usearch_vectors_log WHERE segment_id = 0` (all segment-0 rows become redundant: DEL rows are for keys physically absent from the flushed file; supersession of older segments is already recorded in their own rows).
+- **In-memory stale-set cache:** `HashMap<segment_id, HashSet<u32>>` + an `AtomicU64` version. Reloaded with a single SQL select (`WHERE flags = 2`) only when the version changes (every WAL write goes through the engine → version bump). **In steady state the search path issues zero SQL.**
 
-### 4. Write-пути
+### 4. Write paths
 
-- **`insert_batch(rows)`** (RAM): WAL-транзакция supersession-строк → `add` в RAM-индекс → `ram_keys.insert` (in-memory `HashSet`, нужен для sidecar и `chunk_ids`). После batch: если `RAM.size() ≥ max_segment_vectors` → **flush** (п. 5).
-- **`delete_by_chunk_ids(ids)`**: WAL-транзакция (`(0,k,DEL)` + supersession) → `remove` из RAM → `ram_keys.remove`. DISK-файлы не трогаем (read-only; `remove` на view молчит — не вызываем).
-- **`rebuild(rows)`** (ultimate repair): layout-лок → WAL полностью очистить → удалить все файлы DISK (каталог `segments/` пересоздать) → RAM = `rows` → `save()` ram + sidecar. Полная смена состояния, старые слои не остаются (текущий баг #8 закрыт).
-- **`build_index()`** (trait) = `save()` RAM-снапшота + sidecar (публичная точка персистентности; consumer вызывает при shutdown).
+- **`insert_batch(rows)`** (RAM): a WAL transaction of supersession rows → `add` to the RAM index → `ram_keys.insert` (an in-memory `HashSet`, needed for the sidecar and `chunk_ids`). After the batch: if `RAM.size() ≥ max_segment_vectors` → **flush** (section 5).
+- **`delete_by_chunk_ids(ids)`**: a WAL transaction (`(0,k,DEL)` + supersession) → `remove` from RAM → `ram_keys.remove`. DISK files are not touched (read-only; `remove` on a view is silent — we do not call it).
+- **`rebuild(rows)`** (ultimate repair): layout lock → clear the WAL entirely → delete all DISK files (recreate the `segments/` directory) → RAM = `rows` → `save()` ram + sidecar. A full state swap; no old tiers remain (current bug #8 is closed).
+- **`build_index()`** (trait) = `save()` of the RAM snapshot + sidecar (the public persistence point; the consumer calls it on shutdown).
 
 ### 5. Flush (RAM → DISK[n])
 
-Триггер: `RAM.size() ≥ max_segment_vectors` внутри `insert_batch`. Процедура под layout-локом (сериализует с компакцией):
+Trigger: `RAM.size() ≥ max_segment_vectors` inside `insert_batch`. Procedure under the layout lock (serialized with compaction):
 
 1. `n = max(id) + 1`;
-2. `save()` RAM-индекса → `segments/segment-n.usearch` (tmp+rename) + sidecar `segment-n.keys` из `ram_keys`;
-3. WAL-транзакция: `DELETE ... WHERE segment_id = 0`;
-4. RAM: `reset()`, `ram_keys.clear()`, `save()` пустого `ram.usearch` + пустой sidecar;
-5. bump версии кэша.
+2. `save()` the RAM index → `segments/segment-n.usearch` (tmp+rename) + sidecar `segment-n.keys` from `ram_keys`;
+3. WAL transaction: `DELETE ... WHERE segment_id = 0`;
+4. RAM: `reset()`, `ram_keys.clear()`, `save()` an empty `ram.usearch` + an empty sidecar;
+5. bump the cache version.
 
-**Окно потери (честная семантика):** WAL без векторов не реплеит вставки. Краш теряет вставки RAM с последнего flush/shutdown-save (≤ `max_segment_vectors`). Манифест sidecar + chunks-таблица позволяют consumer'у найти потерянные chunk_id (SQLite − index) и переинджестить; ultimate repair — `rebuild`. Это осознанное ограничение «WAL without vectors», а не дефект.
+**Loss window (honest semantics):** a WAL without vectors cannot replay inserts. A crash loses RAM inserts since the last flush/shutdown-save (≤ `max_segment_vectors`). The sidecar manifest + the chunks table let the consumer find the lost chunk_ids (SQLite − index) and re-ingest them; the ultimate repair is `rebuild`. This is a conscious "WAL without vectors" limitation, not a defect.
 
-### 6. Поиск
+### 6. Search
 
-1. При необходимости (сменилась версия) перезагрузить кэш stale-множеств;
-2. Клонировать `Arc<Index>` текущих DISK-сегментов (короткий read-лок `RwLock<Vec<DiskSegment>>`);
-3. **Параллельно** (выделенный `rayon::ThreadPool` из `search_threads`) по `[RAM] + DISK[n]`: `filtered_search(query, k, |key| !stale[s].contains(key))`; если stale-множество сегмента пусто — обычный `search` без фильтра (меньше overhead);
-4. Слияние: дубликат → свежий слой; сортировка по distance; truncate k.
+1. Reload the stale-set cache if needed (the version changed);
+2. Clone the `Arc<Index>` of the current DISK segments (a short read lock on `RwLock<Vec<DiskSegment>>`);
+3. **In parallel** (a dedicated `rayon::ThreadPool` from `search_threads`) over `[RAM] + DISK[n]`: `filtered_search(query, k, |key| !stale[s].contains(key))`; if a segment's stale set is empty — a plain `search` without a filter (less overhead);
+4. Merge: duplicate → the freshest tier; sort by distance; truncate to k.
 
-`count()` и `chunk_ids()` — **без сканирования индексов**: `ram_keys − stale[0]` ∪ ⋃(`keys(n) − stale[n]`) по sidecar-манифестам (примитив reconcile для GC теперь видит все слои; баг #5 закрыт).
+`count()` and `chunk_ids()` — **without index scans**: `ram_keys − stale[0]` ∪ ⋃(`keys(n) − stale[n]`) over the sidecar manifests (the reconcile primitive for GC now sees all tiers; bug #5 is closed).
 
-### 7. Компакция (vacuum)
+### 7. Compaction (vacuum)
 
-- **Триггер** (`maybe_compact`, новый аддитивный метод трейта с default no-op — единственное расширение контракта, все существующие имплементации продолжают компилироваться): `stale_total / total_disk * 100 > compaction_stale_threshold`, где `stale_total` = число DEL-строк с `segment_id > 0` (из кэша), `total_disk` = Σ `size()` DISK-файлов. Процент — семантика уже зафиксированного конфига (1..=100).
-- **Выполнение:** фоновый `std::thread` (fire-and-forget под `AtomicBool` «compact in progress»); поиск продолжается на старых сегментах (Arc-клоны), простой только на момент атомарной смены списка.
-- **Процедура** (под layout-локом):
-  1. live-ключи каждого сегмента = `keys(n) − stale[n]` (sidecar + кэш, без сканов);
-  2. сборка векторов `get(key)` (параллельно по сегментам); дедуп: свежий слой выигрывает;
-  3. новые индексы чанками по `max_segment_vectors` → `segments.tmp/segment-<N+i>.usearch` + `.keys` (**новые id**, п. 2);
-  4. смена каталогов: `segments → segments.old`, `segments.tmp → segments`, удалить `segments.old` (rename каталога атомен на одной ФС);
-  5. WAL-транзакция: `DELETE ... WHERE segment_id > 0` (новые сегменты свежие — строк нет);
-  6. смена списка сегментов (write-лок), bump версии.
-- **Краш-матрица** (порядок «каталог → WAL» обязателен):
-  - до смены каталогов: старые файлы + мусор `segments.tmp` → при старте удалить `segments.tmp`;
-  - после смены, до DELETE WAL: новые файлы (id N+1..N+M) + старые строки (id 1..N) → при старте удалить строки, чей файл не существует (п. 8). Монотонные id исключают алиасинг «старая строка напала на новый файл».
-  - обратный порядок (WAL → каталог) дал бы «старые ключи оживают» — отклонён.
-- После успешного завершения WAL DISK-сегментов очищен (п. 7.5) — соответствует целевой архитектуре.
+- **Trigger** (`maybe_compact`, a new additive trait method with a default no-op — the only contract extension; all existing implementations keep compiling): `stale_total / total_disk * 100 > compaction_stale_threshold`, where `stale_total` = the number of DEL rows with `segment_id > 0` (from the cache), `total_disk` = Σ `size()` of the DISK files. The percentage is the semantics of the already-fixed config (1..=100).
+- **Execution:** a background `std::thread` (fire-and-forget under an `AtomicBool` "compact in progress"); search continues on the old segments (Arc clones), pausing only at the moment of the atomic list swap.
+- **Procedure** (under the layout lock):
+  1. each segment's live keys = `keys(n) − stale[n]` (sidecar + cache, no scans);
+  2. gather vectors via `get(key)` (in parallel across segments); dedup: the freshest tier wins;
+  3. new indices in chunks of `max_segment_vectors` → `segments.tmp/segment-<N+i>.usearch` + `.keys` (**new ids**, section 2);
+  4. directory swap: `segments → segments.old`, `segments.tmp → segments`, delete `segments.old` (a directory rename is atomic on one FS);
+  5. WAL transaction: `DELETE ... WHERE segment_id > 0` (the new segments are fresh — no rows);
+  6. swap the segment list (write lock), bump the version.
+- **Crash matrix** (the "directory → WAL" order is mandatory):
+  - before the directory swap: old files + `segments.tmp` garbage → on start delete `segments.tmp`;
+  - after the swap, before the WAL DELETE: new files (ids N+1..N+M) + old rows (ids 1..N) → on start delete rows whose file does not exist (section 8). Monotonic ids rule out "an old row aliasing a new file".
+  - the reverse order (WAL → directory) would let "old keys come back to life" — rejected.
+- After a successful completion the DISK segments' WAL is clean (section 7.5) — consistent with the target architecture.
 
-### 8. Старт (`open`) и восстановление
+### 8. Start (`open`) and recovery
 
-1. Убрать мусор: `segments.tmp/`, `segments.old/`, `*.usearch.tmp`; особый случай «`segments/` отсутствует, но `segments.tmp/` есть» (краш между двумя rename) → `segments.tmp → segments`.
-2. Скан `segments/`: `restore_view` каждого `segment-n.usearch` + чтение `segment-n.keys` (sidecar отсутствует/бит → fallback: перечисление через `exact_search` один раз на старте — редкий путь).
-3. RAM: `ram.usearch` → `restore_from_buffer` (файла нет → пустой индекс); `ram.keys` (fallback тот же).
-4. **WAL reconciliation:** `DELETE FROM usearch_vectors_log WHERE segment_id != 0 AND segment_id NOT IN <существующие файлы>`.
-5. Проверка dim всех файлов (несоответствие → `DimensionMismatch`, как сейчас).
-6. Загрузка кэша stale-множеств.
+1. Remove garbage: `segments.tmp/`, `segments.old/`, `*.usearch.tmp`; the special case "`segments/` is missing but `segments.tmp/` exists" (a crash between the two renames) → `segments.tmp → segments`.
+2. Scan `segments/`: `restore_view` every `segment-n.usearch` + read `segment-n.keys` (sidecar missing/corrupt → fallback: one-time enumeration via `exact_search` at start — a rare path).
+3. RAM: `ram.usearch` → `restore_from_buffer` (no file → an empty index); `ram.keys` (same fallback).
+4. **WAL reconciliation:** `DELETE FROM usearch_vectors_log WHERE segment_id != 0 AND segment_id NOT IN <existing files>`.
+5. Check the dim of every file (mismatch → `DimensionMismatch`, as now).
+6. Load the stale-set cache.
 
-### 9. Wiring (закрытие дыры #2)
+### 9. Wiring (closing hole #2)
 
-- Фабрика `create_vector_engine` получает WAL: новая сигнатура с `wal_db: Option<&Path>` (путь к knowledge.db) — engine сам открывает **посвящённое** долгоживущее `rusqlite::Connection` (WAL-режим SQLite допускает; пул db-краты для этого не нужен). `VectorIndexConfig.usearch` наконец передаётся в engine (теперь не игнорируется).
-- `search_threads` → выделенный `rayon::ThreadPool` engine'а (прежний глобальный пул + игнорирование конфига — баг #9).
-- Consumer-интеграция (cli/ingestion): `maybe_compact()` — после ingestion-batch (в cleanup-фазе рядом с `reconcile_vectors`); `build_index()` — при graceful shutdown serve.
+- The `create_vector_engine` factory receives the WAL: a new signature with `wal_db: Option<&Path>` (the path to knowledge.db) — the engine opens its **dedicated** long-lived `rusqlite::Connection` itself (SQLite's WAL mode allows it; the db crate's pool is not needed for this). `VectorIndexConfig.usearch` is finally passed to the engine (previously ignored).
+- `search_threads` → the engine's dedicated `rayon::ThreadPool` (the previous global pool + ignoring the config — bug #9).
+- Consumer integration (cli/ingestion): `maybe_compact()` — after an ingestion batch (in the cleanup phase next to `reconcile_vectors`); `build_index()` — on serve graceful shutdown.
 
-### 10. Конфиг и схема
+### 10. Config and schema
 
-- `vectors.usearch` секция **без изменений** (`max_segment_vectors`, `compaction_stale_threshold`, `search_threads`) — все три поля получают реальное значение.
-- Схема WAL-таблицы **без изменений** (миграции 3+4 остаются; миграция 5 не нужна). Чинятся **тесты** db-краты (ожидают `user_version = 4`; insert-тест получает `segment_id`) — дефект #3.
+- The `vectors.usearch` section is **unchanged** (`max_segment_vectors`, `compaction_stale_threshold`, `search_threads`) — all three fields now get a real meaning.
+- The WAL table schema is **unchanged** (migrations 3+4 stay; migration 5 is not needed). The db crate's **tests** are fixed (they expect `user_version = 4`; the insert test gets `segment_id`) — defect #3.
 
-## Отклонённые альтернативы
+## Rejected alternatives
 
-- **Кумулятивный WAL + перепривязка при flush** (вариант 1) — см. выше.
-- **UPD-флаг как отдельное состояние** — не нужен: «заменён» ≡ «недействителен в этом сегменте» = DEL; отдельный флаг только усложняет запросы (текущий код определил UPD и не использует его — баг #9).
-- **Манифест ключей в WAL (ADD-строки)** — раздувает WAL до размера корпуса и ломает краш-семантику (баг #7: запрос по ADD-строкам всегда пуст).
-- **Перенумерация сегментов при компакции** — алиасинг WAL-строк в краш-окне; монотонные id решают бесплатно.
-- **`&mut self` для компакции** — несовместимо с `Arc<dyn VectorIndex>` (баг #4); внутренняя синхронизация (`RwLock`/layout-лок) + фоновый поток.
-- **mmap-`restore` для RAM** — `add` не персистит (проверено экспериментально).
-- **Полный save RAM на каждый batch** — O(N²) write amplification.
+- **A cumulative WAL + rebinding on flush** (option 1) — see above.
+- **The UPD flag as a separate state** — not needed: "replaced" ≡ "invalid in this segment" = DEL; a separate flag only complicates the queries (the current code defined UPD and never uses it — bug #9).
+- **A key manifest in the WAL (ADD rows)** — balloons the WAL to the corpus size and breaks the crash semantics (bug #7: a query over ADD rows is always empty).
+- **Renumbering segments on compaction** — WAL-row aliasing in the crash window; monotonic ids solve it for free.
+- **`&mut self` for compaction** — incompatible with `Arc<dyn VectorIndex>` (bug #4); internal synchronization (`RwLock`/layout lock) + a background thread.
+- **mmap `restore` for RAM** — `add` does not persist (verified experimentally).
+- **A full RAM save on every batch** — O(N²) write amplification.
 
-## Открытые вопросы / остаточные риски
+## Open questions / residual risks
 
-1. **Окно потери RAM** (п. 5): краш теряет до `max_segment_vectors` вставок. Митигация: consumer-реконсиляция SQLite−index + re-ingest / `rebuild`. Расширение `reconcile_vectors` на «недостающие векторы» — отдельная задача ingestion-краты (не в этом ADR).
-2. **Дефолт `max_segment_vectors = 1M`**: RAM-слой ≈ 2–2.5 ГБ (bf16 + HNSW-граф) на ноуте 16 ГБ — впритык. Конфигурируемо; при необходимости дефолт снижается отдельным решением (изменение конфига — frozen-контракт).
-3. **Recall при фильтрации**: `filtered_search` исключает stale-ключи внутри обхода, но HNSW-навигация по «дырявому» графу теоретически теряет recall при высокой доле stale — компакция (порог 30%) удерживает долю в норме; гейты recall@k/p95 проверяются parity-харнессом после реализации.
-4. **`remove` на view молчит (`Ok(0)`)**: защита — DISK-сегменты не мутируются по построению; assert-тест закрепит поведение.
+1. **RAM loss window** (section 5): a crash loses up to `max_segment_vectors` inserts. Mitigation: consumer reconciliation SQLite−index + re-ingest / `rebuild`. Extending `reconcile_vectors` to "missing vectors" — a separate ingestion-crate task (not in this ADR).
+2. **Default `max_segment_vectors = 1M`**: the RAM tier ≈ 2–2.5 GB (bf16 + HNSW graph) on a 16 GB laptop — tight. It is configurable; if needed the default is lowered by a separate decision (a config change — a frozen contract).
+3. **Recall under filtering:** `filtered_search` excludes stale keys inside the walk, but HNSW navigation over a "holey" graph theoretically loses recall at a high stale fraction — compaction (30% threshold) keeps the fraction in check; the recall@k/p95 gates are checked by the parity harness after implementation.
+4. **`remove` on a view is silent (`Ok(0)`)**: the safeguard — DISK segments are not mutated by construction; an assert test pins the behavior.
 
-## План реализации (обновление tasks.md change'а)
+## Implementation plan (tasks.md update for the change)
 
-1. Починить db-тесты (user_version 4, segment_id) — разблокировать зелёный workspace.
-2. `UsearchEngine` core: layout (ram/segments), sidecar-кодек, `create`/`open` + восстановление (п. 8).
-3. WAL write-пути: транзакционные DEL-строки, кэш stale + версия (п. 3–4).
-4. Поиск: pool, per-segment filter, merge «свежий выигрывает»; `count`/`chunk_ids` по манифестам (п. 6).
-5. Flush + layout-лок (п. 5).
-6. Компакция: `maybe_compact` (аддитивный trait-метод), фоновый поток, монотонные id, краш-безопасность (п. 7).
-7. Wiring: фабрика (+WAL-путь, +UsearchConfig), bootstrap, shutdown-save, вызов `maybe_compact` в ingestion-cleanup.
-8. Тесты: unit (sidecar, WAL-инварианты, flush, компакция, краш-сценарии манипуляцией файлами) + integration (restart, correctness поиска, параллельность) + поправка layout-зависимых тестов (factory в `lib.rs`, fixtures cli).
+1. Fix the db tests (user_version 4, segment_id) — unblock a green workspace.
+2. `UsearchEngine` core: layout (ram/segments), the sidecar codec, `create`/`open` + recovery (section 8).
+3. WAL write paths: transactional DEL rows, the stale cache + version (sections 3–4).
+4. Search: the pool, per-segment filtering, "freshest wins" merge; `count`/`chunk_ids` over the manifests (section 6).
+5. Flush + layout lock (section 5).
+6. Compaction: `maybe_compact` (an additive trait method), a background thread, monotonic ids, crash safety (section 7).
+7. Wiring: the factory (+WAL path, +UsearchConfig), bootstrap, the shutdown save, the `maybe_compact` call in ingestion cleanup.
+8. Tests: unit (sidecar, WAL invariants, flush, compaction, crash scenarios by file manipulation) + integration (restart, search correctness, concurrency) + fixes to layout-dependent tests (the factory in `lib.rs`, cli fixtures).

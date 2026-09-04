@@ -2,77 +2,77 @@
 
 ## Purpose
 
-Гибридный поиск знаний: лексическая нога (FTS5/BM25), семантическая нога (векторное сходство), Reciprocal Rank Fusion с BM25-калибровкой, обогащение, реранкинг бизнес-правилами и графовое расширение.
+Hybrid knowledge search: the lexical leg (FTS5/BM25), the semantic leg (vector similarity), Reciprocal Rank Fusion with BM25 calibration, enrichment, business-rule reranking, and graph expansion.
 
 ## Requirements
 
-### Requirement: Гибридный поиск
+### Requirement: Hybrid search
 
-Крейт search предоставляет трейт `Searcher` с тремя методами: `hybrid_search` (оба суб-поиска → RRF-фьюжн), `lexical_search` (FTS5/BM25), `semantic_search` (векторное сходство). Пустой запрос возвращает пустой результат; при отказе обоих суб-поисков — ошибка с обеими причинами; при отказе одного — работа продолжается на уцелевших результатах. Финальный конвейер (enrich → rerank → truncate → expand) выполняется на всех путях, включая одиночные ноги.
+The search crate provides the trait `Searcher` with three methods: `hybrid_search` (both sub-searches → RRF fusion), `lexical_search` (FTS5/BM25), `semantic_search` (vector similarity). An empty query returns an empty result; on the failure of both sub-searches — an error with both reasons; on the failure of one — processing continues with the surviving results. The final pipeline (enrich → rerank → truncate → expand) runs on all paths, including the single legs.
 
-#### Scenario: Отказ одного суб-поиска
-- **WHEN** лексический поиск упал, семантический успешен
-- **THEN** возвращаются результаты семантического поиска без ошибки
+#### Scenario: One sub-search failure
+- **WHEN** the lexical search failed and the semantic one succeeded
+- **THEN** the semantic search results are returned without an error
 
-#### Scenario: Отказ обоих суб-поисков
-- **WHEN** оба суб-поиска вернули ошибки
-- **THEN** гибридный поиск завершается ошибкой, упоминая обе причины
+#### Scenario: Both sub-searches failed
+- **WHEN** both sub-searches returned errors
+- **THEN** the hybrid search fails, mentioning both reasons
 
 ### Requirement: Reciprocal Rank Fusion
 
-Фьюжн сливает два ранжированных списка: score += 1/(k + rank) по каждому списку (k default 20); BM25-оценки нормализуются min-max только по записям лексического списка (семантически-единственные получают нейтральную 0.5); RRF-оценки нормализуются в [0,1]; итог 0.7·rrf + 0.3·bm25; сортировка по убыванию счёта с детерминированным tiebreak по возрастанию chunk_id; тип результата: lexical | semantic | hybrid.
+The fusion merges two ranked lists: score += 1/(k + rank) per list (k default 20); BM25 scores are min-max normalized only over the lexical list's entries (semantically-unique ones get a neutral 0.5); RRF scores are normalized into [0,1]; the final is 0.7·rrf + 0.3·bm25; sorted in descending score order with a deterministic tiebreak by ascending chunk_id; result type: lexical | semantic | hybrid.
 
-#### Scenario: Чанк в обоих списках
-- **WHEN** чанк найден и лексическим, и семантическим поиском
-- **THEN** его RRF-счёт суммируется из обоих списков и тип помечается hybrid
+#### Scenario: Chunk in both lists
+- **WHEN** a chunk is found by both the lexical and the semantic search
+- **THEN** its RRF score is summed from both lists and the type is marked hybrid
 
-#### Scenario: Детерминированный порядок
-- **WHEN** два чанка имеют равный финальный счёт
-- **THEN** выше стоит чанк с меньшим chunk_id
+#### Scenario: Deterministic order
+- **WHEN** two chunks have an equal final score
+- **THEN** the chunk with the smaller chunk_id ranks higher
 
-### Requirement: Фильтрация по домену
+### Requirement: Domain filtering
 
-Доменная фильтрация выполняется внутри суб-поисков (лексическая — на уровне SQL, семантическая — на стороне приложения с переизбытком выборки ×3), до фьюжна и усечения: до topK результатов выживают в запрошенном домене. Сравнение доменов нормализовано (регистр/пробелы).
+Domain filtering is performed inside the sub-searches (lexical — at the SQL level, semantic — on the application side with ×3 over-fetching), before the fusion and truncation: up to topK results within the requested domain survive. Domain comparison is normalized (case/whitespace).
 
-#### Scenario: Доменный фильтр до усечения
-- **WHEN** hybrid_search вызывается с доменом и topK
-- **THEN** возвращается до topK результатов из этого домена, а не меньше из-за пост-фильтрации
+#### Scenario: Domain filter before truncation
+- **WHEN** hybrid_search is called with a domain and a topK
+- **THEN** up to topK results from that domain are returned, not fewer due to post-filtering
 
-### Requirement: Обогащение результатов
+### Requirement: Result enrichment
 
-Enricher батчево добавляет к результатам: путь документа, объединённый тип (поиск+документ), updated_at в RFC3339 (принимает RFC3339 и формат SQLite CURRENT_TIMESTAMP), флаги реранкера (is_deprecated/is_official/valid_to) из метаданных документа, список доменов; сущности чанка прикрепляются одним батчевым запросом.
+The enricher adds to the results in batches: the document path, the merged type (search+document), updated_at in RFC3339 (accepts RFC3339 and the SQLite CURRENT_TIMESTAMP format), the reranker flags (is_deprecated/is_official/valid_to) from the document metadata, and the domain list; the chunk's entities are attached in a single batch query.
 
-#### Scenario: Батчевое обогащение
-- **WHEN** enriched пул содержит результаты нескольких документов
-- **THEN** документы и сущности запрашиваются пакетно, без N+1
+#### Scenario: Batch enrichment
+- **WHEN** the enriched pool contains results from several documents
+- **THEN** the documents and entities are requested in batches, without N+1
 
-### Requirement: Реранкинг
+### Requirement: Reranking
 
-Reranker применяет бизнес-правила (deprecated ×0.2, official ×1.5, истёкший valid_to ×0.1 — множители компонуются), freshness-буст для документов обновлённых в пределах recent_days (×recent_boost), authority-буст по типу документа из конфигурационной карты; затем пересортировка по убыванию счёта и перенумерация рангов. Значения по умолчанию: 0.2/1.5/1.2/90; конфиг переопределяет только положительные значения.
+The reranker applies business rules (deprecated ×0.2, official ×1.5, expired valid_to ×0.1 — the multipliers compose), a freshness boost for documents updated within recent_days (×recent_boost), and an authority boost by document type from the configuration map; then it re-sorts in descending score order and re-numbers the ranks. Default values: 0.2/1.5/1.2/90; the config overrides only positive values.
 
-#### Scenario: Композиция бустов
-- **WHEN** документ одновременно deprecated и official
-- **THEN** счёт умножается на оба фактора (0.2 × 1.5)
+#### Scenario: Boost composition
+- **WHEN** a document is both deprecated and official
+- **THEN** the score is multiplied by both factors (0.2 × 1.5)
 
-#### Scenario: Перенумерация рангов
-- **WHEN** бусты меняют порядок результатов
-- **THEN** ранги переприсваиваются согласно новому порядку после усечения topK
+#### Scenario: Rank renumbering
+- **WHEN** the boosts change the order of the results
+- **THEN** the ranks are reassigned according to the new order after the topK truncation
 
-### Requirement: Графовое расширение
+### Requirement: Graph expansion
 
-Если включено конфигурацией и граф предоставлен: сущности результатов расширяются BFS в обе стороны (max_depth/max_nodes), одобренные факты загружаются батчево; рёбра и факты сериализуются в metadata.related_entities. Ошибки расширения не фатальны — результаты возвращаются без графового контекста.
+If enabled by the configuration and the graph is provided: the results' entities are expanded by BFS in both directions (max_depth/max_nodes), approved facts are loaded in batches; edges and facts are serialized into metadata.related_entities. Expansion errors are not fatal — the results are returned without graph context.
 
-#### Scenario: Незначимый сбой расширения
-- **WHEN** обход графа падает
-- **THEN** поиск возвращает обогащённые результаты без related_entities, без ошибки
+#### Scenario: Non-critical expansion failure
+- **WHEN** the graph traversal fails
+- **THEN** the search returns the enriched results without related_entities, without an error
 
-### Requirement: Паритет поиска
+### Requirement: Search parity
 
-RRF-фьюжн, реранкер и обогащение проверяются против записанных фикстур: калибровочные константы (k=20, 0.7/0.3), нормализации, бусты и порядок дают те же значения, что зафиксированы в записанных кейсах; сквозные сценарии прогоняются через реальную FTS5 с просчитанными вручную ожиданиями.
+The RRF fusion, the reranker, and the enrichment are verified against recorded fixtures: the calibration constants (k=20, 0.7/0.3), the normalizations, the boosts, and the order yield the same values as fixed in the recorded cases; end-to-end scenarios are run through real FTS5 with manually computed expectations.
 
-#### Scenario: Прогон записанных кейсов
-- **WHEN** кейсы (rrf, enricher, reranker, graph expansion) прогоняются через Rust-реализацию
-- **THEN** счёты, порядки и метаданные совпадают с записанными фикстурами
+#### Scenario: Recorded-case run
+- **WHEN** the cases (rrf, enricher, reranker, graph expansion) are run through the Rust implementation
+- **THEN** the scores, orders, and metadata match the recorded fixtures
 
 ### Requirement: Search legs consume search_text
 Both search legs SHALL be fed the chunk's `search_text` for **matching**: the lexical leg matches the FTS5 index (built over `search_text`) and the semantic leg compares the query embedding against chunk embeddings computed from `search_text`. The fused, ranked result's `text` field SHALL be the chunk's pure `chunk_text` (the byte-offset slice), and the chunk's metadata bag (`section_title`, `heading_level`, `breadcrumb`, `image_paths`, …) SHALL be carried on the result as structured `metadata` — the section context that was previously glued into the text. The fusion (RRF), reranking, and enrichment are otherwise unchanged.

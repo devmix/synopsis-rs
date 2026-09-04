@@ -2,82 +2,82 @@
 
 ## Purpose
 
-Извлечение знаний из чанков: NER-провайдеры (regex по правилам доменных конфигов, LLM со структурированным выводом и кэшем), композитная оркестрация стадий с пороговой фильтрацией, разрешение сущностей (дедупликация по сходству имён) с персистентностью через entity_sources.
+Knowledge extraction from chunks: NER providers (regex per domain-config rules, LLM with structured output and a cache), composite orchestration of stages with threshold filtering, and entity resolution (deduplication by name similarity) with persistence through entity_sources.
 
 ## Requirements
 
-### Requirement: NER-провайдеры
+### Requirement: NER providers
 
-Крейт ingestion предоставляет трейт `NerProvider` (`name()` + `extract_entities()`), реализованный провайдерами `RegexNer` и `LlmNer`; «ничего не найдено» — `Ok(None)`, ошибки провайдера фатальны для вызова. RegexNer строится из regex-правил доменных конфигов, предпочитает первую capture-группу, дедуплицирует по (имя, тип, домен) и проставляет `rule_id`. LlmNer требует хотя бы один доменный конфиг и обрабатывает домены в порядке конфигурации.
+The ingestion crate provides the trait `NerProvider` (`name()` + `extract_entities()`), implemented by the `RegexNer` and `LlmNer` providers; "nothing found" is `Ok(None)`, and a provider error is fatal for the call. RegexNer is built from the regex rules of the domain configs, prefers the first capture group, deduplicates by (name, type, domain), and sets `rule_id`. LlmNer requires at least one domain config and processes domains in configuration order.
 
-#### Scenario: Regex-извлечение с capture-группой
-- **WHEN** правило имеет capture-группу и текст совпадает
-- **THEN** именем сущности становится содержимое группы; без групп — полное совпадение; дубликаты по (имя, тип, домен) убираются
+#### Scenario: Regex extraction with a capture group
+- **WHEN** a rule has a capture group and the text matches
+- **THEN** the entity name becomes the group's content; without groups — the full match; duplicates by (name, type, domain) are removed
 
-#### Scenario: LLM-извлечение по нескольким доменам
-- **WHEN** сконфигурировано несколько доменов
-- **THEN** каждый домен обрабатывается отдельным вызовом; результаты помечаются именем домена
+#### Scenario: LLM extraction across multiple domains
+- **WHEN** several domains are configured
+- **THEN** each domain is processed in a separate call; the results are tagged with the domain name
 
-### Requirement: Валидация ответа LLM
+### Requirement: LLM response validation
 
-Ответ LLM парсится как JSON `{entities, relations}`: пустые имена пропускаются; confidence вне [0,1] заменяется дефолтом 0.5; description обрезается до ≤500 символов на границе предложения; строковые значения метаданных с маркерами неуверенности («implied by context», «not explicitly stated») отбрасываются; поле `version` проверяется на формат версии; факты с пустым любым обязательным полем отбрасываются.
+The LLM response is parsed as JSON `{entities, relations}`: empty names are skipped; a confidence outside [0,1] is replaced with the default 0.5; description is truncated to ≤500 characters at a sentence boundary; string metadata values with uncertainty markers ("implied by context", "not explicitly stated") are dropped; the `version` field is checked for the version format; facts with any empty required field are dropped.
 
-#### Scenario: Некорректный confidence
-- **WHEN** LLM вернул confidence 1.7 или отрицательный
-- **THEN** используется дефолт 0.5
+#### Scenario: Invalid confidence
+- **WHEN** the LLM returned a confidence of 1.7 or a negative one
+- **THEN** the default 0.5 is used
 
-#### Scenario: Обрезка description
-- **WHEN** description длиннее 500 символов
-- **THEN** он обрезается на последней границе предложения внутри лимита, при её отсутствии — жёстко по лимиту
+#### Scenario: description truncation
+- **WHEN** a description is longer than 500 characters
+- **THEN** it is truncated at the last sentence boundary within the limit, or hard-truncated at the limit if there is none
 
-### Requirement: Контекст документа в NER-промпте
+### Requirement: Document context in the NER prompt
 
-LLM-промпт обязан явно включать контекст позиции чанка в документе (путь секции / breadcrumbs из метаданных чанка), когда он присутствует; чанк передаётся чистым срезом без префиксов.
+The LLM prompt MUST explicitly include the context of the chunk's position in the document (the section path / breadcrumbs from the chunk metadata) when it is present; the chunk is passed as a pure slice without prefixes.
 
-#### Scenario: Чанк с breadcrumbs
-- **WHEN** метаданные чанка содержат путь секции
-- **THEN** user-промпт содержит явный блок контекста документа перед текстом чанка
+#### Scenario: Chunk with breadcrumbs
+- **WHEN** the chunk metadata contains a section path
+- **THEN** the user prompt contains an explicit document-context block before the chunk text
 
-#### Scenario: Чанк без контекста
-- **WHEN** метаданные не содержат пути секции
-- **THEN** блок контекста не рендерится
+#### Scenario: Chunk without context
+- **WHEN** the metadata contains no section path
+- **THEN** the context block is not rendered
 
-### Requirement: Кэш LLM-NER
+### Requirement: LLM-NER cache
 
-Ответы LLM кэшируются в таблице `llm_ner_cache` (создаётся лениво при первом использовании, вне миграционной схемы); ключ — SHA-256 от параметров вызова (сервер, модель, temperature, max_tokens, system/user промпты, контент). Повреждённая запись трактуется как промах; отключённый кэш — no-op.
+LLM responses are cached in the `llm_ner_cache` table (created lazily on first use, outside the migration schema); the key is the SHA-256 of the call parameters (server, model, temperature, max_tokens, system/user prompts, content). A corrupted entry is treated as a miss; a disabled cache is a no-op.
 
-#### Scenario: Повторный чанк
-- **WHEN** тот же контент с теми же параметрами извлекается повторно
-- **THEN** HTTP-вызов не выполняется, результат берётся из кэша
+#### Scenario: Repeat chunk
+- **WHEN** the same content with the same parameters is extracted again
+- **THEN** no HTTP call is made and the result is taken from the cache
 
-### Requirement: Композитный NER
+### Requirement: Composite NER
 
-Композит запускает стадии из конфигурации (`regex`, `llm`) в порядке объявления; обогащает метаданные каждой сущности/факта метаданными источника и именем провайдера; фильтрует по `auto_publish_threshold` домена — сущности ниже порога отбрасываются, факты с отброшенным субъектом или объектом отбрасываются каскадно; сущности неизвестных доменов проходят без фильтрации.
+The composite runs the stages from the configuration (`regex`, `llm`) in declaration order; enriches the metadata of each entity/fact with the source metadata and the provider name; filters by the domain's `auto_publish_threshold` — entities below the threshold are dropped, and facts with a dropped subject or object are dropped cascadingly; entities of unknown domains pass through unfiltered.
 
-#### Scenario: Каскадная фильтрация фактов
-- **WHEN** сущность ниже порога auto_publish участвует в факте
-- **THEN** факт удаляется вместе с сущностью
+#### Scenario: Cascading fact filtering
+- **WHEN** an entity below the auto_publish threshold participates in a fact
+- **THEN** the fact is removed together with the entity
 
-#### Scenario: Неизвестная стадия
-- **WHEN** конфигурация содержит стадию вне {regex, llm}
-- **THEN** построение композита завершается ошибкой с перечнем допустимых значений
+#### Scenario: Unknown stage
+- **WHEN** the configuration contains a stage outside {regex, llm}
+- **THEN** building the composite fails with the list of allowed values
 
-### Requirement: Разрешение сущностей
+### Requirement: Entity resolution
 
-Resolver дедуплицирует сущности по сходству имён: нормализация имени, rune-aware Jaro-Winkler, bigram-блокинг с ключами `domain:type:bigram` (разные домены/типы никогда не сливаются), union-find кластеризация батча, канон — самое длинное имя. Индекс гидратируется из БД лениво один раз и обновляется инкрементально. Операции: `lookup` (только поиск), `lookup_or_create(_with_stats)` (поиск или создание + связь с документом через entity_sources), `add_entities` (кластеризация батча + связывание). Метаданные сущности при создании очищаются от документных полей (url, image_paths, page_links, categories).
+The resolver deduplicates entities by name similarity: name normalization, rune-aware Jaro-Winkler, bigram blocking with keys `domain:type:bigram` (different domains/types are never merged), union-find clustering of the batch, the canonical is the longest name. The index is hydrated lazily once from the DB and updated incrementally. Operations: `lookup` (search only), `lookup_or_create(_with_stats)` (search or create + link to the document through entity_sources), `add_entities` (batch clustering + linking). Entity metadata on creation is cleared of the document fields (url, image_paths, page_links, categories).
 
-#### Scenario: Слияние похожих имён
-- **WHEN** имена двух сущностей одного типа и домена имеют Jaro-Winkler ≥ порога
-- **THEN** они разрешаются в одну каноническую сущность с самым длинным именем
+#### Scenario: Merging similar names
+- **WHEN** the names of two entities of the same type and domain have Jaro-Winkler ≥ the threshold
+- **THEN** they resolve to a single canonical entity with the longest name
 
-#### Scenario: Изоляция доменов
-- **WHEN** одинаковые имена встречаются в разных доменах
-- **THEN** это разные сущности
+#### Scenario: Domain isolation
+- **WHEN** identical names appear in different domains
+- **THEN** they are different entities
 
-### Requirement: Паритет извлечения
+### Requirement: Extraction parity
 
-NER-извлечение и разрешение проверяются против записанных фикстур: regex-правила, валидация ответа, фильтрация порогов, сходство имён (включая кириллицу) дают те же результаты, что зафиксированы в записанных кейсах.
+NER extraction and resolution are verified against recorded fixtures: regex rules, response validation, threshold filtering, and name similarity (including Cyrillic) yield the same results as fixed in the recorded cases.
 
-#### Scenario: Прогон записанных кейсов
-- **WHEN** кейсы (regex, parse, composite, similarity, resolver) прогоняются через Rust-реализацию
-- **THEN** результаты совпадают с записанными фикстурами
+#### Scenario: Recorded-case run
+- **WHEN** the cases (regex, parse, composite, similarity, resolver) are run through the Rust implementation
+- **THEN** the results match the recorded fixtures

@@ -2,118 +2,118 @@
 
 ## Purpose
 
-Локальный пайплайн эмбеддингов: lifecycle ONNX Runtime (внешняя библиотека), менеджер моделей (скачивание/кэш по onnx.yaml), токенизация, кэш эмбеддингов и провайдер с батч-инференсом и L2-нормализацией для ингестии.
+The local embedding pipeline: the ONNX Runtime lifecycle (external library), the model manager (download/caching per onnx.yaml), tokenization, the embedding cache, and a provider with batch inference and L2 normalization for ingestion.
 
 ## Requirements
 
-### Requirement: ONNX Runtime библиотека
+### Requirement: ONNX Runtime library
 
-Крейт `embedding` обеспечивает наличие ONNX Runtime как ВНЕШНЕЙ разделяемой библиотеки (`.so`/`.dylib`/`.dll`): при первом использовании библиотека скачивается по конфигурации `onnx.yaml` (секция runtime, запись для текущей платформы), распаковывается из архива (zip/tgz) и кэшируется в каталоге данных. Повторные запуски используют кэшированную библиотеку без скачивания. Библиотека загружается по явному пути из кэша (не через системные пути поиска).
+The `embedding` crate provides ONNX Runtime as an EXTERNAL shared library (`.so`/`.dylib`/`.dll`): on first use the library is downloaded per the `onnx.yaml` configuration (the runtime section, the entry for the current platform), unpacked from the archive (zip/tgz), and cached in the data directory. Subsequent runs use the cached library without downloading. The library is loaded by an explicit path from the cache (not through the system search paths).
 
-#### Scenario: Первый запуск — библиотека отсутствует
-- **WHEN** вызывается обеспечение библиотеки, а кэш пуст
-- **THEN** библиотека скачивается по URL из onnx.yaml для текущей платформы, распаковывается, кэшируется, и возвращается путь к ней
+#### Scenario: First run — library missing
+- **WHEN** the library provision is invoked and the cache is empty
+- **THEN** the library is downloaded from the onnx.yaml URL for the current platform, unpacked, cached, and the path to it is returned
 
-#### Scenario: Повторный запуск — библиотека в кэше
-- **WHEN** вызывается обеспечение библиотеки, а кэш уже содержит установленную библиотеку (версия совпадает с onnx.yaml)
-- **THEN** скачивание не выполняется, возвращается путь к кэшированной библиотеке
+#### Scenario: Repeat run — library in cache
+- **WHEN** the library provision is invoked and the cache already contains the installed library (the version matches onnx.yaml)
+- **THEN** no download is performed and the path to the cached library is returned
 
-#### Scenario: Ошибка скачивания библиотеки
-- **WHEN** скачивание или распаковка библиотеки завершается ошибкой
-- **THEN** возвращается явная ошибка с указанием причины; частично скачанные файлы не остаются в кэше как установленные
+#### Scenario: Library download error
+- **WHEN** the library download or unpacking fails
+- **THEN** an explicit error naming the cause is returned; partially downloaded files do not remain in the cache as installed
 
-### Requirement: Менеджер моделей
+### Requirement: Model manager
 
-Крейт `embedding` управляет моделями эмбеддингов из реестра `onnx.yaml` (секция models): по имени модели возвращает путь к установленной модели, при отсутствии — скачивает все файлы модели (по списку files с URL и размером) в каталог данных и помечает модель установленной. Неизвестное имя модели — ошибка. Установка проверяется по кэшу установки и наличию файлов.
+The `embedding` crate manages the embedding models from the `onnx.yaml` registry (the models section): by model name it returns the path to the installed model, and when absent it downloads all model files (per the files list with URLs and sizes) into the data directory and marks the model installed. An unknown model name is an error. Installation is verified by the install cache and the presence of the files.
 
-#### Scenario: Модель уже установлена
-- **WHEN** запрашивается модель, помеченная установленной, и её файлы присутствуют
-- **THEN** возвращается путь к каталогу модели без скачивания
+#### Scenario: Model already installed
+- **WHEN** a model marked installed is requested and its files are present
+- **THEN** the path to the model directory is returned without downloading
 
-#### Scenario: Модель не установлена
-- **WHEN** запрашивается модель из реестра, отсутствующая в кэше
-- **THEN** все файлы модели скачиваются по URL из onnx.yaml, модель помечается установленной, возвращается путь
+#### Scenario: Model not installed
+- **WHEN** a model from the registry is requested that is absent from the cache
+- **THEN** all model files are downloaded from the onnx.yaml URLs, the model is marked installed, and the path is returned
 
-#### Scenario: Неизвестное имя модели
-- **WHEN** запрашивается модель, отсутствующая в реестре onnx.yaml
-- **THEN** возвращается явная ошибка, скачивание не выполняется
+#### Scenario: Unknown model name
+- **WHEN** a model absent from the onnx.yaml registry is requested
+- **THEN** an explicit error is returned and no download is performed
 
-#### Scenario: Модель по умолчанию
-- **WHEN** имя модели не указано
-- **THEN** используется модель `default` из onnx.yaml
+#### Scenario: Default model
+- **WHEN** no model name is given
+- **THEN** the `default` model from onnx.yaml is used
 
-### Requirement: Загрузчик файлов
+### Requirement: File downloader
 
-Загрузчик файлов скачивает файлы по HTTPS/HTTP с повторными попытками (по умолчанию 3, с задержкой), таймаутом запроса, защитой от SSRF (адреса private/loopback/link-local отклоняются) и индикатором прогресса. После скачивания проверяется размер файла против ожидаемого из onnx.yaml; при несовпадении файл не считается установленным.
+The file downloader downloads files over HTTPS/HTTP with retries (default 3, with a delay), a request timeout, SSRF protection (private/loopback/link-local addresses are rejected), and a progress indicator. After downloading, the file size is checked against the expected value from onnx.yaml; on a mismatch the file is not considered installed.
 
-#### Scenario: Успешное скачивание
-- **WHEN** файл скачивается с доступного URL
-- **THEN** файл сохраняется по целевому пути, размер совпадает с ожидаемым, прогресс отображается
+#### Scenario: Successful download
+- **WHEN** a file is downloaded from a reachable URL
+- **THEN** the file is saved to the target path, the size matches the expected value, and the progress is displayed
 
-#### Scenario: Временная ошибка сети
-- **WHEN** первый запрос завершается ошибкой сети
-- **THEN** выполняется повторная попытка (до лимита), при успехе файл сохраняется
+#### Scenario: Transient network error
+- **WHEN** the first request fails with a network error
+- **THEN** a retry is performed (up to the limit) and on success the file is saved
 
-#### Scenario: Исчерпание попыток
-- **WHEN** все попытки завершаются ошибкой
-- **THEN** возвращается явная ошибка, частичный файл удаляется
+#### Scenario: Retries exhausted
+- **WHEN** all attempts fail
+- **THEN** an explicit error is returned and the partial file is deleted
 
-#### Scenario: SSRF-защита
-- **WHEN** URL указывает на private/loopback/link-local адрес
-- **THEN** скачивание отклоняется с ошибкой до выполнения запроса
+#### Scenario: SSRF protection
+- **WHEN** the URL points to a private/loopback/link-local address
+- **THEN** the download is rejected with an error before the request is made
 
-#### Scenario: Несовпадение размера
-- **WHEN** скачанный файл имеет размер, отличный от ожидаемого из onnx.yaml
-- **THEN** возвращается ошибка верификации, файл не помечается установленным
+#### Scenario: Size mismatch
+- **WHEN** the downloaded file has a size different from the expected value in onnx.yaml
+- **THEN** a verification error is returned and the file is not marked installed
 
-### Requirement: Токенизация
+### Requirement: Tokenization
 
-Токенизатор загружает словарь в формате HuggingFace `tokenizer.json` (поставляется вместе с моделью) и преобразует текст в токен-айдишники и attention mask для модели. Длина последовательности ограничивается максимальной длиной модели (по умолчанию 512); обратное преобразование токенов в текст поддерживается.
+The tokenizer loads a vocabulary in the HuggingFace `tokenizer.json` format (shipped with the model) and converts text into token IDs and an attention mask for the model. The sequence length is limited to the model's maximum length (default 512); the inverse conversion of tokens to text is supported.
 
-#### Scenario: Кодирование текста
-- **WHEN** текст кодируется токенизатором
-- **THEN** возвращаются token ids и attention mask, совместимые с входом модели
+#### Scenario: Text encoding
+- **WHEN** text is encoded by the tokenizer
+- **THEN** token IDs and an attention mask compatible with the model input are returned
 
-#### Scenario: Ограничение длины
-- **WHEN** текст длиннее максимальной длины модели
-- **THEN** последовательность обрезается до максимальной длины
+#### Scenario: Length limit
+- **WHEN** the text is longer than the model's maximum length
+- **THEN** the sequence is truncated to the maximum length
 
-#### Scenario: Декодирование
-- **WHEN** token ids декодируются обратно
-- **THEN** возвращается текст (с учётом специальных токенов)
+#### Scenario: Decoding
+- **WHEN** token IDs are decoded back
+- **THEN** the text is returned (accounting for the special tokens)
 
-### Requirement: Кэш эмбеддингов
+### Requirement: Embedding cache
 
-Кэш эмбеддингов хранит вычисленные векторы в памяти: ключ формируется из имени модели, размерности и текста; кэш ограничен по размеру (по умолчанию 10000 записей) и потокобезопасен. Повторный запрос того же текста для той же модели возвращает вектор из кэша без повторного инференса.
+The embedding cache stores computed vectors in memory: the key is formed from the model name, the dimensionality, and the text; the cache is size-limited (default 10000 entries) and thread-safe. A repeat request for the same text with the same model returns the vector from the cache without re-inference.
 
-#### Scenario: Попадание в кэш
-- **WHEN** запрашивается вектор для текста, уже вычисленного для той же модели и размерности
-- **THEN** возвращается кэшированный вектор без повторного инференса
+#### Scenario: Cache hit
+- **WHEN** a vector is requested for text already computed for the same model and dimensionality
+- **THEN** the cached vector is returned without re-inference
 
-#### Scenario: Промах и заполнение
-- **WHEN** запрашивается вектор для нового текста
-- **THEN** вектор вычисляется и сохраняется в кэш
+#### Scenario: Miss and fill
+- **WHEN** a vector is requested for new text
+- **THEN** the vector is computed and stored in the cache
 
-#### Scenario: Ограничение размера
-- **WHEN** кэш достигает максимального размера
-- **THEN** кэш освобождается (старые записи удаляются), новые записи продолжают работать
+#### Scenario: Size limit
+- **WHEN** the cache reaches its maximum size
+- **THEN** the cache is evicted (old entries are removed) and new entries continue to work
 
-### Requirement: Провайдер эмбеддингов
+### Requirement: Embedding provider
 
-Провайдер генерирует эмбеддинги для списка текстов: каждый текст токенизируется, выполняется инференс модели, вектор нормализуется (L2) и возвращается. Размерность векторов соответствует модели (bge-m3 — 1024). Перед инференсом проверяется кэш; результаты сохраняются в кэш. Пустой список текстов — ошибка. Провайдер создаётся явно (модель загружается только при создании/использовании провайдера, не на запросном пути).
+The provider generates embeddings for a list of texts: each text is tokenized, model inference is run, the vector is normalized (L2) and returned. The vector dimensionality matches the model (bge-m3 — 1024). The cache is checked before inference; the results are stored in the cache. An empty list of texts is an error. The provider is created explicitly (the model is loaded only at provider creation/use, not on the query path).
 
-#### Scenario: Генерация эмбеддингов
-- **WHEN** провайдеру передаётся список текстов
-- **THEN** для каждого текста возвращается L2-нормализованный вектор размерности модели
+#### Scenario: Embedding generation
+- **WHEN** the provider is given a list of texts
+- **THEN** an L2-normalized vector of the model's dimensionality is returned for each text
 
-#### Scenario: Пустой список
-- **WHEN** провайдеру передаётся пустой список текстов
-- **THEN** возвращается явная ошибка
+#### Scenario: Empty list
+- **WHEN** the provider is given an empty list of texts
+- **THEN** an explicit error is returned
 
-#### Scenario: Кэш-интеграция
-- **WHEN** среди текстов есть уже вычисленные
-- **THEN** для них возвращаются кэшированные векторы, инференс выполняется только для новых
+#### Scenario: Cache integration
+- **WHEN** some of the texts are already computed
+- **THEN** the cached vectors are returned for them and inference is run only for the new ones
 
-#### Scenario: Явное создание провайдера
-- **WHEN** провайдер не создан
-- **THEN** модель и библиотека не загружаются (запросный путь не грузит модель эмбеддингов)
+#### Scenario: Explicit provider creation
+- **WHEN** the provider is not created
+- **THEN** the model and the library are not loaded (the query path does not load the embedding model)

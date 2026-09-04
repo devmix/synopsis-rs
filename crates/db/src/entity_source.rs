@@ -274,7 +274,7 @@ mod tests {
         .unwrap();
     }
 
-    // (и, cont.) link_batch: empty input is a no-op; duplicates inside the
+    // (i, cont.) link_batch: empty input is a no-op; duplicates inside the
     // input are skipped by OR IGNORE.
     #[test]
     fn link_batch_empty_and_duplicate_input() {
@@ -328,7 +328,7 @@ mod tests {
         .unwrap();
     }
 
-    // (к, cont.) delete_by_document_id: only the requested document's rows
+    // (j, cont.) delete_by_document_id: only the requested document's rows
     // are removed; other documents' rows survive.
     #[test]
     fn delete_by_document_id_isolates_documents() {
@@ -395,7 +395,7 @@ mod tests {
         .unwrap();
     }
 
-    // (л, cont.) find_orphaned_entity_ids: every orphan, ordered by id;
+    // (l, cont.) find_orphaned_entity_ids: every orphan, ordered by id;
     // linked entities are absent.
     #[test]
     fn find_orphaned_ordered() {

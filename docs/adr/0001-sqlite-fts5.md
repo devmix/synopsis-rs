@@ -1,66 +1,66 @@
-# ADR 0001 — SQLite/FTS5 шов в Rust (bundled, source-compiled)
+# ADR 0001 — SQLite/FTS5 seam in Rust (bundled, source-compiled)
 
-**Статус:** GO по шву; все записанные bm25-ожидания подтверждены (исходное `knowledge OR RAG` → 3 хита исправлено решением человека на 18 — см. «Открытые вопросы»).
-**Дата:** 2026-08-18 · **Change:** native-seam-spikes, задача 1.1 (спайк S1: `crates/spikes/src/bin/s1_sqlite.rs`, `crates/spikes/migrations/1-init/up.sql`)
+**Status:** GO on the seam; all recorded bm25 expectations confirmed (the original `knowledge OR RAG` → 3 hits was corrected to 18 by human decision — see "Open questions").
+**Date:** 2026-08-18 · **Change:** native-seam-spikes, task 1.1 (spike S1: `crates/spikes/src/bin/s1_sqlite.rs`, `crates/spikes/migrations/1-init/up.sql`)
 
-## Вопрос
+## Question
 
-Может ли Rust-бинарь владеть полным путём SQLite/FTS5 без CGO-флагов: source-compiled bundled SQLite, инициализация СВЕЖЕЙ базы одним init-миграцией, применение PRAGMA из `configs/config.default.yaml` (включая WAL) и bm25-результаты, идентичные записанным ожиданиям? Какой механизм миграций зафиксировать для боевого crate'а `db`?
+Can a Rust binary own the full SQLite/FTS5 path without CGO flags: a source-compiled bundled SQLite, initialization of a FRESH database by a single init migration, applying the PRAGMAs from `configs/config.default.yaml` (including WAL), and bm25 results identical to the recorded expectations? Which migration mechanism to freeze for the production `db` crate?
 
-## Варианты
+## Options
 
-1. **rusqlite + libsqlite3-sys `bundled`** — SQLite компилируется из исходников прямо в бинарь; FTS5 входит в каждую bundled-сборку (отдельной фичи больше нет); CGO-флагов нигде нет, и целый класс тихой деградации («нет fts5-модуля → молча склипать») исключён по построению.
-2. rusqlite с системным SQLite (pkg-config) — отклонено: теряется воспроизводимость сборки на 5 CI-таргетах (musl / windows-gnu / darwin), нарушается контракт «один локальный бинарь, без внешних зависимостей».
-3. Векторные расширения SQLite (vec0 и пр.) — вне шва S1: legacy vec0-данные в Rust вообще не читаются (векторы пересобираются по тексту чанков; data-schema / design D2).
+1. **rusqlite + libsqlite3-sys `bundled`** — SQLite is compiled from source directly into the binary; FTS5 ships with every bundled build (there is no separate feature anymore); there are no CGO flags anywhere, and an entire class of silent degradation ("no fts5 module → silently degrade") is excluded by construction.
+2. rusqlite with system SQLite (pkg-config) — rejected: build reproducibility across the 5 CI targets (musl / windows-gnu / darwin) is lost, and the "one local binary, no external dependencies" contract is violated.
+3. SQLite vector extensions (vec0 and the like) — outside the S1 seam: legacy vec0 data is not read at all in Rust (vectors are rebuilt from chunk text; data-schema / design D2).
 
-## Измерения (спайк s1_sqlite, прогон 2026-08-18)
+## Measurements (spike s1_sqlite, run 2026-08-18)
 
-- Bundled SQLite: **3.53.2** (source id `d6e03d8c…`); в Cargo.lock единственная инстанция libsqlite3-sys.
-- Fresh-БД через `rusqlite_migration::from_directory` (include_dir, SQL встроен на compile-time): `PRAGMA user_version == 1` ✓; таблица `_schema_migrations` НЕ создаётся.
-- Схемный дифф fresh vs fixture (`fixtures/knowledge.db`, v5, provenance и sha256 — fixtures/README.md), legacy-артефакты исключены явным списком: **14 таблиц (63 колонки), 25 индексов, 3 триггера** — идентичны.
-- PRAGMA из `configs/config.default.yaml` применены без ошибок; read-back: `journal_mode=wal` ✓, `synchronous=NORMAL(1)`, `cache_size=-64000 KiB`, `mmap_size=268435456`.
-- bm25-паритет (270 чанков скопированы из fixture read-only в fresh-БД; FTS-контент наполнен sync-триггерами, зафиксированными в init-DDL):
+- Bundled SQLite: **3.53.2** (source id `d6e03d8c…`); the single libsqlite3-sys instance in Cargo.lock.
+- Fresh DB via `rusqlite_migration::from_directory` (include_dir, SQL embedded at compile time): `PRAGMA user_version == 1` ✓; the `_schema_migrations` table is NOT created.
+- Schema diff fresh vs fixture (`fixtures/knowledge.db`, v5, provenance and sha256 — fixtures/README.md), legacy artifacts excluded by an explicit list: **14 tables (63 columns), 25 indexes, 3 triggers** — identical.
+- PRAGMAs from `configs/config.default.yaml` applied without errors; read-back: `journal_mode=wal` ✓, `synchronous=NORMAL(1)`, `cache_size=-64000 KiB`, `mmap_size=268435456`.
+- bm25 parity (270 chunks copied read-only from the fixture into the fresh DB; FTS content populated by the sync triggers fixed in the init DDL):
 
-| Запрос | Записанное ожидание | Измерено | Вердикт |
+| Query | Recorded expectation | Measured | Verdict |
 |---|---|---|---|
-| `knowledge` | 17 хитов; top-3 = (247, −4.4453), (30, −3.573), (106, −3.4522) | 17 хитов; (247, −4.4453), (30, −3.5730), (106, −3.4522) | ✓ точное совпадение chunk_id/порядка, score в относительной допуска 1e-3 |
-| `RAG` | 1 хит | 1 хит (chunk 88, score −2.2573) | ✓ |
-| `"knowledge graph"` (фраза) | 1 хит | 1 хит (chunk 1, score −5.2473) | ✓ |
-| `knowledge OR RAG` (операторы) | **3 хита** (исправлено решением человека на 18, ревизия 4 задачи 1.1) | **18 хитов** (= объединение 17 + 1; чанков, содержащих оба термина, нет) | ✓ ожидание исправлено — «3 хита» было артефактом замера с `LIMIT 3` (первые строки 1, 30, 88); см. «Открытые вопросы» |
+| `knowledge` | 17 hits; top-3 = (247, −4.4453), (30, −3.573), (106, −3.4522) | 17 hits; (247, −4.4453), (30, −3.5730), (106, −3.4522) | ✓ exact chunk_id/order match, scores within relative tolerance 1e-3 |
+| `RAG` | 1 hit | 1 hit (chunk 88, score −2.2573) | ✓ |
+| `"knowledge graph"` (phrase) | 1 hit | 1 hit (chunk 1, score −5.2473) | ✓ |
+| `knowledge OR RAG` (operators) | **3 hits** (corrected to 18 by human decision, task 1.1 revision 4) | **18 hits** (= union of 17 + 1; no chunk contains both terms) | ✓ expectation corrected — "3 hits" was an artifact of a measurement with `LIMIT 3` (first rows: 1, 30, 88); see "Open questions" |
 
-## Решение (GO)
+## Decision (GO)
 
-Шов доказан: source-compiled bundled SQLite с FTS5/bm25 полностью работает в Rust без CGO-флагов; схема и ранжирование совпадают с записанными ожиданиями. **Вердикт: GO** — crate `db` строится на rusqlite + bundled libsqlite3-sys.
+The seam is proven: a source-compiled bundled SQLite with FTS5/bm25 works fully in Rust without CGO flags; the schema and ranking match the recorded expectations. **Verdict: GO** — the `db` crate is built on rusqlite + bundled libsqlite3-sys.
 
-### Механизм миграций (фиксация для crate'а `db`)
+### Migration mechanism (frozen for the `db` crate)
 
-- Механизм = `rusqlite_migration` 2.6 (`from-directory`; SQL встраивается в бинарь compile-time через include_dir).
-- ОДИН init-каталог `migrations/1-init/up.sql` со squashed DDL финального v5-состояния: выведен механически из схемы fixture (sqlite_master + PRAGMA table_info) минус явный список legacy-артефактов (`_schema_migrations`, vec0-семейство `chunks_vec*`); финальное v5-состояние соответствует истории legacy-миграций 001–005 (003 исключает `documents.domain` и его индекс; 002 даёт unique-индекс `idx_documents_original_path`; 005 — `app_kv`).
-- `PRAGMA user_version` — ЕДИНСТВЕННЫЙ источник истины о состоянии схемы (== 1 после init). Таблица `_schema_migrations` не создаётся и не ведётся; legacy-совместимость отслеживания не поддерживается.
-- Будущие миграции: новые нумерованные каталоги `<id>-<slug>/up.sql`, forward-only, down.sql не нужны, shipped-файлы не редактируются.
+- Mechanism = `rusqlite_migration` 2.6 (`from-directory`; SQL embedded into the binary at compile time via include_dir).
+- A SINGLE init directory `migrations/1-init/up.sql` with the squashed DDL of the final v5 state: derived mechanically from the fixture schema (sqlite_master + PRAGMA table_info) minus an explicit list of legacy artifacts (`_schema_migrations`, the `chunks_vec*` vec0 family); the final v5 state corresponds to the legacy migration history 001–005 (003 drops `documents.domain` and its index; 002 adds the unique index `idx_documents_original_path`; 005 — `app_kv`).
+- `PRAGMA user_version` — the ONLY source of truth for schema state (== 1 after init). The `_schema_migrations` table is neither created nor maintained; legacy-compatible tracking is not supported.
+- Future migrations: new numbered directories `<id>-<slug>/up.sql`, forward-only, no down.sql needed, shipped files are never edited.
 
-### Заметки по PRAGMA/WAL
+### PRAGMA/WAL notes
 
-- `journal_mode=WAL` применяется на bundled SQLite без ошибок и читается обратно как `wal`; появляются sidecar-файлы `-wal`/`-shm` рядом с БД — деплой предполагает запись в каталог данных.
-- `synchronous=NORMAL` — корректная пара к WAL для локального single-writer использования (ноутбук, без внешних сервисов).
-- `cache_size=-64000` (отрицательное значение = KiB) и `mmap_size=256 MB` применяются и читаются обратно без отклонений.
+- `journal_mode=WAL` applies on the bundled SQLite without errors and reads back as `wal`; `-wal`/`-shm` sidecar files appear next to the DB — deployment assumes a writable data directory.
+- `synchronous=NORMAL` — the correct pairing with WAL for local single-writer use (laptop, no external services).
+- `cache_size=-64000` (negative value = KiB) and `mmap_size=256 MB` apply and read back without deviation.
 
-### Deviation pина rusqlite (объяснение, ревизия 2 задачи 0.1)
+### rusqlite pin deviation (explanation, task 0.1 revision 2)
 
-Замороженный entry `rusqlite (bundled + fts5)` в openspec/config.yaml **нерезолвябель** дословно: начиная с rusqlite 0.40 / libsqlite3-sys 0.38 дефолтная сборка линкует системный SQLite через pkg-config, а source-compiled бандлинг переехал во фичу `bundled` самого **libsqlite3-sys**; cargo запрещает включать транзитные фичи без re-export. Реальный пин:
+The frozen entry `rusqlite (bundled + fts5)` in openspec/config.yaml is **not resolvable** verbatim: starting with rusqlite 0.40 / libsqlite3-sys 0.38 the default build links system SQLite via pkg-config, and source-compiled bundling moved into the `bundled` feature of **libsqlite3-sys** itself; cargo forbids enabling transitive features without a re-export. The real pin:
 
 ```toml
 rusqlite = "0.40"
 libsqlite3-sys = { version = "0.38", features = ["bundled"] }
 ```
 
-FTS5 отдельной фичей не является — входит в каждую bundled-сборку (эмпирика: `bm25()` работает, одна инстанция libsqlite3-sys 0.38.x в Cargo.lock, CGO-флагов нигде). Намерение frozen entry D3 сохранено; текст config.yaml при этом не редактируется по прецеденту design D8 — отклонение зафиксировано здесь и в ревизии 2 задачи 0.1.
+FTS5 is not a separate feature — it ships with every bundled build (empirically: `bm25()` works, a single libsqlite3-sys 0.38.x instance in Cargo.lock, no CGO flags anywhere). The intent of the frozen entry (D3) is preserved; the config.yaml text is not edited by the design D8 precedent — the deviation is recorded here and in task 0.1 revision 2.
 
-## Отклонённые альтернативы (механизм миграций)
+## Rejected alternatives (migration mechanism)
 
-- **Копировать legacy-миграции 001–005 как есть** (отклонено человеком, ревизия 3 задачи 1.1): реплей мёртвой истории на чистой БД бессмыслен; 002/004 — data-миграции, которым применять нечего на пустых таблицах; итоговое состояние полностью описывается одним init-DDL.
-- **Bridge/double-write `_schema_migrations` + user_version** (отклонено человеком, design D6): legacy-совместимость отслеживания явно не требуется — legacy knowledge.db никогда не открывается, не апгрейдится и не мигрируется (ревизия 2 задачи 1.1: Rust всегда строит БД с нуля).
+- **Copy the legacy migrations 001–005 as-is** (rejected by the human, task 1.1 revision 3): replaying dead history onto a clean DB is pointless; 002/004 are data migrations with nothing to apply on empty tables; the end state is fully described by a single init DDL.
+- **Bridge/double-write `_schema_migrations` + user_version** (rejected by the human, design D6): legacy-compatible tracking is explicitly not required — the legacy knowledge.db is never opened, upgraded, or migrated (task 1.1 revision 2: Rust always builds the DB from scratch).
 
-## Открытые вопросы (закрыты)
+## Open questions (closed)
 
-- ~~Записанное ожидание `knowledge OR RAG` → **3 хита** противоречит измеренным **18**: в fixture ровно 17 чанков содержат термин «knowledge» и ровно 1 (id 88) — «rag», пересечения нет; при булевой семантике FTS5 (`OR` = объединение) для этого файла результат математически определён — 18.~~ — **Решено решением человека 2026-08-18 (ревизия 4 задачи 1.1):** исходное «3 хита» было артефактом замера с `LIMIT 3` (первые строки: 1, 30, 88); ожидание исправлено на **18** (= объединение 17 + 1, пересечения нет). Выверено двумя независимыми сборками SQLite (bundled 3.53.2 и системный sqlite3 CLI) и код-путём поиска (запрос передаётся в `chunks_fts MATCH ?` без преобразований); альтернативные интерпретации (AND=0, NEAR=0, wildcard=19, distinct docs=10) значения 3 не дают. Остальные ожидания совпадают с точностью до 4 знаков bm25-score — записаны именно из этого fixture-файла. Спайк s1_sqlite теперь завершается кодом 0 на всех чеках.
+- ~~The recorded expectation `knowledge OR RAG` → **3 hits** contradicts the measured **18**: the fixture has exactly 17 chunks containing the term "knowledge" and exactly 1 (id 88) containing "rag", with no overlap; under FTS5 boolean semantics (`OR` = union) the result for this file is mathematically determined — 18.~~ — **Resolved by human decision on 2026-08-18 (task 1.1 revision 4):** the original "3 hits" was an artifact of a measurement with `LIMIT 3` (first rows: 1, 30, 88); the expectation was corrected to **18** (= union of 17 + 1, no overlap). Verified with two independent SQLite builds (bundled 3.53.2 and the system sqlite3 CLI) and via the search code path (the query is passed to `chunks_fts MATCH ?` unmodified); alternative interpretations (AND=0, NEAR=0, wildcard=19, distinct docs=10) do not yield 3. The other expectations match to 4 significant digits of the bm25 score — they were recorded from this very fixture file. Spike s1_sqlite now exits with code 0 on all checks.

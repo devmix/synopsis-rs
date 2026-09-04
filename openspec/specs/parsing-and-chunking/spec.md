@@ -2,65 +2,65 @@
 
 ## Purpose
 
-Разбор документов источников: обнаружение файлов по расширениям, извлечение контента (markdown, json, mediawiki, webpage, unstructured), structure-aware чанкинг с офсетами и метаданными — вход конвейера ингестии.
+Parsing of source documents: file discovery by extension, content extraction (markdown, json, mediawiki, webpage, unstructured), structure-aware chunking with offsets and metadata — the entry point of the ingestion pipeline.
 
 ## Requirements
 
-### Requirement: Трейты разбора
+### Requirement: Parsing traits
 
-Крейт `ingestion` определяет трейты: `Parser` — обход исходного пути и извлечение документов (результат содержит документы И нефатальные ошибки разбора вместе); `Chunker` — разбиение контента на чанки; `Source` — композит Parser+Chunker для одного типа источника («самодостаточная единица ингестии»). Чанк несёт текст, порядковый номер в документе, byte-офсеты начала/конца в исходном тексте и метаданные; NER-результат в чанке не хранится (дизайн: NER присоединяется отдельным этапом).
+The `ingestion` crate defines the traits: `Parser` — walking a source path and extracting documents (the result contains the documents AND non-fatal parse errors together); `Chunker` — splitting content into chunks; `Source` — a composite Parser+Chunker for one source type (a "self-contained unit of ingestion"). A chunk carries text, a sequence number within the document, byte offsets of start/end in the source text, and metadata; NER results are not stored in the chunk (design: NER is attached by a separate stage).
 
-#### Scenario: Обход каталога источников
-- **WHEN** парсер вызывается на пути источника
-- **THEN** возвращаются все документы подходящих расширений; ошибки отдельных файлов собраны в результат, не прерывая обход
+#### Scenario: Source directory walk
+- **WHEN** a parser is invoked on a source path
+- **THEN** all documents of matching extensions are returned; errors of individual files are collected into the result without interrupting the walk
 
-#### Scenario: Чанк несёт офсеты
-- **WHEN** контент разбит на чанки
-- **THEN** каждый чанк имеет sequence_num по порядку и byte-офсеты, вырезка из которых по исходному тексту даёт текст чанка
+#### Scenario: Chunk carries offsets
+- **WHEN** content is split into chunks
+- **THEN** each chunk has a sequential sequence_num and byte offsets such that slicing the source text by them yields the chunk's text
 
-### Requirement: Markdown-источник
+### Requirement: Markdown source
 
-Markdown-парсер обнаруживает файлы `.md`/`.markdown` и извлекает их содержимое. Markdown-чанкер делит документ structure-aware — по секциям заголовков — с ограничением максимального размера чанка и перекрытием из конфигурации (`chunking.markdown.max_chunk_size`, default 1000; `overlap_size`, default 100; configured 0 для overlap сохраняется). Метаданные чанка включают заголовок секции.
+The Markdown parser discovers `.md`/`.markdown` files and extracts their content. The Markdown chunker splits a document structure-aware — by heading sections — with a maximum chunk size and an overlap from the configuration (`chunking.markdown.max_chunk_size`, default 1000; `overlap_size`, default 100; a configured 0 for overlap is preserved). The chunk's metadata includes the section heading.
 
-#### Scenario: Секционный чанкинг
-- **WHEN** markdown-документ с несколькими заголовками делится на чанки
-- **THEN** границы чанков следуют структуре заголовков; размер уважает max_chunk_size; соседние чанки перекрываются на overlap_size
+#### Scenario: Sectional chunking
+- **WHEN** a Markdown document with several headings is split into chunks
+- **THEN** chunk boundaries follow the heading structure; the size respects max_chunk_size; adjacent chunks overlap by overlap_size
 
-#### Scenario: Нулевой overlap
-- **WHEN** overlap_size сконфигурирован как 0
-- **THEN** чанки не перекрываются (0 — валидное значение, не заменяется дефолтом)
+#### Scenario: Zero overlap
+- **WHEN** overlap_size is configured as 0
+- **THEN** chunks do not overlap (0 is a valid value, not replaced by the default)
 
-### Requirement: JSON-источник
+### Requirement: JSON source
 
-JSON-парсер обрабатывает `.json`-файлы согласно зафиксированной семантике (проверяется тестами). JSON-чанкер делит содержимое по структуре документа.
+The JSON parser handles `.json` files according to the fixed semantics (checked by tests). The JSON chunker splits the content by the document structure.
 
-#### Scenario: Разбор JSON-источника
-- **WHEN** json-источник парсится и чанкуется
-- **THEN** документы извлечены, чанки покрывают содержимое без потери данных
+#### Scenario: Parsing a JSON source
+- **WHEN** a JSON source is parsed and chunked
+- **THEN** documents are extracted and the chunks cover the content without data loss
 
-### Requirement: Дополнительные форматы
+### Requirement: Additional formats
 
-Источники mediawiki, webpage и unstructured реализуют те же трейты (каждый — свой формат обнаружения и извлечения).
+The mediawiki, webpage, and unstructured sources implement the same traits (each with its own format of discovery and extraction).
 
-#### Scenario: Единый паттерн форматов
-- **WHEN** добавляется источник нового формата
-- **THEN** он реализует тот же трейт Source и регистрируется в реестре без изменений потребляющего кода
+#### Scenario: Unified format pattern
+- **WHEN** a source of a new format is added
+- **THEN** it implements the same Source trait and is registered in the registry without changes to consuming code
 
-### Requirement: Реестр источников
+### Requirement: Source registry
 
-Реестр сопоставляет тип источника (из конфигурации global.xml `<source type=…>`) и расширения файлов с реализацией Source; неизвестный тип — явная ошибка.
+The registry maps a source type (from the `<source type=…>` in the global.xml configuration) and file extensions to a Source implementation; an unknown type is an explicit error.
 
-#### Scenario: Выбор источника по типу
-- **WHEN** запрашивается источник по типу из конфигурации
-- **THEN** возвращается зарегистрированная реализация; неизвестный тип даёт явную ошибку
+#### Scenario: Source selection by type
+- **WHEN** a source is requested by type from the configuration
+- **THEN** the registered implementation is returned; an unknown type gives an explicit error
 
-### Requirement: Паритет с записанными фикстурами
+### Requirement: Parity with recorded fixtures
 
-Разбор и чанкинг проверяются против записанных фикстур: одинаковый вход даёт одинаковое число чанков, идентичный текст чанков и согласованные офсеты.
+Parsing and chunking are verified against recorded fixtures: identical input gives the same number of chunks, identical chunk text, and consistent offsets.
 
-#### Scenario: Дифференциальный тест
-- **WHEN** записанная фикстура прогоняется через Rust-парсер и чанкер
-- **THEN** число чанков и их текст совпадают с ожиданиями, зафиксированными из записанных фикстур
+#### Scenario: Differential test
+- **WHEN** a recorded fixture is run through the Rust parser and chunker
+- **THEN** the chunk count and their text match the expectations fixed from the recorded fixtures
 
 ### Requirement: search_text emission
 The Markdown chunker emits, for every chunk, a `search_text` value in addition to the invariant-preserving `text`. `search_text` is the chunk's heading breadcrumb (the multi-line heading path, e.g. `> H1` / ` > H2`) followed by a blank line and the chunk body; when the chunk has no breadcrumb (e.g. the preamble before the first heading) `search_text` equals `text`. The `text` field and the byte-offset invariant (`content[start_offset..end_offset] == text`) are unchanged, and the breadcrumb is still also available in the chunk metadata.

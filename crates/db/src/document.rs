@@ -688,7 +688,7 @@ mod tests {
         });
     }
 
-    // (з) count respects the same filters as list_paginated.
+    // (h) count respects the same filters as list_paginated.
     #[test]
     fn count_respects_filters() {
         let db = in_memory_db();

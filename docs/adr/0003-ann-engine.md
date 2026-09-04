@@ -1,118 +1,118 @@
-# ADR 0003 — ANN-движок: LanceDB (IVF-HNSW, u8-SQ)
+# ADR 0003 — ANN engine: LanceDB (IVF-HNSW, u8-SQ)
 
 **Status:** Superseded by ADR 0004 (2026-08-31): the lance engine was removed; usearch is the sole ANN engine.
 
-**Статус:** GO; конфигурация зафиксирована ниже. Полные таблицы измерений — в [spike-s3-results.md](spike-s3-results.md).
-**Дата:** 2026-08-18 · **Change:** native-seam-spikes, задача 3.2 (спайк S3b: `crates/spikes/src/bin/s3b_lance.rs`)
+**Status:** GO; the configuration is fixed below. Full measurements tables — in [spike-s3-results.md](spike-s3-results.md).
+**Date:** 2026-08-18 · **Change:** native-seam-spikes, task 3.2 (spike S3b: `crates/spikes/src/bin/s3b_lance.rs`)
 
-## Вопрос
+## Question
 
-Какой движок и конфигурацию ANN зафиксировать для crate'а `vectors` при жёстких гейтах ноутбука (16 ГБ RAM, один локальный бинарь): **p95 < 10 ms**, **recall@10 ≥ 0.95**, **RSS-delta ≤ ~2 GB** на N=1M×1024-классе корпуса? Кандидат единственный — **lancedb** (usearch-спайк отменён решением человека 2026-08-18: часы прогона и неудовлетворительный результат).
+Which ANN engine and configuration to freeze for the `vectors` crate under the laptop's hard gates (16 GB RAM, one local binary): **p95 < 10 ms**, **recall@10 ≥ 0.95**, **RSS-delta ≤ ~2 GB** on an N=1M×1024-class corpus? The candidate is singular — **lancedb** (the usearch spike was cancelled by human decision on 2026-08-18: hours of run time and an unsatisfactory result).
 
-## Варианты
+## Options
 
-Протокол 3.2 (по ревизии 1): seeded синтетика N=250K×1024 f32, M=16, efConstruction=100, IVF num_partitions=256, nprobes=32, L2, 100 held-out запросов, top-k=50, recall@10 против exact-L2 brute force внутри спайка. Варьируются два ключевых параметра решения — квантизация и efSearch:
+Protocol 3.2 (per revision 1): seeded synthetic N=250K×1024 f32, M=16, efConstruction=100, IVF num_partitions=256, nprobes=32, L2, 100 held-out queries, top-k=50, recall@10 against exact-L2 brute force inside the spike. Two key decision parameters are varied — quantization and efSearch:
 
-1. **f32 / IvfHnswFlat** (полная точность) × efSearch {50, 200}
-2. **i8 / IvfHnswSq** (u8 scalar quantization, ~3× меньше на диске и в RAM) × efSearch {50, 200}
+1. **f32 / IvfHnswFlat** (full precision) × efSearch {50, 200}
+2. **i8 / IvfHnswSq** (u8 scalar quantization, ~3× smaller on disk and in RAM) × efSearch {50, 200}
 
-## Измерения (спайк s3b_lance, release, два протокольных прогона A/B + диагностика; детали — appendix)
+## Measurements (spike s3b_lance, release, two protocol runs A/B + diagnostics; details — appendix)
 
-| cfg | p95 ms (A/B) | recall@10 (A/B) | RSS ΔMB (A/B) | index / total на диске | Гейты |
+| cfg | p95 ms (A/B) | recall@10 (A/B) | RSS ΔMB (A/B) | index / total on disk | Gates |
 |---|---|---|---|---|---|
-| f32_ef50 | 22.0 / 20.4 | 0.902 / 0.899 | 890 / 897 | ~1.06 ГБ / ~2.09 ГБ | FAIL (p95, recall) |
-| f32_ef200 | 39.7 / 39.3 | 0.994 / 0.990 | 745 / 545 | ~1.06 ГБ / ~2.09 ГБ | FAIL (p95) |
-| i8_ef50 | 7.66 / 7.77 | 0.885 / 0.884 | 79 / 62 | ~297 МБ / ~1.32 ГБ | FAIL (recall) |
-| **i8_ef200** | **9.63 / 9.76** | **0.957 / 0.962** | **71 / 79** | **~297 МБ / ~1.32 ГБ** | **PASS — все три гейта, оба прогона** |
+| f32_ef50 | 22.0 / 20.4 | 0.902 / 0.899 | 890 / 897 | ~1.06 GB / ~2.09 GB | FAIL (p95, recall) |
+| f32_ef200 | 39.7 / 39.3 | 0.994 / 0.990 | 745 / 545 | ~1.06 GB / ~2.09 GB | FAIL (p95) |
+| i8_ef50 | 7.66 / 7.77 | 0.885 / 0.884 | 79 / 62 | ~297 MB / ~1.32 GB | FAIL (recall) |
+| **i8_ef200** | **9.63 / 9.76** | **0.957 / 0.962** | **71 / 79** | **~297 MB / ~1.32 GB** | **PASS — all three gates, both runs** |
 
-Воспроизводимость i8_ef200 (критерий «два прогона <5 % разброса»): p50 6.04/6.17 ms (**2.1 %**), p95 9.63/9.76 ms (**1.4 %**) — **выполнен**. Recall стабилен во всех пересборках (Δ ≤ 0.005); fingerprint корпуса идентичен во всех прогонах (`corpus_fnv1a=50194a997027c6d2`).
+Reproducibility of i8_ef200 (criterion "two runs with <5 % spread"): p50 6.04/6.17 ms (**2.1 %**), p95 9.63/9.76 ms (**1.4 %**) — **met**. Recall is stable across all rebuilds (Δ ≤ 0.005); the corpus fingerprint is identical across all runs (`corpus_fnv1a=50194a997027c6d2`).
 
-Диагностический sweep nprobes {64,128,256} × efSearch {50,200} (appendix): efSearch доминирует по recall (ef=50 потолок ~0.88–0.90; ef=200 → 0.96–0.997); рост nprobes с 32→256 даёт +1–4 pp recall ценой линейного роста p95 — ни одна точка не превосходит i8_ef200 по совокупности гейтов.
+Diagnostic sweep nprobes {64,128,256} × efSearch {50,200} (appendix): efSearch dominates recall (ef=50 caps at ~0.88–0.90; ef=200 → 0.96–0.997); raising nprobes from 32→256 gives +1–4 pp recall at the cost of linear p95 growth — no point beats i8_ef200 on the combined gates.
 
-## Решение (GO)
+## Decision (GO)
 
-**Движок:** LanceDB, `lancedb = "0.37"` / lance 10.0.0 (Cargo.lock: lancedb 0.37.1, lance 10.0.0). **Конфигурация для crate'а `vectors`:**
+**Engine:** LanceDB, `lancedb = "0.37"` / lance 10.0.0 (Cargo.lock: lancedb 0.37.1, lance 10.0.0). **Configuration for the `vectors` crate:**
 
-| Параметр | Значение |
+| Parameter | Value |
 |---|---|
-| Индекс | IVF-HNSW с u8 scalar quantization (`IvfHnswSq`) |
+| Index | IVF-HNSW with u8 scalar quantization (`IvfHnswSq`) |
 | M (HNSW) | 16 |
 | efConstruction | 100 |
 | num_partitions (IVF) | 256 |
 | nprobes | 32 |
-| **efSearch** | **200** (ключевой параметр: без него recall ~0.88 < гейта 0.95) |
-| Метрика | L2 |
+| **efSearch** | **200** (the key parameter: without it recall ~0.88 < the 0.95 gate) |
+| Metric | L2 |
 
-Исходные векторы хранятся в таблице как f32 (`FixedSizeList<Float32, 1024>`), квантизация — только внутри индекса; поиск возвращает `_distance`, ранжирование — по нему. Фрагментация: `num_rows_to_batch = 1_000` (по умолчанию lance) при записи стримингом через Arrow RecordBatch'и.
+Source vectors are stored in the table as f32 (`FixedSizeList<Float32, 1024>`); quantization lives only inside the index; search returns `_distance`, and ranking is by it. Fragmentation: `num_rows_to_batch = 1_000` (the lance default) when writing in a stream via Arrow RecordBatches.
 
-**Футпринт (250K×1024):** индекс ~297 МБ, таблица+индекс ~1.32 ГБ на диске; **RSS-delta поиска ~71–79 MB** — порядок величин для N=1M (~300–400 МБ RAM при mmap-поддержке lance) укладывается в бюджет ноутбука с большим запасом. Экстраполяция диска на 1M: ~5.3 ГБ — допустимо (NVMe).
+**Footprint (250K×1024):** index ~297 MB, table+index ~1.32 GB on disk; **search RSS-delta ~71–79 MB** — the order of magnitude for N=1M (~300–400 MB RAM with lance's mmap support) fits the laptop budget with a large margin. Disk extrapolation to 1M: ~5.3 GB — acceptable (NVMe).
 
-## Отклонённые альтернативы
+## Rejected alternatives
 
-- **f32 / IvfHnswFlat** (оба efSearch): p95 20–40 ms — в 2–4 раза за гейтом <10 ms; recall при ef=50 и так ниже гейта. Полная точность не нужна: bge-m3 int8 эмбеддинги сами 8-битны по смыслу, а recall i8_ef200 проходит с запасом +0.7–1.2 pp.
-- **i8 / efSearch=50:** p95 7.7 ms — лучший тайминг всех конфигов, но recall 0.884–0.885 < 0.95 (гейт). efSearch=50 недопустим для боевого crate'а при этой геометрии.
-- **Увеличение nprobes >32** (64/128/256): +1–4 pp recall, но p95 i8_ef200 растёт 9.7 → 10.3–24.4 ms — уводит из-под гейта; не требуется при efSearch=200.
-- **usearch** (отменён человеком до спайка): часы прогона и неудовлетворительный результат — см. ревизии задач 3.1/3.2.
+- **f32 / IvfHnswFlat** (both efSearch): p95 20–40 ms — 2–4× past the <10 ms gate; recall at ef=50 is below the gate anyway. Full precision is not needed: bge-m3 int8 embeddings are effectively 8-bit in meaning, and i8_ef200 recall passes with a +0.7–1.2 pp margin.
+- **i8 / efSearch=50:** p95 7.7 ms — the best timing of all configs, but recall 0.884–0.885 < 0.95 (the gate). efSearch=50 is unacceptable for the production crate at this geometry.
+- **Raising nprobes >32** (64/128/256): +1–4 pp recall, but the p95 of i8_ef200 grows 9.7 → 10.3–24.4 ms — past the gate; not needed with efSearch=200.
+- **usearch** (cancelled by the human before the spike): hours of run time and an unsatisfactory result — see the revisions of tasks 3.1/3.2.
 
-## Открытые вопросы / остаточные риски
+## Open questions / residual risks
 
-1. **Тонкие маржи у i8_ef200:** p95 9.6–9.8 ms против гейта <10 ms (запас ~3 %) и recall 0.957–0.962 против ≥0.95 (+0.7–1.2 pp). На более загруженной машине ноутбука p95 может выйти за гейт. Митигация в crate'е `vectors`: efSearch — runtime-настройка (не константа), дефолт 200; при регрессии на реальном корпусе поднять nprobes/efSearch или вернуться к f32_ef200 ценой p95.
-2. **Синтетическая геометрия:** 256-кластерная гауссова смесь — вопрос механики индекса (design D2), но реальный bge-m3-корпус может отличаться. По митигации D2 измерения S3 **повторяются на реальной фикстуре** в change'е `vectors` (явная задача там); полный 1M-прогон тоже остаётся за ним. — *закрыт appendix'ом (2026-08-22): 1M-прогон выполнен — гейты p95/recall не выполнены, см. «Эскалация»; повтор на реальной фикстуре отложен (экспорт `vectors.bin` недоступен).*
-3. **Шум машины:** p50/p95 разброс >5 % у НЕрекомендуемых конфигов между прогонами A/B (артефакт общей загруженной машины; у i8_ef200 оба перцентиля <5 %) — см. appendix «Воспроизводимость».
-4. **Асинхронный путь замера:** тайминг включает полный async-пути search→stream collect через tokio (как и в боевом crate'е) — overhead рантайма учтён, а не приписан движку.
+1. **Thin margins at i8_ef200:** p95 9.6–9.8 ms against the <10 ms gate (~3 % headroom) and recall 0.957–0.962 against ≥0.95 (+0.7–1.2 pp). On a more loaded laptop machine p95 may go past the gate. Mitigation in the `vectors` crate: efSearch is a runtime setting (not a constant), default 200; on regression on a real corpus raise nprobes/efSearch or fall back to f32_ef200 at the cost of p95.
+2. **Synthetic geometry:** a 256-cluster Gaussian mixture is a question of index mechanics (design D2), but the real bge-m3 corpus may differ. Per the D2 mitigation, the S3 measurements **are repeated on a real fixture** in the `vectors` change (an explicit task there); the full 1M run also stays with it. — *closed by the appendix (2026-08-22): the 1M run was performed — the p95/recall gates are not met, see "Escalation"; the repeat on the real fixture is deferred (the `vectors.bin` export is unavailable).*
+3. **Machine noise:** p50/p95 spread >5 % between A/B runs on the NOT-recommended configs (an artifact of a generally loaded machine; both percentiles of i8_ef200 are <5 %) — see the appendix "Reproducibility".
+4. **Async measurement path:** the timing includes the full async path search→stream collect through tokio (as in the production crate) — the runtime overhead is accounted for, not attributed to the engine.
 
-## Appendix — полный прогон N=1M (vectors task 1.8, 2026-08-22)
+## Appendix — full N=1M run (vectors task 1.8, 2026-08-22)
 
-Закрытие открытого вопроса №2 (полный масштаб + повтор на реальной геометрии). Протокол: s3b_lance через `crates/vectors/tests/full_benchmark.rs` (release, `#[ignore]`), конфигурация ADR 0003 (IvfHnswSq, M=16, efConstruction=100, 256 partitions, nprobes=32, efSearch=200, L2). **lancedb 0.37.1 / lance 10.0.0.** Машина: 16-ядерный ноутбук, 31 ГБ RAM, NVMe; **машина была загружена** (load average ~4–5, общие процессы) — см. «Воспроизводимость».
+Closure of open question #2 (full scale + repeat on real geometry). Protocol: s3b_lance via `crates/vectors/tests/full_benchmark.rs` (release, `#[ignore]`), ADR 0003 configuration (IvfHnswSq, M=16, efConstruction=100, 256 partitions, nprobes=32, efSearch=200, L2). **lancedb 0.37.1 / lance 10.0.0.** Machine: 16-core laptop, 31 GB RAM, NVMe; **the machine was loaded** (load average ~4–5, shared processes) — see "Reproducibility".
 
-### Прогон (а): синтетика N=1 000 000×1024
+### Run (a): synthetic N=1 000 000×1024
 
-Геометрия: 256-кластерная гауссова смесь на единичной сфере (σ=0.1) — та же семья, что у спайка. Корпус регенерируется построчно (построчный SplitMix64-сид, ~4 ГБ никогда не резидентны в RAM), seed `0x5EED_3B25_CAFE_BAB7`, fingerprint `corpus_fnv1a=1d94cb3216d76f01` (A == B во всех прогонах). Ground truth: exact-L2² brute force (f32-накопление, 16 worker-потоков, 268–283 c).
+Geometry: a 256-cluster Gaussian mixture on the unit sphere (σ=0.1) — the same family as the spike. The corpus is regenerated line by line (per-line SplitMix64 seed, ~4 GB never resident in RAM), seed `0x5EED_3B25_CAFE_BAB7`, fingerprint `corpus_fnv1a=1d94cb3216d76f01` (A == B across all runs). Ground truth: exact-L2² brute force (f32 accumulation, 16 worker threads, 268–283 s).
 
-| run | write ms | build ms | p50 ms | p95 ms | recall@10 | RSS Δ MB | index / total на диске |
+| run | write ms | build ms | p50 ms | p95 ms | recall@10 | RSS Δ MB | index / total on disk |
 |---|---|---|---|---|---|---|---|
-| A | 29 953 | 62 650 | 15.332 | 32.159 | 0.9330 | 1371 | 1.21 ГБ / 5.35 ГБ |
-| B | 31 358 | 65 763 | 18.624 | 42.866 | 0.9110 | 1343 | 1.21 ГБ / 5.35 ГБ |
+| A | 29 953 | 62 650 | 15.332 | 32.159 | 0.9330 | 1371 | 1.21 GB / 5.35 GB |
+| B | 31 358 | 65 763 | 18.624 | 42.866 | 0.9110 | 1343 | 1.21 GB / 5.35 GB |
 
-Дополнительный прогон того же дня (до sweep): A p50/p95 20.012/55.539 ms, recall 0.9110; B 19.080/40.775 ms, recall 0.9160 — тот же порядок, p95 выше (загрузка машины).
+An additional run the same day (before the sweep): A p50/p95 20.012/55.539 ms, recall 0.9110; B 19.080/40.775 ms, recall 0.9160 — the same order, higher p95 (machine load).
 
-**Гейты:** p95 < 10 ms → **FAIL** (32–55 ms, в 3–6 раз за гейтом); recall@10 ≥ 0.95 → **FAIL** (0.911–0.933); RSS Δ ≤ ~2 ГБ → **PASS** (1.0–1.4 ГБ). Диск: 5.35 ГБ — совпадает с экстраполяцией ADR (~5.3 ГБ). Индекс ~1.21 ГБ (у спайка 0.297 ГБ на 250K — масштаб 4.1×, как и ожидается).
+**Gates:** p95 < 10 ms → **FAIL** (32–55 ms, 3–6× past the gate); recall@10 ≥ 0.95 → **FAIL** (0.911–0.933); RSS Δ ≤ ~2 GB → **PASS** (1.0–1.4 GB). Disk: 5.35 GB — matches the ADR extrapolation (~5.3 GB). Index ~1.21 GB (the spike had 0.297 GB at 250K — a 4.1× scale, as expected).
 
-**Воспроизводимость (гейт <5 %):** НЕ выполнен — p50 spread 21.5 %, p95 spread 33.3 % (артефакт загрузки машины; cf. открытый вопрос №3). Recall между двумя независимыми сборками одного конфига: 0.911/0.933 — build-to-build варьанс ~2 pp от случайных инициализаций k-means/HNSW в lance (deterministic-файлы индекса при этом различаются).
+**Reproducibility (gate <5 %):** NOT met — p50 spread 21.5 %, p95 spread 33.3 % (a machine-load artifact; cf. open question #3). Recall between two independent builds of one config: 0.911/0.933 — a build-to-build variance of ~2 pp from the random k-means/HNSW initializations inside lance (the deterministic index files differ in that case).
 
-### Митигационный sweep (runtime-параметры, без пересборки; индекс run B)
+### Mitigation sweep (runtime parameters, no rebuild; run B's index)
 
 | nprobes | efSearch | p50 ms | p95 ms | recall@10 | RSS Δ MB |
 |---|---|---|---|---|---|
-| 32 | 200 (default ADR) | 18.624 | 42.866 | 0.9110 | 1343 |
+| 32 | 200 (ADR default) | 18.624 | 42.866 | 0.9110 | 1343 |
 | 64 | 200 | 26.619 | 46.425 | 0.9120 | 1072 |
 | 128 | 200 | 41.249 | 66.627 | 0.9120 | 499 |
 | 256 | 200 | 72.060 | 89.883 | 0.9120 | 362 |
 | 128 | 400 | 59.258 | 72.484 | **0.9600** | 868 |
 | 256 | 400 | 115.388 | 141.417 | **0.9600** | 297 |
 
-**Наблюдение:** на N=1M recall упирается в **efSearch** (HNSW-луч внутри партиции), а не в IVF-покрытие: nprobes 32→256 recall не поднимает (0.911→0.912), тогда как efSearch 200→400 поднимает до 0.960. При этом гейт p95 < 10 ms **недостижим ни в одной точке** с recall ≥ 0.95 (72–141 ms при ef=400). Контраст со спайком 250K (i8_ef200: p95 9.6 ms, recall 0.957 — все гейты PASS): при 4× масштабе p95-бюджет исчерпан.
+**Observation:** at N=1M recall is limited by **efSearch** (the HNSW walk inside a partition), not by IVF coverage: nprobes 32→256 does not raise recall (0.911→0.912), while efSearch 200→400 raises it to 0.960. At the same time, the p95 < 10 ms gate is **unachievable at any point** with recall ≥ 0.95 (72–141 ms at ef=400). Contrast with the 250K spike (i8_ef200: p95 9.6 ms, recall 0.957 — all gates PASS): at 4× scale the p95 budget is exhausted.
 
-### Прогон (б): реальная фикстура vectors.bin
+### Run (b): real vectors.bin fixture
 
-**Отложен** — экспорт `vectors.bin` недоступен (task 1.8: НЕ блокер архивации change'а). Harness готов: `SYNOPSIS_BENCH_VECTORS_BIN=<path> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture`. Задокументированное отклонение: запросы — seeded-выборка строк корпуса (в экспорте нет held-out-множества), recall@10 против exact-top-10 при этом определён корректно.
+**Deferred** — the `vectors.bin` export is unavailable (task 1.8: NOT a blocker for archiving the change). Harness ready: `SYNOPSIS_BENCH_VECTORS_BIN=<path> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture`. Documented deviation: queries — a seeded sample of corpus lines (no held-out set in the export); recall@10 against exact top-10 is still well defined.
 
-### Команды запуска (воспроизводимость)
+### Run commands (reproducibility)
 
 ```sh
-# прогон (а): A/B + гейты, ~9 мин, только release, ~5.4 ГБ диска
+# run (a): A/B + gates, ~9 min, release only, ~5.4 GB of disk
 cargo test -p vectors --release -- --ignored full_benchmark_synthetic --nocapture
-# то же + митигационный sweep на индексе run B
+# same + mitigation sweep on run B's index
 SYNOPSIS_BENCH_SWEEP=1 cargo test -p vectors --release -- --ignored full_benchmark_synthetic --nocapture
-# прогон (б) — когда экспорт vectors.bin станет доступен
+# run (b) — once the vectors.bin export becomes available
 SYNOPSIS_BENCH_VECTORS_BIN=<vectors.bin> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture
 # env: SYNOPSIS_BENCH_N (default 1_000_000), SYNOPSIS_BENCH_WORK_DIR (default /mnt/local/sandbox/opencode-vectors-18)
 ```
 
-### Эскалация пользователю (отклонение от гейтов ADR 0003)
+### Escalation to the user (deviation from ADR 0003 gates)
 
-На полном масштабе N=1M конфигурация ADR 0003 **не удерживает гейты p95 (<10 ms) и recall (≥0.95)** на этой машине; гейты RSS (≤2 ГБ) и диск (5.35 ГБ) выполнены с запасом. Ни одна runtime-настройка (sweep выше) не проходит оба гейта одновременно. Варианты (решение за пользователем):
+At full scale N=1M the ADR 0003 configuration **does not hold the p95 (<10 ms) and recall (≥0.95) gates** on this machine; the RSS (≤2 GB) and disk (5.35 GB) gates are met with margin. No runtime setting (the sweep above) passes both gates at once. Options (the decision is up to the user):
 
-1. **Принять отклонение на 1M** — реальный корпус ноутбука, вероятно, меньше 1M (на 250K все гейты держатся с запасом); цифры 1M зафиксировать как worst-case поведение.
-2. **Пересобрать индекс с другой конфигурацией** (M / efConstruction / num_partitions) — отдельное ADR-решение, не runtime-митигация; требует повторного полного прогона.
-3. **Поднять дефолт efSearch (200→400)** — recall восстанавливается (0.960), но p95 на 1M становится 72–141 ms — гейт p95 всё равно не выполняется; оправдано только при осознанном отказе от p95-гейта на больших корпусах.
+1. **Accept the deviation at 1M** — a real laptop corpus is probably smaller than 1M (at 250K all gates hold with margin); fix the 1M numbers as worst-case behavior.
+2. **Rebuild the index with a different configuration** (M / efConstruction / num_partitions) — a separate ADR decision, not a runtime mitigation; requires a repeated full run.
+3. **Raise the default efSearch (200→400)** — recall recovers (0.960), but p95 at 1M becomes 72–141 ms — the p95 gate still is not met; justified only by a conscious waiver of the p95 gate on large corpora.

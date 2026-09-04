@@ -9,7 +9,7 @@
 //!
 //! A missing or unreadable file is an
 //! [`ConfigError::Io`] carrying the path, an unparseable document is
-//! [`ConfigError::Yaml`] (spec scenario "Отсутствующий onnx.yaml"), unknown keys are
+//! [`ConfigError::Yaml`] (spec scenario "Missing onnx.yaml"), unknown keys are
 //! ignored, and [`ArchiveFormat`] is tolerant by design D7 — the format is stored as a plain
 //! string that only the downloader interprets ("zip"/"tgz", else an error at download time),
 //! so an unrecognized value must not fail config loading.

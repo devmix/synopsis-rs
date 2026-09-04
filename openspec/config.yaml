@@ -1,85 +1,89 @@
 schema: spec-driven
 
 # ─────────────────────────────────────────────────────────────────────
-# Project context — показано AI при создании артефактов
+# Project context — shown to the AI when creating artifacts
 # ─────────────────────────────────────────────────────────────────────
 context: |
-  ## Проект
-  Synopsis — локальный RAG + knowledge-graph MCP-сервер на Rust для личного
-  использования.
+  ## Project
+  Synopsis — a local RAG + knowledge-graph MCP server in Rust for personal
+  use.
 
-  ## Целевой стек (заморожен)
-  - Rust + tokio (async runtime) + axum (HTTP для не-MCP эндпоинтов, напр. /health)
-  - rusqlite (bundled + fts5) — SQLite-хранилище; FTS5 всегда доступен, без cgo-флагов.
-    Миграции: rusqlite_migration 2.x (from-directory), PRAGMA user_version — единственный
-    источник истины о состоянии схемы; _schema_migrations не создаётся (решения 2026-08-18)
-  - ort (ONNX Runtime, внешний .so/.dylib) — эмбеддинги (bge-m3 int8, 1024-dim) и NER;
-    рантайм скачивается в data/ по onnx.yaml (реестр: URL + size_bytes + sha256-verify).
-    Биндинги-крейт отложен: финальный пин — в change `embedding` (ADR 0002)
+  ## Target stack (frozen)
+  - Rust + tokio (async runtime) + axum (HTTP for non-MCP endpoints, e.g. /health)
+  - rusqlite (bundled + fts5) — SQLite storage; FTS5 is always available, no cgo flags.
+    Migrations: rusqlite_migration 2.x (from-directory), PRAGMA user_version — the sole
+    source of truth for schema state; _schema_migrations is not created (decisions 2026-08-18)
+  - ort (ONNX Runtime, external .so/.dylib) — embeddings (bge-m3 int8, 1024-dim) and NER;
+    the runtime is downloaded to data/ per onnx.yaml (registry: URL + size_bytes + sha256-verify).
+    The bindings crate is deferred: the final pin — in change `embedding` (ADR 0002)
   - usearch 2.x (C++11 HNSW core via cxx, disk-backed, scalar-quantized default bf16,
     WAL + segments per ADR 0004) — the sole ANN engine, replaces vec0 brute-force.
-    Векторы НЕ читаются из старого vec0: пересобираются по тексту чанков
-  - rmcp 3.x — MCP протокол (Streamable HTTP (design D8) + legacy HTTP+SSE
-    (override D8, решение человека 2026-08-31, change `add-legacy-sse-transport`,
-    wire-контракт mcp-go v0.57.0)); cel-interpreter — выражения линковки сущностей;
+    Vectors are NOT read from the old vec0: they are rebuilt from chunk text
+  - rmcp 3.x — MCP protocol (Streamable HTTP (design D8) + legacy HTTP+SSE
+    (override D8, human decision 2026-08-31, change `add-legacy-sse-transport`,
+    wire contract mcp-go v0.57.0)); cel-interpreter — entity-linking expressions;
     tokenizers, notify, indicatif
-  - tokio-cron-scheduler — был в стеке, удалён в change `document-jobs-queue` (задача
-    1.9): standalone orphan-cleanup scheduler заменён GC внутри worker'а; зависимость
-    стала сиротской и убрана из workspace + cli Cargo.toml и Cargo.lock.
-  - clap 4.6.6 (Builder API) — парсинг CLI-флагов и подкоманд (change `cli`,
-    user-approved расширение стека 2026-08-27; help-текст — только функциональное
-    соответствие, байт-идентичность не требуется)
-  - tracing 0.1.44 + tracing-subscriber 0.3.23 — структурированные логи в `cli`
-    (serve/sync/load-test); библиотеки остаются logger-less (user-approved расширение
-    стека 2026-08-27)
+  - tokio-cron-scheduler — was in the stack, removed in change `document-jobs-queue`
+    (task 1.9): the standalone orphan-cleanup scheduler was replaced by GC inside the
+    worker; the dependency became orphaned and was removed from the workspace + cli
+    Cargo.toml and Cargo.lock.
+  - clap 4.6.6 (Builder API) — parsing of CLI flags and subcommands (change `cli`,
+    user-approved stack extension 2026-08-27; help text — functional equivalence
+    only, byte-identity not required)
+  - tracing 0.1.44 + tracing-subscriber 0.3.23 — structured logging in `cli`
+    (serve/sync/load-test); the libraries remain logger-less (user-approved stack
+    extension 2026-08-27)
 
-  ## Жёсткие ограничения
-  - Цель: ноутбук (16 ГБ RAM), личное использование, НЕ сервер. При N=1M × 1024-dim
-    full-precision векторы (~4 ГБ) в RAM не помещаются → индекс должен быть
-    disk-backed/mmap + квантованный граф. Запросный путь не грузит модель эмбеддингов.
-  - Один локальный бинарь, без внешних сервисов.
-  - Rust строит свою БД с нуля: один squashed init-миграция; legacy knowledge.db
-    НЕ открывается, НЕ апгрейдится, данные НЕ мигрируются (решения 2026-08-18,
-    design D6). v5-форма схемы (5 миграций) — структурный контракт.
+  ## Hard constraints
+  - Target: laptop (16 GB RAM), personal use, NOT a server. At N=1M × 1024-dim
+    full-precision vectors (~4 GB) do not fit in RAM → the index must be
+    disk-backed/mmap + a quantized graph. The query path does not load the embedding model.
+  - One local binary, no external services.
+  - Rust builds its own DB from scratch: one squashed init migration; legacy knowledge.db
+    is NOT opened, NOT upgraded, data is NOT migrated (decisions 2026-08-18,
+    design D6). The v5 schema shape (5 migrations) — a structural contract.
 
-  ## Модель исполнения (ВАЖНО для декомпозиции задач)
-  - Реализацию пишет ИИ; человек отвечает только за ревью процесса и контрактов.
-  - Оркестратор запускает РАЗНЫХ агентов на разных этапах/задачах: каждый агент
-    стартует БЕЗ памяти предыдущих сессий. Бюджет контекста агента ~100k токенов —
-    задача должна полностью помещаться в него (тело + код модуля + тесты + референсы
-    на фикстуры и контракты).
-  - Паритет проверяется МАШИНОЙ: differential-тесты на записанных фикстурах,
-    recall@k + p50/p95 гейты для ANN. Человек ревьюит контракты и отклонения, не строки кода.
+  ## Execution model (IMPORTANT for task decomposition)
+  - The AI writes the implementation; the human is only responsible for reviewing
+    process and contracts.
+  - The orchestrator runs DIFFERENT agents at different stages/tasks: each agent
+    starts WITHOUT memory of previous sessions. The agent's context budget is
+    ~100k tokens — a task must fit entirely within it (body + module code + tests +
+    references to fixtures and contracts).
+  - Parity is checked BY THE MACHINE: differential tests against recorded fixtures,
+    recall@k + p50/p95 gates for ANN. The human reviews contracts and deviations,
+    not lines of code.
 
-  ## Принципы (решения человека, 2026-08-18)
-  - Перед выбором любой библиотеки/фреймворка — проверять в интернете наиболее подходящие
-    кандидаты под задачу (в Rust другие движки шаблонов, HTTP-клиенты, сериализация и т.п.).
-    Сверять версии, MSRV, статус поддержки и CVE по официальным источникам.
+  ## Principles (human decisions, 2026-08-18)
+  - Before choosing any library/framework — check online for the most suitable
+    candidates for the task (in Rust: other template engines, HTTP clients,
+    serialization, etc.). Verify versions, MSRV, support status, and CVEs against
+    official sources.
 
 # ─────────────────────────────────────────────────────────────────────
-# Правила по артефактам
+# Rules for artifacts
 # ─────────────────────────────────────────────────────────────────────
 rules:
   proposal:
-    - Ограничивай scope одним модулем или одним этапом
-    - Всегда указывай, какие замороженные контракты (MCP tools / CLI / data schema / config) затрагиваются и как подтверждается паритет
-    - Обязательно секция "Non-goals"
+    - Keep the scope to a single module or a single stage
+    - Always state which frozen contracts (MCP tools / CLI / data schema / config) are touched and how parity is confirmed
+    - The "Non-goals" section is mandatory
 
   design:
-    - Каждое решение — с причиной (почему не альтернатива)
-    - Изменение замороженного контракта оформляется отдельным решением с явным обоснованием
-    - Указывай, какие записанные фикстуры и контрактные спеки являются референсом для данного дизайна
+    - Every decision — with a reason (why not the alternative)
+    - Changing a frozen contract is a separate decision with explicit justification
+    - State which recorded fixtures and contract specs are the reference for this design
 
   specs:
-    - Контрактные спеки (mcp-contract, cli-surface, data-schema, config-format) фиксируют поведение как есть; источники истины — сами спеки и записанные фикстуры
-    - Требования формулируются через сценарии (Given/When/Then), проверяемые тестами
+    - The contract specs (mcp-contract, cli-surface, data-schema, config-format) pin the behavior as-is; the sources of truth — the specs themselves and the recorded fixtures
+    - Requirements are expressed through scenarios (Given/When/Then), testable
 
   tasks:
-    - ДЕКОМПОЗИЦИЯ ПОД КОНТЕКСТ АГЕНТА — каждая задача выполняется свежим агентом без памяти предыдущих задач. Тело задачи должно быть самодостаточным при бюджете ~100k токенов, а именно — цель, точный scope файлов, зависимости (какие задачи/модули должны уже существовать), критерии приёмки, референсы (записанные фикстуры, контрактные спеки)
-    - Размер задачи — итоговый diff не более ~500 строк нового кода + тесты; если модуль больше, разбивай на подзадачи по файлам/подсистемам с явным порядком
-    - Критерии приёмки каждой задачи проверяются автоматически (тесты, clippy/fmt чистые, parity-чек против записанных фикстур где применимо) — человек ревьюит только diff и соответствие плану
-    - Задача не начинается, пока её зависимости не завершены; порядок задач в tasks.md отражает граф зависимостей
+    - DECOMPOSITION FOR THE AGENT CONTEXT — each task is executed by a fresh agent with no memory of previous tasks. The task body must be self-contained at a ~100k token budget, namely — goal, exact file scope, dependencies (which tasks/modules must already exist), acceptance criteria, references (recorded fixtures, contract specs)
+    - Task size — the final diff no more than ~500 lines of new code + tests; if a module is larger, split into subtasks by files/subsystems with an explicit order
+    - Each task's acceptance criteria are checked automatically (tests, clippy/fmt clean, a parity check against recorded fixtures where applicable) — the human reviews only the diff and its match to the plan
+    - A task does not start until its dependencies are complete; the order of tasks in tasks.md reflects the dependency graph
 
   operations:
-    - apply — перед завершением задачи прогнать cargo clippy --all-targets (без замечаний), cargo fmt --check (чисто) и cargo test (зелёно, с учётом build-features FTS5); сводка задачи компактно — изменённые файлы, результат проверки, отклонения от плана
-    - archive — в сводке архивации указать результаты parity-проверок change'а и оставшиеся риски
+    - apply — before finishing a task, run cargo clippy --all-targets (no warnings), cargo fmt --check (clean) and cargo test (green, accounting for the FTS5 build features); the task summary is compact — changed files, check results, deviations from the plan
+    - archive — in the archive summary, state the change's parity-check results and the remaining risks

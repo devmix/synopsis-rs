@@ -2,46 +2,46 @@
 
 ## Purpose
 
-OpenAI-совместимый LLM-клиент: единая точка вызова chat-completions с ретраями, таймаутом и структурированным выводом для линкера сущностей и будущего NER.
+OpenAI-compatible LLM client: a single call point for chat completions with retries, a timeout, and structured output, for the entity linker and future NER.
 
 ## Requirements
 
-### Requirement: Вызов chat-completions
+### Requirement: Chat completions call
 
-Крейт `llm` предоставляет синхронный клиент OpenAI-совместимого API `POST {api_base_url}/chat/completions`: тело запроса содержит model, messages (system + user), temperature, seed, max_tokens; аутентификация — Bearer-токен из `api_key` (пустой ключ — заголовок не отправляется); ответ парсится в текст первого choice. Клиент конфигурируется из `LlmConfig` (base URL, модель, температура, seed, max_tokens, таймаут, ретраи).
+The `llm` crate provides a synchronous client of the OpenAI-compatible API `POST {api_base_url}/chat/completions`: the request body contains model, messages (system + user), temperature, seed, max_tokens; authentication is a Bearer token from `api_key` (an empty key — the header is not sent); the response is parsed into the text of the first choice. The client is configured from `LlmConfig` (base URL, model, temperature, seed, max_tokens, timeout, retries).
 
-#### Scenario: Успешный вызов
-- **WHEN** сервер валидного формата возвращает choices[0].message.content
-- **THEN** клиент возвращает текст; запрос содержит model/messages/temperature/seed/max_tokens и Bearer-заголовок
+#### Scenario: Successful call
+- **WHEN** a well-formed server returns choices[0].message.content
+- **THEN** the client returns the text; the request contains model/messages/temperature/seed/max_tokens and the Bearer header
 
-#### Scenario: Пустой api_key
-- **WHEN** api_key в конфиге пуст
-- **THEN** Authorization-заголовок не отправляется; вызов выполняется
+#### Scenario: Empty api_key
+- **WHEN** the api_key in the config is empty
+- **THEN** the Authorization header is not sent; the call is made
 
-### Requirement: Структурированный вывод
+### Requirement: Structured output
 
-Режим `response_format` из конфига управляет полем request_format: `json_object` → `{"type":"json_object"}`; `json_schema` → `{"type":"json_schema","json_schema":{"name":N,"schema":S}}`, где схема передаётся вызывающим кодом вместе с именем (default «llm_output»).
+The `response_format` mode from the config controls the request_format field: `json_object` → `{"type":"json_object"}`; `json_schema` → `{"type":"json_schema","json_schema":{"name":N,"schema":S}}`, where the schema is passed by the calling code together with its name (default "llm_output").
 
 #### Scenario: json_object
-- **WHEN** response_format=json_object и схема не задана
-- **THEN** запрос содержит только {"type":"json_object"}
+- **WHEN** response_format=json_object and no schema is given
+- **THEN** the request contains only {"type":"json_object"}
 
 #### Scenario: json_schema
-- **WHEN** response_format=json_schema и переданы имя и схема
-- **THEN** запрос содержит вложенный объект json_schema с именем и схемой
+- **WHEN** response_format=json_schema and a name and schema are passed
+- **THEN** the request contains the nested json_schema object with the name and schema
 
-### Requirement: Ретраи и таймауты
+### Requirement: Retries and timeouts
 
-Временные сбои повторяются до `max_retries` раз с экспоненциальным backoff и jitter: HTTP 429 и 5xx — retryable; пустой content в валидном ответе — явная non-retryable ошибка; сетевые ошибки/таймаут — retryable. Таймаут одного запроса — из конфига. Исчерпание попыток — явная ошибка с причиной последнего сбоя.
+Transient failures are retried up to `max_retries` times with exponential backoff and jitter: HTTP 429 and 5xx are retryable; empty content in a valid response is an explicit non-retryable error; network errors/timeouts are retryable. The timeout of a single request comes from the config. Exhausting the attempts is an explicit error carrying the last failure's reason.
 
-#### Scenario: Ретрай на 429/5xx
-- **WHEN** сервер отвечает 429 или 5xx
-- **THEN** выполняется повторная попытка (до лимита) с растущей задержкой; успех после ретрая возвращает результат
+#### Scenario: Retry on 429/5xx
+- **WHEN** the server answers 429 or 5xx
+- **THEN** a retry is made (up to the limit) with a growing delay; a success after a retry returns the result
 
-#### Scenario: Пустой content без ретрая
-- **WHEN** валидный ответ содержит пустой content
-- **THEN** возвращается явная ошибка немедленно, без повторных попыток
+#### Scenario: Empty content without retry
+- **WHEN** a valid response contains empty content
+- **THEN** an explicit error is returned immediately, without retries
 
-#### Scenario: Исчерпание попыток
-- **WHEN** все попытки завершаются временным сбоем
-- **THEN** возвращается ошибка с указанием последней причины
+#### Scenario: Attempts exhausted
+- **WHEN** all attempts end in a transient failure
+- **THEN** an error is returned indicating the last reason

@@ -2,97 +2,97 @@
 
 ## Purpose
 
-Оркестрация «источник → знания»: Ingester проводит каждый документ через chunk → эмбеддинги → NER → транзакционную запись с дедупликацией по хешу; Runner исполняет сконфигурированные источники (полный прогон, инкрементальная синхронизация, prune, очистка сирок, междоменная линковка).
+Orchestration of "source → knowledge": the Ingester takes each document through chunk → embeddings → NER → transactional write with deduplication by hash; the Runner executes the configured sources (full run, incremental sync, prune, orphan cleanup, cross-domain linking).
 
 ## Requirements
 
-### Requirement: Прогресс ингестии
+### Requirement: Ingestion progress
 
-Конвейер публикует статистику выполнения: обработанные файлы, созданные чанки и эмбеддинги, извлечённые сущности, созданные факты и источники фактов, документы created/updated/skipped, ошибки, время выполнения. Прогресс отображается индикатором (indicatif).
+The pipeline publishes run statistics: files processed, chunks and embeddings created, entities extracted, facts and fact sources created, documents created/updated/skipped, errors, run time. Progress is displayed by an indicator (indicatif).
 
-#### Scenario: Статистика после прогона
-- **WHEN** ингестия источника завершается
-- **THEN** возвращаемая статистика отражает счётчики всех этапов и число ошибок
+#### Scenario: Statistics after a run
+- **WHEN** ingestion of a source completes
+- **THEN** the returned statistics reflect the counters of all stages and the number of errors
 
-### Requirement: Дедупликация документов по хешу
+### Requirement: Document deduplication by hash
 
-Каждый документ идентифицируется путём; SHA-256 контента сравнивается с сохранённым — неизменённый документ пропускается полностью (updated-счётчик не растёт), изменённый обновляется с полной очисткой старых данных документа перед записью новых.
+Each document is identified by its path; the SHA-256 of the content is compared with the stored one — an unchanged document is skipped entirely (the updated counter does not grow), a changed one is updated with a full cleanup of the document's old data before the new data is written.
 
-#### Scenario: Неизменённый документ
-- **WHEN** документ с тем же путём и хешем уже проиндексирован
-- **THEN** он пропускается без записи в БД и попадает в skipped
+#### Scenario: Unchanged document
+- **WHEN** a document with the same path and hash is already indexed
+- **THEN** it is skipped without a database write and lands in skipped
 
-#### Scenario: Изменённый документ
-- **WHEN** хеш документа отличается от сохранённого
-- **THEN** старые чанки/связи/факты документа удаляются каскадно, новые записываются атомарно в одной транзакции
+#### Scenario: Changed document
+- **WHEN** the document's hash differs from the stored one
+- **THEN** the document's old chunks/relations/facts are deleted cascadingly, and the new data is written atomically in a single transaction
 
-### Requirement: Конвейер обработки документа
+### Requirement: Document processing pipeline
 
-Документ проходит этапы: chunk → эмбеддинги батчами (batch_size, default 100; расхождение числа векторов — ошибка) → NER по чанкам (если провайдер сконфигурирован и NER не отключён) → одна транзакция SQLite: документ, чанки, разрешение сущностей + связи chunk_entities, синтетические сущности фактов, факты. Ошибка отдельного документа увеличивает счётчик ошибок и не прерывает прогон.
+A document goes through the stages: chunk → embeddings in batches (batch_size, default 100; a mismatch in the number of vectors is an error) → NER over the chunks (if a provider is configured and NER is not disabled) → a single SQLite transaction: document, chunks, entity resolution + chunk_entities relations, synthetic fact entities, facts. An error of an individual document increments the error counter and does not abort the run.
 
-#### Scenario: Пакетные эмбеддинги
-- **WHEN** чанков больше batch_size
-- **THEN** они обрабатываются последовательными батчами; несовпадение числа векторов и текстов завершает документ ошибкой
+#### Scenario: Batched embeddings
+- **WHEN** there are more chunks than batch_size
+- **THEN** they are processed in sequential batches; a mismatch between the number of vectors and texts ends the document with an error
 
-#### Scenario: Ошибка одного документа
-- **WHEN** обработка документа падает
-- **THEN** ошибка учитывается в статистике, остальные документы продолжают обработку
+#### Scenario: Single-document error
+- **WHEN** processing of a document fails
+- **THEN** the error is counted in the statistics, and the remaining documents continue to be processed
 
-### Requirement: Факты при ингестии
+### Requirement: Facts at ingestion
 
-Для каждого факта: субъект и объект разрешаются как синтетические сущности (lookup_or_create) и связываются с чанком; кросс-доменный факт отбрасывается с предупреждением; факт создаётся create_or_ignore с метаданными; для факта сохраняется источник с цитатой — rune-aware окно вокруг первого вхождения имени субъекта или объекта (±60 rune, fallback 120, обрезка по границе строки, суффикс «...»); веса затронутых фактов пересчитываются.
+For each fact: the subject and the object are resolved as synthetic entities (lookup_or_create) and linked to the chunk; a cross-domain fact is dropped with a warning; the fact is created with create_or_ignore with metadata; a source with a quote is stored for the fact — a rune-aware window around the first occurrence of the subject's or object's name (±60 runes, fallback 120, trimmed at a line boundary, "..." suffix); the weights of the affected facts are recomputed.
 
-#### Scenario: Кросс-доменный факт
-- **WHEN** субъект и объект факта принадлежат разным доменам
-- **THEN** факт не создаётся, фиксируется предупреждение
+#### Scenario: Cross-domain fact
+- **WHEN** the subject and the object of a fact belong to different domains
+- **THEN** the fact is not created, and a warning is recorded
 
-#### Scenario: Цитата источника факта
-- **WHEN** имя сущности найдено в тексте чанка
-- **THEN** цитата вырезается вокруг первого вхождения с обрезкой по границе строки и «...» при усечении
+#### Scenario: Fact source quote
+- **WHEN** an entity name is found in a chunk's text
+- **THEN** the quote is cut around the first occurrence, trimmed at a line boundary, with "..." when truncated
 
-### Requirement: Векторы вне транзакции
+### Requirement: Vectors outside the transaction
 
-Векторы пишутся в ANN-индекс после коммита транзакции SQLite (чанк в БД — источник истины); расхождение реконсилируется очисткой сирок: векторы без живого чанка удаляются.
+Vectors are written to the ANN index after the SQLite transaction commits (the chunk in the DB is the source of truth); the mismatch is reconciled by the orphan cleanup: vectors without a live chunk are deleted.
 
-#### Scenario: Реконсиляция сирок-векторов
-- **WHEN** очистка данных выполняется
-- **THEN** векторы, чанки которых не существуют в БД, удаляются из индекса
+#### Scenario: Orphan-vector reconciliation
+- **WHEN** data cleanup is performed
+- **THEN** vectors whose chunks do not exist in the DB are removed from the index
 
-### Requirement: Резервная копия и rebuild
+### Requirement: Backup and rebuild
 
-Перед индексацией создаётся WAL-снимок БД через VACUUM INTO в каталог backups (ошибка снимка — предупреждение, не сбой; для in-memory БД снимок пропускается). Rebuild очищает все документы под корнем источника в одной транзакции до разбора файлов.
+Before indexing, a WAL snapshot of the DB is created via VACUUM INTO into the backups directory (a snapshot failure is a warning, not a failure; for an in-memory DB the snapshot is skipped). A rebuild deletes all documents under a source root in a single transaction before the files are parsed.
 
-#### Scenario: Rebuild источника
-- **WHEN** ингестия запущена с rebuild
-- **THEN** все ранее проиндексированные документы этого корня удаляются одной транзакцией, затем источник индексируется заново
+#### Scenario: Source rebuild
+- **WHEN** ingestion is started with rebuild
+- **THEN** all previously indexed documents of this root are deleted in a single transaction, and the source is then indexed again
 
-### Requirement: Мультиисточниковый Runner
+### Requirement: Multi-source Runner
 
-Runner исполняет конвейер по сконфигурированным источникам: ingest_all (последовательно, ошибки источников собираются), ingest_source, sync_source/ingest_source_by_path (точки входа инкрементальной синхронизации по пути файла), prune_deleted (документы с исчезнувшими файлами удаляются каскадно), cleanup_orphaned_data (сироки-сущности без entity_sources, кроме инфраструктурных типов; сироки-факты без fact_sources, кроме одобренных; сироки-документы). Все мутирующие операции сериализуются. Тип источника при отсутствии в конфигурации определяется эвристикой пути (wiki → mediawiki, webpage → webpages, иначе unstructured); домены из конфигурации источника проставляются в метаданные документов.
+The Runner executes the pipeline over the configured sources: ingest_all (sequentially, source errors are collected), ingest_source, sync_source/ingest_source_by_path (entry points of incremental sync by file path), prune_deleted (documents with vanished files are deleted cascadingly), cleanup_orphaned_data (orphan entities without entity_sources, except infrastructure types; orphan facts without fact_sources, except approved ones; orphan documents). All mutating operations are serialized. The source type, when absent from the configuration, is determined by a path heuristic (wiki → mediawiki, webpage → webpages, otherwise unstructured); the domains from the source configuration are stamped into the documents' metadata.
 
-#### Scenario: Инкрементальная синхронизация по файлу
-- **WHEN** sync_source вызывается для изменённого файла
-- **THEN** находится источник, чей каталог содержит путь, и выполняется инкрементальная ингестия
+#### Scenario: Per-file incremental sync
+- **WHEN** sync_source is called for a changed file
+- **THEN** the source whose catalog contains the path is found, and incremental ingestion is performed
 
-#### Scenario: Prune удалённых файлов
-- **WHEN** проиндексированный файл исчез с диска
-- **THEN** документ и все его данные удаляются каскадно в одной транзакции
+#### Scenario: Pruning deleted files
+- **WHEN** an indexed file vanishes from disk
+- **THEN** the document and all its data are deleted cascadingly in a single transaction
 
-### Requirement: Пост-обработка: линковка
+### Requirement: Post-processing: linking
 
-После ингестии Runner строит междоменные связи сущностей средствами graph-слоя, если конфигурация cross_domain_links присутствует; окно инкрементальности берётся из app_kv (timestamp последнего прогона) и записывается обратно; ошибки линковки попадают в итоговую статистику, не прерывая её.
+After ingestion the Runner builds cross-domain entity relations with the graph layer, if the cross_domain_links configuration is present; the incrementality window is taken from app_kv (the timestamp of the last run) and written back; linking errors land in the final statistics without aborting it.
 
-#### Scenario: Первый запуск линковки
-- **WHEN** timestamp предыдущего прогона отсутствует
-- **THEN** связи строятся по всем сущностям, текущий timestamp сохраняется
+#### Scenario: First linking run
+- **WHEN** the timestamp of the previous run is absent
+- **THEN** relations are built over all entities, and the current timestamp is stored
 
-### Requirement: Паритет конвейера
+### Requirement: Pipeline parity
 
-Конвейер проверяется end-to-end на записанных сценариях: дедупликация, rebuild, факты с цитатами, prune, очистка сирок — на in-memory БД с mock-эмбеддингами и regex-NER.
+The pipeline is verified end-to-end on recorded scenarios: deduplication, rebuild, facts with quotes, prune, orphan cleanup — on an in-memory DB with mock embeddings and regex NER.
 
-#### Scenario: Сквозной прогон по записанным сценариям
-- **WHEN** e2e-сценарии (ingest → повторный ingest → изменение → удаление → prune → cleanup) прогоняются через Rust-конвейер
-- **THEN** состояние БД и статистика соответствуют зафиксированным результатам
+#### Scenario: End-to-end run over recorded scenarios
+- **WHEN** the e2e scenarios (ingest → repeat ingest → change → delete → prune → cleanup) are run through the Rust pipeline
+- **THEN** the DB state and statistics match the fixed results
 
 ### Requirement: Embedding and persistence of search_text
 The per-document ingestion pipeline SHALL compute each chunk's embedding from `search_text` (not `text`) and SHALL persist both `chunk_text` (the invariant-preserving body) and `search_text` to the `chunks` table. It SHALL also serialize each chunk's own metadata bag (`section_title`, `heading_level`, `breadcrumb`, `image_paths`, …) to the `chunks.metadata_json` column (a chunk with an empty bag stores `NULL`); the document-level `extra` bag is still serialized to `documents.metadata_json` as before. Entity extraction (NER) is unchanged: it SHALL receive the chunk's metadata bag (the same keys as before) and run on `text`.

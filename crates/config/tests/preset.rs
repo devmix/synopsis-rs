@@ -320,7 +320,7 @@ fn unknown_top_level_key_does_not_break_parse() {
 
 #[test]
 fn validate_rejects_unknown_embeddings_mode() {
-    // Parity (criterion г): `mode` parses as a plain value, so a bogus
+    // Parity (criterion d): `mode` parses as a plain value, so a bogus
     // mode does NOT fail parsing; it is rejected by `validate()` with the
     // expected message — a ConfigError::Validation, not a YAML/parse error.
     let cfg = parse("embeddings:\n  mode: bogus\n");

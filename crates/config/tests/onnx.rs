@@ -136,7 +136,7 @@ fn model_for_name_semantics() {
 
 #[test]
 fn missing_file_is_an_error_carrying_the_path() {
-    // Criterion (d) / spec scenario "Отсутствующий onnx.yaml".
+    // Criterion (d) / spec scenario "Missing onnx.yaml".
     let missing =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/definitely-missing-onnx.yaml");
     match load_onnx_config(&missing) {

@@ -322,7 +322,7 @@ fn tool(
     Tool::new(name, description, Arc::from(schema)).annotate(ToolAnnotations::default())
 }
 
-/// The frozen 12-tool registry (`mcp-contract` "Набор инструментов"): names,
+/// The frozen 12-tool registry (`mcp-contract` "Tool set"): names,
 /// descriptions and parameter schemas as pinned by the spec.
 pub fn tool_definitions() -> Vec<Tool> {
     vec![

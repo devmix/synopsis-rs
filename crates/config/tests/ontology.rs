@@ -8,11 +8,11 @@
 //! SHA-256 and the adaptation recipe. These tests assert that the whole document **loads** with
 //! its exact values after defaulting: absent threshold elements carry the defaults (0.7 / 5),
 //! every source has a domain, and the regex rule is compiled in place (design D5) — criteria
-//! (a) and (e). Edge-case documents cover the task 3.1b validation matrix — criteria (г), (д),
-//! (ж), (з) — with the exact expected error messages.
+//! (a) and (e). Edge-case documents cover the task 3.1b validation matrix — criteria (d), (e),
+//! (g), (h) — with the exact expected error messages.
 //!
 //! Also hosts the tests relocated from the inline `#[cfg(test)]` module in `src/ontology.rs`
-//! (change `test-hygiene-phase-2`, task 2.7) — criterion (б): they exercise only the public API
+//! (change `test-hygiene-phase-2`, task 2.7) — criterion (b): they exercise only the public API
 //! (plus the crate's own `quick-xml` dependency for the parse-only helper), so names and
 //! assertions are carried over verbatim and the move changes no behavior.
 
@@ -222,7 +222,7 @@ fn assert_fixture_ner_entities_relations_extraction(cfg: &config::GlobalConfig) 
 
 #[test]
 fn source_without_path_fails_validation() {
-    // Criterion (г): the expected message, 1-based numbering.
+    // Criterion (d): the expected message, 1-based numbering.
     let doc = "<global><sources>\
                <source type=\"markdown\"><domains><domain>x</domain></domains></source>\
                </sources></global>";
@@ -237,7 +237,7 @@ fn source_without_type_fails_validation() {
 
 #[test]
 fn invalid_regex_pattern_is_a_typed_error_with_file_and_rule() {
-    // Criterion (д): an uncompilable pattern is a typed error naming both the ontology file and
+    // Criterion (e): an uncompilable pattern is a typed error naming both the ontology file and
     // the offending rule id.
     let dir = TempOntology::new(
         "bad-regex",
@@ -256,7 +256,7 @@ fn invalid_regex_pattern_is_a_typed_error_with_file_and_rule() {
 
 #[test]
 fn duplicate_entity_id_fails_validation() {
-    // Criterion (ж): duplicate id fails with the expected message.
+    // Criterion (g): duplicate id fails with the expected message.
     let doc = "<global><entities>\
                <entity id=\"a\" name=\"A\"/><entity id=\"a\" name=\"B\"/>\
                </entities></global>";
@@ -265,7 +265,7 @@ fn duplicate_entity_id_fails_validation() {
 
 #[test]
 fn empty_domain_element_yields_default_domain() {
-    // Criterion (з): an element without text contributes no domain — quick-xml yields "" and
+    // Criterion (h): an element without text contributes no domain — quick-xml yields "" and
     // the loader filters it, so the "no domains → default" fallback still fires.
     let dir = TempOntology::new(
         "empty-domain",

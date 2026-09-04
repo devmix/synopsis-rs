@@ -825,7 +825,7 @@ mod tests {
         });
     }
 
-    // (д) domain filter — the fixture covers scalar and array domains.
+    // (e) domain filter — the fixture covers scalar and array domains.
     #[test]
     fn search_fts_domain_filter() {
         let db = in_memory_db();
@@ -901,7 +901,7 @@ mod tests {
         });
     }
 
-    // (е) create/update/delete keep the FTS index in sync (ai/ad/au triggers).
+    // (f) create/update/delete keep the FTS index in sync (ai/ad/au triggers).
     #[test]
     fn fts_index_stays_in_sync_with_crud() {
         let db = in_memory_db();

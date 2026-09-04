@@ -457,7 +457,7 @@ mod tests {
         .unwrap();
     }
 
-    // (г) graph_node_count: subjects ∪ targets (distinct), 0 on an empty
+    // (d) graph_node_count: subjects ∪ targets (distinct), 0 on an empty
     // table.
     #[test]
     fn graph_node_count_unions_endpoints() {

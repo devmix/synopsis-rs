@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 use mcp::McpError;
 use mcp::server::{Server, tool_definitions};
 
-/// The 12 frozen tool names (`mcp-contract` "Набор инструментов"), in
+/// The 12 frozen tool names (`mcp-contract` "Tool set"), in
 /// registration order.
 const FROZEN_NAMES: [&str; 12] = [
     "search",

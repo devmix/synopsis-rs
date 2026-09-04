@@ -2,137 +2,136 @@
 
 ## Purpose
 
-Форматы конфигурационных файлов Synopsis: YAML-пресеты (`config.{preset}.yaml`), реестр моделей `onnx.yaml`, онтологии XML в `data/ontology/`. Фиксирует форматы: пользователь не должен менять конфиги при переходе на Rust-бинарь.
+The configuration file formats of Synopsis: YAML presets (`config.{preset}.yaml`), the `onnx.yaml` model registry, and XML ontologies in `data/ontology/`. Fixes the formats: the user must not change configs when switching to the Rust binary.
 ## Requirements
-### Requirement: Полный YAML-пресет
+### Requirement: Full YAML preset
 
-Rust-бинарь читает `config.{preset}.yaml`. Пресет включает секции: `database` (path, pragma), `embeddings` (mode local|api), `ingestion` (chunking.markdown/json, ner.llm, batch_size, resolver, max_retries), `linker` (disabled, llm), `search` (rrf_k, top-k, boosts, authority_boost), `graph`, `auto_update` (enabled, debounce_seconds, watch_sources, initial_sync, retry_failed), `scheduler.jobs` (поимённые job'ы с enabled/interval_seconds), `logging` (level/format/output), `paths` (data_dir, documents_dir, migrations_dir, global_config_path, prompts_path, onnx_config), `server` (name/version/host/port). Неизвестные ключи не ломают старт. Неизвестные значения строковых полей, не валидируемых при парсинге (`logging.level/format/output`, `chunking.strategy`, `response_format`, `archive_format`, `source.type`, `attribute.type`), не ломают старт.
+The Rust binary reads `config.{preset}.yaml`. The preset includes the sections: `database` (path, pragma), `embeddings` (mode local|api), `ingestion` (chunking.markdown/json, ner.llm, batch_size, resolver, max_retries), `linker` (disabled, llm), `search` (rrf_k, top-k, boosts, authority_boost), `graph`, `auto_update` (enabled, debounce_seconds, watch_sources, initial_sync, retry_failed), `scheduler.jobs` (named jobs with enabled/interval_seconds), `logging` (level/format/output), `paths` (data_dir, documents_dir, migrations_dir, global_config_path, prompts_path, onnx_config), `server` (name/version/host/port). Unknown keys do not break startup. Unknown values of string fields that are not validated at parse time (`logging.level/format/output`, `chunking.strategy`, `response_format`, `archive_format`, `source.type`, `attribute.type`) do not break startup.
 
-Новые поля (аддитивные, с дефолтами — обратно совместимы с пресетами без них):
-- `ingestion.max_retries` (целое, default 3) — максимальное число автоматических повторов индексации проблемного документа фоновым worker'ом; после исчерпания документ получает статус `error` в очереди `document_jobs`.
-- `auto_update.retry_failed` (объект, default `{ enabled: true, poll_interval_seconds: 60 }`) — включает фоновый пересмотр проблемных документов и задаёт период опроса очереди `document_jobs` в секундах.
+New fields (additive, with defaults — backward compatible with presets that lack them):
+- `ingestion.max_retries` (integer, default 3) — the maximum number of automatic re-indexing attempts for a problematic document by the background worker; after exhaustion the document gets `error` status in the `document_jobs` queue.
+- `auto_update.retry_failed` (object, default `{ enabled: true, poll_interval_seconds: 60 }`) — enables the background re-processing of problematic documents and sets the polling interval for the `document_jobs` queue in seconds.
 
-#### Scenario: Существующий пресет
-- **WHEN** Rust-бинарь стартует с `workspace/configs/config.default.yaml` без изменений
-- **THEN** конфиг parsed успешно, значения по умолчанию применены согласно пресету (machine-diff effective config)
+#### Scenario: Existing preset
+- **WHEN** the Rust binary starts with an unmodified `workspace/configs/config.default.yaml`
+- **THEN** the config is parsed successfully, default values are applied per the preset (machine-diff of the effective config)
 
-#### Scenario: Неизвестное значение строкового поля
-- **WHEN** `logging.level` содержит незнакомое значение (например "verbose")
-- **THEN** старт не завершается ошибкой; значение сохраняется как есть
+#### Scenario: Unknown value of a string field
+- **WHEN** `logging.level` contains an unfamiliar value (e.g. "verbose")
+- **THEN** startup does not fail; the value is kept as-is
 
-#### Scenario: Отсутствие секции auto_update
-- **WHEN** в YAML нет секции auto_update
-- **THEN** применяются дефолты enabled=true, initial_sync=true
+#### Scenario: Missing auto_update section
+- **WHEN** the YAML has no auto_update section
+- **THEN** the defaults enabled=true, initial_sync=true are applied
 
-#### Scenario: Явная секция auto_update
-- **WHEN** в YAML есть auto_update с enabled=false
-- **THEN** enabled=false уважается (не перезаписывается дефолтом)
+#### Scenario: Explicit auto_update section
+- **WHEN** the YAML has auto_update with enabled=false
+- **THEN** enabled=false is honored (not overwritten by the default)
 
-#### Scenario: Булевы дефолты с presence-семантикой
-- **WHEN** `graph.load_on_startup` или `auto_update.watch_sources` явно установлены в false
-- **THEN** значение false уважается (**BREAKING**: ранее явный false принудительно переворачивался в true — настройка была нерабочей)
-- **WHEN** эти ключи отсутствуют в YAML
-- **THEN** применяется дефолт true
+#### Scenario: Boolean defaults with presence semantics
+- **WHEN** `graph.load_on_startup` or `auto_update.watch_sources` is explicitly set to false
+- **THEN** the value false is honored (**BREAKING**: previously an explicit false was forcibly flipped to true — the setting was non-functional)
+- **WHEN** these keys are absent from the YAML
+- **THEN** the default true is applied
 
-#### Scenario: enable_graph по интенту документации
-- **WHEN** `graph.enable_graph` отсутствует в YAML
-- **THEN** применяется true (**BREAKING**: ранее отсутствующий ключ давал false вопреки doc-комментарию «default true»)
+#### Scenario: enable_graph per documented intent
+- **WHEN** `graph.enable_graph` is absent from the YAML
+- **THEN** true is applied (**BREAKING**: previously an absent key yielded false despite the doc comment "default true")
 
-#### Scenario: Отсутствие retry-полей
-- **WHEN** в YAML нет `ingestion.max_retries` и `auto_update.retry_failed`
-- **THEN** применяются дефолты max_retries=3, retry_failed.enabled=true, retry_failed.poll_interval_seconds=60 (обратная совместимость)
+#### Scenario: Missing retry fields
+- **WHEN** the YAML has neither `ingestion.max_retries` nor `auto_update.retry_failed`
+- **THEN** the defaults max_retries=3, retry_failed.enabled=true, retry_failed.poll_interval_seconds=60 are applied (backward compatibility)
 
-#### Scenario: Явная настройка retry
-- **WHEN** в YAML задано `ingestion.max_retries: 5` и `auto_update.retry_failed.poll_interval_seconds: 120`
-- **THEN** значения уважаются (фоновый worker повторяет до 5 раз с опросом очереди каждые 120 с)
+#### Scenario: Explicit retry configuration
+- **WHEN** the YAML sets `ingestion.max_retries: 5` and `auto_update.retry_failed.poll_interval_seconds: 120`
+- **THEN** the values are honored (the background worker retries up to 5 times, polling the queue every 120 s)
 
-### Requirement: Поле vectors.engine
+### Requirement: Field vectors.engine
 
 The `vectors:` section (additive config-format extension, decision 2026-08-21) contains the optional `engine` field. The field SHALL accept only: absent (default) or `"usearch"`. The value `"lance"` SHALL be rejected with an explicit validation error stating that the lance engine was removed and that usearch is the only engine (`post-migration-lance-removal`, user decision 2026-08-31). Any other value SHALL be rejected with an explicit parse/validation error. The field does not affect other config sections and does not change the preset format.
 
-#### Scenario: Отсутствие поля
+#### Scenario: Missing field
 - **WHEN** the preset contains a `vectors` section without the `engine` field
 - **THEN** the usearch engine is used (the only engine)
 
-#### Scenario: Явное значение
+#### Scenario: Explicit value
 - **WHEN** the preset sets `vectors.engine: "usearch"`
 - **THEN** `vectors` instantiates `UsearchEngine`
 
-#### Scenario: Удалённый движок
+#### Scenario: Removed engine
 - **WHEN** the preset sets `vectors.engine: "lance"`
 - **THEN** the configuration is rejected with an explicit error naming the removal and pointing to usearch
 
-#### Scenario: Невалидное значение
+#### Scenario: Invalid value
 - **WHEN** the preset sets `vectors.engine: "foo"`
 - **THEN** the configuration is rejected with an explicit error
 
-### Requirement: Секция vectors.usearch
+### Requirement: Section vectors.usearch
 
-Секция `vectors:` дополняется опциональным объектом `usearch`, содержащим параметры двухслойной persistence UsearchEngine (ADR 0004): `max_segment_vectors` (usize, default 1000000), `compaction_stale_threshold` (u8, 1..=100, default 30), `search_threads` (usize, default 4). Поле необязательно: при отсутствии применяется `UsearchConfig::default()`. Невалидные значения (`max_segment_vectors: 0`, `compaction_stale_threshold` вне 1..=100, `search_threads: 0`) отклоняются на уровне парсинга с явной ошибкой.
+The `vectors:` section is extended with an optional `usearch` object holding the two-layer persistence parameters of UsearchEngine (ADR 0004): `max_segment_vectors` (usize, default 1000000), `compaction_stale_threshold` (u8, 1..=100, default 30), `search_threads` (usize, default 4). The field is optional: when absent, `UsearchConfig::default()` is applied. Invalid values (`max_segment_vectors: 0`, `compaction_stale_threshold` outside 1..=100, `search_threads: 0`) are rejected at the parsing level with an explicit error.
 
-#### Scenario: Отсутствие секции usearch
-- **WHEN** пресет содержит секцию `vectors` без поля `usearch`
-- **THEN** движок получает `UsearchConfig::default()` (1000000 / 30 / 4)
+#### Scenario: Missing usearch section
+- **WHEN** the preset contains a `vectors` section without the `usearch` field
+- **THEN** the engine receives `UsearchConfig::default()` (1000000 / 30 / 4)
 
-#### Scenario: Явная настройка usearch
-- **WHEN** пресет задаёт `vectors.usearch.max_segment_vectors: 500000`
-- **THEN** flush RAM-слоя выполняется при достижении 500000 векторов
+#### Scenario: Explicit usearch configuration
+- **WHEN** the preset sets `vectors.usearch.max_segment_vectors: 500000`
+- **THEN** the RAM layer is flushed upon reaching 500000 vectors
 
-#### Scenario: Невалидное значение
-- **WHEN** пресет задаёт `vectors.usearch.max_segment_vectors: 0`
-- **THEN** конфигурация отклоняется с явной ошибкой «must be > 0»
+#### Scenario: Invalid value
+- **WHEN** the preset sets `vectors.usearch.max_segment_vectors: 0`
+- **THEN** the configuration is rejected with an explicit error "must be > 0"
 
-#### Scenario: Частичная настройка
-- **WHEN** пресет задаёт `vectors.usearch.compaction_stale_threshold: 50` без остальных полей
-- **THEN** `compaction_stale_threshold=50`, остальные — дефолты (1000000, 4)
+#### Scenario: Partial configuration
+- **WHEN** the preset sets `vectors.usearch.compaction_stale_threshold: 50` without the other fields
+- **THEN** `compaction_stale_threshold=50`, the rest are defaults (1000000, 4)
 
-### Requirement: Реестр моделей onnx.yaml
+### Requirement: onnx.yaml model registry
 
-Формат `onnx.yaml` сохраняется: секция `runtime` (version, platforms[] — key/os/arch/archive_url/archive_format/library_name/library_path) и `models` (default, entries[] — name/display_name/description/version/vector_dim/files[name,url,size_bytes]). Поведение загрузки моделей (скачивание по url, проверка размера, хранение в data/) зафиксировано этим контрактом.
+The `onnx.yaml` format is preserved: the `runtime` section (version, platforms[] — key/os/arch/archive_url/archive_format/library_name/library_path) and `models` (default, entries[] — name/display_name/description/version/vector_dim/files[name,url,size_bytes]). Model-loading behavior (download by url, size check, storage in data/) is fixed by this contract.
 
-#### Scenario: Реестр моделей
-- **WHEN** Rust-бинарь читает `workspace/configs/onnx.yaml`
-- **THEN** список моделей и параметры рантайма распознаны полностью; model list выводит все записи (machine-diff)
+#### Scenario: Model registry
+- **WHEN** the Rust binary reads `workspace/configs/onnx.yaml`
+- **THEN** the model list and runtime parameters are fully recognized; the model list prints all entries (machine-diff)
 
-### Requirement: Обработка ошибок загрузки onnx.yaml
+### Requirement: onnx.yaml load-error handling
 
-Загрузка реестра моделей из внешнего `onnx.yaml` завершается ошибкой с путём файла, если файл отсутствует или не парсится.
+Loading the model registry from an external `onnx.yaml` fails with the file path if the file is missing or does not parse.
 
-#### Scenario: Отсутствующий onnx.yaml
-- **WHEN** файл onnx.yaml не существует
-- **THEN** загрузка завершается ошибкой с путём файла
+#### Scenario: Missing onnx.yaml
+- **WHEN** the onnx.yaml file does not exist
+- **THEN** loading fails with the file path
 
-### Requirement: Онтологии XML
+### Requirement: XML ontologies
 
-Источники инжестии объявляются в `data/ontology/global.xml` + `domains/*.xml` (не в YAML). Правила: отсутствующий или некорректный domain-XML — ошибка старта; отсутствующий global.xml — не ошибка (пустой пул). Эффективная схема домена строится из определений домена и глобального пула (`<entity>`, `<relation>`, `<extraction>` в global.xml) как двух слоёв: lookup сначала ищет в домене, затем в глобальном слое (shadowing). Определение домена с ID, совпадающим с глобальным, переопределяет глобальное для этого домена без warning (**BREAKING**: ранее — merge с warning). Валидация ссылок (relation → entity, ref-атрибуты) выполняется на объединении слоёв.
+Ingestion sources are declared in `data/ontology/global.xml` + `domains/*.xml` (not in YAML). Rules: a missing or malformed domain XML — startup error; a missing global.xml — not an error (empty pool). The effective domain schema is built from the domain definitions and the global pool (`<entity>`, `<relation>`, `<extraction>` in global.xml) as two layers: lookup searches the domain first, then the global layer (shadowing). A domain definition with an ID matching a global one overrides the global one for this domain, without a warning (**BREAKING**: previously — merge with a warning). Reference validation (relation → entity, ref attributes) is performed on the merged layers.
 
-**Формат global.xml (BREAKING, решение человека 2026-08-19):** каждая группа повторяющихся элементов — в plural-обёртке: `<entities><entity id= name= description=>` (с `<attributes><attribute name= type= required= target=>` и `<synonyms><synonym>`), `<relations><relation source= predicate= target= description=>` (с `<attributes>`), `<sources><source path= type= disabled= space= dataset=>` (с `<domains><domain>`), `<cross-domain-links>` (`<methods><method>`, `<equals><min-words>`, `<llm-confidence-threshold>`, `<batch-size>`, `<expressions><expression>` с `<name>/<description>/<priority>/<where>/<relation-type>`), `<ner>` (`<methods><method>`), `<extraction>` (`<regex-rules><regex id= entity= pattern= confidence=>`). Новый формат — осознанное breaking-изменение; совместимость — по семантике.
+**global.xml format (BREAKING, human decision 2026-08-19):** every group of repeating elements is wrapped in a plural wrapper: `<entities><entity id= name= description=>` (with `<attributes><attribute name= type= required= target=>` and `<synonyms><synonym>`), `<relations><relation source= predicate= target= description=>` (with `<attributes>`), `<sources><source path= type= disabled= space= dataset=>` (with `<domains><domain>`), `<cross-domain-links>` (`<methods><method>`, `<equals><min-words>`, `<llm-confidence-threshold>`, `<batch-size>`, `<expressions><expression>` with `<name>/<description>/<priority>/<where>/<relation-type>`), `<ner>` (`<methods><method>`), `<extraction>` (`<regex-rules><regex id= entity= pattern= confidence=>`). The new format is a deliberate breaking change; compatibility is by semantics.
 
-#### Scenario: Некорректная онтология
-- **WHEN** domains/ содержит синтаксически невалидный XML и бинарь стартует
-- **THEN** старт завершается ошибкой с сообщением о файле онтологии
+#### Scenario: Malformed ontology
+- **WHEN** domains/ contains syntactically invalid XML and the binary starts
+- **THEN** startup fails with a message about the ontology file
 
-#### Scenario: Переопределение глобального пула
-- **WHEN** entity в domain-файле имеет ID из глобального пула
-- **THEN** для этого домена используется версия из домена; глобальная версия остаётся доступной для остальных доменов; warning не требуется (BREAKING: ранее — merge с warning)
+#### Scenario: Global pool override
+- **WHEN** an entity in a domain file has an ID from the global pool
+- **THEN** the domain version is used for this domain; the global version remains available for the other domains; no warning is required (BREAKING: previously — merge with a warning)
 
-#### Scenario: Отсутствующий global.xml
-- **WHEN** data/ontology/ не содержит global.xml
-- **THEN** старт не завершается ошибкой; глобальный пул пуст
+#### Scenario: Missing global.xml
+- **WHEN** data/ontology/ does not contain global.xml
+- **THEN** startup does not fail; the global pool is empty
 
-#### Scenario: Валидация на объединении слоёв
-- **WHEN** глобальное relation ссылается на entity, переопределённую доменом
-- **THEN** ссылка разрешается в версию домена (рассинхрон слоёв исключён)
+#### Scenario: Validation on merged layers
+- **WHEN** a global relation references an entity overridden by a domain
+- **THEN** the reference resolves to the domain version (layer desynchronization is excluded)
 
-### Requirement: Domain-XML онтологии
+### Requirement: Domain-XML ontology
 
-Каждый файл `domains/*.xml` описывает домен: `<domain name= version= description=>` с `<entities><entity id= name= description=>` (атрибуты `<attributes><attribute name= type= required= target=>`, синонимы `<synonyms><synonym>`), `<relations><relation source= predicate= target=>` (атрибуты), `<extraction><regex-rules><regex id= entity= pattern= confidence=>`, `<confidence auto_publish_threshold= review_threshold= reject_threshold=>`. Формат domain-XML — та же схема обёрток, что и global.xml (BREAKING). Правила: отсутствующий domain-файл — ошибка старта; невалидный XML — ошибка старта; невалидный regex-паттерн — ошибка старта (компиляция при загрузке).
+Each `domains/*.xml` file describes a domain: `<domain name= version= description=>` with `<entities><entity id= name= description=>` (attributes `<attributes><attribute name= type= required= target=>`, synonyms `<synonyms><synonym>`), `<relations><relation source= predicate= target=>` (attributes), `<extraction><regex-rules><regex id= entity= pattern= confidence=>`, `<confidence auto_publish_threshold= review_threshold= reject_threshold=>`. The domain-XML format — the same wrapper schema as global.xml (BREAKING). Rules: a missing domain file — startup error; invalid XML — startup error; an invalid regex pattern — startup error (compiled at load time).
 
-#### Scenario: Невалидный regex
-- **WHEN** domain-XML содержит regex с некомпилируемым pattern
-- **THEN** старт завершается ошибкой с указанием файла и правила
+#### Scenario: Invalid regex
+- **WHEN** a domain XML contains a regex with a non-compilable pattern
+- **THEN** startup fails, naming the file and the rule
 
-#### Scenario: Полный домен
-- **WHEN** Rust-бинарь читает `workspace/datasets/edtech/ontology/domains/domain_hr.xml`
-- **THEN** entity/relation/extraction/confidence распознаны полностью (machine-diff)
-
+#### Scenario: Complete domain
+- **WHEN** the Rust binary reads `workspace/datasets/edtech/ontology/domains/domain_hr.xml`
+- **THEN** entity/relation/extraction/confidence are fully recognized (machine-diff)
