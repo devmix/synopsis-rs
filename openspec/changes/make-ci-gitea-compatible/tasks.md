@@ -38,7 +38,7 @@ machine-checkable acceptance all fit in the body.
 
 ## 1 — Pipeline files
 
-- [ ] 1.1 Make `ci.yml` `coverage` job Gitea-compatible (swap the artifact action)
+- [x] 1.1 Make `ci.yml` `coverage` job Gitea-compatible (swap the artifact action)
 
 **Goal.** In `.github/workflows/ci.yml`, the `coverage` job's final step "Upload lcov
 artifact" currently uses `actions/upload-artifact@v4`, which aborts on Gitea with
@@ -62,7 +62,7 @@ is not supported on the self-hosted Gitea runner). Do NOT change any other job o
 - YAML still parses: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` → no error.
 - Gates green: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 
-- [ ] 1.2 Rewrite `release.yml` as a single Gitea-compatible job
+- [x] 1.2 Rewrite `release.yml` as a single Gitea-compatible job
 
 **Goal.** Replace `.github/workflows/release.yml` (currently a 2-job pipeline: a 5-way
 `build` matrix that `upload-artifact@v4`s each archive + a `release` job that
@@ -112,7 +112,7 @@ work; run after 1.1 for a coherent review).
 
 ## 2 — Verification
 
-- [ ] 2.1 Whole-pipeline Gitea-compatibility verification
+- [x] 2.1 Whole-pipeline Gitea-compatibility verification
 
 **Goal.** Confirm both workflow files are Gitea-compatible: no standard artifact action
 remains anywhere, the two Gitea forks are pinned correctly, the release is a single
