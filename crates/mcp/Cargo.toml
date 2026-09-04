@@ -6,12 +6,10 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges; oracle imports: ../synopsis/internal/mcp + internal/mcp/handlers
-# (config, database, graph, search). rmcp features: server role + Streamable
-# HTTP transport (design D8).
+# D1 edges (config, db, graph, search). rmcp features: server role +
+# Streamable HTTP transport (design D8).
 [dependencies]
-# Opaque cursor base64 for the paginated catalog tools (task 5.2); the wire
-# format is byte-compatible with the Go oracle's pagination.go.
+# Opaque cursor base64 for the paginated catalog tools (task 5.2).
 base64 = { workspace = true }
 axum = { workspace = true }
 # D1 layering (design.md): mcp depends on {config, db, search, graph}.

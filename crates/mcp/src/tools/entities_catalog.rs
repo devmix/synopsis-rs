@@ -1,37 +1,27 @@
 //! The `catalog_entities` and `search_entities_by_type` tools: the paginated
 //! entity listings (design D4).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/{catalog_entities.go,
-//! search_entities_by_type.go}` plus the cursor helpers in
-//! `../synopsis/internal/mcp/handlers/pagination.go` (ported to
-//! [`crate::pagination`], task 5.2).
-//!
 //! Thin handlers per design D2: parse the frozen-schema arguments →
-//! [`EntityDao::list_paginated`] → oracle-shaped JSON. No business logic
-//! lives here.
+//! [`EntityDao::list_paginated`] → the frozen wire JSON (`mcp-contract`).
+//! No business logic lives here.
 //!
-//! **Rust re-architecture (DRY):** the two oracle handlers are near-verbatim
-//! copies of each other — `CatalogEntity` and `SearchEntityOut` are
-//! field-identical Go structs, and the handler bodies differ only in the
-//! required-`entity_type` check and the `name` filter. This module keeps ONE
-//! entity wire struct, ONE response struct and ONE list core
-//! (`list_entities`); the two public handlers differ only in argument
-//! parsing.
+//! **DRY:** the two tools return field-identical entity entries, and their
+//! handlers differ only in the required-`entity_type` check and the `name`
+//! filter. This module keeps ONE entity wire struct, ONE response struct and
+//! ONE list core (`list_entities`); the two public handlers differ only in
+//! argument parsing.
 //!
-//! **Recorded deviations (error text):** the oracle prefixes its tool-error
-//! messages with `"Error …"`; this crate uses the [`McpError`] conventions
-//! established by tasks 5.1/5.3 (e.g. `"invalid arguments for tool
-//! 'catalog_entities': …"`). The tool-error structure (is_error result with
-//! a text block) is the same; internal message text is not part of the
-//! frozen contract.
+//! **Design (error text):** tool-error messages follow the [`McpError`]
+//! conventions established by tasks 5.1/5.3 (e.g. `"invalid arguments for
+//! tool 'catalog_entities': …"`). The tool-error structure (is_error result
+//! with a text block) is the frozen contract; internal message text is not
+//! part of it.
 //!
-//! **Response parity:** field names, order and optionality match the Go
-//! structs (`CatalogEntitiesResponse`/`SearchEntitiesByTypeResponse` and
-//! their entity entries), so the wire JSON matches the oracle's marshal
-//! output. `description` is omitted when absent OR empty (the oracle's
-//! `*string != ""` check); `metadata` is the parsed `metadata_json`, the raw
-//! string when it is not valid JSON (the oracle's fallback), and omitted for
-//! absent/empty/JSON-`null` metadata (Go `omitempty` on a nil `interface{}`).
+//! **Response shape:** field names, order and optionality follow the frozen
+//! contract (`mcp-contract`) for both tools. `description` is omitted when
+//! absent OR empty; `metadata` is the parsed `metadata_json`, the raw string
+//! when it is not valid JSON, and omitted for absent/empty/JSON-`null`
+//! metadata.
 
 use db::{ConnectionOrTx, Entity, EntityDao, EntityFilter};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -47,9 +37,9 @@ pub const SEARCH_ENTITIES_BY_TYPE: &str = "search_entities_by_type";
 
 // ── shared wire shape ───────────────────────────────────────────────────────
 
-/// One entity entry (oracle `CatalogEntity` / `SearchEntityOut` — the Go
-/// structs are field-identical): field order matches, so the wire JSON
-/// matches the oracle's marshal order.
+/// One entity entry, shared by both tools (field-identical shapes): field
+/// order follows the frozen contract (`mcp-contract`), so the wire JSON
+/// field order is stable.
 #[derive(Debug, Serialize)]
 struct EntityEntry {
     /// Entity row id.
@@ -61,22 +51,19 @@ struct EntityEntry {
     r#type: String,
     /// Entity domain (empty = global).
     domain: String,
-    /// Free-text description; absent when NULL or empty (oracle omitempty +
-    /// `*string != ""` check).
+    /// Free-text description; absent when NULL or empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
-    /// Extraction confidence; absent when NULL (oracle omitempty on the
-    /// zero-valued `float64` standing in for SQL NULL).
+    /// Extraction confidence; absent when NULL.
     #[serde(skip_serializing_if = "Option::is_none")]
     confidence: Option<f64>,
-    /// The parsed `metadata_json`; the raw string when it is not valid JSON
-    /// (the oracle's fallback); absent when there is no metadata.
+    /// The parsed `metadata_json`; the raw string when it is not valid JSON;
+    /// absent when there is no metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<Value>,
 }
 
-/// The entity-listing response (oracle `CatalogEntitiesResponse` /
-/// `SearchEntitiesByTypeResponse` — identical shapes).
+/// The entity-listing response, shared by both tools (identical shapes).
 #[derive(Debug, Serialize)]
 struct EntitiesResponse {
     /// The page of entities (empty, not null, when there are no matches).
@@ -88,8 +75,7 @@ struct EntitiesResponse {
     next_cursor: Option<String>,
 }
 
-/// Map a stored entity to the wire entry (oracle field mapping in
-/// `handlers/catalog_entities.go`).
+/// Map a stored entity to the wire entry.
 fn entity_entry(entity: &Entity) -> EntityEntry {
     EntityEntry {
         id: entity.id,
@@ -107,9 +93,8 @@ fn entity_entry(entity: &Entity) -> EntityEntry {
 }
 
 /// The parsed `metadata_json` for the wire: absent/empty → no field; valid
-/// JSON `null` → no field (Go `omitempty` drops the nil value); valid JSON →
-/// the parsed value; malformed JSON → the raw string (the oracle's
-/// fallback).
+/// JSON `null` → no field; valid JSON → the parsed value; malformed JSON →
+/// the raw string.
 fn metadata_field(metadata_json: Option<&str>) -> Option<Value> {
     let raw = metadata_json.filter(|raw| !raw.is_empty())?;
     match serde_json::from_str::<Value>(raw) {
@@ -120,9 +105,8 @@ fn metadata_field(metadata_json: Option<&str>) -> Option<Value> {
 
 // ── shared list core ────────────────────────────────────────────────────────
 
-/// One page of entities matching `filter`, as the oracle-shaped response
-/// payload. Shared by both tools (the oracle's two handler bodies differ
-/// only in argument parsing).
+/// One page of entities matching `filter`, as the response payload. Shared
+/// by both tools (the handlers differ only in argument parsing).
 fn list_entities(
     db: &db::Db,
     tool: &'static str,
@@ -132,9 +116,9 @@ fn list_entities(
 ) -> Result<Value, McpError> {
     let limit = parse_page_size(page_size);
     let cursor = cursor.unwrap_or_default();
-    // Oracle parity: an EMPTY cursor starts the first page with the
-    // REQUESTED page size; only a non-empty cursor overrides the offset AND
-    // limit (the cursor carries its own page window).
+    // An EMPTY cursor starts the first page with the REQUESTED page size;
+    // only a non-empty cursor overrides the offset AND limit (the cursor
+    // carries its own page window).
     let page = if cursor.is_empty() {
         Page::first(limit)
     } else {
@@ -160,10 +144,9 @@ fn list_entities(
 }
 
 /// Parse `page_size` (frozen schema: number, default 20, range 1-200).
-/// Mirrors the oracle's `req.GetInt` leniency: missing or unparseable values
-/// fall back to the default rather than erroring; floats truncate toward
-/// zero like Go's `int(v)` conversion. Out-of-range values are clamped by
-/// [`normalize_page_size`] (oracle `NormalizePageSize`), not rejected.
+/// Lenient parsing: missing or unparseable values fall back to the default
+/// rather than erroring; floats truncate toward zero. Out-of-range values
+/// are clamped by [`normalize_page_size`], not rejected.
 /// (Same convention as `tools::catalog::parse_page_size`.)
 fn parse_page_size(value: Option<&Value>) -> i64 {
     let Some(size) = value.and_then(|value| match value {
@@ -190,7 +173,7 @@ fn to_value<T: Serialize>(tool: &'static str, response: T) -> Result<Value, McpE
 
 /// Deserialize the argument object; `None` (no arguments) is the empty
 /// object, so every filter is absent rather than a parse failure. Unknown
-/// keys are ignored, as in the oracle's `req.Get*` accessors.
+/// keys are ignored.
 fn deserialize_args<T: DeserializeOwned>(
     args: Option<&Value>,
     tool: &'static str,
@@ -226,7 +209,7 @@ struct CatalogEntitiesArgs {
 /// Handle the `catalog_entities` tool call (design D2/D4).
 ///
 /// `args` is the raw JSON argument object (`None` = no arguments). The
-/// result is the oracle-shaped payload the server serializes into the tool
+/// result is the response payload the server serializes into the tool
 /// response's text block.
 pub fn handle_catalog_entities(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
     let args: CatalogEntitiesArgs = deserialize_args(args, CATALOG_ENTITIES)?;
@@ -265,7 +248,7 @@ struct SearchEntitiesByTypeArgs {
 /// Handle the `search_entities_by_type` tool call (design D2/D4).
 ///
 /// `args` is the raw JSON argument object (`None` = no arguments). The
-/// result is the oracle-shaped payload the server serializes into the tool
+/// result is the response payload the server serializes into the tool
 /// response's text block.
 pub fn handle_search_entities_by_type(
     db: &db::Db,
@@ -301,8 +284,8 @@ mod tests {
 
     use super::*;
 
-    /// The oracle `TestHandleCatalogEntities` fixture: 2 employees (Alice
-    /// with description + metadata, Bob with description only) + 1 policy.
+    /// Catalog-entities fixture: 2 employees (Alice with description +
+    /// metadata, Bob with description only) + 1 policy.
     fn seeded_entities_db() -> db::Db {
         let db = test_util::in_memory_db();
         db.exec_tx(|tx| -> Result<(), db::DbError> {
@@ -330,7 +313,7 @@ mod tests {
         db
     }
 
-    /// `n` employees in the `hr` domain (the oracle pagination fixture).
+    /// `n` employees in the `hr` domain (pagination fixture).
     fn seeded_n_employees_db(n: usize) -> db::Db {
         let db = test_util::in_memory_db();
         db.exec_tx(|tx| -> Result<(), db::DbError> {
@@ -359,7 +342,7 @@ mod tests {
         handle_search_entities_by_type(db, args.as_ref())
     }
 
-    // ── catalog_entities: filters (oracle TestHandleCatalogEntities) ─────
+    // ── catalog_entities: filters ─────────────────────────────────────────
 
     #[test]
     fn entities_empty_request_returns_all() {
@@ -405,8 +388,8 @@ mod tests {
         assert_eq!(response["entities"][0]["name"], "Alice");
     }
 
-    /// Name substring filter (frozen schema `name` → the oracle's
-    /// `ListPaginatedWithName`): case-insensitive on the entity name.
+    /// Name substring filter (frozen schema `name`): case-insensitive on the
+    /// entity name.
     #[test]
     fn entities_name_filter_is_case_insensitive_substring() {
         let db = &seeded_entities_db();
@@ -416,7 +399,7 @@ mod tests {
         }
     }
 
-    // ── catalog_entities: cursor pagination (oracle _CursorPagination) ───
+    // ── catalog_entities: cursor pagination ───────────────────────────────
 
     #[test]
     fn entities_cursor_pagination_walk() {
@@ -458,7 +441,7 @@ mod tests {
     }
 
     /// An empty cursor honours the REQUESTED page size (the cursor's own
-    /// window only applies to a non-empty cursor — oracle control flow).
+    /// window only applies to a non-empty cursor).
     #[test]
     fn entities_empty_cursor_uses_requested_page_size() {
         let db = seeded_n_employees_db(5);
@@ -471,8 +454,7 @@ mod tests {
         assert!(response["next_cursor"].is_string(), "{response}");
     }
 
-    /// Oracle `TestHandleCatalogDocuments_InvalidCursor` analogue: an invalid
-    /// cursor is a tool error.
+    /// An invalid cursor is a tool error.
     #[test]
     fn entities_invalid_cursor_is_an_error() {
         let db = test_util::in_memory_db();
@@ -489,7 +471,7 @@ mod tests {
     }
 
     /// `page_size` out of range (or unparseable) clamps to the default 20
-    /// (oracle `NormalizePageSize`) instead of erroring.
+    /// (`normalize_page_size`) instead of erroring.
     #[test]
     fn entities_page_size_out_of_range_defaults_to_twenty() {
         let db = seeded_n_employees_db(25);
@@ -519,10 +501,10 @@ mod tests {
         assert!(response.get("next_cursor").is_none(), "{response}");
     }
 
-    /// Oracle field mapping: `description`/`confidence`/`metadata`
-    /// optionality — valid JSON metadata, malformed metadata (raw string
-    /// fallback), JSON-`null` metadata (omitted), empty description (omitted),
-    /// NULL confidence (omitted), set confidence (present).
+    /// Field mapping: `description`/`confidence`/`metadata` optionality —
+    /// valid JSON metadata, malformed metadata (raw string fallback),
+    /// JSON-`null` metadata (omitted), empty description (omitted), NULL
+    /// confidence (omitted), set confidence (present).
     #[test]
     fn entities_metadata_and_optionality_shapes() {
         let db = test_util::in_memory_db();
@@ -575,8 +557,8 @@ mod tests {
         }
     }
 
-    /// The seeded oracle fixture maps end-to-end: Alice carries description
-    /// and parsed metadata; the type field carries the stored type.
+    /// The seeded fixture maps end-to-end: Alice carries description and
+    /// parsed metadata; the type field carries the stored type.
     #[test]
     fn entities_seeded_fixture_field_mapping() {
         let response = catalog(&seeded_entities_db(), None).unwrap();
@@ -588,7 +570,7 @@ mod tests {
         assert_eq!(alice["metadata"]["role"], "senior_engineer");
     }
 
-    // ── search_entities_by_type (oracle TestHandleSearchEntitiesByType) ──
+    // ── search_entities_by_type ───────────────────────────────────────────
 
     #[test]
     fn by_type_missing_entity_type_is_an_error() {
@@ -622,8 +604,7 @@ mod tests {
         assert_eq!(response["entities"].as_array().unwrap().len(), 2);
     }
 
-    /// Oracle `NonExistentTypeReturnsEmpty`: an unknown type is a valid
-    /// empty page, not an error.
+    /// An unknown type is a valid empty page, not an error.
     #[test]
     fn by_type_nonexistent_type_is_empty_page() {
         let response = by_type(
@@ -636,7 +617,7 @@ mod tests {
         assert!(response.get("next_cursor").is_none(), "{response}");
     }
 
-    /// Oracle `TestHandleSearchEntitiesByType_ResponseFields`.
+    /// The response carries the frozen fields for a matching entity.
     #[test]
     fn by_type_response_fields() {
         let response = by_type(
@@ -650,8 +631,8 @@ mod tests {
         assert_eq!(response["entities"][0]["domain"], "hr");
     }
 
-    /// Oracle `TestHandleSearchEntitiesByType_Pagination`: 5 employees,
-    /// page size 2 → 2/2/1 pages, no overlap, no cursor on the last page.
+    /// 5 employees, page size 2 → 2/2/1 pages, no overlap, no cursor on the
+    /// last page.
     #[test]
     fn by_type_pagination_walk() {
         let db = seeded_n_employees_db(5);
@@ -704,7 +685,7 @@ mod tests {
         );
     }
 
-    /// Oracle `TestHandleSearchEntitiesByType_DomainFilter`.
+    /// The domain filter combines with the required entity type.
     #[test]
     fn by_type_domain_filter() {
         let db = test_util::in_memory_db();
@@ -725,8 +706,7 @@ mod tests {
         assert_eq!(response["entities"][0]["name"], "Alice");
     }
 
-    /// Oracle `TestHandleSearchEntitiesByType_Pagination/invalid cursor
-    /// returns error`.
+    /// An invalid cursor is a tool error.
     #[test]
     fn by_type_invalid_cursor_is_an_error() {
         let db = test_util::in_memory_db();

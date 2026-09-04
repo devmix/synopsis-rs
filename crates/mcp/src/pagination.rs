@@ -2,35 +2,31 @@
 //! (`catalog_documents`, `catalog_entities`, `search_entities_by_type`,
 //! `search_facts`).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/pagination.go`.
-//!
 //! The cursor is an opaque base64 string carrying the `{offset, limit}`
-//! pair the db crate's offset-based `list_paginated` DAOs consume. The
-//! wire format is byte-compatible with the Go oracle (base64 of
-//! `{"offset":N,"limit":M}`), so a cursor issued by either implementation
-//! decodes identically in the other.
+//! pair the db crate's offset-based `list_paginated` DAOs consume. The wire
+//! format is a stable base64 encoding of `{"offset":N,"limit":M}` — any
+//! implementation that follows it decodes cursors identically.
 //!
-//! **Recorded deviation:** design.md D3 describes the cursor as "base64 of
-//! the last-seen sort key", but the oracle's `pagination.go` — the file
-//! this task ports — encodes the offset/limit pair, and the db crate's
-//! `list_paginated` DAOs (frozen by the db change) are offset-based.
-//! Keyset pagination would require new DAO methods outside this task's
-//! scope; the oracle's wire format wins (the frozen contract requires
-//! response parity with the Go binary, including cursor strings).
+//! **Design:** design.md D3 describes the cursor as "base64 of the
+//! last-seen sort key", but the db crate's `list_paginated` DAOs (frozen by
+//! the db change) are offset-based, so the cursor encodes the offset/limit
+//! pair instead. Keyset pagination would require new DAO methods outside
+//! this module's scope; the offset/limit wire format is what the frozen
+//! contract requires, including cursor strings.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Default number of items per page (oracle `DefaultPageSize`).
+/// Default number of items per page.
 pub const DEFAULT_PAGE_SIZE: i64 = 20;
-/// Minimum allowed page size (oracle `MinPageSize`).
+/// Minimum allowed page size.
 pub const MIN_PAGE_SIZE: i64 = 1;
-/// Maximum allowed page size (oracle `MaxPageSize`).
+/// Maximum allowed page size.
 pub const MAX_PAGE_SIZE: i64 = 200;
 
-/// Cursor decode failure (oracle `DecodeCursor` error paths).
+/// Cursor decode failure.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CursorError {
     /// The cursor is not valid standard base64.
@@ -41,9 +37,8 @@ pub enum CursorError {
     MalformedPayload,
 }
 
-/// The cursor wire format (oracle `Cursor` struct): base64 of
-/// `{"offset":N,"limit":M}`. Field order matches Go's `json.Marshal`
-/// output; `#[serde(default)]` mirrors Go's `json.Unmarshal` zero values
+/// The cursor wire format: base64 of `{"offset":N,"limit":M}`. Field order
+/// is fixed by the wire format; `#[serde(default)]` mirrors the zero values
 /// for missing fields.
 #[derive(Debug, Serialize, Deserialize)]
 struct CursorPayload {
@@ -71,22 +66,22 @@ impl Page {
     }
 
     /// The cursor for the page following this one, or `None` when no more
-    /// rows exist (`offset + limit >= total`) — the oracle's rule that
-    /// `next_cursor` is present only when more rows exist.
+    /// rows exist (`offset + limit >= total`) — `next_cursor` is present
+    /// only when more rows exist.
     pub fn next_cursor(&self, total: i64) -> Option<String> {
         (self.offset + self.limit < total)
             .then(|| encode_cursor(self.offset + self.limit, self.limit))
     }
 }
 
-/// Decode a cursor string into a page window (oracle `DecodeCursor`).
+/// Decode a cursor string into a page window.
 ///
 /// An empty string is the "start from the beginning" sentinel: the first
 /// page with [`DEFAULT_PAGE_SIZE`] rows.
 ///
 /// A negative offset (only possible in a hand-crafted cursor) is clamped
-/// to zero — a robustness fix over the oracle, which passed the raw value
-/// through to SQLite's `OFFSET` clause.
+/// to zero — a robustness guard, since a raw negative value would reach
+/// SQLite's `OFFSET` clause.
 pub fn decode_cursor(cursor: &str) -> Result<Page, CursorError> {
     if cursor.is_empty() {
         return Ok(Page::first(DEFAULT_PAGE_SIZE));
@@ -103,8 +98,7 @@ pub fn decode_cursor(cursor: &str) -> Result<Page, CursorError> {
 }
 
 /// Clamp a page size to [`MIN_PAGE_SIZE`]..=[`MAX_PAGE_SIZE`]; an
-/// out-of-range value falls back to [`DEFAULT_PAGE_SIZE`] (oracle
-/// `NormalizePageSize`).
+/// out-of-range value falls back to [`DEFAULT_PAGE_SIZE`].
 pub fn normalize_page_size(size: i64) -> i64 {
     if (MIN_PAGE_SIZE..=MAX_PAGE_SIZE).contains(&size) {
         size
@@ -113,9 +107,9 @@ pub fn normalize_page_size(size: i64) -> i64 {
     }
 }
 
-/// Encode the `{offset, limit}` pair as the opaque cursor string (oracle
-/// `EncodeCursor`). The JSON payload can never fail to serialize (two i64
-/// fields), so the fallback only keeps the no-panic rule (design D7).
+/// Encode the `{offset, limit}` pair as the opaque cursor string. The JSON
+/// payload can never fail to serialize (two i64 fields), so the fallback
+/// only keeps the no-panic rule (design D7).
 fn encode_cursor(offset: i64, limit: i64) -> String {
     let json = serde_json::to_string(&CursorPayload { offset, limit })
         .unwrap_or_else(|_| r#"{"offset":0,"limit":20}"#.to_owned());
@@ -148,14 +142,13 @@ mod tests {
         assert_eq!(encode_cursor(40, 50), cursor);
     }
 
-    /// The wire format is byte-compatible with the Go oracle's
-    /// `EncodeCursor` (base64 of `{"offset":N,"limit":M}`, standard
-    /// alphabet with padding).
+    /// The wire format is stable (base64 of `{"offset":N,"limit":M}`,
+    /// standard alphabet with padding).
     #[test]
-    fn wire_format_matches_the_go_oracle() {
+    fn wire_format_is_stable() {
         assert_eq!(encode_cursor(20, 20), "eyJvZmZzZXQiOjIwLCJsaW1pdCI6MjB9");
         assert_eq!(encode_cursor(40, 5), "eyJvZmZzZXQiOjQwLCJsaW1pdCI6NX0=");
-        // A cursor produced by the Go oracle decodes to the same page.
+        // A cursor encoded per the wire format decodes to the same page.
         let page = decode_cursor("eyJvZmZzZXQiOjIwLCJsaW1pdCI6MjB9").unwrap();
         assert_eq!(
             page,
@@ -187,7 +180,7 @@ mod tests {
     }
 
     /// Walking pages from the first cursor to the last covers every row
-    /// and stops exactly one page past the end (oracle handler walk).
+    /// and stops exactly one page past the end (the handler walk).
     #[test]
     fn pagination_walk_covers_all_rows() {
         let total = 45;
@@ -219,8 +212,8 @@ mod tests {
         }
     }
 
-    /// Oracle `DecodeCursor`: the limit carried in the cursor is
-    /// re-normalized on decode, not trusted as-is.
+    /// The limit carried in the cursor is re-normalized on decode, not
+    /// trusted as-is.
     #[test]
     fn out_of_range_limit_in_cursor_is_normalized() {
         assert_eq!(
@@ -236,9 +229,8 @@ mod tests {
         );
     }
 
-    /// Robustness fix over the oracle: a hand-crafted cursor with a
-    /// negative offset clamps to the first page instead of reaching
-    /// SQLite's `OFFSET` clause.
+    /// A hand-crafted cursor with a negative offset clamps to the first
+    /// page instead of reaching SQLite's `OFFSET` clause.
     #[test]
     fn negative_offset_is_clamped_to_zero() {
         assert_eq!(
@@ -273,7 +265,7 @@ mod tests {
 
     #[test]
     fn missing_fields_fall_back_to_defaults() {
-        // Oracle json.Unmarshal zero values: offset 0, limit 0 → default.
+        // Missing fields decode to zero values: offset 0, limit 0 → default.
         let cursor = STANDARD.encode(r#"{}"#.as_bytes());
         assert_eq!(
             decode_cursor(&cursor).unwrap(),

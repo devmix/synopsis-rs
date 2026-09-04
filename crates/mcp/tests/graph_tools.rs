@@ -4,9 +4,6 @@
 //! tests` module; they now run against the public API
 //! (`mcp::tools::graph_tools`), with the `crate::`/`super::*` imports
 //! rewritten to the crate name.
-//!
-//! Oracle mapping: Go `internal/mcp/handlers/{get_entity_relations.go,
-//! get_entity_links.go}` + the shared `entity_resolve.go`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -41,7 +38,7 @@ fn links(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
     handle_get_entity_links(db, args.as_ref())
 }
 
-/// The oracle `setupTestGraph` fixture: Alice --works_in--> Engineering,
+/// The relations fixture: Alice --works_in--> Engineering,
 /// Bob --works_in--> Engineering, Alice --owns--> NDA,
 /// Policy --requires--> Bob, Alice --reports_to--> Policy.
 fn seeded_relations_db() -> (db::Db, (i64, i64, i64, i64, i64)) {
@@ -88,10 +85,9 @@ fn seeded_relations_db() -> (db::Db, (i64, i64, i64, i64, i64)) {
 
 // ── get_entity_relations ─────────────────────────────────────────────────
 
-/// Oracle `TestHandleGetEntityRelations_NilGraph` (the task's "no-graph
-/// degradation"): an unavailable graph is a tool error BEFORE argument
-/// parsing — `None` args must still yield the graph error, not an
-/// argument error.
+/// No-graph degradation: an unavailable graph is a tool error BEFORE
+/// argument parsing — `None` args must still yield the graph error, not
+/// an argument error.
 #[test]
 fn relations_unavailable_graph_errors_before_arg_parsing() {
     let db = test_util::in_memory_db();
@@ -105,8 +101,7 @@ fn relations_unavailable_graph_errors_before_arg_parsing() {
     );
 }
 
-/// Oracle "empty entity_id and entity_name returns error" +
-/// `TestHandleGetEntityRelations_BothIDAndName`: the XOR is enforced.
+/// Empty entity_id and entity_name return an error: the XOR is enforced.
 #[test]
 fn relations_requires_exactly_one_of_id_or_name() {
     let (db, _) = seeded_relations_db();
@@ -125,7 +120,7 @@ fn relations_requires_exactly_one_of_id_or_name() {
     }
 }
 
-/// Oracle "non-integer entity_id returns error".
+/// A non-integer entity_id returns an error.
 #[test]
 fn relations_non_integer_id_is_an_error() {
     let (db, _) = seeded_relations_db();
@@ -143,7 +138,7 @@ fn relations_non_integer_id_is_an_error() {
     assert!(err.to_string().contains("must be an integer"), "got: {err}");
 }
 
-/// Oracle "nonexistent entity returns error" + `EntityNameNotFound`.
+/// A nonexistent entity (by id or name) returns a not-found error.
 #[test]
 fn relations_missing_entity_is_not_found() {
     let (db, _) = seeded_relations_db();
@@ -158,8 +153,8 @@ fn relations_missing_entity_is_not_found() {
     }
 }
 
-/// Oracle happy path + `_ResponseFields`: depth-1 traversal from Alice,
-/// response shape, and non-zero/non-empty edge endpoints.
+/// Happy path: depth-1 traversal from Alice, response shape, and
+/// non-zero/non-empty edge endpoints.
 #[test]
 fn relations_depth_one_returns_direct_neighbors() {
     let (db, (alice, ..)) = seeded_relations_db();
@@ -192,8 +187,7 @@ fn relations_depth_one_returns_direct_neighbors() {
         "{response}"
     );
 
-    // Oracle `_ResponseFields`: every edge carries non-zero ids and
-    // non-empty endpoint names.
+    // Every edge carries non-zero ids and non-empty endpoint names.
     for edge in response["edges"].as_array().unwrap() {
         assert_eq!(edge["source_id"].as_i64().unwrap(), alice);
         assert!(edge["target_id"].as_i64().unwrap() != 0, "{edge}");
@@ -226,8 +220,8 @@ fn relations_depth_two_reaches_second_hop() {
     assert!(names.contains(&"Bob"), "Bob is a second hop: {response}");
 }
 
-/// Oracle "depth zero defaults to 1" + "depth over 10 capped at 10", plus
-/// the house lenient numeric string and the default for unparseable input.
+/// Depth zero defaults to 1 and depth over 10 is capped at 10, plus the
+/// house lenient numeric string and the default for unparseable input.
 #[test]
 fn relations_depth_is_clamped_to_the_frozen_range() {
     let (db, alice) = seed_db(|exec| {
@@ -256,10 +250,9 @@ fn relations_depth_is_clamped_to_the_frozen_range() {
     }
 }
 
-/// Oracle `TestHandleGetEntityRelations_DomainDisambiguation`: two
-/// same-named entities in different domains; a domain narrows the lookup
-/// (case-insensitive), no domain + multiple matches lists the candidates,
-/// and a single match succeeds.
+/// Two same-named entities in different domains; a domain narrows the
+/// lookup (case-insensitive), no domain + multiple matches lists the
+/// candidates, and a single match succeeds.
 #[test]
 fn relations_domain_disambiguates_and_lists_candidates() {
     let (db, (id_hr, id_product, _acme, unique)) = seed_db(|exec| {
@@ -316,7 +309,7 @@ fn relations_domain_disambiguates_and_lists_candidates() {
 
 /// The index can lag the database (built at startup, rebuilt on demand):
 /// an entity present in the db but absent from the index is a not-found
-/// tool error (oracle `g.GetNode` miss; recorded deviation 1 wording).
+/// tool error (a graph node miss).
 #[test]
 fn relations_entity_missing_from_index_is_not_found() {
     let (db, _) = seed_db(|exec| {
@@ -444,8 +437,8 @@ fn relations_cross_domain_flag_controls_links_and_metadata() {
 
 // ── get_entity_links ─────────────────────────────────────────────────────
 
-/// Oracle `TestHandleGetEntityLinks` error cases: missing args, empty id,
-/// non-integer id, and a not-found id.
+/// Error cases: missing args, empty id, non-integer id, and a not-found
+/// id.
 #[test]
 fn links_argument_errors() {
     let (db, _) = seed_db(|exec| {
@@ -476,8 +469,8 @@ fn links_argument_errors() {
     assert!(matches!(err, McpError::NotFound { .. }), "got: {err:?}");
 }
 
-/// Oracle `TestHandleGetEntityLinks_EntityWithNoLinks`: `links` is an
-/// empty array, still present in the response.
+/// For an entity with no links, `links` is an empty array, still present
+/// in the response.
 #[test]
 fn links_empty_entity_returns_empty_links_array() {
     let (db, id) = seed_db(|exec| {
@@ -494,9 +487,8 @@ fn links_empty_entity_returns_empty_links_array() {
     assert_eq!(response["links"], serde_json::json!([]), "{response}");
 }
 
-/// Oracle `TestHandleGetEntityLinks_EntityWithLinks`: the entity's links
-/// with the DAO's deterministic `(target, subject)` order and the full
-/// provenance payload.
+/// The entity's links with the DAO's deterministic `(target, subject)`
+/// order and the full provenance payload.
 #[test]
 fn links_returns_entity_links_with_provenance() {
     let (db, (alice, engineering, nda)) = seed_db(|exec| {
@@ -547,9 +539,8 @@ fn links_returns_entity_links_with_provenance() {
     assert_eq!(out[1]["confidence"], 0.78);
 }
 
-/// Oracle `TestHandleGetEntityLinks_LinksProvenance`: method / confidence
-/// / evidence round-trip; an absent evidence value is omitted from the
-/// wire (oracle `omitempty`).
+/// Method / confidence / evidence round-trip; an absent evidence value
+/// is omitted from the wire.
 #[test]
 fn links_provenance_round_trips_and_omits_absent_evidence() {
     let (db, bob) = seed_db(|exec| {
@@ -609,9 +600,8 @@ fn links_provenance_round_trips_and_omits_absent_evidence() {
     );
 }
 
-/// Oracle `TestHandleGetEntityLinks_DedupBidirectional`: an A→B / B→A
-/// pair with the same relation type yields ONE entry; the first
-/// occurrence (DAO order) wins.
+/// An A→B / B→A pair with the same relation type yields ONE entry; the
+/// first occurrence (DAO order) wins.
 #[test]
 fn links_dedup_bidirectional_pairs() {
     let (db, (alice, office)) = seed_db(|exec| {
@@ -649,10 +639,9 @@ fn links_dedup_bidirectional_pairs() {
     assert_eq!(out[0]["relation_type"], "works_in");
 }
 
-/// Oracle `TestHandleGetEntityLinks_NilTargetGuard`: a link whose target
-/// row is gone is skipped silently. The v5 FKs make such a row
-/// uncreatable through the DAOs (recorded deviation 6), so the fixture
-/// inserts past the FK on this connection only.
+/// A link whose target row is gone is skipped silently. The v5 FKs make
+/// such a row uncreatable through the DAOs, so the fixture inserts past
+/// the FK on this connection only.
 #[test]
 fn links_skip_missing_target_rows() {
     let (db, charlie) = seed_db(|exec| {
@@ -684,10 +673,9 @@ fn links_skip_missing_target_rows() {
     assert_eq!(response["links"], serde_json::json!([]), "{response}");
 }
 
-/// Oracle `TestHandleGetEntityLinks_DomainDisambiguation`: a domain
-/// narrows the lookup (case-insensitive), multiple matches without a
-/// domain are an error listing the candidates, and a single match
-/// succeeds.
+/// A domain narrows the lookup (case-insensitive), multiple matches
+/// without a domain are an error listing the candidates, and a single
+/// match succeeds.
 #[test]
 fn links_domain_disambiguates_and_lists_candidates() {
     let (db, (id_hr, id_product, unique)) = seed_db(|exec| {

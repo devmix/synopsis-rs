@@ -91,7 +91,7 @@ fn tool_registry_matches_frozen_contract() {
             .schema_as_json_value()
     };
 
-    // Property types transcribed from tools.go.
+    // Property types per the frozen contract.
     for (tool, prop, r#type) in [
         ("search", "query", "string"),
         ("search", "top_k", "number"),
@@ -144,7 +144,7 @@ fn tool_registry_matches_frozen_contract() {
         );
     }
 
-    // Defaults transcribed from tools.go.
+    // Defaults per the frozen contract.
     assert_eq!(
         schema("search")["properties"]["top_k"]["default"],
         json!(10)
@@ -182,7 +182,7 @@ fn tool_registry_matches_frozen_contract() {
         json!(2)
     );
 
-    // Required fields transcribed from tools.go.
+    // Required fields per the frozen contract.
     assert_eq!(schema("search")["required"], json!(["query"]));
     assert_eq!(
         schema("search_entities_by_type")["required"],
@@ -610,7 +610,7 @@ async fn router_serves_health_sse_and_streamable_http_together() {
 
 /// The idle reaper is live on the REAL `Server::router()` (task 1.5
 /// acceptance): the threshold is not injectable through `Server` (no
-/// config surface is invented — the oracle has none), so the production
+/// config surface is invented), so the production
 /// defaults (300 s threshold / 30 s tick, design D9) are exercised on a
 /// paused clock: a `/sse` session with no activity is reaped at the first
 /// reaper pass past the threshold (t=330 s), and the client observes the

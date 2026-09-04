@@ -1,26 +1,18 @@
 //! The `catalog_overview` and `catalog_documents` tools: knowledge-base
 //! statistics and the paginated document listing (design D4).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/{catalog_overview.go,
-//! catalog_documents.go}` plus the cursor helpers in
-//! `../synopsis/internal/mcp/handlers/pagination.go` (ported to
-//! [`crate::pagination`], task 5.2).
-//!
 //! Thin handlers per design D2: parse the frozen-schema arguments → db DAOs
-//! → oracle-shaped JSON. No business logic lives here.
+//! → the frozen wire JSON (`mcp-contract`). No business logic lives here.
 //!
-//! **Recorded deviations (error text):** the oracle prefixes its tool-error
-//! messages with `"Error …"`; this crate uses the [`McpError`] conventions
-//! established by tasks 5.1/5.3 (e.g. `"invalid arguments for tool
-//! 'catalog_documents': …"`). The tool-error structure (is_error result with
-//! a text block) is the same; internal message text is not part of the
-//! frozen contract.
+//! **Design (error text):** tool-error messages follow the [`McpError`]
+//! conventions established by tasks 5.1/5.3 (e.g. `"invalid arguments for
+//! tool 'catalog_documents': …"`). The tool-error structure (is_error result
+//! with a text block) is the frozen contract; internal message text is not
+//! part of it.
 //!
-//! **Response parity:** field names, order and optionality match the Go
-//! structs (`CatalogOverviewResponse`, `CatalogDocumentsResponse`), so the
-//! wire JSON matches the oracle's marshal output. The count maps use
-//! `BTreeMap` because Go's `json.Marshal` emits map keys sorted, while a
-//! `HashMap` would not be deterministic.
+//! **Response shape:** field names, order and optionality follow the frozen
+//! contract (`mcp-contract`) for both tools. The count maps use `BTreeMap`
+//! so map keys are emitted sorted — a `HashMap` would not be deterministic.
 
 use std::collections::BTreeMap;
 
@@ -41,9 +33,8 @@ pub const CATALOG_DOCUMENTS: &str = "catalog_documents";
 
 // ── catalog_overview ────────────────────────────────────────────────────────
 
-/// The `catalog_overview` response (oracle `CatalogOverviewResponse`): field
-/// order matches the Go struct, so the wire JSON matches the oracle's
-/// marshal order.
+/// The `catalog_overview` response: field order follows the frozen contract
+/// (`mcp-contract`), so the wire JSON field order is stable.
 #[derive(Debug, Serialize)]
 struct OverviewResponse {
     /// Number of documents.
@@ -52,8 +43,8 @@ struct OverviewResponse {
     chunk_count: i64,
     /// Number of entities.
     entity_count: i64,
-    /// Number of facts (all statuses — the oracle's `FactDAO.Count` has no
-    /// status filter; approved-only applies to the fact *listing* tools).
+    /// Number of facts (all statuses — the count has no status filter;
+    /// approved-only applies to the fact *listing* tools).
     fact_count: i64,
     /// Number of documents per source type.
     documents_by_type: BTreeMap<String, i64>,
@@ -73,8 +64,7 @@ struct OverviewResponse {
 
 /// Handle the `catalog_overview` tool call (design D2/D4).
 ///
-/// The frozen schema takes no parameters; the oracle ignored its request
-/// arguments too, so `args` is unused.
+/// The frozen schema takes no parameters, so `args` is unused.
 pub fn handle_catalog_overview(db: &db::Db, _args: Option<&Value>) -> Result<Value, McpError> {
     let overview = db
         .with_conn(|conn| {
@@ -105,8 +95,7 @@ pub fn handle_catalog_overview(db: &db::Db, _args: Option<&Value>) -> Result<Val
 // ── catalog_documents ───────────────────────────────────────────────────────
 
 /// Parsed `catalog_documents` arguments (frozen schema: `page_size`,
-/// `cursor`, `domain`, `source_type`, `name`). Unknown keys are ignored, as
-/// in the oracle's `req.Get*` accessors.
+/// `cursor`, `domain`, `source_type`, `name`). Unknown keys are ignored.
 #[derive(Debug, Deserialize)]
 struct CatalogDocumentsArgs {
     /// Number of items per page (number, default 20, range 1-200).
@@ -121,8 +110,8 @@ struct CatalogDocumentsArgs {
     name: Option<String>,
 }
 
-/// A document entry (oracle `CatalogDocument`): field order matches the Go
-/// struct.
+/// A document entry: field order follows the frozen contract
+/// (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct CatalogDocument {
     /// Document row id.
@@ -134,8 +123,8 @@ struct CatalogDocument {
     /// Document domains from `metadata_json` `$.domain` (string or array);
     /// always an array, empty when the metadata has no domain.
     domain: Vec<String>,
-    /// The parsed `metadata_json`; the raw string when it is not valid JSON
-    /// (the oracle's fallback); absent when there is no metadata.
+    /// The parsed `metadata_json`; the raw string when it is not valid JSON;
+    /// absent when there is no metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<Value>,
     /// Creation timestamp.
@@ -144,7 +133,7 @@ struct CatalogDocument {
     updated_at: String,
 }
 
-/// The `catalog_documents` response (oracle `CatalogDocumentsResponse`).
+/// The `catalog_documents` response.
 #[derive(Debug, Serialize)]
 struct DocumentsResponse {
     /// The page of documents (empty, not null, when there are no matches).
@@ -159,16 +148,16 @@ struct DocumentsResponse {
 /// Handle the `catalog_documents` tool call (design D2/D4).
 ///
 /// `args` is the raw JSON argument object (`None` = no arguments). The
-/// result is the oracle-shaped payload the server serializes into the tool
+/// result is the response payload the server serializes into the tool
 /// response's text block.
 pub fn handle_catalog_documents(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
     let args = parse_args(args)?;
 
     let limit = parse_page_size(args.page_size.as_ref());
     let cursor = args.cursor.unwrap_or_default();
-    // Oracle parity: an EMPTY cursor starts the first page with the
-    // REQUESTED page size; only a non-empty cursor overrides the offset AND
-    // limit (the cursor carries its own page window).
+    // An EMPTY cursor starts the first page with the REQUESTED page size;
+    // only a non-empty cursor overrides the offset AND limit (the cursor
+    // carries its own page window).
     let page = if cursor.is_empty() {
         Page::first(limit)
     } else {
@@ -213,10 +202,9 @@ fn parse_args(args: Option<&Value>) -> Result<CatalogDocumentsArgs, McpError> {
 }
 
 /// Parse `page_size` (frozen schema: number, default 20, range 1-200).
-/// Mirrors the oracle's `req.GetInt` leniency: missing or unparseable values
-/// fall back to the default rather than erroring; floats truncate toward
-/// zero like Go's `int(v)` conversion. Out-of-range values are clamped by
-/// [`normalize_page_size`] (oracle `NormalizePageSize`), not rejected.
+/// Lenient parsing: missing or unparseable values fall back to the default
+/// rather than erroring; floats truncate toward zero. Out-of-range values
+/// are clamped by [`normalize_page_size`], not rejected.
 fn parse_page_size(value: Option<&Value>) -> i64 {
     let Some(size) = value.and_then(|value| match value {
         Value::Number(number) => number
@@ -230,8 +218,7 @@ fn parse_page_size(value: Option<&Value>) -> i64 {
     normalize_page_size(size)
 }
 
-/// Map a stored document to the wire entry (oracle field mapping in
-/// `handlers/catalog_documents.go`).
+/// Map a stored document to the wire entry.
 fn catalog_document(doc: &Document) -> CatalogDocument {
     let (domain, metadata) = metadata_fields(doc.metadata_json.as_deref());
     CatalogDocument {
@@ -246,12 +233,9 @@ fn catalog_document(doc: &Document) -> CatalogDocument {
 }
 
 /// Extract the `$.domain` value (string or array of strings) and the parsed
-/// metadata from a document's `metadata_json` (oracle field mapping in
-/// `handlers/catalog_documents.go`). No/empty metadata → no domains, no
-/// metadata field. Malformed JSON → no domains, the raw string as the
-/// metadata (the oracle's fallback). A JSON `null` → no metadata field
-/// (the oracle's `interface{}` unmarshals `null` to a nil value, which
-/// `omitempty` drops).
+/// metadata from a document's `metadata_json`. No/empty metadata → no
+/// domains, no metadata field. Malformed JSON → no domains, the raw string
+/// as the metadata. A JSON `null` → no metadata field.
 fn metadata_fields(metadata_json: Option<&str>) -> (Vec<String>, Option<Value>) {
     let Some(raw) = metadata_json.filter(|raw| !raw.is_empty()) else {
         return (Vec::new(), None);
@@ -264,7 +248,7 @@ fn metadata_fields(metadata_json: Option<&str>) -> (Vec<String>, Option<Value>) 
 
 /// The `$.domain` members as strings: a non-empty string wraps into a
 /// one-element array; an array keeps its non-empty string members (non-string
-/// items are skipped, as in the oracle's type switch).
+/// items are skipped).
 fn extract_domains(metadata: &Value) -> Vec<String> {
     match metadata.get("domain") {
         Some(Value::String(domain)) if !domain.is_empty() => vec![domain.clone()],
@@ -296,8 +280,8 @@ mod tests {
 
     use super::*;
 
-    /// The oracle `TestHandleCatalogOverview` fixture: 2 documents (markdown
-    /// + json), 3 chunks, 2 entities, 1 fact, 1 entity link.
+    /// Overview fixture: 2 documents (markdown + json), 3 chunks, 2 entities,
+    /// 1 fact, 1 entity link.
     fn seeded_overview_db() -> db::Db {
         let db = test_util::in_memory_db();
         db.exec_tx(|tx| -> Result<(), db::DbError> {
@@ -351,8 +335,8 @@ mod tests {
         db
     }
 
-    /// The oracle `TestHandleCatalogDocuments` fixture: 2 documents, one with
-    /// array domains `["hr","policy"]`, one with `["engineering"]`.
+    /// Documents fixture: 2 documents, one with array domains
+    /// `["hr","policy"]`, one with `["engineering"]`.
     fn seeded_documents_db() -> db::Db {
         let db = test_util::in_memory_db();
         db.exec_tx(|tx| -> Result<(), db::DbError> {
@@ -375,7 +359,7 @@ mod tests {
         db
     }
 
-    /// `n` documents without metadata (the oracle cursor-pagination fixture).
+    /// `n` documents without metadata (cursor-pagination fixture).
     fn seeded_n_documents_db(n: usize) -> db::Db {
         let db = test_util::in_memory_db();
         db.exec_tx(|tx| -> Result<(), db::DbError> {
@@ -402,7 +386,7 @@ mod tests {
         handle_catalog_documents(db, args.as_ref())
     }
 
-    // ── catalog_overview (oracle catalog_overview_test.go cases) ──────────
+    // ── catalog_overview ──────────────────────────────────────────────────
 
     #[test]
     fn overview_counts_match_seeded_db() {
@@ -450,7 +434,7 @@ mod tests {
         assert_eq!(response["graph_edge_count"], serde_json::json!(1));
     }
 
-    /// Oracle `TestHandleCatalogOverview_EmptyDB`: all counters are zero.
+    /// All counters are zero for an empty db.
     #[test]
     fn overview_empty_db_is_all_zeros() {
         let response = overview(&test_util::in_memory_db());
@@ -470,8 +454,7 @@ mod tests {
         assert_eq!(response["entities_by_domain"], serde_json::json!({}));
     }
 
-    /// Oracle `TestHandleCatalogOverview_EmptyDB_ReturnsEmptyArrays`: the
-    /// list fields serialize as `[]`, not `null`.
+    /// The list fields serialize as `[]`, not `null`.
     #[test]
     fn overview_empty_db_lists_are_empty_arrays_not_null() {
         let wire = serde_json::to_string(&overview(&test_util::in_memory_db())).unwrap();
@@ -479,11 +462,9 @@ mod tests {
         assert!(wire.contains("\"entity_types\":[]"), "got: {wire}");
     }
 
-    /// Oracle `TestHandleCatalogOverview_MultiEdgePath`: the graph counts
-    /// union the endpoints of a multi-edge chain (1→2, 2→3 → 3 nodes, 2
-    /// edges) — the oracle's regression case for its broken intersection
-    /// formula, which the db crate's `graph_node_count` (distinct subjects ∪
-    /// targets) handles correctly by construction.
+    /// The graph counts union the endpoints of a multi-edge chain (1→2, 2→3
+    /// → 3 nodes, 2 edges): `graph_node_count` is distinct subjects ∪
+    /// targets by construction.
     #[test]
     fn overview_multi_edge_path_graph_counts() {
         let db = test_util::in_memory_db();
@@ -513,8 +494,7 @@ mod tests {
         assert_eq!(response["graph_edge_count"], serde_json::json!(2));
     }
 
-    /// Oracle `TestHandleCatalogOverview_DomainsFromMetadata`: domains are
-    /// read from `metadata_json` for multi-domain documents.
+    /// Domains are read from `metadata_json` for multi-domain documents.
     #[test]
     fn overview_domains_from_metadata() {
         let db = test_util::in_memory_db();
@@ -541,7 +521,7 @@ mod tests {
         assert_eq!(domains, ["engineering", "hr", "product"]);
     }
 
-    // ── catalog_documents: filters (oracle TestHandleCatalogDocuments) ────
+    // ── catalog_documents: filters ────────────────────────────────────────
 
     #[test]
     fn documents_empty_request_returns_all() {
@@ -594,8 +574,8 @@ mod tests {
         );
     }
 
-    /// Name substring filter (frozen schema `name` → the oracle's
-    /// `ListPaginatedWithName`): case-insensitive on `original_path`.
+    /// Name substring filter (frozen schema `name`): case-insensitive on
+    /// `original_path`.
     #[test]
     fn documents_name_filter_is_case_insensitive_substring() {
         let response = documents(
@@ -618,7 +598,7 @@ mod tests {
         assert_eq!(none["documents"], serde_json::json!([]));
     }
 
-    // ── catalog_documents: cursor pagination (oracle _CursorPagination) ───
+    // ── catalog_documents: cursor pagination ──────────────────────────────
 
     #[test]
     fn documents_cursor_pagination_walk() {
@@ -666,7 +646,7 @@ mod tests {
     }
 
     /// An empty cursor honours the REQUESTED page size (the cursor's own
-    /// window only applies to a non-empty cursor — oracle control flow).
+    /// window only applies to a non-empty cursor).
     #[test]
     fn documents_empty_cursor_uses_requested_page_size() {
         let db = seeded_n_documents_db(5);
@@ -679,7 +659,7 @@ mod tests {
         assert!(response["next_cursor"].is_string(), "{response}");
     }
 
-    /// Oracle `TestHandleCatalogDocuments_InvalidCursor`.
+    /// An invalid cursor is a tool error.
     #[test]
     fn documents_invalid_cursor_is_an_error() {
         let db = test_util::in_memory_db();
@@ -711,7 +691,7 @@ mod tests {
     }
 
     /// `page_size` out of range (or unparseable) clamps to the default 20
-    /// (oracle `NormalizePageSize`) instead of erroring.
+    /// (`normalize_page_size`) instead of erroring.
     #[test]
     fn documents_page_size_out_of_range_defaults_to_twenty() {
         let db = seeded_n_documents_db(25);
@@ -731,7 +711,7 @@ mod tests {
         }
     }
 
-    // ── catalog_documents: shapes (oracle _EmptyDB + field mapping) ───────
+    // ── catalog_documents: shapes (empty db + field mapping) ──────────────
 
     #[test]
     fn documents_empty_db_is_empty_page_without_cursor() {
@@ -741,7 +721,7 @@ mod tests {
         assert!(response.get("next_cursor").is_none(), "{response}");
     }
 
-    /// Oracle field mapping for `domain` and `metadata`: array and scalar
+    /// Field mapping for `domain` and `metadata`: array and scalar
     /// `$.domain`, no metadata, and malformed metadata (raw string fallback).
     #[test]
     fn documents_metadata_shapes() {

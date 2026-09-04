@@ -4,9 +4,6 @@
 //! run against the public API (`mcp::tools::dossier::handle_get_entity_dossier`,
 //! `mcp::McpError`) plus the public seams of the `db`, `graph` and `config`
 //! crates (in-memory fixture db, ready graph index).
-//!
-//! Oracle mapping: Go `internal/mcp/handlers/get_entity_dossier.go` - the
-//! fixtures mirror the Go test file (`get_entity_dossier_test.go`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -39,8 +36,8 @@ fn call(db: &db::Db, graph: &GraphIndex, args: Option<Value>) -> Result<Value, M
     handle_get_entity_dossier(db, graph, args.as_ref())
 }
 
-/// The oracle `TestHandleGetEntityDossier` fixture: Alice (hr) `works_at`
-/// Acme (hr) + a fact source + a linked document.
+/// The dossier fixture: Alice (hr) `works_at` Acme (hr) + a fact source +
+/// a linked document.
 fn seeded_dossier_db() -> (db::Db, (i64, i64, i64)) {
     seed_db(|exec| {
         let entities = EntityDao::new(exec);
@@ -61,9 +58,9 @@ fn seeded_dossier_db() -> (db::Db, (i64, i64, i64)) {
     })
 }
 
-// ── resolution (oracle TestHandleGetEntityDossier + _DomainDisambiguation)
+// ── resolution ───────────────────────────────────────────────────────────
 
-/// Oracle "empty/missing entity id returns error": the XOR is enforced.
+/// An empty/missing entity id returns an error: the XOR is enforced.
 #[test]
 fn resolution_requires_exactly_one_of_id_or_name() {
     let (db, _) = seeded_dossier_db();
@@ -82,7 +79,7 @@ fn resolution_requires_exactly_one_of_id_or_name() {
     }
 }
 
-/// Oracle "non-integer entity id returns error".
+/// A non-integer entity id returns an error.
 #[test]
 fn resolution_non_integer_id_is_an_error() {
     let (db, _) = seeded_dossier_db();
@@ -95,8 +92,7 @@ fn resolution_non_integer_id_is_an_error() {
     assert!(err.to_string().contains("must be an integer"), "got: {err}");
 }
 
-/// Oracle "nonexistent entity id returns error" (recorded deviation: the
-/// message says "id", not the oracle's "Predicate").
+/// A nonexistent entity id returns an error.
 #[test]
 fn resolution_nonexistent_id_is_not_found() {
     let (db, _) = seeded_dossier_db();
@@ -114,8 +110,7 @@ fn resolution_nonexistent_id_is_not_found() {
     );
 }
 
-/// Oracle `TestHandleGetEntityDossier_DomainDisambiguation`: two same-named
-/// entities in different domains.
+/// Two same-named entities in different domains.
 #[test]
 fn resolution_domain_disambiguates_and_lists_candidates() {
     let (db, ids) = seed_db(|exec| {
@@ -170,10 +165,10 @@ fn resolution_domain_disambiguates_and_lists_candidates() {
     assert_eq!(single["entity"]["id"], ids.2);
 }
 
-// ── response shape (oracle TestHandleGetEntityDossier_ResponseFields) ────
+// ── response shape ───────────────────────────────────────────────────────
 
-/// Oracle "valid entity returns dossier with facts and sources" + the
-/// response-fields test: entity fields, a fact, and a source.
+/// A valid entity returns a dossier with facts and sources: entity
+/// fields, a fact, and a source.
 #[test]
 fn dossier_returns_entity_facts_and_sources() {
     let (db, (alice, _acme, doc_id)) = seeded_dossier_db();
@@ -206,8 +201,8 @@ fn dossier_returns_entity_facts_and_sources() {
     assert_eq!(sources[0]["original_path"], "/docs/hr.md");
 }
 
-/// Oracle `TestHandleGetEntityDossier_ResponseFields` with description +
-/// metadata: both are present (the raw metadata string, not parsed).
+/// With description + metadata: both are present (the raw metadata
+/// string, not parsed).
 #[test]
 fn dossier_entity_carries_description_and_raw_metadata() {
     let (db, alice) = seed_db(|exec| {
@@ -238,8 +233,7 @@ fn dossier_entity_carries_description_and_raw_metadata() {
     );
 }
 
-/// Oracle `TestHandleGetEntityDossier_ExcludeFactsAndSources`: both flags
-/// false → the sections are omitted (omitempty).
+/// Both flags false → the sections are omitted (omitempty).
 #[test]
 fn dossier_excludes_facts_and_sources_when_disabled() {
     let (db, (alice, _, _)) = seeded_dossier_db();
@@ -260,8 +254,7 @@ fn dossier_excludes_facts_and_sources_when_disabled() {
     assert_eq!(response["entity"]["id"], alice);
 }
 
-/// Oracle `TestHandleGetEntityDossier_DepthClamping`: out-of-range depths
-/// are clamped, not rejected.
+/// Out-of-range depths are clamped, not rejected.
 #[test]
 fn dossier_depth_is_clamped_not_rejected() {
     let (db, alice) = seed_db(|exec| {
@@ -310,9 +303,9 @@ fn dossier_empty_sections_are_omitted() {
     }
 }
 
-// ── cross-domain links (oracle TestCrossDomainLinks) ─────────────────────
+// ── cross-domain links ───────────────────────────────────────────────────
 
-/// Oracle `FilterSameDomain` (with graph): same-domain targets stay out of
+/// Same-domain filtering (with graph): same-domain targets stay out of
 /// `cross_domain_links` but appear in `related_entities`; cross-domain
 /// targets appear in both.
 #[test]
@@ -372,8 +365,8 @@ fn cross_links_filter_same_domain() {
     );
 }
 
-/// Oracle `DedupByTargetEntityID` (no graph): two links to the same target
-/// collapse to one, keeping the higher confidence and both relation types.
+/// Deduplication (no graph): two links to the same target collapse to
+/// one, keeping the higher confidence and both relation types.
 #[test]
 fn cross_links_dedup_by_target_and_keep_best_provenance() {
     let (db, (id_hr, id_product)) = seed_db(|exec| {
@@ -423,7 +416,7 @@ fn cross_links_dedup_by_target_and_keep_best_provenance() {
     assert!(types.contains(&"equals"), "{types:?}");
 }
 
-/// Oracle `IncomingLink` (no graph): a link where the entity is the target
+/// Incoming links (no graph): a link where the entity is the target
 /// resolves the subject as the cross-domain target.
 #[test]
 fn cross_links_resolve_incoming_links() {
@@ -459,8 +452,8 @@ fn cross_links_resolve_incoming_links() {
     );
 }
 
-/// Oracle `RelationTypesMerging` (no graph): per target the relation types
-/// are the union, and the best-provenance entry's confidence is kept.
+/// Relation-type merging (no graph): per target the relation types are
+/// the union, and the best-provenance entry's confidence is kept.
 #[test]
 fn cross_links_merge_relation_types_per_target() {
     let (db, id_hr) = seed_db(|exec| {
@@ -518,8 +511,8 @@ fn cross_links_merge_relation_types_per_target() {
     assert_eq!(server["relation_types"], serde_json::json!(["manages"]));
 }
 
-/// Oracle `BFSOnlyIncidentEdges` (with graph): only edges incident to the
-/// center produce cross links; a depth-2 hop is not.
+/// Only incident edges (with graph): only edges incident to the center
+/// produce cross links; a depth-2 hop is not.
 #[test]
 fn cross_links_bfs_only_incident_edges() {
     let (db, id_hr) = seed_db(|exec| {
@@ -565,8 +558,8 @@ fn cross_links_bfs_only_incident_edges() {
     );
 }
 
-/// Oracle `RelationTypesFromBFS` (with graph): the BFS edge's relation type
-/// and the direct link's type both land in the same target's union.
+/// BFS + direct types (with graph): the BFS edge's relation type and the
+/// direct link's type both land in the same target's union.
 #[test]
 fn cross_links_merge_bfs_and_direct_types() {
     let (db, id_hr) = seed_db(|exec| {
@@ -612,8 +605,8 @@ fn cross_links_merge_bfs_and_direct_types() {
     assert!(types.contains(&"equals"), "{types:?}");
 }
 
-/// Oracle `ProvenancePresent` (with graph): a cross-domain link carries its
-/// method and confidence.
+/// Provenance (with graph): a cross-domain link carries its method and
+/// confidence.
 #[test]
 fn cross_links_carry_provenance() {
     let (db, id_hr) = seed_db(|exec| {

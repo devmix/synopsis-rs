@@ -170,7 +170,7 @@ async fn connect(url: &str) -> RunningService<RoleClient, ClientInfo> {
 }
 
 /// The tool response's single text block, parsed as JSON (the server
-/// serializes the oracle-shaped payload into one text block).
+/// serializes the payload into one text block).
 fn payload_json(result: &CallToolResult) -> Value {
     let text = result
         .content
@@ -208,7 +208,7 @@ async fn full_roundtrip_lists_twelve_tools_and_serves_search_catalog_health() {
     names.sort_unstable();
     assert_eq!(names, FROZEN_TOOL_NAMES);
 
-    // search: the canned hit comes back through the wire, oracle-shaped.
+    // search: the canned hit comes back through the wire.
     let mut args = Map::new();
     args.insert("query".to_owned(), Value::String("hiring policy".into()));
     args.insert("top_k".to_owned(), Value::from(5));

@@ -6,8 +6,8 @@
 //! `CHANNEL_CAPACITY`). The 5 `POST /message` tests that need the
 //! `#[cfg(test)]` `test_server` fixture stay inline in `src/transport/sse.rs`.
 //!
-//! Oracle mapping: mcp-go v0.57.0 `server/sse.go` — the wire contract the
-//! endpoint URL and the SSE frame bytes are pinned against.
+//! Wire reference: mcp-go v0.57.0 — the wire contract the endpoint URL
+//! and the SSE frame bytes are pinned against.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -195,7 +195,7 @@ async fn sse_endpoint_serves_endpoint_event_and_cleans_up_on_drop() {
         response.headers().get(header::CACHE_CONTROL).unwrap(),
         "no-cache"
     );
-    // Deliberate break from the oracle's wildcard CORS (design D2 revision).
+    // Deliberate: no wildcard CORS header (design D2 revision).
     assert!(
         response
             .headers()

@@ -1,15 +1,13 @@
 //! MCP server: dual transport composed into one axum router (design D1/D5)
 //! with the frozen 12-tool registry (`mcp-contract`): the rmcp 3.x
-//! Streamable HTTP service as the fallback (design D8) plus the Go oracle's
-//! legacy HTTP+SSE wire contract on explicit `GET /sse` + `POST /message`
-//! routes (D8 override, user decision 2026-08-31; wire reference mcp-go
-//! v0.57.0).
+//! Streamable HTTP service as the fallback (design D8) plus the legacy
+//! HTTP+SSE wire contract (wire reference mcp-go v0.57.0) on explicit
+//! `GET /sse` + `POST /message` routes (D8 override, user decision
+//! 2026-08-31).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/{server.go,tools.go}`. The Go
-//! code is the behavior/contract reference only — this is the Rust
-//! re-architecture (functional copy, not a code copy): tool schemas are
-//! transcribed from `tools.go` as `rmcp::model::Tool` objects, and every
-//! registered tool is backed by a real handler (design D2).
+//! Tool schemas are the frozen `mcp-contract` registry as
+//! `rmcp::model::Tool` objects, and every registered tool is backed by a
+//! real handler (design D2).
 
 use std::sync::{Arc, PoisonError, RwLock};
 
@@ -41,7 +39,7 @@ use crate::transport;
 /// rebuilds it after a knowledge-graph reload and swaps both handles in via
 /// [`Self::set_searcher`] / [`Self::set_graph`]. Every session clone shares
 /// the same lock pair, so a swap is visible to all in-flight and future
-/// sessions — the Rust form of the oracle's `mcpSrv.SetGraph`.
+/// sessions.
 #[derive(Clone)]
 pub struct Server {
     name: String,
@@ -53,11 +51,9 @@ pub struct Server {
 }
 
 impl Server {
-    /// Build the server. `name`/`version` come from config `server.*`
-    /// (oracle `NewServer(cfg, ...)`); `graph` carries the config-driven
-    /// Ready/Unavailable state — the Rust form of the oracle's `*graph.Graph`
-    /// nil check (the task body's "Option&lt;Graph&gt;" is the graph crate's
-    /// own `GraphIndex` modeling of config-driven optionality).
+    /// Build the server. `name`/`version` come from config `server.*`;
+    /// `graph` carries the config-driven Ready/Unavailable state — the graph
+    /// crate's `GraphIndex` models config-driven optionality.
     pub fn new(
         name: String,
         version: String,
@@ -79,19 +75,17 @@ impl Server {
     /// instance.
     ///
     /// Explicit routes: `GET /health` (design D5), `GET /sse` + `POST
-    /// /message` — the oracle's legacy HTTP+SSE wire contract (mcp-go
-    /// v0.57.0) — plus the rmcp Streamable HTTP service as the fallback for
-    /// every other path (design D8; the oracle mounted its SSE server at
-    /// "/"). The SSE routes are mounted BEFORE the fallback; both transports
-    /// share one `Arc<Server>` and one [`transport::SseSessionMap`], so a
-    /// tool call served over either leg runs the same `Server::dispatch`
-    /// seam.
+    /// /message` — the legacy HTTP+SSE wire contract (mcp-go v0.57.0) — plus
+    /// the rmcp Streamable HTTP service as the fallback for every other path
+    /// (design D8; the legacy wire mounted its SSE server at "/"). The SSE
+    /// routes are mounted BEFORE the fallback; both transports share one
+    /// `Arc<Server>` and one [`transport::SseSessionMap`], so a tool call
+    /// served over either leg runs the same `Server::dispatch` seam.
     ///
     /// The legacy SSE leg was deliberately dropped by design D8 (2026-08-18)
     /// and restored by an explicit user decision (2026-08-31, D8 override):
-    /// both transports are always on — no flags, no config (oracle parity:
-    /// the oracle's SSE server was the only transport and had no transport
-    /// switch).
+    /// both transports are always on — no flags, no config (the legacy wire's
+    /// SSE server was the only transport and had no transport switch).
     ///
     /// Axum consumes the SSE routes' state (`.with_state`) before the
     /// state-less `GET /health` route joins — its handler state
@@ -111,17 +105,16 @@ impl Server {
                 move || Ok(server.as_ref().clone())
             },
             Arc::new(LocalSessionManager::default()),
-            // The oracle had no host validation (default bind 0.0.0.0);
-            // rmcp's loopback-only default would break LAN access for a
-            // personal server. Deviation recorded (design D8 keeps the
-            // transport, not the oracle's missing validation).
+            // Host validation is disabled (default bind 0.0.0.0): rmcp's
+            // loopback-only default would break LAN access for a personal
+            // server (design D8).
             StreamableHttpServerConfig::default().disable_allowed_hosts(),
         );
         let sessions = transport::SseSessionMap::new();
         // Idle reaper (design D9, task 1.5): a detached process-lifetime task
         // that reaps sessions idle beyond the 300 s default every 30 s — a
-        // general-service hardening the oracle (single local user) never
-        // needed. The JoinHandle is deliberately NOT held: the reaper is
+        // general-service hardening (a single local user never leaves idle
+        // sessions behind). The JoinHandle is deliberately NOT held: the reaper is
         // process-lifetime and self-terminating in effect (once the map
         // drains it removes nothing; process exit is the only shutdown,
         // design D6). `spawn_reaper` is context-tolerant — this assembly runs
@@ -155,17 +148,17 @@ impl Server {
 
     /// Replaces the active search handle (design D8 hot-swap seam).
     ///
-    /// The search crate's hybrid searcher is immutable by design — there is
-    /// no `SetGraph`-style mutation. The CLI (task 1.6) rebuilds the
+    /// The search crate's hybrid searcher is immutable by design — the
+    /// handle is swapped wholesale. The CLI (task 1.6) rebuilds the
     /// searcher after a knowledge-graph reload and swaps it in here; the
     /// swap is visible to every session clone (they share this lock).
     pub fn set_searcher(&self, searcher: Arc<dyn Searcher + Send + Sync>) {
         write_slot(&self.searcher, searcher);
     }
 
-    /// Replaces the active knowledge-graph handle — the Rust form of the
-    /// oracle's `mcpSrv.SetGraph`: after a graph reload the CLI swaps the
-    /// freshly loaded index in so the graph tools serve the new state.
+    /// Replaces the active knowledge-graph handle: after a graph reload the
+    /// CLI swaps the freshly loaded index in so the graph tools serve the
+    /// new state.
     pub fn set_graph(&self, graph: Arc<graph::GraphIndex>) {
         write_slot(&self.graph, graph);
     }
@@ -176,7 +169,7 @@ impl Server {
     }
 
     /// Dispatch a registered tool call (design D2 seam: parse args → call
-    /// crate API → serialize the oracle-shaped payload). An unknown tool
+    /// crate API → serialize the tool payload). An unknown tool
     /// name never reaches this method — `call_tool` rejects it as a protocol
     /// error first; the catch-all arm is defense in depth.
     pub fn dispatch(&self, name: &str, args: Option<&Value>) -> Result<Value, McpError> {
@@ -227,8 +220,8 @@ impl ServerHandler for Server {
     fn get_info(&self) -> ServerInfo {
         let capabilities = ServerCapabilities::builder()
             .enable_tools()
-            // The oracle advertised tools.listChanged = true (server.go);
-            // keep the same capability surface.
+            // The frozen capability surface advertises tools.listChanged =
+            // true (`mcp-contract`).
             .enable_tool_list_changed()
             .build();
         ServerInfo::new(capabilities)
@@ -249,8 +242,8 @@ impl ServerHandler for Server {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, rmcp::model::ErrorData> {
         let name = request.name.clone();
-        // Unknown tool: protocol error, not a tool error (oracle parity:
-        // mcp-go returns METHOD_NOT_FOUND for unregistered tools).
+        // Unknown tool: protocol error, not a tool error (mcp-go v0.57.0
+        // returns METHOD_NOT_FOUND for unregistered tools).
         if !self
             .tools
             .iter()
@@ -298,7 +291,7 @@ impl ServerHandler for Server {
     }
 }
 
-/// One transcribed tool parameter (oracle `mcp.With*` property).
+/// One tool input-schema property (with an optional default).
 fn param(r#type: &str, description: &str, default: Option<Value>) -> Value {
     let mut property = json!({ "type": r#type, "description": description });
     if let Some(default) = default {
@@ -307,11 +300,10 @@ fn param(r#type: &str, description: &str, default: Option<Value>) -> Value {
     property
 }
 
-/// A frozen tool: name + description + input schema transcribed from
-/// `../synopsis/internal/mcp/tools.go` (`mcp-contract`). Property and
-/// required lists sort alphabetically in the serde_json BTreeMap — the same
-/// wire order the Go oracle's JSON marshal produces. `annotations: {}` is
-/// always present, as in mcp-go's output.
+/// A frozen tool: name + description + input schema (`mcp-contract`).
+/// Property and required lists sort alphabetically in the serde_json
+/// BTreeMap — a stable wire order. `annotations: {}` is always present, as
+/// in mcp-go's output.
 fn tool(
     name: &'static str,
     description: &'static str,
@@ -331,8 +323,7 @@ fn tool(
 }
 
 /// The frozen 12-tool registry (`mcp-contract` "Набор инструментов"): names,
-/// descriptions and parameter schemas transcribed verbatim from the Go
-/// oracle `../synopsis/internal/mcp/tools.go`.
+/// descriptions and parameter schemas as pinned by the spec.
 pub fn tool_definitions() -> Vec<Tool> {
     vec![
         tool(

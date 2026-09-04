@@ -1,17 +1,12 @@
 //! MCP server crate: dual transport over axum — rmcp 3.x Streamable HTTP
-//! (design D1/D8) plus the oracle's legacy HTTP+SSE wire contract
-//! ([`transport`], D8 override, user decision 2026-08-31) — the frozen
-//! 12-tool registry (`mcp-contract`) and the `GET /health` endpoint
-//! (design D5).
+//! (design D1/D8) plus the legacy HTTP+SSE wire contract ([`transport`],
+//! D8 override, user decision 2026-08-31) — the frozen 12-tool registry
+//! (`mcp-contract`) and the `GET /health` endpoint (design D5).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp` + `internal/mcp/handlers`
-//! (design.md D1). The Go code is a reference for behavior and contracts
-//! only — this crate is the Rust re-architecture (functional copy, not a
-//! code copy): the transport is rmcp's Streamable HTTP (design D8) plus the
-//! oracle's legacy HTTP+SSE wire contract ([`transport`], restored by
-//! add-legacy-sse-transport), tool schemas are transcribed from
-//! `../synopsis/internal/mcp/tools.go` and pinned by the registry test in
-//! [`server`].
+//! The transport is rmcp's Streamable HTTP (design D8) plus the legacy
+//! HTTP+SSE wire contract ([`transport`], restored by
+//! add-legacy-sse-transport); tool schemas are the frozen `mcp-contract`
+//! registry, pinned by the registry test in [`server`].
 //!
 //! # Public API
 //!

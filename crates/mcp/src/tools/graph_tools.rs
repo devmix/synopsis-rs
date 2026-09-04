@@ -2,36 +2,29 @@
 //! traversal (BFS) and cross-domain entity links with provenance (design
 //! D2/D4).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/{get_entity_relations.go,
-//! get_entity_links.go}` + the shared `entity_resolve.go` (the id/name XOR
-//! resolution is the same one `dossier.rs` ports).
-//!
 //! Thin handlers per design D2: parse the frozen-schema arguments → resolve
 //! the entity (by `entity_id` XOR `entity_name`) → graph traverser / db DAOs
-//! → oracle-shaped JSON. No business logic lives here.
+//! → the frozen wire JSON (`mcp-contract`). No business logic lives here.
 //!
-//! **Recorded deviations (house conventions, as in `dossier.rs`):**
-//! 1. *Error text:* the oracle prefixes tool errors with `"Error …"` and says
-//!    e.g. `"Entity Predicate %d not found"`; this crate uses the [`McpError`]
-//!    conventions (e.g. `"entity with id N not found"`).
-//! 2. *Unavailable graph:* the oracle's nil-graph check returns a tool error
-//!    BEFORE argument parsing (a disabled graph is a missing resource, so the
-//!    house [`McpError::NotFound`] carries it); the same check order is kept.
-//! 3. *Edge `domain` field:* the oracle's `EdgeOut.Domain` is a dead field —
-//!    the Go traverser never populates it, so its `omitempty` never emits it
-//!    on the wire. The field is omitted here (wire-identical output, YAGNI).
-//! 4. *No BFS timeout:* the oracle wraps the traversal in a 5 s context
-//!    timeout (a Go idiom); the Rust traverser is synchronous.
-//! 5. *Entity wire shape:* the oracle's `EntityNodeOut` has `domain,omitempty`;
-//!    the shared `EntityBrief` (house convention) always emits `domain`. In
-//!    practice identical: the v5 column is `NOT NULL`.
+//! **Design decisions:**
+//! 1. *Error text:* this crate uses the [`McpError`] conventions
+//!    (e.g. `"entity with id N not found"`).
+//! 2. *Unavailable graph:* an unavailable graph returns a tool error BEFORE
+//!    argument parsing (a disabled graph is a missing resource, so the house
+//!    [`McpError::NotFound`] carries it).
+//! 3. *Edge `domain` field:* the traverser never populates a `domain` on an
+//!    edge, so it is never emitted on the wire. The field is omitted here
+//!    (wire-identical output, YAGNI).
+//! 4. *No BFS timeout:* the traverser is synchronous.
+//! 5. *Entity wire shape:* the shared `EntityBrief` (house convention) always
+//!    emits `domain`; the v5 column is `NOT NULL`, so this is unambiguous.
 //! 6. *Nil-target guard:* the v5 schema enforces the link endpoint FKs
 //!    (`foreign_keys=ON` on every pooled connection), so a dangling link row
 //!    cannot exist via the DAOs; the guard (skip a missing target) is kept as
 //!    defense in depth and is testable only by inserting past the FK.
-//! 7. *Entity resolution:* the oracle's `ResolveEntity` is ported privately
-//!    here as in `dossier.rs`; hoisting the shared resolver into
-//!    `tools/entity` is a follow-up refactor outside this task's scope.
+//! 7. *Entity resolution:* the resolver is duplicated privately here as in
+//!    `dossier.rs`; hoisting the shared resolver into `tools/entity` is a
+//!    follow-up refactor outside this task's scope.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -56,11 +49,10 @@ const MIN_DEPTH: i64 = 1;
 /// The BFS depth ceiling (frozen schema: range 1-10).
 const MAX_DEPTH: i64 = 10;
 
-// ── get_entity_relations wire shapes (oracle field order) ────────────────────
+// ── get_entity_relations wire shapes ─────────────────────────────────────────
 
-/// Provenance of a cross-domain edge (oracle `EdgeOut.Metadata`): emitted only
-/// for entity-link edges when `include_cross_domain` is set (oracle condition
-/// `includeCrossDomain && edge.Method != ""` — fact edges have no method).
+/// Provenance of a cross-domain edge: emitted only for entity-link edges when
+/// `include_cross_domain` is set (fact edges have no method).
 #[derive(Debug, Serialize)]
 struct EdgeMetadata {
     /// Entity-link method (`'rule'`/`'equals'`/`'llm'`).
@@ -72,8 +64,7 @@ struct EdgeMetadata {
     evidence: Option<String>,
 }
 
-/// One traversed edge (oracle `EdgeOut`; the oracle's dead `domain` field is
-/// omitted — recorded deviation 3).
+/// One traversed edge (the dead `domain` field is omitted — design decision 3).
 #[derive(Debug, Serialize)]
 struct EdgeOut {
     /// Source entity row id.
@@ -92,9 +83,9 @@ struct EdgeOut {
     metadata: Option<EdgeMetadata>,
 }
 
-/// The `get_entity_relations` response (oracle `EntityRelationsResponse`):
-/// field order matches the Go struct. `nodes`/`edges` are always present (no
-/// omitempty in the oracle), possibly empty.
+/// The `get_entity_relations` response: field order follows the frozen
+/// contract (`mcp-contract`). `nodes`/`edges` are always present, possibly
+/// empty.
 #[derive(Debug, Serialize)]
 struct RelationsResponse {
     /// The center (start) entity, from the graph index.
@@ -103,7 +94,7 @@ struct RelationsResponse {
     nodes: Vec<EntityBrief>,
     /// The edges discovered, in traversal order.
     edges: Vec<EdgeOut>,
-    /// `nodes.len()` — the center excluded from the count, as in the oracle.
+    /// `nodes.len()` — the center excluded from the count.
     total_nodes: usize,
     /// `edges.len()`.
     total_edges: usize,
@@ -113,9 +104,9 @@ struct RelationsResponse {
     traversal_time_ms: u64,
 }
 
-// ── get_entity_links wire shapes (oracle field order) ────────────────────────
+// ── get_entity_links wire shapes ─────────────────────────────────────────────
 
-/// One cross-domain link with provenance (oracle `EntityLinkOut`).
+/// One cross-domain link with provenance.
 #[derive(Debug, Serialize)]
 struct LinkOut {
     /// The target entity row id.
@@ -135,8 +126,7 @@ struct LinkOut {
     evidence: Option<String>,
 }
 
-/// The `get_entity_links` response (oracle `EntityLinksResponse`): `links` is
-/// always present (no omitempty in the oracle), possibly empty.
+/// The `get_entity_links` response: `links` is always present, possibly empty.
 #[derive(Debug, Serialize)]
 struct LinksResponse {
     /// The resolved entity.
@@ -202,7 +192,7 @@ fn to_value<T: Serialize>(tool: &'static str, response: T) -> Result<Value, McpE
 
 /// Parse `depth` (frozen schema: number, range 1-10, default 2). Lenient: a
 /// number or a numeric string is accepted; anything else falls back to the
-/// default (the oracle's `GetInt` leniency). Out-of-range values are clamped.
+/// default. Out-of-range values are clamped.
 fn parse_depth(value: Option<&Value>) -> u32 {
     let raw = value.and_then(|value| match value {
         Value::Number(number) => number
@@ -214,10 +204,9 @@ fn parse_depth(value: Option<&Value>) -> u32 {
     raw.unwrap_or(DEFAULT_DEPTH).clamp(MIN_DEPTH, MAX_DEPTH) as u32
 }
 
-/// Resolve an entity from `entity_id` XOR `entity_name` (oracle
-/// `ResolveEntity`, with `entityType = ""`); `domain` disambiguates the name
-/// lookup. A missing/ambiguous entity is a tool error, as in the oracle. Same
-/// semantics as `dossier.rs`'s private resolver (recorded deviation 7).
+/// Resolve an entity from `entity_id` XOR `entity_name`; `domain`
+/// disambiguates the name lookup. A missing/ambiguous entity is a tool error.
+/// Same semantics as `dossier.rs`'s private resolver (design decision 7).
 fn resolve_entity(
     db: &db::Db,
     id_str: &str,
@@ -298,15 +287,15 @@ fn resolve_entity(
 ///
 /// `db` resolves the entity, `graph` is the injected index (Ready/Unavailable
 /// per config); `args` is the raw JSON argument object (`None` = no
-/// arguments). The result is the oracle-shaped payload the server serializes
-/// into the tool response's text block.
+/// arguments). The result is the frozen wire payload (`mcp-contract`) the
+/// server serializes into the tool response's text block.
 pub fn handle_get_entity_relations(
     db: &db::Db,
     graph: &GraphIndex,
     args: Option<&Value>,
 ) -> Result<Value, McpError> {
-    // Oracle parity: the unavailable graph is a tool error BEFORE argument
-    // parsing (recorded deviation 2).
+    // The unavailable graph is a tool error BEFORE argument parsing (design
+    // decision 2).
     let graph = graph.ready().ok_or_else(|| McpError::NotFound {
         what: "knowledge graph is not available (disabled or not loaded yet)".to_owned(),
     })?;
@@ -322,8 +311,8 @@ pub fn handle_get_entity_relations(
     let depth = parse_depth(args.depth.as_ref());
     let include_cross_domain = args.include_cross_domain.unwrap_or(false);
 
-    // The resolved entity must be in the index (oracle `g.GetNode`); the
-    // index can lag the database (built at startup, rebuilt on demand).
+    // The resolved entity must be in the index; the index can lag the database
+    // (built at startup, rebuilt on demand).
     if graph.node_index(entity.id).is_none() {
         return Err(McpError::NotFound {
             what: format!("entity with id {} not found in graph", entity.id),
@@ -331,7 +320,7 @@ pub fn handle_get_entity_relations(
     }
 
     // BFS with the clamped frozen-schema depth; `max_nodes` 0 normalizes to
-    // the oracle's 1000-node default.
+    // the 1000-node default.
     let options = TraverseOptions {
         max_depth: depth,
         follow_entity_links: include_cross_domain,
@@ -398,8 +387,8 @@ pub fn handle_get_entity_relations(
 /// Handle the `get_entity_links` tool call (design D2/D4).
 ///
 /// `db` is the injected database handle; `args` is the raw JSON argument
-/// object (`None` = no arguments). The result is the oracle-shaped payload
-/// the server serializes into the tool response's text block.
+/// object (`None` = no arguments). The result is the frozen wire payload
+/// (`mcp-contract`) the server serializes into the tool response's text block.
 pub fn handle_get_entity_links(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
     let args: LinksArgs = deserialize_args(args, GET_ENTITY_LINKS)?;
     let entity = resolve_entity(
@@ -429,7 +418,7 @@ pub fn handle_get_entity_links(db: &db::Db, args: Option<&Value>) -> Result<Valu
                     link.target_entity_id
                 };
                 // Nil-target guard: skip links whose target row is gone
-                // (recorded deviation 6).
+                // (design decision 6).
                 let Some(target) = entities.get_by_id(target_id)? else {
                     continue;
                 };

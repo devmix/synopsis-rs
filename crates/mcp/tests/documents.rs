@@ -4,10 +4,6 @@
 //! tests` module; they now run against the public API
 //! (`mcp::tools::documents`), with the `crate::`/`super::*` imports rewritten
 //! to the crate name.
-//!
-//! Oracle mapping: Go `internal/mcp/handlers/{get_document_context.go,
-//! get_chunk_by_id.go}` - the fixtures mirror the Go test files
-//! (`get_document_context_test.go` / `get_chunk_by_id_test.go`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -18,7 +14,7 @@ use mcp::error::McpError;
 use mcp::tools::documents::{handle_get_chunk_by_id, handle_get_document_context};
 use serde_json::Value;
 
-// ── fixtures (oracle get_document_context_test.go / get_chunk_by_id_test.go)
+// ── fixtures ──────────────────────────────────────────────────────────────
 
 /// A document with `metadata_json`; returns its id.
 fn seed_document(db: &db::Db, source_type: &str, path: &str, metadata: Option<&str>) -> i64 {
@@ -97,8 +93,7 @@ fn chunk_by_id(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
 
 // ── get_document_context: argument validation ─────────────────────────
 
-/// Oracle "empty document id returns error" + "missing document id
-/// returns error".
+/// Empty and missing document id both return an error.
 #[test]
 fn doc_context_missing_document_id_is_an_error() {
     let db = test_util::in_memory_db();
@@ -120,7 +115,7 @@ fn doc_context_missing_document_id_is_an_error() {
     }
 }
 
-/// Oracle "non-integer document id returns error".
+/// A non-integer document id returns an error.
 #[test]
 fn doc_context_non_integer_document_id_is_an_error() {
     let db = test_util::in_memory_db();
@@ -136,9 +131,7 @@ fn doc_context_non_integer_document_id_is_an_error() {
 
 // ── get_document_context: not-found ────────────────────────────────────
 
-/// Oracle "nonexistent document id returns error": not-found is a tool
-/// error (recorded deviation: the message says "id", not the oracle's
-/// "Predicate").
+/// A nonexistent document id returns an error: not-found is a tool error.
 #[test]
 fn doc_context_nonexistent_document_is_not_found() {
     let db = test_util::in_memory_db();
@@ -155,10 +148,10 @@ fn doc_context_nonexistent_document_is_not_found() {
     assert_eq!(call.is_error, Some(true));
 }
 
-// ── get_document_context: full structure (oracle _ResponseFields) ─────
+// ── get_document_context: full structure ─────────────────────────────────
 
-/// Oracle `TestHandleGetDocumentContext_ResponseFields`: metadata with
-/// a `domain` array, three chunks, the full `document` object.
+/// Full response structure: metadata with a `domain` array, three
+/// chunks, the full `document` object.
 #[test]
 fn doc_context_response_fields() {
     let db = test_util::in_memory_db();
@@ -194,7 +187,7 @@ fn doc_context_response_fields() {
     assert_eq!(chunks[0]["id"], response["chunks"][0]["id"]);
     assert_eq!(chunks[0]["sequence_num"], serde_json::json!(1));
     assert_eq!(chunks[0]["text"], "Chunk one.");
-    // Oracle ChunkWithContext: offsets always present (0 when NULL).
+    // Offsets are always present in the document context (0 when NULL).
     assert_eq!(chunks[0]["start_offset"], serde_json::json!(0));
     assert_eq!(chunks[0]["end_offset"], serde_json::json!(0));
     // No entities / facts seeded → the fields are omitted.
@@ -204,9 +197,8 @@ fn doc_context_response_fields() {
     assert!(response.get("image_paths").is_none(), "{response}");
 }
 
-/// Oracle `TestHandleGetDocumentContext_NoMetadata` + the task's
-/// "document without chunks" criterion: a bare document is a valid
-/// response with `chunk_count = 0` and no optional fields.
+/// A bare document is a valid response with `chunk_count = 0` and no
+/// optional fields.
 #[test]
 fn doc_context_document_without_metadata_or_chunks() {
     let db = test_util::in_memory_db();
@@ -228,9 +220,9 @@ fn doc_context_document_without_metadata_or_chunks() {
 }
 
 /// `image_paths` is extracted from the `images`/`image_paths`/
-/// `attachments` metadata keys (oracle `extractImagePaths`): every
-/// non-empty string of every key, concatenated in key order (the oracle
-/// does not validate that a value looks like a path).
+/// `attachments` metadata keys: every non-empty string of every key,
+/// concatenated in key order (no validation that a value looks like a
+/// path).
 #[test]
 fn doc_context_image_paths_extracted_from_metadata() {
     let db = test_util::in_memory_db();
@@ -254,7 +246,7 @@ fn doc_context_image_paths_extracted_from_metadata() {
     );
 }
 
-/// `domains` also accepts a plain `domain` string (oracle switch-case).
+/// `domains` also accepts a plain `domain` string.
 #[test]
 fn doc_context_domain_string_in_metadata() {
     let db = test_util::in_memory_db();
@@ -268,10 +260,10 @@ fn doc_context_domain_string_in_metadata() {
     assert_eq!(response["document"]["domains"], serde_json::json!(["hr"]));
 }
 
-// ── get_document_context: include_chunks=false (oracle _IncludeChunksFalse)
+// ── get_document_context: include_chunks=false ───────────────────────────
 
-/// Oracle `TestHandleGetDocumentContext_IncludeChunksFalse`: the count
-/// comes from a COUNT, the `chunks` array is omitted.
+/// With `include_chunks=false`, the count comes from a COUNT and the
+/// `chunks` array is omitted.
 #[test]
 fn doc_context_include_chunks_false_counts_without_loading() {
     let db = test_util::in_memory_db();
@@ -293,10 +285,10 @@ fn doc_context_include_chunks_false_counts_without_loading() {
     assert!(response.get("chunks").is_none(), "{response}");
 }
 
-// ── get_document_context: entities (oracle _WithEntities) ──────────────
+// ── get_document_context: entities ───────────────────────────────────────
 
-/// Oracle `TestHandleGetDocumentContext_WithEntities`: entities linked
-/// across two chunks are de-duplicated and carry id/name/type/domain.
+/// Entities linked across two chunks are de-duplicated and carry
+/// id/name/type/domain.
 #[test]
 fn doc_context_entities_deduplicated_across_chunks() {
     let db = test_util::in_memory_db();
@@ -334,11 +326,11 @@ fn doc_context_entities_deduplicated_across_chunks() {
     }
 }
 
-// ── get_document_context: facts (oracle _FactsMultipleEntitiesPerChunk)
+// ── get_document_context: facts ──────────────────────────────────────────
 
-/// The oracle `_FactsMultipleEntitiesPerChunk` fixture: two chunks,
-/// three entities, links (Alice+Acme → chunk 1, Bob+Acme → chunk 2),
-/// three approved facts. Returns (db, doc_id, [fact ids]).
+/// Facts fixture: two chunks, three entities, links (Alice+Acme → chunk
+/// 1, Bob+Acme → chunk 2), three approved facts. Returns (db, doc_id,
+/// [fact ids]).
 fn seeded_facts_fixture() -> (db::Db, i64, Vec<i64>) {
     let db = test_util::in_memory_db();
     let doc_id = seed_document(&db, "markdown", "/docs/team.md", None);
@@ -359,7 +351,7 @@ fn seeded_facts_fixture() -> (db::Db, i64, Vec<i64>) {
     (db, doc_id, facts)
 }
 
-/// Oracle "all three fact IDs are present" + "no duplicate fact IDs"
+/// All three fact IDs are present and none are duplicated
 /// (include_facts=true, include_entities=false, chunks loaded).
 #[test]
 fn doc_context_fact_ids_all_present_without_duplicates() {
@@ -391,8 +383,8 @@ fn doc_context_fact_ids_all_present_without_duplicates() {
     assert!(response.get("entities").is_none(), "{response}");
 }
 
-/// Oracle `_FactsWithoutChunks`: fact ids resolve through
-/// `GetEntityIDsByDocID` when chunks are not loaded.
+/// Fact ids resolve through the document's entity links when chunks are
+/// not loaded.
 #[test]
 fn doc_context_fact_ids_without_chunks() {
     let (db, doc_id, facts) = seeded_facts_fixture();
@@ -421,8 +413,8 @@ fn doc_context_fact_ids_without_chunks() {
     }
 }
 
-/// Oracle `_EntitiesWithoutChunks`: entities resolve through
-/// `GetEntityIDsByDocID` when chunks are not loaded.
+/// Entities resolve through the document's entity links when chunks are
+/// not loaded.
 #[test]
 fn doc_context_entities_without_chunks() {
     let db = test_util::in_memory_db();
@@ -454,7 +446,7 @@ fn doc_context_entities_without_chunks() {
     );
 }
 
-/// Oracle `_EntitiesAndFactsWithoutChunks`: both sections at once, with
+/// Both the entities and facts sections at once, with
 /// `include_chunks=false`.
 #[test]
 fn doc_context_entities_and_facts_without_chunks() {
@@ -525,8 +517,7 @@ fn doc_context_fact_ids_approved_only() {
 
 // ── get_chunk_by_id: argument validation ───────────────────────────────
 
-/// Oracle "empty chunk id returns error" + "missing chunk id returns
-/// error".
+/// Empty and missing chunk id both return an error.
 #[test]
 fn chunk_id_missing_chunk_id_is_an_error() {
     let db = test_util::in_memory_db();
@@ -547,7 +538,7 @@ fn chunk_id_missing_chunk_id_is_an_error() {
     }
 }
 
-/// Oracle "non-integer chunk id returns error".
+/// A non-integer chunk id returns an error.
 #[test]
 fn chunk_id_non_integer_chunk_id_is_an_error() {
     let db = test_util::in_memory_db();
@@ -563,9 +554,7 @@ fn chunk_id_non_integer_chunk_id_is_an_error() {
 
 // ── get_chunk_by_id: not-found ─────────────────────────────────────────
 
-/// Oracle "nonexistent chunk id returns error": not-found is a tool
-/// error (recorded deviation: the message says "id", not the oracle's
-/// "Predicate").
+/// A nonexistent chunk id returns an error: not-found is a tool error.
 #[test]
 fn chunk_id_nonexistent_chunk_is_not_found() {
     let db = test_util::in_memory_db();
@@ -582,11 +571,11 @@ fn chunk_id_nonexistent_chunk_is_not_found() {
     assert_eq!(call.is_error, Some(true));
 }
 
-// ── get_chunk_by_id: full structure (oracle _ResponseFields) ───────────
+// ── get_chunk_by_id: full structure ──────────────────────────────────────
 
-/// Oracle `TestHandleGetChunkByID_ResponseFields`: offsets, sequence
-/// number, document brief; plus the linked entity (oracle "valid chunk
-/// returns data with document and entities").
+/// Full response structure: offsets, sequence number, document brief;
+/// plus the linked entity (a valid chunk returns data with document and
+/// entities).
 #[test]
 fn chunk_id_response_fields() {
     let db = test_util::in_memory_db();
@@ -621,9 +610,8 @@ fn chunk_id_response_fields() {
     assert_eq!(entities[0]["domain"], "hr");
 }
 
-/// A chunk without offsets omits the offset fields (oracle omitempty on
-/// `ChunkInfo` — the counterpart of `ChunkWithContext`'s always-present
-/// offsets in the document context).
+/// A chunk without offsets omits the offset fields — the counterpart of
+/// the document context's always-present offsets.
 #[test]
 fn chunk_id_without_offsets_omits_offset_fields() {
     let db = test_util::in_memory_db();

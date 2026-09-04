@@ -1,11 +1,9 @@
 //! `GET /health` (design D5): status, version, sync-state placeholder and
 //! knowledge-base counters, on the same listener as the MCP transport.
 //!
-//! The Go oracle's payload (status/uptime/metrics/components,
-//! `../synopsis/internal/mcp/server.go`) is deliberately NOT copied: design
-//! D5 re-decides the structure for Rust — status, version, sync-state
-//! placeholder and KB row counters via the db DAOs (the oracle's request
-//! metrics and component map have no Rust counterpart in this design).
+//! Design: the payload is status, version, a sync-state placeholder and KB
+//! row counters via the db DAOs — no request metrics or component map
+//! (design D5).
 
 use axum::extract::State;
 use axum::response::IntoResponse;
@@ -96,7 +94,7 @@ fn counts(db: &Db) -> Result<KbCounters, db::DbError> {
     })?
 }
 
-/// `GET /health` axum handler: always 200 with a status field (the oracle
+/// `GET /health` axum handler: always 200 with a status field (the handler
 /// never 500s on health; a failed counter read degrades the status).
 pub async fn handler(State(state): State<HealthState>) -> impl IntoResponse {
     let db = state.db.clone();

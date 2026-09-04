@@ -19,8 +19,8 @@ pub enum McpError {
     /// A registered tool whose handler is not implemented yet (tasks 5.3–5.9).
     #[error("tool '{0}' is not implemented yet")]
     NotYetImplemented(String),
-    /// A valid request for a resource that does not exist (the oracle's
-    /// "not found" tool errors, e.g. `get_fact_by_id` on a missing id).
+    /// A valid request for a resource that does not exist (a "not found"
+    /// tool error, e.g. `get_fact_by_id` on a missing id).
     /// Distinct from [`Self::InvalidArguments`]: the arguments parsed fine,
     /// the id simply does not name a row.
     #[error("{what}")]
@@ -45,10 +45,9 @@ pub enum McpError {
 
 impl McpError {
     /// Render as an MCP *tool* error result (`is_error = true` content block)
-    /// so the caller reads the message (design D7). The Go oracle handlers
-    /// do the same: `CallToolResult{IsError: true}` with the message text.
-    /// (A protocol-level `Err(ErrorData)` would hide the message from the
-    /// client — reserved for unroutable requests like unknown tools.)
+    /// so the caller reads the message (design D7). (A protocol-level
+    /// `Err(ErrorData)` would hide the message from the client — reserved
+    /// for unroutable requests like unknown tools.)
     pub fn into_tool_result(self) -> CallToolResponse {
         let message = self.to_string();
         CallToolResponse::Complete(CallToolResult::error(vec![ContentBlock::text(message)]))

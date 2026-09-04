@@ -1,20 +1,20 @@
 //! Legacy HTTP+SSE transport (mcp-go v0.57.0 `SSEServer` wire contract).
 //!
 //! Task 1.1 of `add-legacy-sse-transport`: the session model and the
-//! `GET /sse` handler. The wire reference is mcp-go v0.57.0 `server/sse.go`
-//! `handleSSE` (module cache, read-only): `200 text/event-stream`, the first
-//! frame is an `event: endpoint` whose `data:` is the message URL, and the
-//! session's outbound channel is then streamed as `event: message` frames.
+//! `GET /sse` handler. The wire reference is mcp-go v0.57.0 `handleSSE`:
+//! `200 text/event-stream`, the first frame is an `event: endpoint` whose
+//! `data:` is the message URL, and the session's outbound channel is then
+//! streamed as `event: message` frames.
 //!
 //! **Deployment model (general-service, user decision 2026-09-01):** the
 //! server is a self-hosted service for general use — potentially behind a
 //! TLS-terminating reverse proxy with multiple concurrent clients (the 16 GB
 //! memory constraint is unchanged). Two deliberate, justified breaks from the
-//! oracle's wire (design D2 revision):
+//! legacy wire (design D2 revision):
 //! - **No wildcard CORS.** mcp-go emits `Access-Control-Allow-Origin: *` by
 //!   default — a security anti-pattern for a general service. The Rust server
 //!   sends none; a deploying proxy may add explicit CORS.
-//! - **Proxy-aware endpoint URL.** The oracle hardcodes `http://` (empty
+//! - **Proxy-aware endpoint URL.** The legacy wire hardcodes `http://` (empty
 //!   `baseURL`), which is a dead message URL behind TLS termination. The
 //!   endpoint URL takes scheme from `X-Forwarded-Proto` (first value if a
 //!   comma-list, lowercased) else `http`, and host from `X-Forwarded-Host`
@@ -27,8 +27,8 @@
 //! - D9 — `last_activity` is set on create and refreshed by `touch()`;
 //!   [`SseSessionMap::spawn_reaper`] (spawned once from `Server::router()`)
 //!   reaps sessions idle beyond the threshold (300 s default) every tick
-//!   (30 s default) — a general-service hardening the oracle (single local
-//!   user) never needed.
+//!   (30 s default) — a general-service hardening (a single local user
+//!   never leaves idle sessions behind).
 //! - D6 — no `CloseSessions` equivalent: the client disconnect drops the body,
 //!   which removes the session (the [`SessionGuard`]) — the same single
 //!   removal path the reaper's removal takes (it drops the sender, the stream
@@ -75,7 +75,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Design D9 default idle threshold: a session idle this long is reaped.
 /// Constructor parameter of [`SseSessionMap`] (`with_idle_timeout`) — the
-/// oracle has no such surface, so no config knob is invented here.
+/// legacy wire has no such surface, so no config knob is invented here.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Design D9 default reaper tick: how often the reaper checks for idle
 /// sessions. Constructor parameter of [`SseSessionMap`] (`with_tick`).
@@ -113,8 +113,8 @@ pub struct SseSession {
 ///
 /// The idle threshold and reaper tick are constructor parameters
 /// ([`Self::with_idle_timeout`] / [`Self::with_tick`]; design D9 defaults
-/// [`DEFAULT_IDLE_TIMEOUT`] / [`DEFAULT_REAPER_TICK`]) — the oracle has no
-/// such surface, so no config knob is invented here.
+/// [`DEFAULT_IDLE_TIMEOUT`] / [`DEFAULT_REAPER_TICK`]) — the legacy wire has
+/// no such surface, so no config knob is invented here.
 #[derive(Clone)]
 pub struct SseSessionMap {
     map: Arc<Mutex<HashMap<String, SseSession>>>,
@@ -133,8 +133,8 @@ impl SseSessionMap {
     }
 
     /// Build an empty registry with a custom idle threshold (design D9: the
-    /// threshold and tick are constructor parameters — the oracle has no such
-    /// surface, so no config knob is invented); the tick stays at
+    /// threshold and tick are constructor parameters — the legacy wire has no
+    /// such surface, so no config knob is invented); the tick stays at
     /// [`DEFAULT_REAPER_TICK`].
     pub fn with_idle_timeout(idle_timeout: Duration) -> Self {
         Self {
@@ -151,8 +151,8 @@ impl SseSessionMap {
         self
     }
 
-    /// Create a session with a fresh server-generated UUIDv4 id (mcp-go
-    /// `NewSSEServer`'s default `sessionIDGenFunc`), a bounded outbound channel
+    /// Create a session with a fresh server-generated UUIDv4 id (the mcp-go
+    /// default session-id generator), a bounded outbound channel
     /// (capacity [`CHANNEL_CAPACITY`], design D3 revision), and
     /// `last_activity = now`. Returns the id plus the receiver end of the
     /// channel (which the `/sse` body stream consumes).
@@ -399,8 +399,8 @@ pub(crate) fn encode_sse_frame(sse: &Sse) -> String {
 
 /// Removes the session from the registry when dropped — either the client
 /// disconnected (axum/hyper drops the response body) or the stream ended (the
-/// channel closed / the idle reaper dropped the last sender). The Rust form of
-/// mcp-go's `defer s.sessions.Delete(sessionID)` (design D6).
+/// channel closed / the idle reaper dropped the last sender). The Rust form
+/// of the mcp-go wire's session-cleanup `defer` (design D6).
 struct SessionGuard {
     sessions: SseSessionMap,
     id: String,
@@ -435,16 +435,17 @@ impl Stream for SseBodyStream {
 /// event first (proxy-aware absolute URL), then stream the session's bounded
 /// channel as `event: message` frames. On client disconnect the body drops and
 /// the session is removed (design D6). Deliberately NO `Access-Control-Allow-
-/// Origin` header (design D2 revision — justified break from the oracle's
-/// wildcard CORS).
+/// Origin` header (design D2 revision — justified break from the legacy
+/// wire's wildcard CORS).
 pub async fn handle_sse(
     State(sessions): State<SseSessionMap>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let (id, rx) = sessions.create();
 
-    // Proxy-aware absolute URL (design D2 revision); the oracle hardcodes
-    // http:// (empty baseURL), which is a dead URL behind TLS termination.
+    // Proxy-aware absolute URL (design D2 revision); the legacy wire
+    // hardcodes http:// (empty baseURL), which is a dead URL behind TLS
+    // termination.
     let endpoint_url = endpoint_url(&headers, &id);
 
     let endpoint = Sse::default().event("endpoint").data(endpoint_url);
@@ -461,9 +462,9 @@ pub async fn handle_sse(
     });
 
     // mcp-go v0.57.0 handleSSE headers: text/event-stream, no-cache, keep-alive.
-    // NO Access-Control-Allow-Origin (design D2 revision — the oracle's `*` is
-    // a security anti-pattern for a general-use service; a deploying proxy may
-    // add explicit CORS).
+    // NO Access-Control-Allow-Origin (design D2 revision — the legacy wire's
+    // `*` is a security anti-pattern for a general-use service; a deploying
+    // proxy may add explicit CORS).
     (
         [
             (header::CONTENT_TYPE, "text/event-stream"),
@@ -475,8 +476,8 @@ pub async fn handle_sse(
         .into_response()
 }
 
-/// The `sessionId` query parameter of `POST /message` (mcp-go v0.57.0 sse.go
-/// `r.URL.Query().Get("sessionId")`).
+/// The `sessionId` query parameter of `POST /message` (mcp-go v0.57.0
+/// `handleMessage`).
 #[derive(Debug, Deserialize)]
 pub struct MessageQuery {
     /// The session id from the `endpoint` event; missing/empty → 400.
@@ -484,10 +485,9 @@ pub struct MessageQuery {
     session_id: Option<String>,
 }
 
-/// The pinned mcp-go v0.57.0 400 response (sse.go handleMessage +
-/// jsonrpc_error.go writeJSONRPCError): `400 Bad Request`,
-/// `Content-Type: application/json`, body = the JSON-RPC error object with
-/// id null.
+/// The pinned mcp-go v0.57.0 400 response (handleMessage +
+/// writeJSONRPCError): `400 Bad Request`, `Content-Type: application/json`,
+/// body = the JSON-RPC error object with id null.
 fn http_jsonrpc_error(code: i32, message: &str) -> Response {
     let response = JsonRpcResponse::error(Value::Null, code, message);
     let body = serde_json::to_string(&response).unwrap_or_else(|err| err.to_string());
@@ -505,7 +505,7 @@ fn http_jsonrpc_error(code: i32, message: &str) -> Response {
 /// JSON-RPC message in the background and push the response (if any) onto
 /// the session's SSE channel as an `event: message` frame.
 ///
-/// mcp-go v0.57.0 sse.go: "quick return request, send 202 Accepted with no
+/// mcp-go v0.57.0: "quick return request, send 202 Accepted with no
 /// body, then deal the message and sent response via SSE". A failed channel
 /// send after the 202 is dropped (mcp-go logs "Event queue full" for a full
 /// queue and silently skips a closed session; the library stays logger-less)
@@ -517,20 +517,20 @@ pub async fn handle_message(
     Query(query): Query<MessageQuery>,
     body: Bytes,
 ) -> Response {
-    // mcp-go v0.57.0 sse.go handleMessage: a missing sessionId → 400 with the
+    // mcp-go v0.57.0 handleMessage: a missing sessionId → 400 with the
     // JSON-RPC INVALID_PARAMS error body (id null, "Missing sessionId").
     let Some(session_id) = query.session_id.filter(|id| !id.is_empty()) else {
         return http_jsonrpc_error(INVALID_PARAMS, "Missing sessionId");
     };
-    // mcp-go v0.57.0 sse.go handleMessage: an unknown sessionId → 400 with
+    // mcp-go v0.57.0 handleMessage: an unknown sessionId → 400 with
     // the JSON-RPC INVALID_PARAMS error body (id null, "Invalid session
     // ID"). `touch` doubles as the existence check and refreshes
     // last_activity for the idle reaper (design D9).
     if !state.sessions.touch(&session_id) {
         return http_jsonrpc_error(INVALID_PARAMS, "Invalid session ID");
     }
-    // mcp-go v0.57.0 sse.go handleMessage: the body must decode as raw JSON
-    // (json.RawMessage) → 400 + the JSON-RPC PARSE_ERROR body ("Parse
+    // mcp-go v0.57.0 handleMessage: the body must decode as raw JSON
+    // (a raw JSON value) → 400 + the JSON-RPC PARSE_ERROR body ("Parse
     // error", id null). A structurally invalid JSON-RPC message (valid JSON)
     // is NOT a 400 here: mcp-go answers 202 and pushes the -32700 response
     // over the SSE stream (jsonrpc::dispatch).
@@ -548,7 +548,7 @@ pub async fn handle_message(
             let _ = sessions.send(&session_id, payload).await;
         }
     });
-    // mcp-go v0.57.0 sse.go handleMessage: 202 Accepted, empty body.
+    // mcp-go v0.57.0 handleMessage: 202 Accepted, empty body.
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -660,7 +660,7 @@ mod tests {
     }
 
     /// POST /message without a sessionId → 400 + the pinned JSON-RPC error
-    /// body (mcp-go v0.57.0 sse.go: INVALID_PARAMS, "Missing sessionId", id
+    /// body (mcp-go v0.57.0: INVALID_PARAMS, "Missing sessionId", id
     /// null, Content-Type application/json).
     #[tokio::test]
     async fn message_without_session_id_is_400() {
@@ -689,7 +689,7 @@ mod tests {
     }
 
     /// POST /message with an unknown sessionId → 400 + the pinned JSON-RPC
-    /// error body (mcp-go v0.57.0 sse.go: INVALID_PARAMS, "Invalid session
+    /// error body (mcp-go v0.57.0: INVALID_PARAMS, "Invalid session
     /// ID", id null).
     #[tokio::test]
     async fn message_with_unknown_session_id_is_400() {
@@ -713,7 +713,7 @@ mod tests {
     }
 
     /// POST /message with a valid session but a non-JSON body → 400 + the
-    /// pinned PARSE_ERROR body (mcp-go v0.57.0 sse.go: "Parse error", id
+    /// pinned PARSE_ERROR body (mcp-go v0.57.0: "Parse error", id
     /// null). A structurally invalid JSON-RPC message (valid JSON) instead
     /// gets 202 + a -32700 frame on the stream (jsonrpc::dispatch).
     #[tokio::test]

@@ -2,39 +2,30 @@
 //! context (metadata, chunks, entities, fact ids) and the single-chunk lookup
 //! with document info and entities (design D4).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/{get_document_context.go,
-//! get_chunk_by_id.go}`.
-//!
 //! Thin handlers per design D2: parse the frozen-schema arguments → db DAOs
-//! → oracle-shaped JSON. No business logic lives here.
+//! → the frozen wire JSON (`mcp-contract`). No business logic lives here.
 //!
-//! **Recorded deviations:**
-//! 1. *Error text:* the oracle prefixes its tool-error messages with
-//!    `"Error …"`; this crate uses the [`McpError`] conventions established
+//! **Design decisions:**
+//! 1. *Error text:* this crate uses the [`McpError`] conventions established
 //!    by tasks 5.1/5.3/5.6 (e.g. `"invalid arguments for tool
 //!    'get_document_context': …"`). The tool-error structure (is_error result
-//!    with a text block) is the same; internal message text is not part of
-//!    the frozen contract.
-//! 2. *Not-found messages (bug fix):* the oracle's messages are `"Document
-//!    with Predicate %d not found"` / `"Chunk with Predicate %d not found"` —
-//!    they say "Predicate" where the id is meant. This crate says
-//!    `"document with id N not found"` / `"chunk with id N not found"`.
-//! 3. *`fact_ids` order:* the oracle deduplicated fact ids while iterating a
-//!    Go `map[int][]Fact` — a random order per run. This crate derives them
-//!    from the deterministic de-duplicated entity-id list (first-occurrence
-//!    order across chunks, by entity id when chunks are not loaded).
-//! 4. *Entity lookup errors:* the oracle's `collectAllEntityIDs` skipped
-//!    per-chunk lookup errors silently; this crate propagates them (the db
-//!    crate's batched `get_entities_by_chunks` makes the per-chunk loop
-//!    obsolete — one query, one error path).
+//!    with a text block) is the frozen contract; internal message text is not
+//!    part of it.
+//! 2. *Not-found messages:* the messages say `"document with id N not found"`
+//!    / `"chunk with id N not found"` — id, not predicate.
+//! 3. *`fact_ids` order:* fact ids are derived from the deterministic
+//!    de-duplicated entity-id list (first-occurrence order across chunks, by
+//!    entity id when chunks are not loaded).
+//! 4. *Entity lookup errors:* per-chunk entity-lookup errors are propagated
+//!    (the db crate's batched `get_entities_by_chunks` makes the per-chunk
+//!    loop obsolete — one query, one error path).
 //!
-//! **Response parity:** field names, order and optionality match the Go
-//! structs (`DocumentContextResponse`/`DocumentInfo`/`ChunkWithContext`,
-//! `ChunkByIDResponse`/`ChunkInfo`/`DocumentBrief`, `EntityWithContext`), so
-//! the wire JSON matches the oracle's marshal output. `ChunkWithContext`
-//! (document context) always carries `start_offset`/`end_offset` (0 when
-//! NULL), while `ChunkInfo` (chunk by id) omits them when NULL — the oracle's
-//! two structs differ in exactly that, and the difference is preserved.
+//! **Response shape:** field names, order and optionality follow the frozen
+//! contract (`mcp-contract`) for both tools, so the wire JSON field order is
+//! stable. `ChunkWithContext` (document context) always carries
+//! `start_offset`/`end_offset` (0 when NULL), while `ChunkInfo` (chunk by id)
+//! omits them when NULL — the two structs differ in exactly that, and the
+//! difference is preserved.
 
 use std::collections::{HashMap, HashSet};
 
@@ -53,14 +44,13 @@ pub const GET_DOCUMENT_CONTEXT: &str = "get_document_context";
 /// The frozen tool name (`mcp-contract`).
 pub const GET_CHUNK_BY_ID: &str = "get_chunk_by_id";
 
-/// The metadata keys scanned for image paths (oracle `extractImagePaths`).
+/// The metadata keys scanned for image paths.
 const IMAGE_KEYS: [&str; 3] = ["images", "image_paths", "attachments"];
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 
 /// Deserialize the argument object; `None` (no arguments) is the empty
-/// object. Unknown keys are ignored, as in the oracle's `req.Get*` accessors
-/// (same convention as `tools::facts`).
+/// object. Unknown keys are ignored (same convention as `tools::facts`).
 fn deserialize_args<T: DeserializeOwned>(
     args: Option<&Value>,
     tool: &'static str,
@@ -84,8 +74,8 @@ fn to_value<T: Serialize>(tool: &'static str, response: T) -> Result<Value, McpE
     })
 }
 
-/// Parse a required integer-as-string id argument (oracle
-/// `strconv.Atoi`-after-`GetString`); same convention as `tools::facts`.
+/// Parse a required integer-as-string id argument; same convention as
+/// `tools::facts`.
 fn parse_id_arg(raw: String, key: &str, tool: &'static str) -> Result<i64, McpError> {
     if raw.is_empty() {
         return Err(McpError::InvalidArguments {
@@ -101,7 +91,7 @@ fn parse_id_arg(raw: String, key: &str, tool: &'static str) -> Result<i64, McpEr
 
 /// De-duplicate `entity_ids` keeping first-occurrence order, then resolve
 /// them to full rows in that same order (ids with no row are skipped —
-/// oracle `GetByIDs` map-lookup semantics).
+/// map-lookup semantics).
 fn resolve_entities(
     exec: ConnectionOrTx<'_>,
     entity_ids: &[i64],
@@ -143,8 +133,8 @@ struct DocumentContextArgs {
     include_facts: Option<bool>,
 }
 
-/// The document metadata (oracle `DocumentInfo`): field order matches the Go
-/// struct.
+/// The document metadata: field order follows the frozen contract
+/// (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct DocumentInfo {
     /// Document row id.
@@ -166,9 +156,9 @@ struct DocumentInfo {
     domains: Vec<String>,
 }
 
-/// A chunk of the document (oracle `ChunkWithContext`): field order matches
-/// the Go struct. Unlike `ChunkInfo` (chunk by id), the offsets are ALWAYS
-/// present (0 when NULL) — the oracle struct has no omitempty on them.
+/// A chunk of the document (document context): field order follows the frozen
+/// contract (`mcp-contract`). Unlike `ChunkInfo` (chunk by id), the offsets
+/// are ALWAYS present (0 when NULL).
 #[derive(Debug, Serialize)]
 struct ChunkWithContext {
     /// Chunk row id.
@@ -183,8 +173,8 @@ struct ChunkWithContext {
     text: String,
 }
 
-/// The `get_document_context` response (oracle
-/// `DocumentContextResponse`): field order matches the Go struct.
+/// The `get_document_context` response: field order follows the frozen
+/// contract (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct DocumentContextResponse {
     /// The document metadata.
@@ -209,10 +199,9 @@ struct DocumentContextResponse {
     fact_ids: Vec<i64>,
 }
 
-/// Image paths from a document's raw metadata JSON (oracle
-/// `extractImagePaths`): every non-empty string of the `images`,
-/// `image_paths` and `attachments` array keys, concatenated in that key
-/// order. Malformed or missing metadata yields none.
+/// Image paths from a document's raw metadata JSON: every non-empty string of
+/// the `images`, `image_paths` and `attachments` array keys, concatenated in
+/// that key order. Malformed or missing metadata yields none.
 fn extract_image_paths(metadata_json: &Option<String>) -> Vec<String> {
     let Some(metadata) = metadata_json
         .as_deref()
@@ -233,9 +222,9 @@ fn extract_image_paths(metadata_json: &Option<String>) -> Vec<String> {
     paths
 }
 
-/// Domains from a document's raw metadata JSON (oracle `$.domain` handling):
-/// a non-empty string, or the non-empty string members of an array, in order.
-/// Malformed or missing metadata yields none.
+/// Domains from a document's raw metadata JSON: a non-empty `$.domain`
+/// string, or the non-empty string members of an array, in order. Malformed
+/// or missing metadata yields none.
 fn extract_domains(metadata_json: &Option<String>) -> Vec<String> {
     let Some(metadata) = metadata_json
         .as_deref()
@@ -275,8 +264,8 @@ fn document_info(doc: &Document) -> DocumentInfo {
 /// Handle the `get_document_context` tool call (design D2/D4).
 ///
 /// `args` is the raw JSON argument object (`None` = no arguments). The
-/// result is the oracle-shaped payload the server serializes into the tool
-/// response's text block.
+/// result is the frozen wire payload (`mcp-contract`) the server serializes
+/// into the tool response's text block.
 pub fn handle_get_document_context(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
     let args: DocumentContextArgs = deserialize_args(args, GET_DOCUMENT_CONTEXT)?;
     let document_id = parse_id_arg(
@@ -310,9 +299,8 @@ pub fn handle_get_document_context(db: &db::Db, args: Option<&Value>) -> Result<
             };
 
             // De-duplicated entity ids in first-occurrence order across
-            // chunks (by entity id when chunks are not loaded — the oracle's
-            // `GetEntityIDsByDocID` path); shared by the entities and facts
-            // sections (DRY: one lookup, not two).
+            // chunks (by entity id when chunks are not loaded); shared by the
+            // entities and facts sections (DRY: one lookup, not two).
             let entity_ids: Vec<i64> = if include_entities || include_facts {
                 if chunks.is_empty() {
                     chunk_entity_dao.get_entity_ids_by_doc_id(document_id)?
@@ -344,7 +332,7 @@ pub fn handle_get_document_context(db: &db::Db, args: Option<&Value>) -> Result<
             };
 
             // Approved fact ids linked to the document's entities, in
-            // deterministic first-occurrence order (recorded deviation 3).
+            // deterministic first-occurrence order (design decision 3).
             let fact_ids: Vec<i64> = if include_facts && !entity_ids.is_empty() {
                 let grouped = FactDao::new(exec).list_by_entity_ids(&entity_ids)?;
                 let mut seen_facts = HashSet::new();
@@ -399,7 +387,7 @@ struct ChunkByIdArgs {
     chunk_id: Option<String>,
 }
 
-/// The chunk data (oracle `ChunkInfo`): field order matches the Go struct.
+/// The chunk data: field order follows the frozen contract (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct ChunkInfo {
     /// Chunk row id.
@@ -420,7 +408,7 @@ struct ChunkInfo {
     created_at: String,
 }
 
-/// Minimal document metadata (oracle `DocumentBrief`).
+/// Minimal document metadata.
 #[derive(Debug, Serialize)]
 struct DocumentBrief {
     /// Document row id.
@@ -431,14 +419,14 @@ struct DocumentBrief {
     original_path: String,
 }
 
-/// The `get_chunk_by_id` response (oracle `ChunkByIDResponse`): field order
-/// matches the Go struct.
+/// The `get_chunk_by_id` response: field order follows the frozen contract
+/// (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct ChunkByIdResponse {
     /// The chunk data.
     chunk: ChunkInfo,
     /// The owning document; absent when it cannot be resolved (unreachable
-    /// under the v5 schema's `doc_id` FK — oracle parity keeps the option).
+    /// under the v5 schema's `doc_id` FK — the option is kept).
     #[serde(skip_serializing_if = "Option::is_none")]
     document: Option<DocumentBrief>,
     /// The entities mentioned in the chunk; absent when there are none.
@@ -449,8 +437,8 @@ struct ChunkByIdResponse {
 /// Handle the `get_chunk_by_id` tool call (design D2/D4).
 ///
 /// `args` is the raw JSON argument object (`None` = no arguments). The
-/// result is the oracle-shaped payload the server serializes into the tool
-/// response's text block.
+/// result is the frozen wire payload (`mcp-contract`) the server serializes
+/// into the tool response's text block.
 pub fn handle_get_chunk_by_id(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
     let args: ChunkByIdArgs = deserialize_args(args, GET_CHUNK_BY_ID)?;
     let chunk_id = parse_id_arg(

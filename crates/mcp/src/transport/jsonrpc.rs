@@ -1,9 +1,8 @@
 //! Minimal JSON-RPC 2.0 method table for the legacy SSE transport (design D4).
 //!
-//! Wire reference: mcp-go v0.57.0 (pinned in `../synopsis/go.mod`),
-//! `server/request_handler.go` `MCPServer.HandleMessage` + `server/server.go`
-//! handlers. The oracle's server is tools-only: `initialize`, `ping`,
-//! `tools/list`, `tools/call` are the only request methods; everything else
+//! Wire reference: mcp-go v0.57.0, `MCPServer.HandleMessage` + the server
+//! handlers. The server is tools-only: `initialize`, `ping`, `tools/list`,
+//! `tools/call` are the only request methods; everything else
 //! (resources/prompts/completions/logging) is `-32601`.
 //!
 //! Results are framed exactly as the Streamable HTTP path frames them for the
@@ -21,7 +20,7 @@ use serde_json::{Map, Value, json};
 use crate::error::McpError;
 use crate::server::Server;
 
-// --- JSON-RPC 2.0 error codes (mcp-go v0.57.0 mcp/types.go) ---
+// --- JSON-RPC 2.0 error codes (mcp-go v0.57.0) ---
 
 /// JSON-RPC 2.0 parse error (mcp-go v0.57.0 `mcp.PARSE_ERROR`).
 pub const PARSE_ERROR: i32 = -32700;
@@ -32,19 +31,19 @@ pub const METHOD_NOT_FOUND: i32 = -32601;
 /// Invalid parameters (mcp-go v0.57.0 `mcp.INVALID_PARAMS`).
 pub const INVALID_PARAMS: i32 = -32602;
 
-/// mcp-go v0.57.0 mcp/types.go `ValidProtocolVersions` (pinned).
+/// mcp-go v0.57.0 `ValidProtocolVersions` (pinned).
 const VALID_PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-/// mcp-go v0.57.0 mcp/types.go `LATEST_PROTOCOL_VERSION` (pinned).
+/// mcp-go v0.57.0 `LATEST_PROTOCOL_VERSION` (pinned).
 const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 
-/// mcp-go v0.57.0 server.go `protocolVersion`: an empty client version falls
+/// mcp-go v0.57.0 `protocolVersion`: an empty client version falls
 /// back to "2025-03-26" (the spec's backwards-compat default), NOT the
 /// server's latest.
 const FALLBACK_PROTOCOL_VERSION: &str = "2025-03-26";
 
 /// A JSON-RPC 2.0 message as received on `POST /message` (mcp-go v0.57.0
-/// request_handler.go `baseMessage`). All members are optional on purpose:
+/// `baseMessage`). All members are optional on purpose:
 /// any JSON object decodes, and the semantic checks (version, id, method)
 /// happen in [`dispatch`] with the pinned error codes.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -64,9 +63,8 @@ pub struct JsonRpcRequest {
     pub result: Option<Value>,
 }
 
-/// A JSON-RPC 2.0 error object (mcp-go v0.57.0 mcp/types.go
-/// `JSONRPCErrorDetails`: code + message; `data` is omitempty and the oracle
-/// never sets it).
+/// A JSON-RPC 2.0 error object (mcp-go v0.57.0 `JSONRPCErrorDetails`:
+/// code + message; `data` is omitempty and is never set).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonRpcError {
     /// The JSON-RPC error code (one of the constants above).
@@ -76,7 +74,7 @@ pub struct JsonRpcError {
     pub message: String,
 }
 
-/// A JSON-RPC 2.0 response envelope (mcp-go v0.57.0 mcp/types.go
+/// A JSON-RPC 2.0 response envelope (mcp-go v0.57.0
 /// `JSONRPCResponse`/`JSONRPCError`): `jsonrpc` + `id` + exactly one of
 /// `result` / `error`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,11 +132,10 @@ fn response_value(response: JsonRpcResponse) -> Value {
 pub async fn dispatch(server: &Server, raw: &Value) -> Option<Value> {
     let request = match serde_json::from_value::<JsonRpcRequest>(raw.clone()) {
         Ok(request) => request,
-        // mcp-go v0.57.0 request_handler.go HandleMessage: a message that
+        // mcp-go v0.57.0 HandleMessage: a message that
         // does not unmarshal into the base object (a batch array, a scalar,
         // a wrong-typed member) → -32700 "Failed to parse message", id null.
-        // mcp-go has no batch support (pinned: the oracle's clients never
-        // send batches).
+        // mcp-go has no batch support (pinned: clients never send batches).
         Err(_) => {
             return Some(response_value(JsonRpcResponse::error(
                 Value::Null,
@@ -148,7 +145,7 @@ pub async fn dispatch(server: &Server, raw: &Value) -> Option<Value> {
         }
     };
 
-    // mcp-go v0.57.0 request_handler.go: `jsonrpc` must be "2.0" → else
+    // mcp-go v0.57.0: `jsonrpc` must be "2.0" → else
     // -32600 "Invalid JSON-RPC version" (the id is echoed).
     if request.jsonrpc.as_deref() != Some("2.0") {
         return Some(response_value(JsonRpcResponse::error(
@@ -160,14 +157,14 @@ pub async fn dispatch(server: &Server, raw: &Value) -> Option<Value> {
 
     let id = request.id.clone().unwrap_or(Value::Null);
 
-    // mcp-go v0.57.0 request_handler.go: a missing/null id is a notification
+    // mcp-go v0.57.0: a missing/null id is a notification
     // → `handleNotification` returns nil (JSON-RPC 2.0 spec: a compliant
     // server MUST NOT reply to a valid notification).
     if id.is_null() {
         return None;
     }
 
-    // mcp-go v0.57.0 request_handler.go: a non-null `result` member means the
+    // mcp-go v0.57.0: a non-null `result` member means the
     // client answers a server-sent request (e.g. a keep-alive ping) → nil.
     if request
         .result
@@ -177,15 +174,15 @@ pub async fn dispatch(server: &Server, raw: &Value) -> Option<Value> {
         return None;
     }
 
-    // mcp-go v0.57.0 request_handler.go: the tools-only method table.
+    // mcp-go v0.57.0: the tools-only method table.
     Some(match request.method.as_deref().unwrap_or("") {
         "initialize" => handle_initialize(server, id, request.params.as_ref()),
-        // mcp-go v0.57.0 server.go handlePing: EmptyResult → {}.
+        // mcp-go v0.57.0 handlePing: EmptyResult → {}.
         "ping" => response_value(JsonRpcResponse::result(id, Value::Object(Map::new()))),
         "tools/list" => response_value(JsonRpcResponse::result(id, list_tools_result(server))),
         "tools/call" => handle_tool_call(server, id, request.params.as_ref()).await,
-        // mcp-go v0.57.0 request_handler.go default arm: everything else
-        // (resources/prompts/completions/logging — the oracle's tools-only
+        // mcp-go v0.57.0 default arm: everything else
+        // (resources/prompts/completions/logging — the tools-only
         // server registers none of them) → -32601.
         other => response_value(JsonRpcResponse::error(
             id,
@@ -195,15 +192,15 @@ pub async fn dispatch(server: &Server, raw: &Value) -> Option<Value> {
     })
 }
 
-/// `initialize` (mcp-go v0.57.0 server.go handleInitialize).
+/// `initialize` (mcp-go v0.57.0 handleInitialize).
 fn handle_initialize(server: &Server, id: Value, params: Option<&Value>) -> Value {
-    // mcp-go v0.57.0 request_handler.go MethodInitialize: the message must
+    // mcp-go v0.57.0 MethodInitialize: the message must
     // unmarshal into InitializeRequest — params (when present) must be an
     // object with a string protocolVersion; structurally invalid params →
-    // -32600 (design D4 says -32602; the pinned oracle uses -32600 for
-    // unmarshal failures). The oracle's message is Go-specific
-    // (`UnparsableMessageError`: "unparsable initialize request: <go json
-    // error>"); the code is pinned exactly, the message is the stable
+    // -32600 (design D4 says -32602; the pinned wire behavior uses -32600
+    // for unmarshal failures). The wire's own error message is
+    // language-specific ("unparsable initialize request: <json error>");
+    // the code is pinned exactly, the message is the stable
     // equivalent. Absent params unmarshal to the zero value (empty
     // protocolVersion → the backwards-compat default).
     let client_version = match params {
@@ -233,15 +230,15 @@ fn handle_initialize(server: &Server, id: Value, params: Option<&Value>) -> Valu
     ))
 }
 
-/// The `initialize` result object (pinned from mcp-go v0.57.0 server.go
+/// The `initialize` result object (pinned from mcp-go v0.57.0
 /// handleInitialize): `{"protocolVersion": <rule>, "capabilities":
 /// <tools-only>, "serverInfo": {"name","version"}}` (instructions is
-/// omitempty and the oracle sets none; `_meta` is omitempty and never set).
+/// omitempty and is not set; `_meta` is omitempty and never set).
 fn initialize_result(server: &Server, client_version: &str) -> Value {
-    // mcp-go v0.57.0 server.go protocolVersion (pinned rule):
+    // mcp-go v0.57.0 protocolVersion (pinned rule):
     //  - empty client version → "2025-03-26" (the spec's backwards-compat
     //    default, NOT the latest);
-    //  - a known version (mcp/types.go ValidProtocolVersions) → echoed;
+    //  - a known version (`ValidProtocolVersions`) → echoed;
     //  - anything else → the server's latest ("2025-11-25").
     let protocol_version = if client_version.is_empty() {
         FALLBACK_PROTOCOL_VERSION
@@ -254,10 +251,9 @@ fn initialize_result(server: &Server, client_version: &str) -> Value {
     // serverInfo + capabilities: the same values the Streamable HTTP path
     // reports (ServerHandler::get_info — name/version from Server, tools-only
     // capabilities with tools.listChanged = true), serialized through rmcp's
-    // types so the two transports cannot drift. (The oracle additionally
-    // advertises an empty `resources: {}` object because the Go code passes
-    // WithResourceCapabilities(false, false) explicitly; the Rust server is
-    // tools-only — design D4 — and registers no resources at all.)
+    // types so the two transports cannot drift. (The legacy wire
+    // additionally advertises an empty `resources: {}` object; this server
+    // is tools-only — design D4 — and registers no resources at all.)
     let info = ServerHandler::get_info(server);
     let capabilities =
         serde_json::to_value(&info.capabilities).unwrap_or(Value::Object(Map::new()));
@@ -271,8 +267,8 @@ fn initialize_result(server: &Server, client_version: &str) -> Value {
     })
 }
 
-/// The `tools/list` result (mcp-go v0.57.0 server.go handleListTools):
-/// `{"tools": [ … ]}`. The oracle sets no pagination limit, so all tools are
+/// The `tools/list` result (mcp-go v0.57.0 handleListTools):
+/// `{"tools": [ … ]}`. No pagination limit is set, so all tools are
 /// returned and nextCursor is absent (omitempty). The same 12 Tool
 /// definitions the Streamable HTTP path serves (`Server::tools`), serialized
 /// through rmcp's `Tool` so both transports produce identical JSON.
@@ -281,13 +277,13 @@ fn list_tools_result(server: &Server) -> Value {
     json!({ "tools": tools })
 }
 
-/// `tools/call` (mcp-go v0.57.0 server.go handleToolCall).
+/// `tools/call` (mcp-go v0.57.0 handleToolCall).
 async fn handle_tool_call(server: &Server, id: Value, params: Option<&Value>) -> Value {
-    // mcp-go v0.57.0 request_handler.go MethodToolsCall: the message must
+    // mcp-go v0.57.0 MethodToolsCall: the message must
     // unmarshal into CallToolRequest — params (when present) must be an
     // object with a string name; structurally invalid params → -32600 (the
-    // oracle's `UnparsableMessageError` message is Go-specific, as above —
-    // the code is pinned, the message is the stable equivalent). Absent
+    // wire's error message is language-specific, as above — the code is
+    // pinned, the message is the stable equivalent). Absent
     // params unmarshal to the zero value (empty name).
     let (name, arguments) = match params {
         None => (String::new(), None),
@@ -311,10 +307,9 @@ async fn handle_tool_call(server: &Server, id: Value, params: Option<&Value>) ->
         }
     };
 
-    // mcp-go v0.57.0 server.go handleToolCall: an unregistered (or missing →
+    // mcp-go v0.57.0 handleToolCall: an unregistered (or missing →
     // "") tool name is a JSON-RPC INVALID_PARAMS error — NOT a tool result:
-    // `tool '<name>' not found: tool not found` (pinned message shape,
-    // mcp.ErrToolNotFound).
+    // `tool '<name>' not found: tool not found` (pinned message shape).
     if !server.tools().iter().any(|tool| tool.name.as_ref() == name) {
         return response_value(JsonRpcResponse::error(
             id,
@@ -331,12 +326,11 @@ async fn handle_tool_call(server: &Server, id: Value, params: Option<&Value>) ->
             .await
             .map_err(|join_err| McpError::Internal(format!("tool dispatch failed: {join_err}")));
 
-    // MCP convention (pinned: the oracle's Go handlers return
-    // CallToolResult{IsError: true} and mcp-go v0.57.0 passes handler results
-    // through as results): a tool-level failure is an `isError: true`
-    // result, not a JSON-RPC error. The result is framed exactly as the
-    // Streamable HTTP path frames it for the same call (rmcp
-    // CallToolResult — content[0].text = the serialized dispatch payload).
+    // MCP convention (pinned: mcp-go v0.57.0 passes handler results through
+    // as results): a tool-level failure is an `isError: true` result, not a
+    // JSON-RPC error. The result is framed exactly as the Streamable HTTP
+    // path frames it for the same call (rmcp CallToolResult —
+    // content[0].text = the serialized dispatch payload).
     let mut result = match dispatched {
         Ok(Ok(payload)) => {
             // A serde_json::Value always serializes; the fallback keeps the
@@ -386,7 +380,7 @@ mod tests {
 
     /// A method-bearing message without an id is a notification (JSON-RPC
     /// 2.0 spec: a compliant server MUST NOT reply; mcp-go v0.57.0
-    /// request_handler.go returns nil) — no channel message.
+    /// returns nil) — no channel message.
     #[tokio::test]
     async fn request_without_id_is_a_notification_and_gets_no_response() {
         let server = test_server();
@@ -402,7 +396,7 @@ mod tests {
     }
 
     /// A body that does not parse as a JSON-RPC object → -32700 (mcp-go
-    /// v0.57.0 request_handler.go: batch arrays and scalars fail the base
+    /// v0.57.0: batch arrays and scalars fail the base
     /// message unmarshal → "Failed to parse message", id null).
     #[tokio::test]
     async fn parse_error_is_minus_32700_with_null_id() {
@@ -422,7 +416,7 @@ mod tests {
     }
 
     /// A wrong/missing `jsonrpc` version → -32600 (mcp-go v0.57.0
-    /// request_handler.go, the id is echoed).
+    /// behavior, the id is echoed).
     #[tokio::test]
     async fn invalid_jsonrpc_version_is_minus_32600() {
         let server = test_server();
@@ -434,7 +428,7 @@ mod tests {
     }
 
     /// A client-sent response (non-null `result` member) gets no reply
-    /// (mcp-go v0.57.0 request_handler.go).
+    /// (mcp-go v0.57.0).
     #[tokio::test]
     async fn client_sent_response_gets_no_reply() {
         let server = test_server();
@@ -442,7 +436,7 @@ mod tests {
         assert!(dispatch(&server, &raw).await.is_none());
     }
 
-    /// The `initialize` result shape (pinned from mcp-go v0.57.0 server.go
+    /// The `initialize` result shape (pinned from mcp-go v0.57.0
     /// handleInitialize): protocolVersion rule, tools-only capabilities,
     /// serverInfo = the same name/version the Streamable HTTP path reports.
     #[tokio::test]
@@ -477,7 +471,7 @@ mod tests {
     }
 
     /// The protocolVersion negotiation rule (pinned from mcp-go v0.57.0
-    /// server.go protocolVersion): empty → 2025-03-26; known → echoed;
+    /// protocolVersion): empty → 2025-03-26; known → echoed;
     /// unknown → the server's latest (2025-11-25).
     #[tokio::test]
     async fn initialize_protocol_version_rule_is_pinned() {
@@ -535,7 +529,7 @@ mod tests {
             .map(|tool| tool.name.as_ref())
             .collect();
         assert_eq!(names, expected);
-        // The oracle sets no pagination limit; nextCursor is omitempty.
+        // No pagination limit is set; nextCursor is omitempty.
         assert!(response["result"].get("nextCursor").is_none());
     }
 
@@ -565,7 +559,7 @@ mod tests {
     }
 
     /// `tools/call` tool-level failure: an `isError: true` result with the
-    /// error text (MCP convention, pinned from the oracle's Go handlers).
+    /// error text (MCP convention, pinned).
     #[tokio::test]
     async fn tool_call_tool_error_is_an_error_result() {
         let server = test_server();
@@ -583,7 +577,7 @@ mod tests {
     }
 
     /// `tools/call` unknown tool: a JSON-RPC INVALID_PARAMS error (pinned
-    /// from mcp-go v0.57.0 server.go handleToolCall: `tool '<name>' not
+    /// from mcp-go v0.57.0 handleToolCall: `tool '<name>' not
     /// found: tool not found`), NOT a tool result.
     #[tokio::test]
     async fn tool_call_unknown_tool_is_an_invalid_params_error() {
@@ -602,9 +596,9 @@ mod tests {
         assert!(response.get("result").is_none());
     }
 
-    /// Any other method → -32601 (mcp-go v0.57.0 request_handler.go default
+    /// Any other method → -32601 (mcp-go v0.57.0 default
     /// arm: `Method <m> not found`) — resources/prompts/completions included
-    /// (the oracle's tools-only server registers none of them).
+    /// (the tools-only server registers none of them).
     #[tokio::test]
     async fn unknown_method_is_minus_32601() {
         let server = test_server();
@@ -629,7 +623,7 @@ mod tests {
 
     /// Structurally invalid params (present but not an object, or a
     /// wrong-typed member) → -32600 (pinned from mcp-go v0.57.0
-    /// request_handler.go: the typed request unmarshal fails →
+    /// behavior: the typed request unmarshal fails →
     /// INVALID_REQUEST).
     #[tokio::test]
     async fn structurally_invalid_params_is_minus_32600() {

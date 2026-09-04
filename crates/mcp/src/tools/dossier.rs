@@ -2,30 +2,24 @@
 //! approved facts (with per-fact sources), its source documents, related
 //! entities via graph BFS, and cross-domain links with provenance.
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/{get_entity_dossier.go,
-//! entity_resolve.go}`.
-//!
 //! Thin handler per design D2: parse the frozen-schema arguments → resolve the
 //! entity (by `entity_id` XOR `entity_name`) → db DAOs + graph traverser →
-//! oracle-shaped JSON. No business logic lives here.
+//! the frozen wire JSON (`mcp-contract`). No business logic lives here.
 //!
-//! **Recorded deviations (house conventions, as in `facts.rs`):**
-//! 1. *Error text:* the oracle prefixes tool errors with `"Error …"` and says
-//!    `"Entity Predicate %d not found"`; this crate uses the [`McpError`]
-//!    conventions (e.g. `"entity with id N not found"`).
-//! 2. *Fact-source errors:* the oracle ignores `GetByFactID` errors
-//!    (`if err == nil`); this crate propagates them as tool errors.
-//! 3. *Direct-link list errors:* the oracle ignores `ListByEntity` errors; this
-//!    crate propagates them.
-//! 4. *No BFS timeout:* the oracle wraps the traversal in a 5 s context
-//!    timeout (a Go idiom); the Rust traverser is synchronous (callers wrap it
-//!    in `spawn_blocking` where cancellation is needed).
-//! 5. *Cross-domain comparison:* the oracle compares the normalized
-//!    graph-node domain against the RAW entity domain, and applies NO domain
-//!    filter to the direct-links pass. Both quirks are replicated so the wire
-//!    output matches the oracle's.
-//! 6. *`confidence` 0.0:* the oracle's `omitempty` drops a zero confidence; the
-//!    house convention (as in `entities_catalog`) keeps an explicit `0.0`. In
+//! **Design decisions:**
+//! 1. *Error text:* this crate uses the [`McpError`] conventions
+//!    (e.g. `"entity with id N not found"`).
+//! 2. *Fact-source errors:* errors reading a fact's sources are propagated as
+//!    tool errors.
+//! 3. *Direct-link list errors:* errors listing an entity's links are
+//!    propagated as tool errors.
+//! 4. *No BFS timeout:* the traverser is synchronous (callers wrap it in
+//!    `spawn_blocking` where cancellation is needed).
+//! 5. *Cross-domain comparison:* the normalized graph-node domain is compared
+//!    against the RAW entity domain, and NO domain filter is applied to the
+//!    direct-links pass.
+//! 6. *`confidence` 0.0:* the house convention (as in `entities_catalog`)
+//!    keeps an explicit `0.0` rather than dropping a zero confidence. In
 //!    practice the column is `NULL` when absent, so this is theoretical.
 
 use std::collections::HashMap;
@@ -45,9 +39,9 @@ use crate::tools::facts::FactSourceInfo;
 /// The frozen tool name (`mcp-contract`).
 pub const GET_ENTITY_DOSSIER: &str = "get_entity_dossier";
 
-/// The hard cap on facts returned per dossier (oracle `facts[:100]`).
+/// The hard cap on facts returned per dossier.
 const MAX_FACTS: usize = 100;
-/// The BFS node cap (oracle `MaxNodes: 100`).
+/// The BFS node cap.
 const BFS_MAX_NODES: usize = 100;
 /// The default BFS depth (frozen schema: range 1-5, default 2).
 const DEFAULT_DEPTH: i64 = 2;
@@ -56,9 +50,10 @@ const MIN_DEPTH: i64 = 1;
 /// The BFS depth ceiling (frozen schema: range 1-5).
 const MAX_DEPTH: i64 = 5;
 
-// ── wire shapes (oracle field order) ────────────────────────────────────────
+// ── wire shapes ──────────────────────────────────────────────────────────────
 
-/// The dossier entity (oracle `DossierEntityInfo`): field order matches Go.
+/// The dossier entity: field order follows the frozen contract
+/// (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct DossierEntity {
     /// Entity row id.
@@ -81,7 +76,7 @@ struct DossierEntity {
     metadata: Option<String>,
 }
 
-/// A dossier fact (oracle `DossierFact`): field order matches Go.
+/// A dossier fact: field order follows the frozen contract (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct DossierFact {
     /// Fact row id.
@@ -114,7 +109,8 @@ struct DossierFact {
     sources: Vec<FactSourceInfo>,
 }
 
-/// A source document (oracle `SourceDoc`): field order matches Go.
+/// A source document: field order follows the frozen contract
+/// (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct SourceDoc {
     /// Document row id.
@@ -128,7 +124,8 @@ struct SourceDoc {
     metadata: Option<String>,
 }
 
-/// A cross-domain link (oracle `CrossDomainLink`): field order matches Go.
+/// A cross-domain link: field order follows the frozen contract
+/// (`mcp-contract`).
 #[derive(Debug, Clone, Serialize)]
 struct CrossDomainLink {
     /// The target entity row id.
@@ -152,8 +149,8 @@ struct CrossDomainLink {
     evidence: Option<String>,
 }
 
-/// The `get_entity_dossier` response (oracle `EntityDossierResponse`): field
-/// order matches the Go struct; the empty sections are omitted (omitempty).
+/// The `get_entity_dossier` response: field order follows the frozen contract
+/// (`mcp-contract`); the empty sections are omitted.
 #[derive(Debug, Serialize)]
 struct DossierResponse {
     /// The resolved entity.
@@ -221,7 +218,7 @@ fn to_value<T: Serialize>(tool: &'static str, response: T) -> Result<Value, McpE
 
 /// Parse `depth` (frozen schema: number, range 1-5, default 2). Lenient: a
 /// number or a numeric string is accepted; anything else falls back to the
-/// default (the oracle's `GetInt` leniency). Out-of-range values are clamped.
+/// default. Out-of-range values are clamped.
 fn parse_depth(value: Option<&Value>) -> u32 {
     let raw = value.and_then(|value| match value {
         Value::Number(number) => number
@@ -233,9 +230,8 @@ fn parse_depth(value: Option<&Value>) -> u32 {
     raw.unwrap_or(DEFAULT_DEPTH).clamp(MIN_DEPTH, MAX_DEPTH) as u32
 }
 
-/// Resolve an entity from `entity_id` XOR `entity_name` (oracle `ResolveEntity`,
-/// with `entityType = ""` for the dossier). `domain` disambiguates the name
-/// lookup. A missing/ambiguous entity is a tool error, as in the oracle.
+/// Resolve an entity from `entity_id` XOR `entity_name`. `domain`
+/// disambiguates the name lookup. A missing/ambiguous entity is a tool error.
 fn resolve_entity(db: &db::Db, args: &DossierArgs) -> Result<Entity, McpError> {
     let id_str = args.entity_id.as_deref().unwrap_or_default();
     let name = args.entity_name.as_deref().unwrap_or_default();
@@ -310,8 +306,7 @@ fn resolve_entity(db: &db::Db, args: &DossierArgs) -> Result<Entity, McpError> {
 
 // ── wire mapping ─────────────────────────────────────────────────────────────
 
-/// Map a stored entity to the wire `entity` object (oracle field mapping in
-/// `get_entity_dossier.go`).
+/// Map a stored entity to the wire `entity` object.
 fn dossier_entity(entity: &Entity) -> DossierEntity {
     DossierEntity {
         id: entity.id,
@@ -332,8 +327,7 @@ fn dossier_entity(entity: &Entity) -> DossierEntity {
     }
 }
 
-/// Map a stored fact plus its sources to the wire fact object (oracle field
-/// mapping in `get_entity_dossier.go`).
+/// Map a stored fact plus its sources to the wire fact object.
 fn dossier_fact(fact: &Fact, fact_sources: &[FactSource]) -> DossierFact {
     DossierFact {
         id: fact.id,
@@ -365,8 +359,7 @@ fn dossier_fact(fact: &Fact, fact_sources: &[FactSource]) -> DossierFact {
     }
 }
 
-/// Map a stored document to the wire source object (oracle field mapping in
-/// `get_entity_dossier.go`).
+/// Map a stored document to the wire source object.
 fn source_doc(doc: &Document) -> SourceDoc {
     SourceDoc {
         id: doc.id,
@@ -384,8 +377,7 @@ fn source_doc(doc: &Document) -> SourceDoc {
 
 /// Related entities (BFS nodes minus the center) plus the cross-domain links
 /// deduplicated by target id. A traversal error (e.g. the entity is not in the
-/// index) or an unavailable graph yields empty sections — the oracle's
-/// `if err == nil && result != nil` guard.
+/// index) or an unavailable graph yields empty sections.
 fn bfs_cross_links(
     graph: &GraphIndex,
     entity: &Entity,
@@ -414,8 +406,8 @@ fn bfs_cross_links(
     }
 
     // Cross-domain links come from the BFS edges INCIDENT to the center whose
-    // target domain differs from the center's (the oracle's quirk: the
-    // normalized node domain vs the raw entity domain).
+    // target domain differs from the center's (the normalized node domain vs
+    // the raw entity domain).
     let node_map: HashMap<i64, &EntityNode> = result.nodes.iter().map(|n| (n.id, n)).collect();
     for edge in &result.edges {
         if edge.source != entity.id && edge.target != entity.id {
@@ -450,8 +442,7 @@ fn bfs_cross_links(
 
 /// Merge one freshly built link (carrying exactly one relation type) into the
 /// target-deduplicated map: the entry with the better provenance is kept, and
-/// the relation types are the union in encounter order (oracle
-/// `hasBetterProvenance` + `mergeRelationTypes`).
+/// the relation types are the union in encounter order.
 fn merge_cross_link(
     map: &mut HashMap<i64, CrossDomainLink>,
     mut candidate: CrossDomainLink,
@@ -482,10 +473,10 @@ fn push_unique(types: &mut Vec<String>, rel_type: String) {
     }
 }
 
-/// Whether `candidate` has more complete provenance than `existing` (oracle
-/// `hasBetterProvenance`): higher confidence wins, then a non-empty method over
-/// an empty one, then a non-empty evidence, then a deterministic lexicographic
-/// tiebreak on method, evidence, and target id.
+/// Whether `candidate` has more complete provenance than `existing`: higher
+/// confidence wins, then a non-empty method over an empty one, then a
+/// non-empty evidence, then a deterministic lexicographic tiebreak on method,
+/// evidence, and target id.
 fn has_better_provenance(candidate: &CrossDomainLink, existing: &CrossDomainLink) -> bool {
     let cand_conf = candidate.confidence.unwrap_or(0.0);
     let exist_conf = existing.confidence.unwrap_or(0.0);
@@ -525,8 +516,9 @@ fn has_better_provenance(candidate: &CrossDomainLink, existing: &CrossDomainLink
 /// Handle the `get_entity_dossier` tool call (design D2/D4).
 ///
 /// `db` and `graph` are the injected collaborators; `args` is the raw JSON
-/// argument object (`None` = no arguments). The result is the oracle-shaped
-/// payload the server serializes into the tool response's text block.
+/// argument object (`None` = no arguments). The result is the frozen wire
+/// payload (`mcp-contract`) the server serializes into the tool response's
+/// text block.
 pub fn handle_get_entity_dossier(
     db: &db::Db,
     graph: &GraphIndex,
@@ -560,7 +552,7 @@ pub fn handle_get_entity_dossier(
     };
 
     // Source documents: the entity's linked document ids, resolved and kept in
-    // the oracle's id order (missing documents are skipped).
+    // id order (missing documents are skipped).
     let sources = if include_sources {
         db.with_conn(|conn| {
             let exec = ConnectionOrTx::Connection(conn);
@@ -586,8 +578,8 @@ pub fn handle_get_entity_dossier(
     // Related entities + cross-domain links via BFS (graph, no db).
     let (related_entities, mut cross_by_target) = bfs_cross_links(graph, &entity, depth);
 
-    // Direct entity links (cross-domain). The oracle applies NO domain filter
-    // here (recorded deviation): a same-domain link is kept.
+    // Direct entity links (cross-domain). NO domain filter is applied here
+    // (design decision 5): a same-domain link is kept.
     let direct = db
         .with_conn(|conn| {
             let exec = ConnectionOrTx::Connection(conn);
@@ -625,7 +617,7 @@ pub fn handle_get_entity_dossier(
         merge_cross_link(&mut cross_by_target, link, rel_type);
     }
 
-    // Deterministic output order (oracle `slices.Sort` by target id).
+    // Deterministic output order (sorted by target id).
     let mut cross_domain_links: Vec<CrossDomainLink> = cross_by_target.into_values().collect();
     cross_domain_links.sort_by_key(|link| link.target_entity_id);
 

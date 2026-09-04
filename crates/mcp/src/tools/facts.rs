@@ -1,54 +1,41 @@
 //! The `search_facts` and `get_fact_by_id` tools: fact search with filters
 //! and the single-fact lookup with entities and sources (design D4).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/{search_facts.go,
-//! get_fact_by_id.go}` plus the cursor helpers in
-//! `../synopsis/internal/mcp/handlers/pagination.go` (ported to
-//! [`crate::pagination`], task 5.2).
-//!
 //! Thin handlers per design D2: parse the frozen-schema arguments → db DAOs
-//! → oracle-shaped JSON. No business logic lives here.
+//! → the frozen wire JSON (`mcp-contract`). No business logic lives here.
 //!
 //! **Status filtering (design D2 "approved-only"):** `search_facts` applies
 //! the frozen default `status = 'approved'` when the argument is omitted,
 //! and honours an explicit `status` value (e.g. `'pending'`) as a filter.
-//! `get_fact_by_id` intentionally has NO status filter (oracle parity,
-//! verified in `handlers/get_fact_by_id.go` → `FactDAO.GetByID`): a pending
-//! fact is retrievable by direct id, and its actual `status` is exposed in
-//! the response.
+//! `get_fact_by_id` intentionally has NO status filter: a pending fact is
+//! retrievable by direct id, and its actual `status` is exposed in the
+//! response.
 //!
-//! **Recorded deviations:**
-//! 1. *Error text:* the oracle prefixes its tool-error messages with
-//!    `"Error …"`; this crate uses the [`McpError`] conventions established
-//!    by tasks 5.1/5.3 (e.g. `"invalid arguments for tool 'search_facts':
-//!    …"`). The tool-error structure (is_error result with a text block) is
-//!    the same; internal message text is not part of the frozen contract.
-//! 2. *`search_facts` empty `status` (bug fix):* the oracle's
-//!    `req.GetString("status", "approved")` passes an explicit empty string
-//!    through to the DAO, where "empty = no filter" — so `{"status": ""}`
-//!    silently disabled the approved-only default and returned
-//!    pending/draft/rejected facts. An empty `status` now applies the
-//!    `'approved'` default, like a missing one.
-//! 3. *`get_fact_by_id` not-found message (bug fix):* the oracle's message
-//!    is `"Fact with Predicate %d not found"` — it says "Predicate" where
-//!    the id is meant. This crate says `"fact with id N not found"`.
-//! 4. *`get_fact_by_id` endpoint lookup errors:* the oracle ignores
-//!    `EntityDAO.GetByID` errors (`err == nil && subj != nil`); this crate
-//!    propagates them as tool errors instead of silently omitting the
-//!    entity. A missing entity (dangling id) is still omitted — unreachable
-//!    under the v5 schema's endpoint FKs, but the oracle's semantics are
-//!    preserved.
-//! 5. *`search_facts` entity-name lookup errors:* the oracle ignores the
-//!    `GetByIDs` error (`//nolint:errcheck`); this crate propagates it.
+//! **Design decisions:**
+//! 1. *Error text:* tool-error messages follow the [`McpError`] conventions
+//!    established by tasks 5.1/5.3 (e.g. `"invalid arguments for tool
+//!    'search_facts': …"`). The tool-error structure (is_error result with
+//!    a text block) is the frozen contract; internal message text is not
+//!    part of it.
+//! 2. *`search_facts` empty `status`:* an explicit empty `status` applies
+//!    the `'approved'` default, like a missing one — an empty value must
+//!    not silently disable the approved-only filter and return
+//!    pending/draft/rejected facts.
+//! 3. *`get_fact_by_id` not-found message:* the message says
+//!    `"fact with id N not found"` — id, not predicate.
+//! 4. *`get_fact_by_id` endpoint lookup errors:* entity lookup errors are
+//!    propagated as tool errors instead of silently omitting the entity. A
+//!    missing entity (dangling id) is still omitted — unreachable under the
+//!    v5 schema's endpoint FKs.
+//! 5. *`search_facts` entity-name lookup errors:* the batch entity-name
+//!    lookup error is propagated as a tool error.
 //!
-//! **Response parity:** field names, order and optionality match the Go
-//! structs (`SearchFactsResponse`/`SearchFactOut`, `FactByIDResponse`/
-//! `FactInfo`/`EntityWithContext`/`FactSourceInfo`), so the wire JSON
-//! matches the oracle's marshal output. The `search_facts` entity-name
-//! filter is a correlated `EXISTS` in the db crate (a fact whose subject
-//! AND object names both match appears once, with a matching total — the
-//! oracle's `INNER JOIN` duplicated it in the page while its
-//! `COUNT(DISTINCT …)` total did not).
+//! **Response shape:** field names, order and optionality follow the frozen
+//! contract (`mcp-contract`), so the wire JSON field order is stable. The
+//! `search_facts` entity-name filter is a correlated `EXISTS` in the db
+//! crate (a fact whose subject AND object names both match appears once,
+//! with a matching total; an `INNER JOIN` would duplicate it in the page
+//! while the `COUNT(DISTINCT …)` total would not).
 
 use std::collections::{HashMap, HashSet};
 
@@ -72,10 +59,9 @@ const DEFAULT_FACT_STATUS: &str = "approved";
 // ── shared helpers ──────────────────────────────────────────────────────────
 
 /// Parse `page_size` (frozen schema: number, default 20, range 1-200).
-/// Mirrors the oracle's `req.GetInt` leniency: missing or unparseable values
-/// fall back to the default rather than erroring; floats truncate toward
-/// zero like Go's `int(v)` conversion. Out-of-range values are clamped by
-/// [`normalize_page_size`] (oracle `NormalizePageSize`), not rejected.
+/// Lenient parsing: missing or unparseable values fall back to the default
+/// rather than erroring; floats truncate toward zero. Out-of-range values
+/// are clamped by [`normalize_page_size`], not rejected.
 /// (Same convention as `tools::catalog::parse_page_size`.)
 fn parse_page_size(value: Option<&Value>) -> i64 {
     let Some(size) = value.and_then(|value| match value {
@@ -90,10 +76,9 @@ fn parse_page_size(value: Option<&Value>) -> i64 {
     normalize_page_size(size)
 }
 
-/// The page window from the `cursor` argument. Oracle parity: an EMPTY
-/// cursor starts the first page with the REQUESTED page size; only a
-/// non-empty cursor overrides the offset AND limit (the cursor carries its
-/// own page window).
+/// The page window from the `cursor` argument: an EMPTY cursor starts the
+/// first page with the REQUESTED page size; only a non-empty cursor
+/// overrides the offset AND limit (the cursor carries its own page window).
 fn page_from(cursor: &str, limit: i64, tool: &'static str) -> Result<Page, McpError> {
     if cursor.is_empty() {
         Ok(Page::first(limit))
@@ -107,7 +92,7 @@ fn page_from(cursor: &str, limit: i64, tool: &'static str) -> Result<Page, McpEr
 
 /// Deserialize the argument object; `None` (no arguments) is the empty
 /// object, so every filter is absent rather than a parse failure. Unknown
-/// keys are ignored, as in the oracle's `req.Get*` accessors.
+/// keys are ignored.
 fn deserialize_args<T: DeserializeOwned>(
     args: Option<&Value>,
     tool: &'static str,
@@ -141,8 +126,7 @@ struct SearchFactsArgs {
     predicate: Option<String>,
     /// Subject-or-object entity name filter (empty = no filter).
     entity_name: Option<String>,
-    /// Status filter (default `'approved'`; empty = default, recorded
-    /// deviation).
+    /// Status filter (default `'approved'`; empty = default).
     status: Option<String>,
     /// Domain filter (empty = all domains).
     domain: Option<String>,
@@ -152,8 +136,8 @@ struct SearchFactsArgs {
     cursor: Option<String>,
 }
 
-/// One fact entry (oracle `SearchFactOut`): field order matches the Go
-/// struct, so the wire JSON matches the oracle's marshal order.
+/// One fact entry: field order follows the frozen contract
+/// (`mcp-contract`), so the wire JSON field order is stable.
 #[derive(Debug, Serialize)]
 struct SearchFactOut {
     /// Fact row id.
@@ -188,7 +172,7 @@ struct SearchFactOut {
     weight: i64,
 }
 
-/// The `search_facts` response (oracle `SearchFactsResponse`).
+/// The `search_facts` response.
 #[derive(Debug, Serialize)]
 struct SearchFactsResponse {
     /// The page of facts (empty, not null, when there are no matches).
@@ -203,7 +187,7 @@ struct SearchFactsResponse {
 /// Handle the `search_facts` tool call (design D2/D4).
 ///
 /// `args` is the raw JSON argument object (`None` = no arguments). The
-/// result is the oracle-shaped payload the server serializes into the tool
+/// result is the response payload the server serializes into the tool
 /// response's text block.
 pub fn handle_search_facts(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
     let args: SearchFactsArgs = deserialize_args(args, SEARCH_FACTS)?;
@@ -216,8 +200,8 @@ pub fn handle_search_facts(db: &db::Db, args: Option<&Value>) -> Result<Value, M
     )?;
 
     // The frozen default is approved-only; an explicit empty `status`
-    // applies the default too (recorded deviation: the oracle's empty
-    // string disabled the filter and leaked non-approved facts).
+    // applies the default too — an empty string must not silently disable
+    // the filter and leak non-approved facts.
     let status = args
         .status
         .filter(|status| !status.is_empty())
@@ -234,8 +218,8 @@ pub fn handle_search_facts(db: &db::Db, args: Option<&Value>) -> Result<Value, M
             let exec = ConnectionOrTx::Connection(conn);
             let (facts, total_count) =
                 FactDao::new(exec).search_paginated(page.offset, page.limit, &filter)?;
-            // Batch entity-name lookup for the page's endpoints (the
-            // oracle's `GetByIDs` batch; ids de-duplicated).
+            // Batch entity-name lookup for the page's endpoints (ids
+            // de-duplicated).
             let ids: HashSet<i64> = facts
                 .iter()
                 .flat_map(|fact| [fact.subject_entity_id, fact.object_entity_id])
@@ -266,10 +250,9 @@ pub fn handle_search_facts(db: &db::Db, args: Option<&Value>) -> Result<Value, M
     to_value(SEARCH_FACTS, response)
 }
 
-/// Map a stored fact to the wire entry (oracle field mapping in
-/// `handlers/search_facts.go`): the endpoint ids are present when the fact
-/// has endpoints (NULL → absent), and the names only when the endpoint
-/// resolved.
+/// Map a stored fact to the wire entry: the endpoint ids are present when
+/// the fact has endpoints (NULL → absent), and the names only when the
+/// endpoint resolved.
 fn search_fact_out(fact: &Fact, entity_names: &HashMap<i64, String>) -> SearchFactOut {
     let name = |id: Option<i64>| {
         id.and_then(|id| entity_names.get(&id))
@@ -300,7 +283,7 @@ struct GetFactByIdArgs {
     fact_id: Option<String>,
 }
 
-/// The fact data (oracle `FactInfo`): field order matches the Go struct.
+/// The fact data: field order follows the frozen contract (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct FactInfo {
     /// Fact row id.
@@ -315,11 +298,11 @@ struct FactInfo {
     object_entity_id: Option<i64>,
     /// Fact domain (`''` = global).
     domain: String,
-    /// The raw `metadata` string (the oracle does not parse it in this
-    /// tool); absent when there is none.
+    /// The raw `metadata` string (not parsed in this tool); absent when
+    /// there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<String>,
-    /// Fact status — any status (no approved-only filter, oracle parity).
+    /// Fact status — any status (no approved-only filter).
     status: String,
     /// Validity interval start, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -331,8 +314,7 @@ struct FactInfo {
     weight: i64,
 }
 
-/// A fact source (oracle `FactSourceInfo`), shared with the entity dossier
-/// (task 5.8).
+/// A fact source, shared with the entity dossier (task 5.8).
 #[derive(Debug, Serialize)]
 pub(crate) struct FactSourceInfo {
     /// The source document id.
@@ -344,8 +326,8 @@ pub(crate) struct FactSourceInfo {
     pub(crate) extracted_at: String,
 }
 
-/// The `get_fact_by_id` response (oracle `FactByIDResponse`): field order
-/// matches the Go struct.
+/// The `get_fact_by_id` response: field order follows the frozen contract
+/// (`mcp-contract`).
 #[derive(Debug, Serialize)]
 struct FactByIdResponse {
     /// The fact data.
@@ -366,7 +348,7 @@ struct FactByIdResponse {
 /// Handle the `get_fact_by_id` tool call (design D2/D4).
 ///
 /// `args` is the raw JSON argument object (`None` = no arguments). The
-/// result is the oracle-shaped payload the server serializes into the tool
+/// result is the response payload the server serializes into the tool
 /// response's text block.
 pub fn handle_get_fact_by_id(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
     let args: GetFactByIdArgs = deserialize_args(args, GET_FACT_BY_ID)?;
@@ -385,8 +367,7 @@ pub fn handle_get_fact_by_id(db: &db::Db, args: Option<&Value>) -> Result<Value,
     let (fact, subject, object, sources) = db
         .with_conn(|conn| {
             let exec = ConnectionOrTx::Connection(conn);
-            // No status filter (oracle parity): any status is retrievable
-            // by direct id.
+            // No status filter: any status is retrievable by direct id.
             let Some(fact) = FactDao::new(exec).get_by_id(fact_id)? else {
                 return Ok(None);
             };
@@ -423,8 +404,7 @@ pub fn handle_get_fact_by_id(db: &db::Db, args: Option<&Value>) -> Result<Value,
     to_value(GET_FACT_BY_ID, response)
 }
 
-/// Map a stored fact to the wire `fact` object (oracle field mapping in
-/// `handlers/get_fact_by_id.go`).
+/// Map a stored fact to the wire `fact` object.
 fn fact_info(fact: &Fact) -> FactInfo {
     FactInfo {
         id: fact.id,
@@ -452,11 +432,10 @@ mod tests {
 
     use super::*;
 
-    // ── fixtures (oracle search_facts_test.go / get_fact_by_id_test.go) ──
+    // ── fixtures ──────────────────────────────────────────────────────────
 
-    /// The oracle `TestHandleSearchFacts` fixture: 3 entities (Alice,
-    /// Engineering, NDA) + 2 approved facts (Alice `works_in` Engineering,
-    /// Alice `owns` NDA).
+    /// Search-facts fixture: 3 entities (Alice, Engineering, NDA) + 2
+    /// approved facts (Alice `works_in` Engineering, Alice `owns` NDA).
     fn seeded_facts_db() -> db::Db {
         let db = test_util::in_memory_db();
         db.exec_tx(|tx| -> Result<(), db::DbError> {
@@ -483,8 +462,7 @@ mod tests {
         db
     }
 
-    /// The oracle `TestHandleSearchFacts_Pagination` fixture: 3 entities +
-    /// 2 approved facts.
+    /// Pagination fixture: 3 entities + 2 approved facts.
     fn seeded_pagination_db() -> db::Db {
         let db = test_util::in_memory_db();
         db.exec_tx(|tx| -> Result<(), db::DbError> {
@@ -556,9 +534,8 @@ mod tests {
         .expect("status update");
     }
 
-    /// The oracle `TestHandleGetFactByID` fixture: Alice `works_at` Acme
-    /// Corp (hr) + one source (document + quote). Returns
-    /// (db, fact_id).
+    /// Get-by-id fixture: Alice `works_at` Acme Corp (hr) + one source
+    /// (document + quote). Returns (db, fact_id).
     fn seeded_get_by_id_db() -> (db::Db, i64) {
         let db = test_util::in_memory_db();
         let fact_id = db
@@ -588,11 +565,10 @@ mod tests {
         handle_get_fact_by_id(db, args.as_ref())
     }
 
-    // ── search_facts: filters (oracle TestHandleSearchFacts) ─────────────
+    // ── search_facts: filters ─────────────────────────────────────────────
 
-    /// Oracle "default returns approved facts": no arguments → the seeded
-    /// approved facts (oracle `TestHandleSearchFacts_DefaultStatusApproved`
-    /// too: every returned fact is approved).
+    /// Default returns approved facts: no arguments → the seeded approved
+    /// facts; every returned fact is approved.
     #[test]
     fn facts_default_returns_approved_facts() {
         let response = search(&seeded_facts_db(), None).unwrap();
@@ -604,7 +580,7 @@ mod tests {
     }
 
     /// Predicate substring filter: case-insensitive, and a non-matching
-    /// predicate is a valid empty page (the oracle's "located" case).
+    /// predicate is a valid empty page.
     #[test]
     fn facts_predicate_filter_is_case_insensitive_substring() {
         let db = &seeded_facts_db();
@@ -614,7 +590,7 @@ mod tests {
         }
     }
 
-    /// Oracle "entity_name filter finds Alice facts": Alice is the subject
+    /// The `entity_name` filter finds Alice's facts: Alice is the subject
     /// of both seeded facts.
     #[test]
     fn facts_entity_name_filter_finds_subject_facts() {
@@ -626,9 +602,8 @@ mod tests {
         assert_eq!(response["total_count"], serde_json::json!(2));
     }
 
-    /// Oracle `TestHandleSearchFacts_EntityNameFilter`: Alice is subject in
-    /// one fact and object in another — both match, and each returned fact
-    /// carries at least one resolved entity name.
+    /// Alice is subject in one fact and object in another — both match,
+    /// and each returned fact carries at least one resolved entity name.
     #[test]
     fn facts_entity_name_filter_matches_subject_or_object() {
         let db = test_util::in_memory_db();
@@ -691,11 +666,10 @@ mod tests {
         assert_eq!(none["facts"], serde_json::json!([]));
     }
 
-    // ── search_facts: status (approved-only, oracle _DefaultStatusApproved)
+    // ── search_facts: status (approved-only) ──────────────────────────────
 
-    /// Oracle "status filter pending returns empty" + the task's
-    /// approved-only criterion: pending facts never leak into the default
-    /// (approved) search, and `status: "pending"` selects them explicitly.
+    /// Pending facts never leak into the default (approved) search, and
+    /// `status: "pending"` selects them explicitly.
     #[test]
     fn facts_pending_never_leaks_into_default_search() {
         let db = seeded_facts_db();
@@ -718,9 +692,8 @@ mod tests {
         assert_eq!(pending["facts"][0]["status"], "pending");
     }
 
-    /// Recorded deviation: an explicit empty `status` applies the
-    /// 'approved' default (the oracle's empty string disabled the filter
-    /// and returned every status).
+    /// An explicit empty `status` applies the 'approved' default — an
+    /// empty string must not disable the filter and return every status.
     #[test]
     fn facts_empty_status_applies_approved_default() {
         let db = seeded_facts_db();
@@ -739,7 +712,7 @@ mod tests {
         assert_eq!(response["facts"][0]["status"], "approved");
     }
 
-    // ── search_facts: pagination (oracle TestHandleSearchFacts_Pagination)
+    // ── search_facts: pagination ──────────────────────────────────────────
 
     #[test]
     fn facts_pagination_walk() {
@@ -766,8 +739,8 @@ mod tests {
         );
     }
 
-    /// Oracle `page_size` leniency: out-of-range (or unparseable) values
-    /// clamp to the default 20.
+    /// `page_size` leniency: out-of-range (or unparseable) values clamp to
+    /// the default 20.
     #[test]
     fn facts_page_size_out_of_range_defaults_to_twenty() {
         let db = seeded_n_facts_db(25);
@@ -787,7 +760,7 @@ mod tests {
         }
     }
 
-    /// Oracle "invalid cursor returns error".
+    /// An invalid cursor is a tool error.
     #[test]
     fn facts_invalid_cursor_is_an_error() {
         let db = test_util::in_memory_db();
@@ -803,8 +776,8 @@ mod tests {
         assert!(err.to_string().contains("invalid cursor"), "got: {err}");
     }
 
-    /// Oracle `TestHandleSearchFacts_ResponseFields`: the predicate filter
-    /// returns the fact with resolved subject AND object names.
+    /// The predicate filter returns the fact with resolved subject AND
+    /// object names.
     #[test]
     fn facts_response_fields() {
         let response = search(
@@ -823,9 +796,8 @@ mod tests {
         assert!(fact["weight"].is_i64());
     }
 
-    /// Oracle `TestHandleSearchFacts_ResponseFormat` + optionality: a fact
-    /// without a subject omits the subject fields; the always-present fields
-    /// stay present.
+    /// Optionality: a fact without a subject omits the subject fields; the
+    /// always-present fields stay present.
     #[test]
     fn facts_endpoint_optionality_shapes() {
         let db = test_util::in_memory_db();
@@ -869,7 +841,7 @@ mod tests {
         assert!(response.get("next_cursor").is_none(), "{response}");
     }
 
-    // ── get_fact_by_id (oracle get_fact_by_id_test.go) ────────────────────
+    // ── get_fact_by_id ────────────────────────────────────────────────────
 
     #[test]
     fn by_id_missing_fact_id_is_an_error() {
@@ -891,7 +863,7 @@ mod tests {
         }
     }
 
-    /// Oracle "non-integer fact id returns error".
+    /// A non-integer fact id is an error.
     #[test]
     fn by_id_non_integer_fact_id_is_an_error() {
         let (db, _) = seeded_get_by_id_db();
@@ -905,9 +877,8 @@ mod tests {
         }
     }
 
-    /// Oracle "nonexistent fact id returns error": not-found is a tool
-    /// error (recorded deviation: the message says "id", not the oracle's
-    /// "Predicate").
+    /// A nonexistent fact id is a not-found tool error; the message says
+    /// "id", not "Predicate".
     #[test]
     fn by_id_nonexistent_fact_is_not_found() {
         let (db, _) = seeded_get_by_id_db();
@@ -924,8 +895,7 @@ mod tests {
         assert_eq!(call.is_error, Some(true));
     }
 
-    /// Oracle "valid fact returns data with entities and sources" +
-    /// `TestHandleGetFactByID_ResponseFields`.
+    /// A valid fact returns data with entities and sources.
     #[test]
     fn by_id_response_fields() {
         let (db, fact_id) = seeded_get_by_id_db();
@@ -956,9 +926,8 @@ mod tests {
         assert!(source["extracted_at"].is_string());
     }
 
-    /// Oracle `TestHandleGetFactByID_ResponseFields` metadata variant: the
-    /// `metadata` field is the RAW string (the oracle does not parse it in
-    /// this tool), present when set.
+    /// The `metadata` field is the RAW string (not parsed in this tool),
+    /// present when set.
     #[test]
     fn by_id_metadata_is_the_raw_string() {
         let db = test_util::in_memory_db();
@@ -992,13 +961,12 @@ mod tests {
         );
         assert_eq!(response["fact"]["valid_from"], "2024-01-01");
         assert_eq!(response["fact"]["valid_to"], "2024-12-31");
-        // No sources seeded → the field is omitted (oracle omitempty).
+        // No sources seeded → the field is omitted.
         assert!(response.get("sources").is_none(), "{response}");
     }
 
-    /// CRITICAL behavior (oracle parity, verified in get_fact_by_id.go): a
-    /// PENDING fact is retrievable by direct id — no approved-only filter —
-    /// and its actual status is exposed.
+    /// CRITICAL behavior: a PENDING fact is retrievable by direct id — no
+    /// approved-only filter — and its actual status is exposed.
     #[test]
     fn by_id_returns_pending_fact_with_its_status() {
         let (db, fact_id) = seeded_get_by_id_db();
@@ -1012,8 +980,7 @@ mod tests {
         assert_eq!(response["fact"]["status"], "pending");
     }
 
-    /// Sources shape: a source without a quote omits the `quote` field
-    /// (oracle omitempty on the Go zero string).
+    /// Sources shape: a source without a quote omits the `quote` field.
     #[test]
     fn by_id_source_without_quote_omits_quote_field() {
         let db = test_util::in_memory_db();

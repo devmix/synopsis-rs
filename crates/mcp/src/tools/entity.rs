@@ -1,21 +1,16 @@
 //! The shared 4-field entity wire shape (`id`, `name`, `type`, `domain`).
 //!
-//! The oracle carries this shape under three names — `EntityWithContext`
-//! (fact tools), `EntityOut` (document tools) and `RelatedEntity` (the
-//! entity dossier) — all with the identical field set and order. This module
-//! hoists it into one type (task 5.8, reviewer guidance) so the wire JSON is
-//! defined once.
-//!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/{get_fact_by_id.go,
-//! get_document_context.go, get_entity_dossier.go}`.
+//! The fact tools, the document tools, and the entity dossier all carry this
+//! identical field set and order. This module hoists it into one type (task
+//! 5.8, reviewer guidance) so the wire JSON is defined once.
 
 use db::Entity;
 use graph::EntityNode;
 use serde::Serialize;
 
-/// A brief entity reference (oracle `EntityWithContext` / `EntityOut` /
-/// `RelatedEntity`): field order matches the Go structs, so the wire JSON
-/// matches the oracle's marshal output.
+/// A brief entity reference, shared by the fact tools, the document tools
+/// and the entity dossier: field order follows the frozen contract
+/// (`mcp-contract`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EntityBrief {
     /// Entity row id.

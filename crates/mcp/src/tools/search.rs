@@ -1,21 +1,16 @@
 //! The `search` tool: hybrid (lexical + semantic) search over the knowledge
 //! base (design D4).
 //!
-//! Oracle mapping: `../synopsis/internal/mcp/handlers/search.go` plus the
-//! `dbDomainValidator` in `../synopsis/internal/mcp/tools.go`.
-//!
 //! Thin handler per design D2: parse the frozen-schema arguments
 //! (`query`, `top_k`, `domain`) → [`Searcher::hybrid_search`] → serialize
-//! the oracle-shaped JSON (`results` / `total_count` / `search_time_ms` /
+//! the frozen wire JSON (`results` / `total_count` / `search_time_ms` /
 //! optional `warning`). The frozen schema exposes no search-mode argument,
 //! so only the hybrid entry point is used.
 //!
-//! **Recorded deviations (error text):** the oracle prefixes its tool-error
-//! messages with `"Error: "` (e.g. `"Error: 'query' argument is required
-//! and must not be empty"`); this crate uses the [`McpError`] conventions
+//! **Design (error text):** this crate uses the [`McpError`] conventions
 //! established by task 5.1 (e.g. `"invalid arguments for tool 'search':
 //! …"`). The tool-error structure (is_error result with a text block) is
-//! the same; internal message text is not part of the frozen contract.
+//! the frozen contract; internal message text is not part of it.
 
 use std::time::Instant;
 
@@ -36,7 +31,7 @@ const MIN_TOP_K: i32 = 1;
 const MAX_TOP_K: i32 = 100;
 
 /// Parsed `search` arguments (frozen schema: `query`, `top_k`, `domain`).
-/// Unknown keys are ignored, as in the oracle's `req.Get*` accessors.
+/// Unknown keys are ignored.
 #[derive(Debug, Deserialize)]
 struct SearchArgs {
     /// The search query (required, non-empty).
@@ -47,9 +42,8 @@ struct SearchArgs {
     domain: Option<String>,
 }
 
-/// The `search` tool response (oracle `SearchResponse`): field order and
-/// optionality match the Go struct, so the wire JSON matches the oracle's
-/// marshal order.
+/// The `search` tool response: field order and optionality follow the frozen
+/// contract (`mcp-contract`), so the wire JSON field order is stable.
 #[derive(Debug, Serialize)]
 struct SearchResponse {
     /// Ranked result chunks.
@@ -63,7 +57,7 @@ struct SearchResponse {
     warning: Option<String>,
 }
 
-/// One ranked result chunk (oracle `SearchResultItem`).
+/// One ranked result chunk.
 #[derive(Debug, Serialize)]
 struct ResultItem {
     /// Owning document id.
@@ -100,14 +94,13 @@ struct ResultItem {
     entities: Vec<EntityRef>,
     /// The owning document's `updated_at` normalized to RFC3339 (the
     /// enricher's bag); omitted when the document has no parseable
-    /// timestamp. A deliberate additive divergence from the Go wire item,
-    /// which does not expose it (mcp-contract: "search result carries
-    /// document freshness").
+    /// timestamp. An additive field beyond the base search item
+    /// (mcp-contract: "search result carries document freshness").
     #[serde(skip_serializing_if = "Option::is_none")]
     updated_at: Option<String>,
 }
 
-/// A lightweight entity reference (oracle `EntityRef`).
+/// A lightweight entity reference.
 #[derive(Debug, Serialize)]
 struct EntityRef {
     /// Entity row id.
@@ -122,8 +115,8 @@ struct EntityRef {
 /// Handle the `search` tool call (design D2/D4).
 ///
 /// `args` is the raw JSON argument object (`None` = no arguments). The
-/// result is the oracle-shaped payload the server serializes into the tool
-/// response's text block.
+/// result is the frozen wire payload (`mcp-contract`) the server serializes
+/// into the tool response's text block.
 pub fn handle_search(
     db: &db::Db,
     searcher: &(dyn Searcher + Send + Sync),
@@ -153,8 +146,8 @@ pub fn handle_search(
     let results = searcher.hybrid_search(&query, top_k, domain.as_deref())?;
     let search_time_ms = started.elapsed().as_millis() as u64;
 
-    // Warn when the requested domain is unknown to the knowledge base
-    // (oracle `dbDomainValidator`); the search itself is not affected.
+    // Warn when the requested domain is unknown to the knowledge base; the
+    // search itself is not affected.
     let warning = match domain.as_deref() {
         Some(domain) if !is_known_domain(db, domain)? => Some(format!(
             "unknown domain {domain:?}; results may be incomplete"
@@ -188,10 +181,9 @@ fn parse_args(args: Option<&Value>) -> Result<SearchArgs, McpError> {
     })
 }
 
-/// Parse `top_k` (frozen schema: number, default 10). Mirrors the oracle's
-/// `req.GetInt` leniency: missing or unparseable values fall back to the
-/// default rather than erroring; floats truncate toward zero like Go's
-/// `int(v)` conversion.
+/// Parse `top_k` (frozen schema: number, default 10). Lenient: missing or
+/// unparseable values fall back to the default rather than erroring; floats
+/// truncate toward zero.
 fn parse_top_k(value: Option<&Value>) -> i32 {
     let Some(top_k) = value.and_then(|value| match value {
         Value::Number(number) => number
@@ -205,10 +197,9 @@ fn parse_top_k(value: Option<&Value>) -> i32 {
     top_k as i32
 }
 
-/// Whether `domain` is known to the knowledge base (oracle
-/// `dbDomainValidator.IsKnownDomain`): the domain must appear as a
-/// `$.domain` string or array member of some document's `metadata_json`.
-/// Case-sensitive, as in the oracle's exact-match SQL.
+/// Whether `domain` is known to the knowledge base: the domain must appear as
+/// a `$.domain` string or array member of some document's `metadata_json`.
+/// Case-sensitive (exact-match).
 fn is_known_domain(db: &db::Db, domain: &str) -> Result<bool, McpError> {
     let known = db
         .with_conn(|conn| {
@@ -218,11 +209,11 @@ fn is_known_domain(db: &db::Db, domain: &str) -> Result<bool, McpError> {
     Ok(known.iter().any(|known| known == domain))
 }
 
-/// Map a fused search result to the wire item (oracle field mapping in
-/// `handlers/search.go`, including the `metadata["domains"]` extraction and
-/// the Rust-only `metadata["updated_at"]` freshness field). The `text`
-/// field carries the chunk's pure `chunk_text` (the section context lives in
-/// the item's `metadata` field, the chunk's own bag).
+/// Map a fused search result to the wire item (including the
+/// `metadata["domains"]` extraction and the `metadata["updated_at"]`
+/// freshness field). The `text` field carries the chunk's pure `chunk_text`
+/// (the section context lives in the item's `metadata` field, the chunk's
+/// own bag).
 fn result_item(result: &search::SearchResult) -> ResultItem {
     ResultItem {
         document_id: result.document_id,
@@ -276,8 +267,7 @@ mod tests {
     use super::*;
 
     /// A Searcher stub with canned results (or a canned error) that records
-    /// the arguments it received — the Rust form of the oracle's
-    /// `mockSearcher` (which truncates its results to top_k).
+    /// the arguments it received (it truncates its results to top_k).
     struct StubSearcher {
         results: Vec<SearchResult>,
         error: Mutex<Option<SearchError>>,
@@ -319,7 +309,7 @@ mod tests {
             if let Some(error) = self.error.lock().unwrap().take() {
                 return Err(error);
             }
-            // The oracle mock truncates to top_k (the real searcher does).
+            // The stub truncates to top_k (the real searcher does).
             Ok(self
                 .results
                 .iter()
@@ -351,9 +341,9 @@ mod tests {
         }
     }
 
-    /// A canned fused result (oracle `TestHandleSearch_ResponseFields`
-    /// shape) with a non-empty chunk metadata bag and an RFC3339
-    /// `updated_at` in the enrichment bag (the enricher's normalized form).
+    /// A canned fused result with a non-empty chunk metadata bag and an
+    /// RFC3339 `updated_at` in the enrichment bag (the enricher's normalized
+    /// form).
     fn canned_result(chunk_id: i64) -> SearchResult {
         let mut metadata = serde_json::Map::new();
         metadata.insert("domains".to_owned(), serde_json::json!(["hr", "policy"]));
@@ -413,7 +403,7 @@ mod tests {
         handle_search(db, searcher, args.as_ref())
     }
 
-    // ── argument validation (oracle TestHandleSearch cases) ─────────────
+    // ── argument validation ────────────────────────────────────────────────
 
     #[test]
     fn empty_query_is_an_error() {
@@ -493,10 +483,10 @@ mod tests {
         assert_eq!(searcher.recorded().unwrap().1, 10);
     }
 
-    // ── searcher results (oracle happy path / error / empty cases) ──────
+    // ── searcher results (happy path / error / empty cases) ────────────────
 
     #[test]
-    fn successful_search_shapes_the_oracle_response() {
+    fn successful_search_shapes_response() {
         let db = test_util::in_memory_db();
         let searcher = StubSearcher::new(vec![canned_result(1), canned_result(2)]);
         let response = call(
@@ -533,7 +523,7 @@ mod tests {
         assert_eq!(item["entities"][0]["name"], "Alice");
         assert_eq!(item["entities"][0]["type"], "employee");
         // The document freshness field: the enricher's RFC3339 value,
-        // surfaced on the wire (Rust-only additive divergence).
+        // surfaced on the wire (an additive field).
         assert_eq!(item["updated_at"], "2026-01-15T12:00:00Z");
     }
 
@@ -590,8 +580,7 @@ mod tests {
         );
     }
 
-    // ── domain handling (oracle TestHandleSearch_UnknownDomainWarning /
-    //    TestHandleSearch_DomainFilter) ───────────────────────────────────
+    // ── domain handling (unknown-domain warning / domain filter) ───────────
 
     #[test]
     fn unknown_domain_adds_a_warning() {
