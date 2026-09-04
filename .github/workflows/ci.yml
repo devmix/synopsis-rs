@@ -1,13 +1,11 @@
-# CI Pipeline — quality gates and cross-platform build matrix (Rust workspace).
-# Three independent jobs run in parallel: `checks` is fmt + clippy + test on
-# Linux x64 (task 2.1); `cross-builds` compiles the release binary for every
-# supported target via cargo-zigbuild (task 2.2); `coverage` measures workspace
-# line coverage with cargo-llvm-cov and uploads an lcov artifact (change
-# coverage-rust-workspace, task 1.1) — measure-first, no gates. The cross-build
-# leg is the Rust replacement for the legacy build matrix (make build-all /
-# scripts/build.sh), which needed CGO_CFLAGS and darwin-stubs because FTS5 was a
-# C compile flag. Here rusqlite bundles SQLite with FTS5 compiled in-tree by
-# zig cc, so no such flags are required.
+# CI Pipeline — quality gates for the Rust workspace. Two independent jobs
+# run in parallel: `checks` is fmt + clippy + test on Linux x64 (task 2.1) —
+# the native build check, since the test gate compiles and links the whole
+# workspace; `coverage` measures workspace line coverage with cargo-llvm-cov
+# and uploads an lcov artifact (change coverage-rust-workspace, task 1.1) —
+# measure-first, no gates. The 5-target cross-build + packaging now happens
+# in `release.yml` at tag time (mirroring the legacy Go structure — "Keeping
+# dev runs fast"); see the rebuild-ci-cd change (design D1).
 name: CI
 
 on:
@@ -69,80 +67,9 @@ jobs:
         run: cargo test
 
   # ------------------------------------------------------------------
-  # Cross-builds — release build of `synopsis` for every supported
-  # platform, using Zig as the C linker (cargo-zigbuild). The target set
-   # mirrors the legacy build matrix platforms (linux-amd64,
-   # linux-arm64, windows-amd64, darwin) with Rust conventions: static musl
-  # for the x86_64 Linux artifact; both gnu and musl on aarch64 Linux so
-  # libc-specific breakage surfaces early; windows-gnu because Zig cannot
-  # link MSVC binaries from a Linux runner (cargo-zigbuild's own CI uses
-  # the same path); aarch64 macOS for Apple Silicon laptops.
-  # ------------------------------------------------------------------
-  cross-builds:
-    name: Cross ${{ matrix.target }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-gnu
-          - aarch64-unknown-linux-musl
-          - x86_64-pc-windows-gnu
-          - aarch64-apple-darwin
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # Same pinned toolchain as the checks job (rust-toolchain.toml, 1.96.0).
-      # A build-only leg needs no clippy/rustfmt; only the target's std is added.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
-        with:
-          targets: ${{ matrix.target }}
-
-      # Caches ~/.cargo (registry, git deps) and ./target; keyed by the
-      # installed rustc version, so it must run after the toolchain step —
-      # same rule as in the checks job.
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
-
-      # Install cargo-zigbuild from crates.io — the method documented in its
-      # README. The binary lands in CARGO_HOME, which Swatinem/rust-cache above
-      # already caches, so only a cold cache pays the compile; --locked pins
-      # the exact dependency set from its Cargo.lock for reproducibility.
-      - name: Install cargo-zigbuild
-        run: cargo install --locked cargo-zigbuild
-
-      # Zig 0.16.0 is the current stable release (ziglang.org, verified
-      # 2026-08-18); the task requires >= 0.14. The action caches the
-      # tarball by version.
-      - name: Install Zig 0.16.0
-        uses: mlugg/setup-zig@v2
-        with:
-          version: "0.16.0"
-
-      # The point of this job: every target must compile. fail-fast: false on
-      # the strategy keeps the other matrix legs running when one fails, so a
-      # single broken platform does not hide the state of the rest.
-      - name: Cross-compile for ${{ matrix.target }}
-        run: cargo zigbuild --release --target ${{ matrix.target }}
-
-      # Acceptance smoke test: the x86_64 musl binary is fully static, so it
-      # must boot and print its version inside a minimal (musl-based) Linux
-      # container with no host glibc to lean on. docker exits with the
-      # container's exit code, so any failure fails this step.
-      - name: Smoke-test musl binary in Alpine container
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/io" -w /io \
-            alpine:3.21 ./target/x86_64-unknown-linux-musl/release/synopsis --version
-
-  # ------------------------------------------------------------------
   # Coverage — workspace line-coverage measurement via cargo-llvm-cov
   # (change coverage-rust-workspace, task 1.1). Runs in parallel to
-  # `checks` and `cross-builds` (no `needs:`): coverage is measure-first,
+  # `checks` (no `needs:`): coverage is measure-first,
   # so a coverage failure must not block the core gate. The lcov trace
   # file is kept as a run artifact; there is deliberately no
   # --fail-under-* flag (gating is deferred to Phase 3).
@@ -171,7 +98,7 @@ jobs:
       # Install cargo-llvm-cov v0.9.0 (pinned, per design D1) from
       # prebuilt GitHub release binaries. Dev-only tool: the binary
       # lands in CARGO_HOME and never enters Cargo.toml/Cargo.lock
-      # (frozen stack), the same precedent as cargo-zigbuild above.
+      # (frozen stack).
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@v2
         with:

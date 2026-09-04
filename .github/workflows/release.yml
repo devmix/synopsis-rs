@@ -1,0 +1,171 @@
+# Release Pipeline — cross-build, package and publish on version tags (v*).
+# Two jobs (change rebuild-ci-cd, design D1–D4): `build` cross-compiles the
+# release binary for each of the 5 supported targets via cargo-zigbuild and
+# packages a per-platform archive `synopsis_<version>_<name>.<ext>` bundling
+# the stripped binary, README.md, workspace/configs/** and
+# workspace/datasets/edtech/ontology/** (the ONNX runtime library and model
+# weights are gitignored runtime artifacts the binary downloads per
+# onnx.yaml, and the demo corpus is not shipped); `release` collects all
+# archives, generates a top-level checksum file and publishes the GitHub
+# Release. The 5-target matrix lives here and only here — the dev CI
+# (ci.yml) stays fast (design D1).
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# The `release` job creates the GitHub Release, which needs to write
+# contents; everything else only reads the repository.
+permissions:
+  contents: write
+
+jobs:
+  # ------------------------------------------------------------------
+  # Build — one leg per target. The matrix rows carry the archive
+  # <name> and <ext> for the target (design: cross-build matrix →
+  # archive mapping). fail-fast: false keeps the other legs running
+  # when one fails, so a single broken platform does not hide the
+  # state of the rest.
+  # ------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            name: linux_amd64
+            ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            name: linux_arm64_gnu
+            ext: tar.gz
+          - target: aarch64-unknown-linux-musl
+            name: linux_arm64_musl
+            ext: tar.gz
+          - target: x86_64-pc-windows-gnu
+            name: windows_amd64
+            ext: zip
+          - target: aarch64-apple-darwin
+            name: darwin_arm64
+            ext: tar.gz
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history so the tag (and thus the version) is available.
+          fetch-depth: 0
+
+      # Same pinned toolchain as the dev CI (rust-toolchain.toml, 1.96.0).
+      # A build-only leg needs no clippy/rustfmt; only the target's std
+      # is added.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.target }}
+
+      # Caches ~/.cargo (registry, git deps) and ./target; keyed by the
+      # installed rustc version, so it must run after the toolchain step.
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Install cargo-zigbuild from crates.io — the method documented in
+      # its README. The binary lands in CARGO_HOME, which the rust-cache
+      # step above already caches, so only a cold cache pays the
+      # compile; --locked pins the exact dependency set from its
+      # Cargo.lock for reproducibility.
+      - name: Install cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild
+
+      # Zig 0.16.0 is the current stable release (ziglang.org, verified
+      # 2026-08-18); the action caches the tarball by version.
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      # Cross-compile the release binary for this leg's target.
+      - name: Cross-compile for ${{ matrix.target }}
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      # Strip symbols and package the per-platform archive
+      # synopsis_<version>_<name>.<ext>. zig objcopy handles all three
+      # object formats (ELF, PE/COFF, Mach-O) with one command, unlike
+      # the host strip (ELF/PE only). The archive bundles the binary,
+      # README.md, the config presets and the ontology data; everything
+      # else (notably the downloaded runtime library and model weights)
+      # is intentionally excluded (design D4).
+      - name: Strip symbols and package archive
+        run: |
+          set -euo pipefail
+          archive="dist/synopsis_${{ github.ref_name#v }}_${{ matrix.name }}.${{ matrix.ext }}"
+          bin="target/${{ matrix.target }}/release/synopsis"
+          case "${{ matrix.target }}" in
+            *-pc-windows-*) bin="${bin}.exe" ;;
+          esac
+          case "${{ matrix.target }}" in
+            *-pc-windows-*) binname="synopsis.exe" ;;
+            *) binname="synopsis" ;;
+          esac
+          zig objcopy --strip-all "${bin}"
+          mkdir -p dist stage/workspace/datasets/edtech
+          cp "${bin}" "stage/${binname}"
+          cp README.md stage/
+          cp -r workspace/configs stage/workspace/configs
+          cp -r workspace/datasets/edtech/ontology stage/workspace/datasets/edtech/ontology
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            (cd stage && zip -qr "../${archive}" .)
+          else
+            tar czf "${archive}" -C stage .
+          fi
+
+      # Hand the archive to the release job as an Actions artifact.
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: synopsis-${{ github.ref_name#v }}-${{ matrix.name }}
+          path: dist/*
+
+  # ------------------------------------------------------------------
+  # Release — collect the 5 archives, add the checksum file and
+  # publish the GitHub Release (design D3: manual v* tags, empty
+  # body, prerelease auto so a vX.Y.Z-rc* tag is marked prerelease).
+  # ------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Download all 5 build artifacts; v4 puts each artifact in its
+      # own subdirectory, so flatten them back into a single dist/.
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect archives into dist
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          mv artifacts/*/* dist/
+          rm -rf artifacts
+
+      # Top-level checksum file covering all archives (design D4).
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum synopsis_*.tar.gz synopsis_*.zip > SHA256SUMS.txt)
+
+      # Publish; the body is deliberately empty (manual release,
+      # design D3). dist/* picks up the archives plus the checksum
+      # file.
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
+          prerelease: auto
