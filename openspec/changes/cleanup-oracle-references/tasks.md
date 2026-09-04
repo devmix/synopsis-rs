@@ -230,7 +230,7 @@ re-architected|not transcribed|migration principle|deviation from the oracle'
 AGENTS.md README.md` → **0** (note: `migration` alone is NOT targeted — only
 "migration principle(s)"). Markdown still well-formed (headings/tables intact).
 
-- [ ] 2.2 Clean `config.yaml` + `docs/adr/**` (Russian)
+- [x] 2.2 Clean `config.yaml` + `docs/adr/**` (Russian)
 
 **Scope.** `openspec/config.yaml` and all `docs/adr/*.md` (Russian; refs found
 in `0001-sqlite-fts5`, `0002-onnx-runtime`, `0003-ann-engine` — verify the rest
