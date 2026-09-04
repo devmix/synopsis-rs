@@ -60,7 +60,7 @@ rationale (D1/D2/D3/ADR 0001/D8, sealed-enum, DRY-composition, PRAGMA parity).
 **Acceptance.** the pattern above over `crates/db/src/` → **0**. Gates green. No
 code changed. DB-migration terms preserved.
 
-- [ ] 1.2 Clean `config` + `llm` crates (~145 mentions)
+- [x] 1.2 Clean `config` + `llm` crates (~145 mentions)
 
 **Scope.** all of `crates/config/src/` and `crates/llm/src/`. Strip
 "ports the Go oracle's `internal/config` package", "Deliberate deviation(s) from
