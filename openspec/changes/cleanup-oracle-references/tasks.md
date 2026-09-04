@@ -194,7 +194,7 @@ Cargo.toml → `# D1 edges.`.
 **Acceptance.** the pattern above over `crates/cli/src/ crates/cli/Cargo.toml`
 → **0**. Gates green.
 
-- [ ] 1.9 Clean `vectors` + `utils` crates (~12 mentions)
+- [x] 1.9 Clean `vectors` + `utils` crates (~12 mentions)
 
 **Scope.** all of `crates/vectors/src/` and `crates/utils/src/` (small). Strip
 any oracle/Go/ported narrative; keep the design.
