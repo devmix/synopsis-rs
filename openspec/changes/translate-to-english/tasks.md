@@ -30,7 +30,7 @@ machine-checkable acceptance all fit in the body.
 
 ## 1 — Config + ADRs
 
-- [ ] 1.1 Translate `openspec/config.yaml`
+- [x] 1.1 Translate `openspec/config.yaml`
 
 **Goal.** Translate the project-context prose in `openspec/config.yaml` from
 Russian to natural technical English. Keep every YAML key, list structure, and
@@ -46,7 +46,7 @@ context block and the `rules` block are both Russian prose under English keys).
 → no error, and the top-level keys (`project`, `rules`, and any others) are
 unchanged. No key renamed; only prose values translated.
 
-- [ ] 1.2 Translate the 5 ADRs
+- [x] 1.2 Translate the 5 ADRs
 
 **Goal.** Translate the 5 ADR documents from Russian to natural technical English,
 preserving every decision, rationale, consequence, and cross-reference in meaning.
@@ -65,7 +65,7 @@ English — do not touch them.
 
 ## 2 — Contract specs (two batches)
 
-- [ ] 2.1 Translate specs batch A (7 specs)
+- [x] 2.1 Translate specs batch A (7 specs)
 
 **Goal.** Translate 7 main contract specs from Russian to natural technical
 English, preserving every requirement, scenario, and Given/When/Then exactly in
@@ -84,7 +84,7 @@ number of `### Requirement:` and `#### Scenario:` headings as before — verify 
 contains "Missing onnx.yaml" and no "Отсутствующий". No tool name, CLI flag, schema
 field, or config key changed in meaning.
 
-- [ ] 2.2 Translate specs batch B (7 specs)
+- [x] 2.2 Translate specs batch B (7 specs)
 
 **Goal.** Translate the remaining 7 main contract specs from Russian to natural
 technical English, preserving every requirement, scenario, and Given/When/Then
@@ -104,7 +104,7 @@ name to `mcp-contract`: "Набор инструментов" → **"Tool set"**
 
 ## 3 — Agents/plans + Rust comments
 
-- [ ] 3.1 Translate `.opencode/` agent + plan files and the Rust comment lines
+- [x] 3.1 Translate `.opencode/` agent + plan files and the Rust comment lines
 
 **Goal.** (a) Translate the remaining Russian in the 3 agent files + the plan file
 to English (mostly field-name references like "Scope файлов" → "File scope",
@@ -145,7 +145,7 @@ must match the already-translated spec section names "Missing onnx.yaml" and
 
 ## 4 — Verification
 
-- [ ] 4.1 Final whole-repo verification
+- [x] 4.1 Final whole-repo verification
 
 **Goal.** Confirm the repo prose is fully English outside the excluded functional
 data, and all gates are green.
