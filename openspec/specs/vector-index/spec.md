@@ -88,7 +88,7 @@ The ADR 0003 machine gates (search p95 latency < 10 ms, recall@10 ≥ 0.95 again
 
 ### Requirement: Формат фикстур SYNX (vectors.bin)
 
-Крейт `vectors` читает и пишет бинарный формат фикстур vectors.bin (контракт оракул ↔ harness): magic "SYNX", version u32 LE = 1, dim u32 LE, count u64 LE, далее count строк `[u32 LE chunk_id][f32 LE × dim]`, отсортированных по возрастанию chunk_id. Чтение поддерживает потоковую обработку без полной загрузки в память; нарушение формата (magic/version/обрыв файла) — явная ошибка.
+Крейт `vectors` читает и пишет бинарный формат фикстур vectors.bin (контракт fixture-формата): magic "SYNX", version u32 LE = 1, dim u32 LE, count u64 LE, далее count строк `[u32 LE chunk_id][f32 LE × dim]`, отсортированных по возрастанию chunk_id. Чтение поддерживает потоковую обработку без полной загрузки в память; нарушение формата (magic/version/обрыв файла) — явная ошибка.
 
 #### Scenario: Цикл записи и чтения
 - **WHEN** набор векторов записан в формат SYNX и прочитан обратно

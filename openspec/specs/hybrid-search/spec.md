@@ -68,11 +68,11 @@ Reranker применяет бизнес-правила (deprecated ×0.2, offic
 
 ### Requirement: Паритет поиска
 
-RRF-фьюжн, реранкер и обогащение проверяются дифференциально против тестов оракула: калибровочные константы (k=20, 0.7/0.3), нормализации, бусты и порядок дают те же значения, что зафиксированы в Go-тестах; сквозные сценарии прогоняются через реальную FTS5 с просчитанными вручную ожиданиями.
+RRF-фьюжн, реранкер и обогащение проверяются против записанных фикстур: калибровочные константы (k=20, 0.7/0.3), нормализации, бусты и порядок дают те же значения, что зафиксированы в записанных кейсах; сквозные сценарии прогоняются через реальную FTS5 с просчитанными вручную ожиданиями.
 
-#### Scenario: Дифференциальный прогон кейсов оракула
-- **WHEN** кейсы Go-тестов оракула (rrf, enricher, reranker, graph expansion) прогоняются через Rust-реализацию
-- **THEN** счёты, порядки и метаданные совпадают с зафиксированными в оракуле
+#### Scenario: Прогон записанных кейсов
+- **WHEN** кейсы (rrf, enricher, reranker, graph expansion) прогоняются через Rust-реализацию
+- **THEN** счёты, порядки и метаданные совпадают с записанными фикстурами
 
 ### Requirement: Search legs consume search_text
 Both search legs SHALL be fed the chunk's `search_text` for **matching**: the lexical leg matches the FTS5 index (built over `search_text`) and the semantic leg compares the query embedding against chunk embeddings computed from `search_text`. The fused, ranked result's `text` field SHALL be the chunk's pure `chunk_text` (the byte-offset slice), and the chunk's metadata bag (`section_title`, `heading_level`, `breadcrumb`, `image_paths`, …) SHALL be carried on the result as structured `metadata` — the section context that was previously glued into the text. The fusion (RRF), reranking, and enrichment are otherwise unchanged.

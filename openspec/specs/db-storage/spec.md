@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Слой хранения данных Synopsis: соединение с SQLite (WAL, PRAGMA-parity с оракулом), миграции через `PRAGMA user_version` (единственный источник истины), транзакции, DAO-операции над таблицами v5-схемы и FTS5-поиск по чанкам с bm25-ранжированием.
+Слой хранения данных Synopsis: соединение с SQLite (WAL, зафиксированный набор PRAGMA), миграции через `PRAGMA user_version` (единственный источник истины), транзакции, DAO-операции над таблицами v5-схемы и FTS5-поиск по чанкам с bm25-ранжированием.
 
 ## Requirements
 
 ### Requirement: Соединение и миграции
 
-Крейт `db` открывает SQLite-базу с PRAGMA-настройками, идентичными оракулу: WAL, synchronous=NORMAL, cache_size=-64000, mmap_size=268435456, foreign_keys=ON, busy_timeout=5000. Схема создаётся одной squashed init-миграцией (финальное v5-состояние), встроенной в бинарь на compile-time; `PRAGMA user_version` — единственный источник истины о состоянии схемы (=1 после init); таблица `_schema_migrations` НЕ создаётся; legacy Go-созданная knowledge.db НЕ открывается и НЕ мигрируется. Будущие миграции — нумерованные каталоги `<id>-<slug>/up.sql`, forward-only, shipped-миграции не редактируются.
+Крейт `db` открывает SQLite-базу с PRAGMA-настройками: WAL, synchronous=NORMAL, cache_size=-64000, mmap_size=268435456, foreign_keys=ON, busy_timeout=5000. Схема создаётся одной squashed init-миграцией (финальное v5-состояние), встроенной в бинарь на compile-time; `PRAGMA user_version` — единственный источник истины о состоянии схемы (=1 после init); таблица `_schema_migrations` НЕ создаётся; legacy knowledge.db НЕ открывается и НЕ мигрируется. Будущие миграции — нумерованные каталоги `<id>-<slug>/up.sql`, forward-only, shipped-миграции не редактируются.
 
 #### Scenario: Инициализация свежей базы
 - **WHEN** db открывает несуществующий файл базы
@@ -40,7 +40,7 @@
 
 ### Requirement: DAO-операции над v5-схемой
 
-DAO-слой покрывает таблицы v5-схемы: documents, chunks, entities, facts, связи (chunk_entities, entity_links, entity_sources, fact_sources), app_kv. Поведение операций совпадает с оракулом по семантике (не 1:1-копия): CRUD, пагинация с фильтрами (domain через json_each, source_type, name), batch-операции (IN-списки с плейсхолдерами, батчи ≤ 500 строк), orphan-cleanup (не удаляет EntityType и факт-референсы), GetOrCreate/CreateOrIgnore — атомарные через UNIQUE-констрейнты и `ON CONFLICT` (исправление TOCTOU-гонки Go). Параметр-лимит SQLite (32766) не нарушается (батчи ≤ 500×2 параметров).
+DAO-слой покрывает таблицы v5-схемы: documents, chunks, entities, facts, связи (chunk_entities, entity_links, entity_sources, fact_sources), app_kv. Поведение операций зафиксировано по семантике: CRUD, пагинация с фильтрами (domain через json_each, source_type, name), batch-операции (IN-списки с плейсхолдерами, батчи ≤ 500 строк), orphan-cleanup (не удаляет EntityType и факт-референсы), GetOrCreate/CreateOrIgnore — атомарные через UNIQUE-констрейнты и `ON CONFLICT` (исправление TOCTOU-гонки). Параметр-лимит SQLite (32766) не нарушается (батчи ≤ 500×2 параметров).
 
 #### Scenario: CRUD документа
 - **WHEN** DAO создаёт, читает, обновляет и удаляет документ
@@ -48,7 +48,7 @@ DAO-слой покрывает таблицы v5-схемы: documents, chunks,
 
 #### Scenario: Пагинация с фильтрами
 - **WHEN** DAO запрашивает страницу документов/сущностей с фильтрами domain/source_type/name
-- **THEN** возвращаются только элементы, удовлетворяющие фильтрам, в порядке оракула, с корректным offset/limit
+- **THEN** возвращаются только элементы, удовлетворяющие фильтрам, в зафиксированном порядке, с корректным offset/limit
 
 #### Scenario: Атомарный GetOrCreate
 - **WHEN** два вызова GetOrCreate с одинаковыми ключами (type, name, domain) выполняются конкурентно
@@ -64,11 +64,11 @@ DAO-слой покрывает таблицы v5-схемы: documents, chunks,
 
 ### Requirement: FTS5-поиск по чанкам
 
-Поиск по чанкам использует FTS5-индекс (встроенный в bundled SQLite, без cgo) с ранжированием bm25 и опциональным domain-фильтром через json_each. Результаты возвращаются с корректными bm25-скорами и chunk_id, отсортированные по релевантности. Поведение совпадает с оракулом (паритет проверяется на фикстуре knowledge.db).
+Поиск по чанкам использует FTS5-индекс (встроенный в bundled SQLite, без cgo) с ранжированием bm25 и опциональным domain-фильтром через json_each. Результаты возвращаются с корректными bm25-скорами и chunk_id, отсортированные по релевантности. Поведение зафиксировано (проверяется на фикстуре knowledge.db).
 
 #### Scenario: FTS5-поиск без фильтра
 - **WHEN** выполняется поиск 'knowledge' по всем чанкам
-- **THEN** возвращается 17 хитов, top-3 chunk_id совпадают с оракулом (проверка на фикстуре knowledge.db)
+- **THEN** возвращается 17 хитов, top-3 chunk_id совпадают с записанной фикстурой (проверка на фикстуре knowledge.db)
 
 #### Scenario: FTS5-поиск с domain-фильтром
 - **WHEN** выполняется поиск с ограничением по домену

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Внешний контракт CLI Synopsis: подкоманды, флаги, порядок аргументов, поведение. Источник истины — `../synopsis/cmd/app/main.go` (+ cmd.go, model_cmd.go, onnx_runtime.go, serve.go, sync.go, loadtest.go). Паритет проверяется machine-diff'ом usage/`--help` выводов и поведенческими сценариями.
+Внешний контракт CLI Synopsis: подкоманды, флаги, порядок аргументов, поведение. Паритет проверяется machine-diff'ом usage/`--help` выводов и поведенческими сценариями.
 ## Requirements
 ### Requirement: Глобальные флаги и структура командной строки
 
@@ -30,10 +30,10 @@
 
 ### Requirement: Подкоманды model и onnx-runtime
 
-`model` управляет реестром моделей (list/benchmark по поведению оракула); `onnx-runtime` управляет загрузкой/состоянием ONNX Runtime. Флаги и вывод совпадают с Go оригиналом.
+`model` управляет реестром моделей (list/benchmark); `onnx-runtime` управляет загрузкой/состоянием ONNX Runtime. Флаги и вывод зафиксированы этим контрактом.
 
 #### Scenario: Паритет usage
-- **WHEN** выполнить machine-diff выводов `model --help` / `onnx-runtime --help` (Go vs Rust)
+- **WHEN** выполнить machine-diff выводов `model --help` / `onnx-runtime --help` против записанных фикстур
 - **THEN** набор флагов, значения по умолчанию и тексты описаний идентичны (допускается нормализация форматирования)
 
 ### Requirement: Подкоманда load-test
@@ -42,11 +42,11 @@
 
 #### Scenario: Отчёт
 - **WHEN** load-test --scale small завершён
-- **THEN** stdout содержит таблицу задержек по кейсам, структура совпадает с отчётом Go оригинала (machine-diff по секциям)
+- **THEN** stdout содержит таблицу задержек по кейсам, структура совпадает с записанной фикстурой отчёта (machine-diff по секциям)
 
 ### Requirement: Резолвинг конфигурации
 
-Приоритет: `--config` > `config.{preset}.yaml`, где preset по умолчанию `default`; авто-поиск файла конфига — сначала относительно каталога исполняемого файла, затем CWD. Поведение при отсутствии конфига и текст ошибок совпадают с оракулом (с учётом того, что Rust-бинарь лежит в своём каталоге).
+Приоритет: `--config` > `config.{preset}.yaml`, где preset по умолчанию `default`; авто-поиск файла конфига — сначала относительно каталога исполняемого файла, затем CWD. Поведение при отсутствии конфига и текст ошибок зафиксированы этим контрактом (с учётом того, что Rust-бинарь лежит в своём каталоге).
 
 #### Scenario: Пресет
 - **WHEN** рядом с бинарью лежит config.prod.yaml и вызов `synopsis --preset prod serve`
@@ -54,7 +54,7 @@
 
 ### Requirement: Подкоманда queue
 
-Новая подкоманда для инспекции и обслуживания очереди индексации документов (`document_jobs`). Подкоманды: `queue status [--source PATH] [--status NAME]` — табличный вывод состояния заданий (колонки: path, source, status, attempts, last_error, next_attempt_at); `queue reset-retries [--source PATH] [--path PATH]` — сброс счётчика повторов для заданий в статусе `error` (status→`pending`, attempts→0, next_attempt_at→now), после чего фоновый worker переиндексирует их. Подкоманда аддитивна к существующим (`sync`, `serve`, `model`, `onnx-runtime`, `load-test`); оракул аналога не имеет, поэтому parity не требуется.
+Новая подкоманда для инспекции и обслуживания очереди индексации документов (`document_jobs`). Подкоманды: `queue status [--source PATH] [--status NAME]` — табличный вывод состояния заданий (колонки: path, source, status, attempts, last_error, next_attempt_at); `queue reset-retries [--source PATH] [--path PATH]` — сброс счётчика повторов для заданий в статусе `error` (status→`pending`, attempts→0, next_attempt_at→now), после чего фоновый worker переиндексирует их. Подкоманда аддитивна к существующим (`serve`, `db`, `model`, `onnx-runtime`, `load-test`).
 
 > **Решение по контракту (2026-08-29):** подкоманда изначально проектировалась как `index`, но переименована в `queue` человеком — имя `queue` точнее отражает сущность (единая таблица состояний `document_jobs`, разделяемая watcher/startup/worker), а не процесс индексации. Это отклонение от исходного наименования в задаче 1.7 зафиксировано явно.
 
