@@ -129,18 +129,43 @@ the remaining oracle/Go/ported narrative; reframe the rationale.
 crate `crates/ingestion/src/` → **0** (final verify). Gates green. No code
 changed.
 
-- [ ] 1.7 Clean `mcp` crate + Cargo.toml (~399 mentions)
+- [ ] 1.7a Clean `mcp` `tools/` part 1 (~147 mentions)
 
-**Scope.** all of `crates/mcp/src/` (13+ files: `tools/*`, `server.rs`,
-`transport/*`, `lib.rs`, `health.rs`, `pagination.rs`) and
-`crates/mcp/Cargo.toml`. Strip `//! Oracle mapping: ../synopsis/...`, "the
-oracle's legacy SSE", `/// `../synopsis/...` (`mcp-contract`)` (keep the
-`mcp-contract` pointer), inline Go symbols, "deviations from the oracle".
-`jsonrpc.rs`: keep "Wire reference: mcp-go v0.57.0" + handler refs, drop
-"the oracle's server". Cargo.toml → `# D1 edges.`.
+**Scope.** `crates/mcp/src/tools/{facts.rs, entities_catalog.rs, catalog.rs}`.
+Strip `//! Oracle mapping: ../synopsis/...`, inline Go symbols, "deviations
+from the oracle" → "Design:". In doc comments that read
+`` `../synopsis/...` (`mcp-contract`) ``, DROP the `../synopsis/...` path but
+KEEP the `(`mcp-contract`)` pointer.
+
+**Acceptance.** the pattern above over those 3 files → **0**. Gates green. No
+behavior change.
+
+- [ ] 1.7b Clean `mcp` `tools/` part 2 (~117 mentions)
+
+**Scope.** `crates/mcp/src/tools/{dossier.rs, graph_tools.rs, documents.rs,
+search.rs, entity.rs}`. Same rule as 1.7a. OPTION A: rename the test function
+`successful_search_shapes_the_oracle_response` (search.rs) → drop "oracle"
+(e.g. `successful_search_shapes_response`).
+
+**Acceptance.** the pattern above over those 5 files → **0**. Gates green. No
+behavior change.
+
+- [ ] 1.7c Clean `mcp` `transport/` + top-level + Cargo.toml (~136 mentions)
+
+**Scope.** `crates/mcp/src/transport/{jsonrpc.rs, sse.rs, mod.rs}`,
+`crates/mcp/src/{server.rs, pagination.rs, lib.rs, health.rs, error.rs,
+tools.rs}`, and `crates/mcp/Cargo.toml`. Strip "the oracle's legacy SSE" →
+"the legacy SSE transport", "the oracle's server", inline Go symbols,
+"deviations from the oracle". `jsonrpc.rs`: KEEP "Wire reference: mcp-go
+v0.57.0" + handler refs, drop "the oracle's server". Cargo.toml: replace
+`# D1 edges; oracle imports: ../synopsis/internal/mcp + internal/mcp/handlers`
+→ `# D1 edges.` and drop the "byte-compatible with the Go oracle's
+pagination.go" clause. OPTION A: rename the test function
+`wire_format_matches_the_go_oracle` (pagination.rs) → drop "oracle".
 
 **Acceptance.** the pattern above over `crates/mcp/src/ crates/mcp/Cargo.toml`
-→ **0**. Gates green. `mcp-contract` pointer + `mcp-go v0.57.0` kept.
+→ **0** (whole crate + Cargo.toml, final verify). Gates green. No behavior
+change. `mcp-contract` pointer + `mcp-go v0.57.0` kept.
 
 - [ ] 1.8 Clean `cli` crate + Cargo.toml (~195 mentions)
 
