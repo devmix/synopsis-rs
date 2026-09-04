@@ -1,0 +1,154 @@
+/**
+  * synopsis[memex] — landing call to action section (FSD-WIDGETS-4).
+  * Rules moved verbatim from src/pages/index.module.css (2026-08-16); the page
+  * drops these rules for good because no section remains in index.tsx after
+  * this batch — its module keeps only the .page/.noise shell. The `.wrap` and
+  * `.secTag` mirrors below keep the cta rendering identical; other widgets carry
+  * their own copies (no cross-widget imports).
+  */
+
+/* ===== 9 · cta ===== */
+
+.cta {
+  border-top: var(--bw) solid var(--line);
+  padding: var(--section-pad) 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.cta::after {
+  content: '';
+  position: absolute;
+  right: -160px;
+  top: -160px;
+  width: var(--glow-size);
+  height: var(--glow-size);
+  border-radius: var(--radius-circle);
+  background: radial-gradient(circle, var(--accent-glow), transparent 70%);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.ctaTitle {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-cta);
+  letter-spacing: var(--ls-tight);
+  line-height: 1;
+  margin-bottom: 28px;
+  max-width: 820px;
+}
+
+.ctaCopy {
+  color: var(--muted);
+  max-width: 520px;
+  margin-bottom: var(--gap-xl);
+  font-size: var(--fs-lead);
+  position: relative;
+}
+
+.ctaActions {
+  display: flex;
+  gap: var(--gap-md);
+  flex-wrap: wrap;
+  align-items: center;
+  position: relative;
+}
+
+.ctaPrompt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--muted);
+  margin-top: var(--gap-xl);
+  position: relative;
+}
+
+.ctaPrompt b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+/* ===== buttons ===== */
+/* Moved from the page's shared button block — the CTA was its last remaining
+   user (the hero widget already carries its own btn mirrors). */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--ls-mono);
+  padding: 13px 24px;
+  border-radius: var(--radius-xs);
+  border: var(--bw) solid transparent;
+  text-decoration: none;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.btnPrimary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: var(--fw-med);
+}
+
+.btnPrimary:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-btn-hover);
+}
+
+.btnGhost {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.btnGhost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ===== page-level rules mirrored into widget scope (FSD-WIDGETS-4) ===== */
+/* Only `.wrap` and `.secTag` are mirrored here; this section styles its title
+   with .ctaTitle instead of the shared .display heading. The `.wrap` mirror
+   includes the page’s ≤720px padding override so mobile spacing stays byte-identical. */
+
+.wrap {
+  max-width: var(--wrap-max);
+  margin: 0 auto;
+  padding: 0 var(--pad-x);
+}
+
+.secTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secTag b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+/* ===== responsive (moved from the page) ===== */
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 var(--pad-x-narrow);
+  }
+
+  .cta {
+    padding: var(--section-pad-sm) 0;
+  }
+}

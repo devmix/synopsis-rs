@@ -1,0 +1,1 @@
+export {HowSection} from './HowSection';

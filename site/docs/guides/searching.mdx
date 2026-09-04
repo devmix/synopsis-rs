@@ -1,0 +1,95 @@
+---
+title: Searching
+description: Using the search MCP tool — parameters, the hybrid pipeline, reranking rules, and graph expansion
+sidebar_position: 4
+---
+
+# Searching
+
+The `search` tool is the primary way AI agents read the knowledge base: one hybrid query over all ingested documents, scoped by domain, enriched with metadata, entities, and graph context.
+
+## How to search
+
+Point any MCP client at the SSE endpoint (`http://localhost:8080/sse` by default) and call `search`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "search",
+    "arguments": {
+      "query": "vacation policy",
+      "domain": "hr",
+      "top_k": 5
+    }
+  }
+}
+```
+
+| Argument | Type   | Required | Description                                                              |
+| -------- | ------ | -------- | ------------------------------------------------------------------------ |
+| `query`  | string | yes      | Search query. Empty query is an error.                                    |
+| `domain` | string | no       | Restrict results to a domain (e.g. `hr`, `product`, `it`); empty = all    |
+| `top_k`  | number | no       | Maximum results to return. Default 10, range 1–100                        |
+
+The tool returns JSON containing `results`, `total_count`, `search_time_ms`, and an optional `warning`. Each result item:
+
+| Field            | Meaning                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| `document_id`    | ID of the source document                                          |
+| `chunk_id`       | ID of the matched chunk                                            |
+| `text`           | Chunk text                                                         |
+| `sequence_num`   | Chunk position within its document                                 |
+| `start_offset` / `end_offset` | Byte offsets of the match inside the original document    |
+| `document_path`  | Original file path (provenance)                                    |
+| `score`          | Normalized relevance score — higher is better                      |
+| `source_type`    | `lexical`, `semantic`, or `hybrid` (found by both retrievers)      |
+| `domains`        | Domain(s) the document belongs to                                  |
+| `entities`       | Entities associated with the chunk (id, name, type)                |
+
+A few practical notes:
+
+- **The domain filter runs inside both sub-searches at the database level** — it is not a post-filter over a shrunken pool, so `top_k` results are always computed within the requested domain. If you pass a domain Synopsis does not know, the search still runs but the response carries a `warning` (unknown domain, results may be incomplete).
+- If one retriever (lexical or semantic) fails, the other's results are still returned; an error is only returned when both fail. Each sub-search is bounded by the `search.timeout_ms` setting.
+- The full fusion math (FTS5/BM25 + sqlite-vec cosine + Reciprocal Rank Fusion) is explained in [Hybrid Search](../concepts/hybrid-search.mdx).
+
+## Reranking
+
+After RRF fusion, results pass through a reranker that rescores them with business rules, then re-sorts and **only then** truncates to `top_k` — so the best-adjusted results survive truncation.
+
+| Rule | Default multiplier | Applied when                                             |
+| ---- | ------------------ | -------------------------------------------------------- |
+| Deprecated | × 0.2 | the document is marked deprecated                         |
+| Official   | × 1.5 | the document is an official policy                        |
+| Expired    | × 0.1 | the document's `valid_to` date is in the past             |
+| Freshness  | × 1.2 | the document was updated within the last 90 days          |
+| Authority  | per document type | e.g. `policy: 1.5`, `regulation: 1.3`, other types 1.0    |
+
+All factors are configurable under `search:` in the config file (`deprecated_boost`, `official_boost`, `recent_boost`, `recent_days`, `authority_boost`). The effect: current, official policy documents float to the top, while deprecated and expired content sinks — exactly what an agent answering "what is the current rule?" needs.
+
+## Graph expansion
+
+After truncation, the engine performs a best-effort **graph expansion**: for each entity in the surviving results it walks the knowledge graph (BFS, bounded by `graph.max_depth`) and attaches neighboring entities with their relations and **approved facts** as `related_entities` metadata.
+
+What this buys you:
+
+- One search call already surfaces the *neighborhood* of the match — the agent can answer follow-up questions without additional full-text queries.
+- If graph expansion fails, it is non-fatal: you still get the (enriched, reranked) results, just without graph context.
+
+See [Knowledge Graph](../concepts/knowledge-graph.mdx) for traversal and dossiers, and [Cross-Domain Linking](../concepts/cross-domain-linking.mdx) for how the same entity is connected across domains.
+
+## Beyond `search`
+
+For deeper follow-ups the server exposes 11 more MCP tools: cataloging documents and entities, searching facts and entities by type, retrieving full document context and single chunks/facts, and traversing the graph (`get_entity_relations`, `get_entity_dossier`, `get_entity_links`). A worked flow: `search` → note the `entities` in the result → `get_entity_dossier` for the full picture with sources and cross-domain links.
+
+:::tip
+When facts are missing from a search result's graph context, the most common cause is that their status is not `approved` — only approved facts are expanded. See [Facts not appearing in search](./troubleshooting.mdx#facts-not-appearing-in-search).
+:::
+
+## What's next
+
+- [Ingestion](./ingestion.mdx) — how the index `search` reads is built
+- [Configuration](./configuration.mdx#search) — search and reranking settings
+- [Troubleshooting](./troubleshooting.mdx) — when searches behave unexpectedly

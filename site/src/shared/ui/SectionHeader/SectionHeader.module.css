@@ -1,0 +1,14 @@
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--ls-normal);
+  line-height: var(--lh-tight);
+  margin-bottom: 18px;
+}
+
+.sectionLead {
+  color: var(--muted);
+  max-width: var(--max-body);
+  font-size: var(--fs-lead);
+}

@@ -1,0 +1,109 @@
+---
+title: 'search_facts'
+description: Search knowledge graph facts by predicate, entity name, status, and domain — with cursor pagination and subject/object entity names
+sidebar_position: 10
+---
+
+# `search_facts`
+
+Searches the fact table of the knowledge base with optional filters on **predicate** (substring), **entity name** (subject or object), **status**, and **domain**, with cursor-based pagination. Each fact is returned with its subject and object entity names resolved, so a single call is enough to read the relation triples.
+
+Facts are the edges of the knowledge graph: `subject —predicate→ object`. See [Database Schema — `facts`](../database-schema.mdx#facts) for the table definition and [Knowledge Graph](../../concepts/knowledge-graph.mdx) for how facts are used.
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `predicate` | string | no | all | Case-insensitive **substring** match on the fact predicate (SQL `LIKE`), e.g. `manages`. The characters `%`, `_`, and `\` are escaped, so they match literally. |
+| `entity_name` | string | no | all | Case-insensitive **substring** match on the **subject or object** entity name, e.g. `alice`. |
+| `status` | string | no | `approved` | Exact-match filter on fact status: `draft`, `pending`, `approved`, or `rejected`. Omitted = only `approved`. Pass an **explicit empty string** (`""`) to return facts of all statuses. |
+| `domain` | string | no | all | Exact match on the fact's domain (e.g. `hr`, `product`). |
+| `page_size` | number | no | `20` | Items per page (1–200). Out-of-range values fall back to the default `20`. |
+| `cursor` | string | no | — | Base64-encoded pagination cursor; pass `next_cursor` from a previous response to continue. Omit or pass empty to start from the beginning. |
+
+All filters combine with AND. Results are ordered by fact ID (ascending).
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "search_facts",
+    "arguments": {
+      "entity_name": "alice",
+      "domain": "hr"
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `facts` | array | Fact entries for this page. |
+| `facts[].id` | int | Fact predicate — pass it to `get_fact_by_id` for source quotes. |
+| `facts[].predicate` | string | The relation, e.g. `manages`, `reports_to`, `valid_until`. |
+| `facts[].subject_entity_id` | int | Subject entity ID (omitted when the fact has no subject). |
+| `facts[].subject_name` | string | Subject entity name (omitted when the subject is missing or was not found). |
+| `facts[].object_entity_id` | int | Object entity ID (omitted when the fact has no object). |
+| `facts[].object_name` | string | Object entity name (omitted when the object is missing or was not found). |
+| `facts[].domain` | string | Domain the fact belongs to. |
+| `facts[].status` | string | Review status: `draft`, `pending`, `approved`, or `rejected`. |
+| `facts[].valid_from` | string | Temporal validity start (ISO date). Omitted when not set. |
+| `facts[].valid_to` | string | Temporal validity end (ISO date). Omitted when not set. |
+| `facts[].weight` | int | Relation weight — recomputed as the number of source quotes backing the fact (default `1`); used in graph traversal. |
+| `total_count` | int | Total number of facts matching the filters (across all pages). |
+| `next_cursor` | string | Cursor for the next page; **omitted on the last page**. |
+
+Example (facts where `alice` appears as subject or object, in domain `hr`):
+
+```json
+{
+  "facts": [
+    {
+      "id": 301,
+      "predicate": "manages",
+      "subject_entity_id": 100,
+      "subject_name": "Alice",
+      "object_entity_id": 112,
+      "object_name": "API Gateway",
+      "domain": "hr",
+      "status": "approved",
+      "weight": 2
+    },
+    {
+      "id": 307,
+      "predicate": "reports_to",
+      "subject_entity_id": 100,
+      "subject_name": "Alice",
+      "object_entity_id": 95,
+      "object_name": "Engineering",
+      "domain": "hr",
+      "status": "approved",
+      "weight": 1
+    }
+  ],
+  "total_count": 2
+}
+```
+
+## Error conditions
+
+| Condition | Result |
+|---|---|
+| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `Error decoding cursor: …` |
+| `page_size` outside 1–200 | **Not an error** — silently falls back to the default `20` |
+| Database failure | `isError` result: `Error searching facts: …` |
+
+An unknown `status` value or an empty match is a **success**: the `facts` array is empty and `total_count` is `0`.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [get_fact_by_id](./get-fact-by-id) — a single fact with subject/object details and source quotes
+- [search](./search) — hybrid search (its graph expansion surfaces approved facts of matched entities)
+- [Troubleshooting — Facts not appearing in search](../../guides/troubleshooting.mdx#facts-not-appearing-in-search) — why a fact is missing from search results

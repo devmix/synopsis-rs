@@ -1,0 +1,147 @@
+/**
+  * synopsis[memex] — landing use cases section (FSD-WIDGETS-4).
+  * Rules moved verbatim from src/pages/index.module.css (2026-08-16); the page
+  * drops these rules for good because no section remains in index.tsx after
+  * this batch — its module keeps only the .page/.noise shell. The `.wrap`,
+  * section header, reveal-delay and chip mirrors below keep use cases rendering
+  * identical; other widgets carry their own copies (no cross-widget imports).
+  */
+
+/* ===== 7 · use cases ===== */
+
+.usecases {
+  padding: var(--section-pad) 0;
+}
+
+.ucGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--gap-md);
+  margin-top: var(--gap-2xl);
+}
+
+.ucCard {
+  background: var(--panel);
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+
+.ucCard:hover {
+  border-color: var(--accent-border);
+  transform: translateY(-4px);
+}
+
+.ucTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: var(--gap-md);
+}
+
+.ucCard h3 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-semi);
+  font-size: var(--fs-card-title);
+  letter-spacing: -0.01em;
+  margin-bottom: 10px;
+}
+
+.ucCard p {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--gap-md);
+  flex: 1;
+}
+
+/* ===== chips ===== */
+/* Moved from the page — UseCasesSection was its last direct user. The pipeline
+   and features widgets already carry their own chip mirrors. */
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-xs);
+}
+
+.chip {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  padding: 6px 12px;
+  border: var(--bw) solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* ===== page-level rules mirrored into widget scope (FSD-WIDGETS-4) ===== */
+/* The grid maps onto all three delay steps (`[i]`), so `.d1`–`.d3` are all
+   mirrored here. The `.wrap` mirror includes the page’s ≤720px padding
+   override so mobile spacing stays byte-identical. */
+
+.wrap {
+  max-width: var(--wrap-max);
+  margin: 0 auto;
+  padding: 0 var(--pad-x);
+}
+
+.secTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secTag b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--ls-normal);
+  line-height: var(--lh-tight);
+  margin-bottom: 18px;
+}
+
+.sectionLead {
+  color: var(--muted);
+  max-width: var(--max-body);
+  font-size: var(--fs-lead);
+}
+
+.d1 { --reveal-delay: 0.08s; }
+.d2 { --reveal-delay: 0.16s; }
+.d3 { --reveal-delay: 0.24s; }
+
+/* ===== responsive (moved from the page) ===== */
+
+@media (max-width: 1024px) {
+  .ucGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 var(--pad-x-narrow);
+  }
+
+  .ucGrid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,99 @@
+---
+title: CI/CD
+description: GitHub Actions workflows — CI (test, lint, coverage) and release (tag-triggered GoReleaser multi-platform build) — plus how cross-compilation works
+sidebar_position: 7
+---
+
+# CI/CD
+
+Two GitHub Actions workflows live in `.github/workflows/`: **`ci.yml`** runs on every push and pull request to `main`; **`release.yml`** builds and publishes binaries when a version tag is pushed.
+
+## CI workflow (`ci.yml`)
+
+```yaml
+on:
+  push:            branches: [main]
+  pull_request:    branches: [main]
+
+concurrency:       # cancel in-progress runs when a new commit lands
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.5"
+```
+
+Three jobs (all on `ubuntu-latest`), wired so nothing downstream runs against red code — typical run is ~3 minutes:
+
+| Job | Steps |
+|---|---|
+| **Test** | install `gcc` → `go test -race ./...` with `CGO_CFLAGS="-DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_VEC"` and `CGO_LDFLAGS=-lm` (FTS5's bm25 scoring calls libm, which glibc does not merge into libc) |
+| **Lint** | `golangci/golangci-lint-action@v9.3.0`, linter version `v2.12`, args `./...` |
+| **Coverage** (`needs: [test]`) | same flags plus `-coverprofile=coverage.out -covermode=atomic`; prints the total line to the job log, renders a per-package table into the job summary (visible on the Actions run page), and uploads `coverage.out` as an artifact for 30 days |
+
+Notes:
+
+- **The test job doubles as the dev build check.** `go test` compiles and links every package — including `cmd/app` — natively, so a separate `go build` or cross-build job adds no signal on regular pushes. Cross-platform compilation is verified where it matters: at release time (below). The repo has no OS-conditional Go code, which is what makes this safe.
+- **Lint uses golangci-lint v2.** The last v1 release was built with Go 1.24 and refuses to target this module's `go 1.25` directive, so CI pins linter version `v2.12`. Locally, `make lint` uses that same pinned version — it runs `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12 run ./...` rather than a locally installed binary, so what passes on your machine is exactly what runs in CI. There is no `.golangci.yml` — defaults only.
+- **The FTS5/VEC defines are not cosmetic.** Without them the migration runner silently skips the fts5 tables and search degrades with no error (see [Troubleshooting — CGO build failures](../guides/troubleshooting#cgo-build-failures)).
+
+## Release workflow (`release.yml`)
+
+Triggered by **push of tags matching `v*`** (for example `v0.12.0`). A single job on `ubuntu-latest`:
+
+1. Check out with full history (`fetch-depth: 0`) so GoReleaser can generate changelog notes from conventional commits.
+2. Install Go 1.25.5 and **Zig 0.16** — the C toolchain for every target (see [Cross-compilation](#cross-compilation)).
+3. Run `goreleaser release --clean` (`goreleaser/goreleaser-action@v7`, goreleaser v2) with `GITHUB_TOKEN`.
+
+All build configuration lives in **`.goreleaser.yaml`** — it is the single source of truth for what ships:
+
+- **Targets**: linux, darwin and windows × amd64/arm64 (windows-arm64 excluded). Each target gets `CC=zig cc -target <triple>` plus `CGO_CFLAGS` with the SQLite include dir and `-DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_VEC`; Darwin additionally links against `scripts/darwin-stubs/` and Zig's bundled macOS SDK with `-Wl,-undefined,dynamic_lookup`. Binaries are stripped (`-ldflags="-s" "-w"`).
+- **Before hook** (`scripts/goreleaser-prebuild.sh`): pre-fetches the `go-sqlite3` module (cold-cache safe), symlinks its `sqlite3-binding.h` as `sqlite3.h` — the vec0 bindings include that name — stages the Darwin stubs and Zig's bundled SDK, and fails hard if anything is missing.
+- **Archives**: `synopsis_<version>_<os>_<arch>.tar.gz`, each containing the binary plus `LICENSE`, `README.md`, `configs/**`, the ontologies under `data/ontology/**`, the sample corpus under `data/storage/**`, and every file in `migrations/*`.
+- **Checksums**: `SHA256SUMS.txt`; release notes are auto-generated.
+
+| Platform | Artifact (v0.12.0 example) |
+|---|---|
+| linux / amd64 | `synopsis_0.12.0_linux_amd64.tar.gz` |
+| linux / arm64 | `synopsis_0.12.0_linux_arm64.tar.gz` |
+| darwin / amd64 | `synopsis_0.12.0_darwin_amd64.tar.gz` |
+| darwin / arm64 | `synopsis_0.12.0_darwin_arm64.tar.gz` |
+| windows / amd64 | `synopsis_0.12.0_windows_amd64.tar.gz` |
+
+## Cross-compilation
+
+Every cross-build — local and release — compiles **from the host** with Zig as the C toolchain: `zig cc` emits C objects for any target, so one Linux runner covers all five platforms without per-platform sysroots or runners. Local targets use `make build-all` / `scripts/build.sh`; the release uses the same approach through GoReleaser's `CC=zig cc ...` overrides in `.goreleaser.yaml`.
+
+| Platform | Zig target triple | CGO specifics |
+|---|---|---|
+| linux-amd64 | `x86_64-linux-gnu` | `sqlite3.h` symlink into `CGO_CFLAGS` (via the before hook) |
+| linux-arm64 | `aarch64-linux-gnu` | same |
+| windows-amd64 | `x86_64-windows` | same; output gets `.exe` |
+| darwin-amd64 | `x86_64-macos` | extra: `scripts/darwin-stubs/` + Zig's bundled macOS SDK, `-Wl,-undefined,dynamic_lookup`, stripped |
+| darwin-arm64 | `aarch64-macos` | same |
+
+**Keep the defines in sync.** The Makefile and `.goreleaser.yaml` both set `CGO_CFLAGS` for go-sqlite3; if one changes, change both — a missing `-DSQLITE_ENABLE_FTS5` does not fail the build, it silently disables the FTS tables.
+
+Details (the header symlink trick, the macOS stubs): [Development Setup — Cross-compilation](./setup#cross-compilation).
+
+## Release flow
+
+```
+git tag -a v0.12.0 && git push github v0.12.0
+      │
+      ▼
+release.yml: zig cross-build of all 5 targets → archives + SHA256SUMS.txt
+      │
+      ▼
+GitHub Release with synopsis_<version>_*_*.tar.gz assets + generated notes
+```
+
+- Tags are annotated (`git tag -a`); `prerelease: auto` marks `v0.x.y` releases as prereleases.
+- GoReleaser builds first and publishes second: if the cross-build fails, nothing is published — fix and force-push the same tag to retry.
+- The first release was **v0.12.0** (August 2026).
+
+## See also
+
+- [Development Setup](./setup) — local builds, Makefile targets, cross-compilation with Zig
+- [Testing](./testing) — what the CI test/coverage jobs run
+- [CLI Reference](../reference/cli) — what the released binary does

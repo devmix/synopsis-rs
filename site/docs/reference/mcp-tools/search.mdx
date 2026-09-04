@@ -1,0 +1,110 @@
+---
+title: 'search'
+description: Hybrid lexical (FTS5/BM25) + semantic (vector) search with RRF fusion — query, top_k, domain; ranked chunks with provenance and entities
+sidebar_position: 5
+---
+
+# `search`
+
+Hybrid search over the knowledge base: **lexical** results (FTS5/BM25 full-text) and **semantic** results (sqlite-vec vectors, cosine similarity) are fused with **Reciprocal Rank Fusion (RRF)**, reranked, and returned as ranked text chunks. Each chunk carries full provenance (document, path, offsets, domains) and the entities extracted from it. This is the primary way an AI agent reads the knowledge base.
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `query` | string | **yes** | — | Search query string; must be non-empty. |
+| `top_k` | number | no | `10` | Maximum number of results to return (range 1–100). |
+| `domain` | string | no | all | Restricts results to a domain (e.g. `hr`, `product`, `engineering`). Empty or omitted = search all domains. An unknown domain does **not** fail the call — see `warning` in the response. |
+
+Behavior:
+
+- The `domain` filter runs **inside both sub-searches at the database level**, not as a post-filter — the `top_k` results are always computed within the requested domain.
+- If one retriever (lexical or semantic) fails, the other's results are still returned; an error is returned only when **both** fail.
+- After fusion, results go through a **reranker** (business rules for deprecated/official/expired/fresh/authoritative documents) and only *then* get truncated to `top_k`, so the best-adjusted results survive. See [Searching — Reranking](../../guides/searching.mdx#reranking).
+- Fusion math (BM25 + cosine + RRF, score calibration) is covered by [Hybrid Search](../../concepts/hybrid-search.mdx#fusion-reciprocal-rank-fusion).
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "search",
+    "arguments": {
+      "query": "vacation policy",
+      "domain": "hr",
+      "top_k": 5
+    }
+  }
+}
+```
+
+## Response
+
+The tool result's text content is a JSON document:
+
+| Field | Type | Description |
+|---|---|---|
+| `results` | array | Matched chunks, best first. |
+| `results[].document_id` | int | ID of the source document. |
+| `results[].chunk_id` | int | ID of the matched chunk. |
+| `results[].text` | string | Chunk text. |
+| `results[].sequence_num` | int | Position of the chunk within its document. |
+| `results[].start_offset` | int | Character offset where the chunk starts in the original document (omitted when unknown). |
+| `results[].end_offset` | int | Character offset where the chunk ends (omitted when unknown). |
+| `results[].document_path` | string | Original file path of the source document (provenance). |
+| `results[].score` | float | Normalized relevance score — higher is better. |
+| `results[].source_type` | string | Which retriever found the chunk: `lexical`, `semantic`, or `hybrid` (both). |
+| `results[].domains` | string[] | Domains the document belongs to (from document metadata; omitted when empty). |
+| `results[].entities` | array | Entities extracted from the chunk, each `{ "id": int, "name": string, "type": string }` (omitted when empty). |
+| `total_count` | int | Number of results returned (≤ `top_k`). |
+| `search_time_ms` | int | Search duration in milliseconds. |
+| `warning` | string | Present only when the requested `domain` is not known to the knowledge base: `unknown domain "…"; results may be incomplete`. Results are still returned. |
+
+Example:
+
+```json
+{
+  "results": [
+    {
+      "document_id": 1,
+      "chunk_id": 42,
+      "text": "Employees accrue 30 vacation days per year; unused days carry over, capped at 10.",
+      "sequence_num": 3,
+      "start_offset": 220,
+      "end_offset": 310,
+      "document_path": "./data/hr/policies/vacation.md",
+      "score": 0.0317,
+      "source_type": "hybrid",
+      "domains": ["hr", "policy"],
+      "entities": [{ "id": 100, "name": "Vacation Policy", "type": "policy" }]
+    }
+  ],
+  "total_count": 1,
+  "search_time_ms": 47
+}
+```
+
+:::tip
+Each result already names the entities in the chunk. A common flow is to take one of those `entities[].id` and call `get_entity_dossier` for the full picture with sources and cross-domain links.
+:::
+
+## Error conditions
+
+| Condition | Result |
+|---|---|
+| `query` missing or empty | `isError` result: `Error: 'query' argument is required and must not be empty` |
+| `top_k` < 1 or > 100 | `isError` result: `Error: 'top_k' must be between 1 and 100, got <N>` |
+| Both lexical **and** semantic sub-searches fail | `isError` result: `Error during search: …` (a single failing retriever is tolerated) |
+| Unknown `domain` | **Not an error** — results are still returned, plus a `warning` field |
+
+See [Troubleshooting — Search returns no results or a domain warning](../../guides/troubleshooting.mdx#search-returns-no-results-or-a-domain-warning).
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [Searching](../../guides/searching.mdx) — practical guidance: filters, reranking, graph expansion
+- [Hybrid Search](../../concepts/hybrid-search.mdx) — the fusion algorithm behind this tool
+- [Database Schema](../database-schema.mdx) — the `documents`, `chunks`, and `entities` tables

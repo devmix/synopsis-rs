@@ -1,0 +1,113 @@
+---
+title: Installation
+description: Prerequisites, building Synopsis from source, cross-compilation with Zig, and running it in Docker
+sidebar_position: 1
+---
+
+# Installation
+
+Synopsis compiles to a **single self-contained binary** — SQLite (with FTS5 and sqlite-vec), the embedding model loader, and the MCP server are all inside it. At runtime it needs just the binary and a writable data directory.
+
+## Prerequisites
+
+| Requirement       | Version | Notes                                                                                     |
+| ----------------- | ------- | ----------------------------------------------------------------------------------------- |
+| Go                | 1.25+   | Build                                                                                     |
+| C toolchain       | gcc or clang | **CGO is mandatory** — go-sqlite3 compiles SQLite into the binary at build time       |
+| Make              | any     | Convenience targets                                                                        |
+| Zig (optional)    | 0.14+   | Only for cross-compilation to other platforms                                             |
+| Network access    | —       | First run: the local embedding model is downloaded automatically                          |
+
+Without a C toolchain (or with `CGO_ENABLED=0`) the build fails — this is expected, not a bug.
+
+## Build from source
+
+```bash
+git clone https://github.com/devmix/synopsis.git && cd synopsis
+
+# Build for the current platform → bin/synopsis
+make build
+```
+
+Verify the binary:
+
+```bash
+./bin/synopsis --version
+```
+
+### Run the key targets
+
+The development targets build first, then run the binary with `configs/config.default.yaml`:
+
+| Target          | What it does                                                    |
+| --------------- | --------------------------------------------------------------- |
+| `make build`    | Compile for the current platform (CGO enabled)                  |
+| `make sync`     | Build, then ingest all configured sources into the database     |
+| `make run`      | Build, then start the MCP server (`serve`)                      |
+| `make rebuild`  | Build, then clear the database and re-ingest everything         |
+| `make clean`    | Remove build artifacts (`bin/`, coverage files)                 |
+
+You can also invoke the binary directly — global flags (see [Configuration](./configuration.mdx)) always precede the subcommand:
+
+```bash
+./bin/synopsis --config configs/config.default.yaml sync
+./bin/synopsis --config configs/config.default.yaml serve
+```
+
+`make run` starts the server on `0.0.0.0:8080`; check it with `curl http://localhost:8080/health`. A working install is the five-minute path in the [Quickstart](../quickstart.mdx).
+
+## Cross-compilation with Zig
+
+Building for another platform requires a C toolchain that can target it. Synopsis uses **Zig as a portable drop-in C compiler** — no per-platform sysroots or SDKs needed. Install Zig 0.14+ first (`brew install zig` on macOS, or the archives from ziglang.org).
+
+| Target                 | Output binary                       |
+| ---------------------- | ----------------------------------- |
+| `make build-linux-amd64`  | `bin/synopsis-linux-amd64`          |
+| `make build-linux-arm64`  | `bin/synopsis-linux-arm64`          |
+| `make build-windows-amd64`| `bin/synopsis-windows-amd64.exe`    |
+| `make build-macos-amd64`  | `bin/synopsis-macos-amd64`          |
+| `make build-macos-arm64`  | `bin/synopsis-macos-arm64`          |
+
+Build everything at once:
+
+```bash
+make build-all
+```
+
+Each target sets `CC`/`CXX` to a `zig cc -target <triplet>` invocation and `GOOS`/`GOARCH` accordingly, so SQLite is compiled for the target and linked statically — for example, `make build-linux-arm64` works from a macOS host without any ARM toolchain. The macOS targets additionally link against stub libraries in `scripts/darwin-stubs` to resolve libc symbols portably.
+
+## Docker
+
+The repository ships a multi-stage `Dockerfile` (Go 1.25 Alpine builder, Alpine 3.21 runtime, CGO-enabled build). Build and run:
+
+```bash
+docker build -t synopsis .
+
+docker run -d --name synopsis \
+  -p 8080:8080 \
+  -v $(pwd)/configs:/app/configs \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/my-documents:/app/documents \
+  synopsis
+```
+
+The container starts the `serve` subcommand with `--config /app/configs/config.default.yaml`. The image documents these mount points as the expected volume layout:
+
+| Path            | Purpose                        |
+| --------------- | ------------------------------ |
+| `/app/configs`  | Configuration files            |
+| `/app/data`     | SQLite database + embedding cache |
+| `/app/workspace`| Source documents (see note)    |
+| `/app/models`   | ONNX model files (see note)    |
+
+Notes:
+
+- All paths inside the config file are **relative to the container working directory** (`/app`), so with the default configuration the documents directory is `/app/documents`, the database is `/app/data/knowledge.db`, and models land in `/app/data/models/`. Mount the directories accordingly (or override `paths.*` in your own config).
+- Keep the config directory on a volume if you use a custom preset — the container expects `configs/config.default.yaml` by default.
+- Port `8080` is exposed; the MCP SSE endpoint is `http://localhost:8080/sse`.
+
+## What's next
+
+- [Quickstart](../quickstart.mdx) — build, ingest, serve, and run your first search
+- [Configuration](./configuration.mdx) — every section of `config.default.yaml`
+- [Ingestion](./ingestion.mdx) — how documents flow into the knowledge base

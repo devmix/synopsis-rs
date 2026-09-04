@@ -1,0 +1,73 @@
+---
+title: 'catalog_overview'
+description: Aggregate knowledge base statistics — document, chunk, entity, and fact counts, per-type and per-domain distributions, and graph size
+sidebar_position: 6
+---
+
+# `catalog_overview`
+
+Returns aggregate statistics about the knowledge base: total counts, distributions by type and domain, the list of known domains and entity types, and the size of the cross-domain link graph. A cheap first call to size up the knowledge base before using [search](./search) or the catalog tools.
+
+## Parameters
+
+None.
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "catalog_overview",
+    "arguments": {}
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `document_count` | int | Total number of documents. |
+| `chunk_count` | int | Total number of chunks. |
+| `entity_count` | int | Total number of entities. |
+| `fact_count` | int | Total number of facts, **regardless of status** (unlike search expansion, which only expands approved facts). |
+| `documents_by_type` | object | Document counts grouped by `source_type`, e.g. `{"markdown": 8, "json": 4}`. |
+| `entities_by_type` | object | Entity counts grouped by type, e.g. `{"employee": 22, "policy": 7}`. |
+| `entities_by_domain` | object | Entity counts grouped by domain, e.g. `{"hr": 66}`. |
+| `domains` | string[] | Distinct domain values taken from document metadata (`$.domain`); empty array when no document declares a domain. |
+| `entity_types` | string[] | Distinct entity types present in the knowledge base — useful as a lookup list for [search_entities_by_type](./search-entities-by-type). |
+| `graph_node_count` | int | Distinct entities referenced by cross-domain entity links. |
+| `graph_edge_count` | int | Number of cross-domain entity links. |
+
+Example:
+
+```json
+{
+  "document_count": 25,
+  "chunk_count": 270,
+  "entity_count": 207,
+  "fact_count": 179,
+  "documents_by_type": { "markdown": 8, "json": 17 },
+  "entities_by_type": { "employee": 22, "department": 13, "policy": 7 },
+  "entities_by_domain": { "hr": 66, "product": 141 },
+  "domains": ["hr", "product"],
+  "entity_types": ["department", "employee", "policy", "system"],
+  "graph_node_count": 5,
+  "graph_edge_count": 8
+}
+```
+
+The `graph_node_count` / `graph_edge_count` pair reflects the `entity_links` table (see [Cross-Domain Linking](../../concepts/cross-domain-linking.mdx) and [Database Schema — `entity_links`](../database-schema.mdx#entity_links)). It is not a count of the in-memory knowledge graph.
+
+## Error conditions
+
+No parameter errors are possible. All failures are database-level and come back as `isError` results with messages such as `Error counting documents: …`.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [catalog_documents](./catalog-documents) / [catalog_entities](./catalog-entities) — enumerate what the counts above refer to
+- [Database Schema](../database-schema.mdx) — the tables behind these numbers

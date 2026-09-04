@@ -1,0 +1,202 @@
+/**
+ * synopsis[memex] — landing quick start section (FSD-WIDGETS-2).
+ * Rules moved verbatim from src/pages/index.module.css (2026-08-16); the page
+ * drops its traffic-dot and tone rules because this section was their last user.
+ * Traffic dots and tone colors come from shared/ui/terminal — identical
+ * declarations, so rendering (incl. the 0x0 dot quirk) is unchanged.
+ */
+
+/* ===== quick start ===== */
+
+.quickstart {
+  padding: var(--section-pad) 0;
+}
+
+.qsGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: var(--grid-gap);
+  align-items: start;
+  margin-top: var(--gap-2xl);
+}
+
+/* The page's combined rule `.termCol, .qsGrid > *` carried `min-width: 0`; the
+   hero terminal restates its own half (see Hero.module.css), so only the
+   qsGrid half moves here. */
+.qsGrid > * {
+  min-width: 0;
+}
+
+.qsStep {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--gap-lg);
+  padding: var(--gap-lg) 0;
+  border-top: var(--bw) solid var(--line);
+}
+
+.qsStep:last-child {
+  border-bottom: var(--bw) solid var(--line);
+}
+
+.qsNum {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-big-num);
+  line-height: 1;
+  color: transparent;
+  -webkit-text-stroke: var(--bw) var(--accent-stroke);
+}
+
+.qsStep h3 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-semi);
+  font-size: var(--fs-h3);
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--gap-sm);
+}
+
+.qsStep p {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.qsCmd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--text);
+  background: var(--panel);
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-xs);
+  padding: 3px 10px;
+}
+
+.qsCode {
+  /* Force dark appearance in both themes — scoped overrides ensure all internal
+     var() references (text, muted, accent, line) resolve to dark values. */
+  background: var(--term-head);
+  --text: #e8edf3;
+  --muted: #8b98a6;
+  --accent: #a8ff3e;
+  --line: rgba(158, 180, 204, 0.14);
+  --line-strong: rgba(158, 180, 204, 0.28);
+  border: var(--bw) solid var(--line-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+
+.qsCodeHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 16px;
+  border-bottom: var(--bw) solid var(--line);
+  background: var(--term-head);
+}
+
+.qsCodeTitle {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  color: var(--muted);
+}
+
+.qsCodePre {
+  padding: var(--gap-lg) 20px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  line-height: var(--lh-term);
+  overflow-x: auto;
+  color: var(--text);
+  background: transparent;
+}
+
+.codeLine {
+  display: block;
+  min-height: 1em;
+}
+
+.qsJson {
+  margin-top: var(--gap-lg);
+}
+
+.qsJsonLabel {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  color: var(--muted);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  margin-bottom: var(--gap-sm);
+}
+
+.qsJsonLabel b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+@media (max-width: 1024px) {
+  .qsGrid {
+    grid-template-columns: 1fr;
+    gap: var(--gap-xl);
+  }
+}
+
+/* ===== page-level rules mirrored into widget scope (FSD-WIDGETS-2) ===== */
+/* `.wrap`, the section header, reveal delays and the tool link are still
+   consumed by sections that remain in index.tsx, so the page keeps its own
+   copies. These mirrors keep quick start rendering identical now; dedupe once
+   every section is a widget (as done for Hero). */
+
+.wrap {
+  max-width: var(--wrap-max);
+  margin: 0 auto;
+  padding: 0 var(--pad-x);
+}
+
+.secTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secTag b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--ls-normal);
+  line-height: var(--lh-tight);
+  margin-bottom: 18px;
+}
+
+.d1 { --reveal-delay: 0.08s; }
+.d2 { --reveal-delay: 0.16s; }
+.d3 { --reveal-delay: 0.24s; }
+
+.toolLink {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-mono);
+  color: var(--accent);
+  align-self: flex-start;
+}
+
+.toolLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

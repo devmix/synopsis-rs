@@ -1,0 +1,96 @@
+---
+title: Quickstart
+description: Get Synopsis running in 5 minutes — build, sync, serve, first search
+sidebar_position: 2
+---
+
+# Quickstart
+
+From source to a searchable MCP server in five minutes.
+
+## Prerequisites
+
+- **Go 1.25+** and a **C toolchain** (gcc or clang) — CGO is mandatory: go-sqlite3 compiles SQLite (with FTS5 and sqlite-vec) into the binary at build time
+- **Make**
+- Network access on first run — the local embedding model (`bge-small-en-v1.5`) is downloaded automatically on the first sync
+
+## 1. Build
+
+Clone the repository, then:
+
+```bash
+make build
+```
+
+Produces `bin/synopsis` — a single self-contained binary.
+
+## 2. Ingest documents
+
+Place your cleaned, normalized documents (`.md`, `.json`, `.html`) into the `documents/` directory (configured by `paths.documents_dir` in `configs/config.default.yaml`), then:
+
+```bash
+make sync
+```
+
+The sync pipeline ingests the documents into `data/knowledge.db`: parsing, chunking, local embeddings (the model downloads automatically on first use), NER, entity and fact extraction, graph and index construction.
+
+To wipe everything and re-ingest from scratch, use `make rebuild` instead.
+
+## 3. Start the MCP server
+
+```bash
+make run
+```
+
+This builds and then runs the `serve` subcommand with `configs/config.default.yaml`. The server listens on `0.0.0.0:8080` with three endpoints:
+
+| Endpoint       | Method | Purpose                                          |
+| -------------- | ------ | ------------------------------------------------ |
+| `/sse`         | GET    | MCP SSE transport (client connection)            |
+| `/message`     | POST   | MCP message endpoint (sessionId query parameter) |
+| `/health`      | GET    | JSON health status                               |
+
+Check that it is up:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Note: with the default configuration, `serve` also performs an initial source scan on startup (`auto_update.initial_sync: true`). Pass `--no-initial-sync` if you want to skip it.
+
+## 4. First search
+
+Point any MCP client at the SSE endpoint — `http://localhost:8080/sse` — and call the `search` tool:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "search",
+    "arguments": {
+      "query": "vacation policy",
+      "domain": "hr"
+    }
+  }
+}
+```
+
+`search` performs a hybrid query: lexical (FTS5/BM25) and semantic (vector/cosine) results are fused with Reciprocal Rank Fusion, then annotated with domains, scores, offsets, and associated entities.
+
+Arguments:
+
+| Argument | Type   | Required | Description                                              |
+| -------- | ------ | -------- | -------------------------------------------------------- |
+| `query`  | string | yes      | Search query                                             |
+| `domain` | string | no       | Filter by domain (e.g., `hr`, `product`); empty = all    |
+| `top_k`  | number | no       | Max results (default 10, range 1–100)                    |
+
+Beyond `search`, the server exposes 11 more tools for cataloging documents and entities, searching facts, and traversing the knowledge graph.
+
+## What's next
+
+- [Introduction](./intro.mdx) — what Synopsis is, and what it is not
+- The **Installation** guide covers cross-compilation with Zig and running Synopsis in Docker
+- The **CLI reference** documents every subcommand (`sync`, `serve`, `model`, `onnx-runtime`) and global flag

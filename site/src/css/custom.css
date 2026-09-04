@@ -1,0 +1,832 @@
+/**
+ * Global CSS — Infima variable overrides for synopsis[memex] theme.
+ */
+
+/* Light mode */
+:root {
+  --ifm-color-primary: #0891b2;
+  --ifm-color-primary-dark: #0e7490;
+  --ifm-color-primary-darker: #155e75;
+  --ifm-color-primary-darkest: #164e63;
+  --ifm-color-primary-light: #22d3ee;
+  --ifm-color-primary-lighter: #67e8f9;
+  --ifm-color-primary-lightest: #a5f3fc;
+
+  --ifm-color-secondary: #7c3aed;
+  --ifm-color-secondary-dark: #6d28d9;
+  --ifm-color-secondary-darker: #6b21a8;
+  --ifm-color-secondary-light: #a78bfa;
+
+  --ifm-background-color: #ffffff;
+  --ifm-navbar-background-color: #f9fafb;
+  --ifm-footer-background-color: #111827;
+
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.05);
+}
+
+/* Dark mode — matches landing-sample.html palette */
+/* :root[data-theme='dark'] has specificity (0,2,0) so it wins over plain :root (0,1,0)
+   regardless of source order — prevents the cascade bug where later :root light values
+   override dark tokens when data-theme='dark' is set. */
+:root[data-theme='dark'] {
+  --ifm-color-primary: #06b6d4;
+  --ifm-color-primary-dark: #0891b2;
+  --ifm-color-primary-darker: #0e7490;
+  --ifm-color-primary-darkest: #155e75;
+  --ifm-color-primary-light: #22d3ee;
+  --ifm-color-primary-lighter: #67e8f9;
+  --ifm-color-primary-lightest: #a5f3fc;
+
+  --ifm-color-secondary: #8b5cf6;
+  --ifm-color-secondary-dark: #7c3aed;
+  --ifm-color-secondary-darker: #6d28d9;
+  --ifm-color-secondary-light: #a78bfa;
+
+  --ifm-background-color: #0a0e14;
+  --ifm-navbar-background-color: rgba(10, 14, 20, 0.85);
+  --ifm-footer-background-color: #111827;
+
+  --docusaurus-highlighted-code-line-bg: rgba(6, 182, 212, 0.15);
+
+  /* ===== custom color tokens (dark) ===== */
+  --bg: #0a0e13;
+  --bg-2: #0d131b;
+  --panel: #101722;
+  --panel-deep: #0c1219;
+  --term-head: #0e1520;
+  --line: rgba(158, 180, 204, 0.14);
+  --line-strong: rgba(158, 180, 204, 0.28);
+  --row-hover: rgba(158, 180, 204, 0.05);
+  --text: #e8edf3;
+  --muted: #8b98a6;
+  --accent: #a8ff3e;
+  --accent-ink: #0a0e13;
+  --accent-soft: rgba(168, 255, 62, 0.09);
+  --accent-border: rgba(168, 255, 62, 0.45);
+  --accent-glow: rgba(168, 255, 62, 0.25);
+  --accent-stroke: rgba(168, 255, 62, 0.5);
+  --term-ok: #7ee787;
+  --dot-red: #ff5f57;
+  --dot-yellow: #febc2e;
+  --dot-green: #28c840;
+}
+
+:root {
+    /* ===== palette (light) ===== */
+    --bg: #f9fafb;
+    --bg-2: #f1f3f6;
+    --panel: #ffffff;
+    --panel-deep: #f1f3f6;
+    --term-head: #0e1520; /* terminal stays dark in both themes */
+    --line: rgba(10, 14, 19, 0.12);
+    --line-strong: rgba(10, 14, 19, 0.24);
+    --row-hover: rgba(10, 14, 19, 0.04);
+    --text: #0a0e13;
+    --muted: #5a6672;
+    --accent: #6aa800;
+    --accent-ink: #0a0e13;
+    --accent-soft: rgba(106, 168, 0, 0.10);
+    --accent-border: rgba(106, 168, 0, 0.35);
+    --accent-glow: rgba(106, 168, 0, 0.18);
+    --accent-stroke: rgba(106, 168, 0, 0.40);
+    /* Terminal-only tokens — dark in both themes */
+    --term-ok: #7ee787;
+    --dot-red: #ff5f57;
+    --dot-yellow: #febc2e;
+    --dot-green: #28c840;
+
+    /* ===== typography ===== */
+    --font-display: 'Space Grotesk', system-ui, sans-serif;
+    --font-body: 'Manrope', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+    --fs-h1: clamp(2.7rem, 6.6vw, 5.2rem);
+    --fs-h2: clamp(2rem, 4.4vw, 3.4rem);
+    --fs-cta: clamp(2.4rem, 6vw, 4.6rem);
+    --fs-h3: 1.25rem;
+    --fs-card-title: 1.1rem;
+    --fs-lead: 1.05rem;
+    --fs-body: 1rem;
+    --fs-sm: 0.92rem;
+    --fs-xs: 0.8rem;
+    --fs-mono-sm: 0.82rem;
+    --fs-mono-xs: 0.72rem;
+    --fs-icon: 1.25rem;
+    --fs-big-num: 2.6rem;
+    --fw-med: 500;
+    --fw-semi: 600;
+    --fw-bold: 700;
+    --lh-hero: 1;
+    --lh-tight: 1.05;
+    --lh-term: 2;
+    --lh-body: 1.65;
+    --ls-tight: -0.03em;
+    --ls-normal: -0.02em;
+    --ls-mono: 0.06em;
+    --ls-wide: 0.14em;
+    --ls-wider: 0.18em;
+
+    /* ===== borders & radii ===== */
+    --bw: 1px;
+    --bw-bold: 2px;
+    --radius-xs: 3px;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-circle: 50%;
+
+    /* ===== shadows ===== */
+    --shadow-lg: 0 40px 80px rgba(0, 0, 0, 0.5);
+    --shadow-card-hover: 0 26px 60px -22px rgba(0, 0, 0, 0.7), 0 0 40px -18px var(--accent-glow);
+    --shadow-btn-hover: 0 8px 30px var(--accent-glow);
+
+    /* ===== spacing ===== */
+    --pad-x: 32px;
+    --pad-x-narrow: 22px;
+    --section-pad: 130px;
+    --section-pad-sm: 96px;
+    --gap-xs: 8px;
+    --gap-sm: 12px;
+    --gap-md: 16px;
+    --gap-lg: 24px;
+    --gap-xl: 40px;
+    --gap-2xl: 64px;
+    --gap-3xl: 72px;
+    --max-sub: 480px;
+    --max-body: 560px;
+    --term-min-h: 264px;
+
+    /* ===== motion ===== */
+    --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+    --dur-fast: 0.25s;
+    --dur-base: 0.35s;
+    --dur-slow: 0.7s;
+    --dur-blink: 1s;
+    --dur-pulse: 2s;
+    --dur-ticker: 36s;
+
+    /* ===== layout ===== */
+    --wrap-max: 1240px;
+    --hero-pad-top: 140px;
+    --hero-pad-bottom: 90px;
+    --glow-size: 520px;
+    --grid-gap: 64px;
+    --grid-pattern: 56px;
+
+    /* ===== footer (index-v5 mockup) ===== */
+    --foot-col-gap: 48px;
+    --foot-col-gap-sm: 36px;
+    --foot-title-mb: 20px;
+    --foot-item-pad: 6px;
+    --foot-bottom-pad: 28px;
+    --foot-pad-bottom: 36px;
+    --foot-brand-max: 280px;
+    --foot-brand-mt: 18px;
+    --logo-dot: 9px;
+    --logo-dot-glow: 0 0 12px var(--accent);
+    --ls-logo: 0.02em;
+}
+
+/**
+ * ============================================================
+ * NAVBAR — restyled per .mockups/index-v5.html (NAVBAR-V5-STYLE).
+ * Appended after the Infima variable overrides above; those are untouched.
+ * Two-state bar: transparent at top → translucent blur + hairline border
+ * after 12px of scroll, toggled by src/client/navbar-scroll.ts (no swizzling).
+ * Values reference tokens from static/css/tokens.css where possible.
+ * ============================================================
+ */
+
+:root {
+  --ifm-navbar-height: 72px; /* mockup .nav-inner height */
+  --nav-link-gap: 36px;      /* mockup .nav-links gap */
+}
+
+/* --- bar states -------------------------------------------------------- */
+
+.navbar {
+  transition: background-color var(--dur-base) ease, border-bottom-color var(--dur-base) ease;
+}
+
+.navbar--fixed-top {
+  /*background-color: transparent;*/
+  box-shadow: none;
+  border-bottom: 1px solid transparent;
+}
+
+/* .navbar--scrolled is toggled by src/client/navbar-scroll.ts (scrollY > 12). */
+.navbar--scrolled {
+  /* Fallbacks for browsers without color-mix support */
+  background-color: rgba(249, 250, 251, 0.86); /* light: #f9fafb @ 86% */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom-color: var(--line);
+}
+
+[data-theme='dark'] .navbar--scrolled {
+  background-color: rgba(10, 14, 20, 0.86); /* mockup: rgba(10,14,19,.86) */
+}
+
+/* --- centered inner row (mockup .wrap) --------------------------------- */
+
+.navbar > .navbar__inner {
+  max-width: var(--wrap-max);
+  margin-inline: auto;
+}
+
+/* Group spacing. Left group = [burger] brand + doc links, right group =
+   GitHub, theme toggle, search (the last two carry no global class —
+   see the structural selectors below). */
+.theme-layout-navbar-left.navbar__items {
+  column-gap: var(--nav-link-gap);
+}
+
+.theme-layout-navbar-right.navbar__items {
+  column-gap: var(--gap-md);
+}
+
+@media (max-width: 996px) {
+  /* only burger + brand remain visible in the bar */
+  .theme-layout-navbar-left.navbar__items {
+    column-gap: var(--gap-sm);
+  }
+}
+
+/* --- brand: accent dot + mono wordmark --------------------------------- */
+
+.navbar__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  margin-right: 0; /* spacing handled by group column-gap above */
+  color: var(--ifm-navbar-link-color);
+}
+
+/* CSS-only accent dot (same tokens as .foot-logo-dot) — replaces removed logo SVG */
+.navbar__brand::before {
+  content: '';
+  width: var(--logo-dot);
+  height: var(--logo-dot);
+  background: var(--accent);
+  border-radius: var(--radius-circle);
+  box-shadow: var(--logo-dot-glow);
+  flex-shrink: 0;
+}
+
+[data-theme='dark'] .navbar__brand,
+[data-theme='dark'] .navbar__brand:hover {
+  color: var(--text);
+}
+
+.navbar__title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lead);
+  font-weight: var(--fw-med);
+  letter-spacing: var(--ls-normal);
+}
+
+/* --- nav links (Docs / Reference / Roadmap / GitHub) ---------------------
+   Mono, uppercase, muted → text color + accent underline on hover/active. */
+
+.navbar__items .navbar__link {
+  position: relative;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);          /* mockup .8rem */
+  font-weight: var(--fw-med);
+  letter-spacing: 0.08em;           /* mockup */
+  text-transform: uppercase;
+  padding: 4px 0;                   /* mockup a{padding:4px 0}; overrides .navbar__item padding */
+  color: var(--ifm-navbar-link-color);
+  transition: color var(--dur-fast) ease;
+}
+
+[data-theme='dark'] .navbar__items .navbar__link {
+  color: var(--muted);
+}
+
+.navbar__items .navbar__link::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 0;
+  height: 1px;
+  background-color: var(--accent);
+  transition: width 0.3s var(--ease-out); /* mockup */
+}
+
+.navbar__items .navbar__link:hover {
+  color: var(--ifm-font-color-base);
+}
+
+[data-theme='dark'] .navbar__items .navbar__link:hover,
+[data-theme='dark'] .navbar__items .navbar__link--active {
+  color: var(--text);
+}
+
+.navbar__items .navbar__link:hover::after {
+  width: 100%;
+}
+
+/* --- search (search-local plugin) ---------------------------------------- */
+
+.navbar__search {
+  margin-left: 4px; /* the module class adds its own 16px; keep the group tight */
+}
+
+.navbar__search-input {
+  font-family: var(--font-mono);
+  width: 11.5rem;
+  height: 38px;
+  border-radius: var(--radius-xs); /* mockup language (Infima default is a pill) */
+}
+
+:root[data-theme='dark'] {
+  --ifm-navbar-search-input-background-color: var(--panel);
+  --ifm-navbar-search-input-color: var(--text);
+  --ifm-navbar-search-input-placeholder-color: var(--muted);
+
+  /* search-local autocomplete dropdown */
+  --search-local-modal-background: var(--panel);
+  --search-local-muted-color: var(--muted);
+  --search-local-hit-background: var(--accent-soft);
+  --search-local-hit-active-color: var(--text);
+  --search-local-highlight-color: var(--accent); /* <mark> on matched terms */
+  --search-local-input-active-border-color: var(--accent-stroke);
+}
+
+[data-theme='dark'] .navbar__search-input {
+  border: 1px solid var(--line); /* Infima default is border:none */
+}
+
+.navbar__search kbd {
+  font-family: var(--font-mono); /* ⌘K hint chip */
+}
+
+/* --- theme toggle (ColorModeToggle has no global class — CSS modules) ----
+   Right group child order: [GitHub][toggle][search] → the toggle is the
+   second-to-last div; the search wrapper is last. */
+
+.theme-layout-navbar-right.navbar__items > div:nth-last-child(2) {
+  display: flex;
+  align-items: center;
+}
+
+.theme-layout-navbar-right.navbar__items > div:nth-last-child(2) button {
+  padding: var(--gap-xs); /* ≈36px hit area */
+  border-radius: var(--radius-sm);
+  color: var(--ifm-navbar-link-color);
+  transition: color var(--dur-fast) ease, background-color var(--dur-fast) ease;
+}
+
+.theme-layout-navbar-right.navbar__items > div:nth-last-child(2) button:hover {
+  background-color: var(--row-hover);
+}
+
+[data-theme='dark'] .theme-layout-navbar-right.navbar__items > div:nth-last-child(2) button {
+  color: var(--muted); /* subtle muted icon */
+}
+
+[data-theme='dark'] .theme-layout-navbar-right.navbar__items > div:nth-last-child(2) button:hover {
+  color: var(--accent); /* accent hover (task spec) */
+}
+
+/* --- burger (mobile only; Infima shows it at ≤996px) ----------------------
+   The 30×30 IconMenu svg crossfades into an X drawn with two pseudo-elements
+   when the drawer opens (aria-expanded on the button). No swizzling. */
+
+.navbar__toggle {
+  position: relative;
+  padding: var(--gap-xs);
+  border-radius: var(--radius-sm);
+  color: var(--ifm-navbar-link-color);
+}
+
+[data-theme='dark'] .navbar__toggle {
+  color: var(--text); /* mockup burger bar color */
+}
+
+.navbar__toggle:hover {
+  background-color: var(--row-hover);
+}
+
+.navbar__toggle svg {
+  transition: opacity 0.15s ease, transform var(--dur-base) var(--ease-out);
+}
+
+.navbar__toggle::before,
+.navbar__toggle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px; /* mockup bar size */
+  height: 2px;
+  border-radius: var(--radius-xs);
+  background-color: currentColor;
+  opacity: 0;
+  transform: translate(-50%, -50%) rotate(45deg) scaleX(0);
+  transition: opacity 0.15s ease, transform var(--dur-base) var(--ease-out);
+}
+
+.navbar__toggle::after {
+  transform: translate(-50%, -50%) rotate(-45deg) scaleX(0);
+}
+
+.navbar__toggle[aria-expanded='true'] svg {
+  opacity: 0;
+  transform: scale(0.85);
+}
+
+.navbar__toggle[aria-expanded='true']::before,
+.navbar__toggle[aria-expanded='true']::after {
+  opacity: 1;
+}
+
+.navbar__toggle[aria-expanded='true']::before {
+  transform: translate(-50%, -50%) rotate(45deg) scaleX(1);
+}
+
+.navbar__toggle[aria-expanded='true']::after {
+  transform: translate(-50%, -50%) rotate(-45deg) scaleX(1);
+}
+
+/* --- mobile sidebar drawer (≤996px) --------------------------------------- */
+
+[data-theme='dark'] .navbar-sidebar {
+  background-color: var(--bg); /* Infima default is the translucent navbar bg */
+  border-right: 1px solid var(--line);
+}
+
+.navbar-sidebar__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  color: var(--ifm-navbar-link-color);
+  border-bottom: 1px solid var(--line);
+  box-shadow: none;
+}
+
+/* CSS-only accent dot for mobile sidebar brand (same as navbar) */
+.navbar-sidebar__brand::before {
+  content: '';
+  width: var(--logo-dot);
+  height: var(--logo-dot);
+  background: var(--accent);
+  border-radius: var(--radius-circle);
+  box-shadow: var(--logo-dot-glow);
+  flex-shrink: 0;
+}
+
+[data-theme='dark'] .navbar-sidebar__brand,
+[data-theme='dark'] .navbar-sidebar__brand:hover {
+  color: var(--text);
+}
+
+/* Primary nav links inside the drawer render as a.menu__link (mobile variant). */
+.navbar-sidebar__items .menu__link {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-navbar-link-color);
+}
+
+[data-theme='dark'] .navbar-sidebar__items .menu__link {
+  color: var(--muted);
+}
+
+.navbar-sidebar__items .menu__link:hover,
+[data-theme='dark'] .navbar-sidebar__items .menu__link:hover {
+  color: var(--ifm-font-color-base);
+  text-decoration: none;
+}
+
+[data-theme='dark'] .navbar-sidebar__items .menu__link:hover {
+  color: var(--text);
+}
+
+.navbar-sidebar__items .menu__link--active,
+[data-theme='dark'] .navbar-sidebar__items .menu__link--active {
+  color: var(--accent);
+}
+
+/* Docs list inside the drawer keeps readable sizes but adopts the mono language. */
+[data-theme='dark'] .navbar-sidebar .menu__list:not(.navbar-sidebar__items) .menu__link {
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+}
+
+/* --- motion -------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .navbar,
+  .navbar__items .navbar__link,
+  .navbar__items .navbar__link::after,
+  .navbar__toggle svg,
+  .navbar__toggle::before,
+  .navbar__toggle::after {
+    transition: none;
+  }
+}
+
+/* ===== reveal on scroll =====
+   Content is hidden until JS sets data-revealed="true" on intersection. The
+   state lives in an attribute (not a class) so it survives React re-renders,
+   which rewrite className from the vdom; a <noscript> style in index.tsx
+   forces visibility when JavaScript is disabled. */
+
+[data-reveal] {
+    opacity: 0;
+    transform: translateY(26px);
+    transition:
+            opacity var(--dur-slow) ease,
+            transform var(--dur-slow) var(--ease-out);
+    transition-delay: var(--reveal-delay, 0s);
+}
+
+[data-reveal][data-revealed='true'] {
+    opacity: 1;
+    transform: none;
+}
+
+/**
+ * ============================================================
+ * FOOTER — restyled per .mockups/index-v5.html (FOOTER-V5-STYLE).
+ * Appended after all existing rules; Infima CSS lives in @layer docusaurus.infima,
+ * custom.css is unlayered → wins without !important.
+ * Values reference tokens from :root above where possible.
+ * ============================================================
+ */
+
+/* --- base footer -------------------------------------------------------- */
+
+.footer--dark {
+    --ifm-footer-background-color: var(--bg);
+    background: var(--bg);
+    border-top: var(--bw) solid var(--line);
+    padding: var(--gap-3xl) 0 var(--foot-pad-bottom);
+    color: var(--text);
+}
+
+.footer .container {
+    max-width: var(--wrap-max);
+    padding: 0 var(--pad-x);
+}
+
+/* --- links grid — 5 cols on desktop, 2 ≤1024px, 1 ≤720px --------------- */
+
+.footer__links {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr;
+    gap: var(--foot-col-gap);
+    margin-bottom: var(--gap-2xl);
+}
+
+.footer__col {
+    width: 100%;
+    max-width: none;
+    flex: none;
+    margin: 0;
+    padding: 0;
+}
+
+/* --- column titles ------------------------------------------------------ */
+
+.footer__title {
+    font-family: var(--font-mono);
+    font-size: var(--fs-mono-xs);
+    font-weight: var(--fw-med);
+    letter-spacing: var(--ls-wider);
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: var(--foot-title-mb);
+}
+
+/* --- link items --------------------------------------------------------- */
+
+.footer__item {
+    margin: 0;
+}
+
+.footer__link-item {
+    display: block;
+    position: relative;
+    color: var(--text);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    padding: var(--foot-item-pad) 0;
+    transition: color var(--dur-fast) ease;
+}
+
+.footer__link-item::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 0;
+    height: 1px;
+    background-color: var(--accent);
+    transition: width 0.3s var(--ease-out);
+}
+
+.footer__link-item:hover {
+    color: var(--ifm-font-color-base);
+}
+
+[data-theme='dark'] .footer__link-item:hover {
+    color: var(--text);
+}
+
+.footer__link-item:hover::after {
+    width: 100%;
+}
+
+/* --- bottom row --------------------------------------------------------- */
+
+.footer__bottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--gap-md);
+    flex-wrap: wrap;
+    border-top: var(--bw) solid var(--line);
+    padding-top: var(--foot-bottom-pad);
+    text-align: left; /* overrides Infima .text--center */
+}
+
+.footer__copyright {
+    font-family: var(--font-mono);
+    font-size: var(--fs-mono-xs);
+    color: var(--muted);
+    letter-spacing: var(--ls-mono);
+}
+
+/* --- brand column ------------------------------------------------------- */
+
+/* title is ' ' (non-empty for validator) — hide it completely */
+.footer-col-brand .footer__title {
+    display: none;
+}
+
+.footer-col-brand .footer__items {
+    margin: 0;
+    padding: 0;
+}
+
+.foot-logo {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-xs);
+    font-family: var(--font-mono);
+    font-size: var(--fs-lead);
+    font-weight: var(--fw-med);
+    letter-spacing: var(--ls-logo);
+    color: var(--text);
+}
+
+.foot-logo-dot {
+    width: var(--logo-dot);
+    height: var(--logo-dot);
+    background: var(--accent);
+    border-radius: var(--radius-circle);
+    box-shadow: var(--logo-dot-glow);
+}
+
+.foot-brand {
+    color: var(--muted);
+    font-size: var(--fs-sm);
+    max-width: var(--foot-brand-max);
+    margin-top: var(--foot-brand-mt);
+}
+
+/* --- responsive --------------------------------------------------------- */
+
+@media (max-width: 1024px) {
+    .footer__links {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+@media (max-width: 720px) {
+    .footer__links {
+        grid-template-columns: 1fr;
+        gap: var(--foot-col-gap-sm);
+    }
+}
+
+/**
+ * ============================================================
+ * COOKIE BANNER — GDPR / 152-FZ notice (COOKIE-CONSENT-BANNER).
+ * Full-width fixed bottom bar, injected by src/client/cookie-banner.ts.
+ * Uses design tokens only; no hardcoded hex values.
+ * ============================================================
+ */
+
+/* --- base bar ----------------------------------------------------------- */
+
+.cookie-banner {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1000; /* below navbar (Infima default ~300) — no overlap since navbar is top */
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--gap-md);
+    padding: var(--gap-sm) var(--pad-x);
+    background-color: var(--panel);
+    border-top: var(--bw) solid var(--line);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+
+    /* Entrance animation: slide-up + fade */
+    transform: translateY(0);
+    opacity: 1;
+    transition:
+        transform var(--dur-base) var(--ease-out),
+        opacity var(--dur-base) var(--ease-out);
+}
+
+/* --- text --------------------------------------------------------------- */
+
+.cookie-banner__text {
+    margin: 0;
+    flex: 1 1 auto;
+    min-width: 0; /* prevent overflow on narrow screens */
+}
+
+.cookie-banner__text a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    transition: color var(--dur-fast) ease;
+}
+
+.cookie-banner__text a:hover {
+    color: var(--ifm-font-color-base);
+}
+
+[data-theme='dark'] .cookie-banner__text a:hover {
+    color: var(--text);
+}
+
+/* --- accept button ------------------------------------------------------ */
+
+.cookie-banner__accept {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-med);
+    letter-spacing: var(--ls-wider);
+    text-transform: uppercase;
+    padding: var(--gap-xs) var(--gap-md);
+    border: var(--bw) solid var(--accent-border);
+    border-radius: var(--radius-sm);
+    background-color: var(--accent);
+    color: var(--accent-ink);
+    cursor: pointer;
+    transition:
+        box-shadow var(--dur-fast) ease,
+        border-color var(--dur-fast) ease;
+}
+
+.cookie-banner__accept:hover {
+    box-shadow: 0 0 12px var(--accent-glow);
+    border-color: var(--accent-stroke);
+}
+
+/* --- hidden state (dismissal animation) --------------------------------- */
+
+.cookie-banner--hidden {
+    transform: translateY(100%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* --- reduced motion ----------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+    .cookie-banner,
+    .cookie-banner--hidden {
+        transition: none;
+    }
+}
+
+/* --- responsive --------------------------------------------------------- */
+
+@media (max-width: 600px) {
+    .cookie-banner {
+        flex-direction: column;
+        align-items: stretch;
+        text-align: center;
+        padding: var(--gap-sm) var(--pad-x-narrow);
+    }
+
+    .cookie-banner__accept {
+        width: 100%;
+        max-width: 200px;
+        margin-inline: auto;
+    }
+}

@@ -1,0 +1,107 @@
+---
+title: Domains
+description: Domain-based configuration — per-domain ontologies, the global pool, ontology XML files, and how domains drive extraction, lookup, and search
+sidebar_position: 4
+---
+
+# Domains
+
+A **domain** is a business area with its own vocabulary: HR has salaries and grades, IT has systems and servers, Product has customers and features. Synopsis is **domain-based by configuration** — each domain ships an ontology that defines which entity types exist there, how they relate, and how to extract them from text.
+
+That gives you one service over a heterogeneous knowledge base: different domains can have completely different entity schemas, and everything still lands in the same graph and search index.
+
+## What domains drive
+
+- **Extraction.** Each domain's ontology lists entity types (with attributes and synonyms) and regex extraction rules; NER during ingestion uses them to decide what to extract from tagged sources.
+- **Identity.** Every entity is tagged with the domain it was extracted in. Name lookups are domain-qualified — `employee` in `hr` and `employee` in `it` do not collide, and two same-named entities in different domains are candidates for [cross-domain linking](./cross-domain-linking.mdx) instead of being merged blindly.
+- **Search scoping.** `search`, catalogs, and entity queries accept a `domain` filter, applied inside both retrievers at the database level.
+- **Graph boundaries.** Traversals stay within the start entity's domain unless you explicitly ask to follow entity links across domains.
+
+## Ontology files
+
+Domain configuration lives in XML under the ontology directory (default `data/ontology/`, set by `global_config_path`):
+
+```
+data/ontology/
+├── global.xml                 ← the global pool + pipeline configuration
+└── domains/
+    ├── domain_hr.xml          ← HR domain
+    ├── domain_it.xml          ← IT domain
+    └── domain_product.xml     ← Product domain
+```
+
+### Discovery at startup
+
+On startup, the domain registry:
+
+1. loads and validates **`global.xml`** — the *global pool*: entity and relation definitions shared by every domain, plus cross-domain linking configuration, NER methods, and source definitions;
+2. scans **`domains/*.xml`** — every matching file becomes a domain;
+3. **merges the global pool into each domain** — a domain's effective ontology is its own definitions plus the shared pool; if a domain redefines a global entity or relation, the **domain definition wins** (a warning is logged);
+4. validates everything — a malformed domain config fails startup, so configuration errors surface immediately rather than silently degrading ingestion.
+
+### Anatomy of a domain file
+
+```xml
+<domain name="hr" version="1.0.0" description="HR policies, employee data, organizational structure">
+
+    <entity id="salary" name="Salary" description="Compensation element">
+        <attribute name="title" type="string" required="true"/>
+        <attribute name="amount" type="number"/>
+        <attribute name="currency" type="string"/>
+        <synonym>compensation</synonym>
+        <synonym>bonus</synonym>
+    </entity>
+
+    <relation source="grade" predicate="salary_of" target="salary"
+              description="Salary level for an employee grade">
+        <attribute name="amount" type="number"/>
+    </relation>
+
+    <extraction>
+        <regex id="employee_id" entity="employee" pattern="EMP-\d{4,6}" confidence="0.95"/>
+    </extraction>
+
+    <confidence auto_publish_threshold="0.7" review_threshold="0.6" reject_threshold="0.4"/>
+</domain>
+```
+
+| Element | Purpose |
+|---------|---------|
+| `<domain>` | Name (used everywhere — source tags, filters, lookups), version, description |
+| `<entity>` | An entity type: attributes (name, type, required flag) and synonyms used for extraction and normalization |
+| `<relation>` | A relation type between two entity types: `source → predicate → target`, with optional relation attributes |
+| `<extraction><regex>` | Regex rules for extracting an entity type, each with its own confidence (e.g. the global pool includes an email pattern at 0.95) |
+| `<confidence>` | Thresholds per domain, applied during entity extraction (extraction results below the auto-publish threshold are filtered out) |
+
+### The global pool
+
+`global.xml` defines what every domain shares — in the bundled configuration:
+
+- **Entities:** `employee`, `department`, `policy`, `role`, `email`
+- **Relations:** `works_in`, `manages`, `has_role`, `owns_policy`, `belongs_to`, `has_email`
+- **Extraction:** an email regex rule (confidence 0.95)
+
+`<global>` also carries the pipeline-wide configuration: cross-domain linking methods and expressions, NER methods, and the source list with per-source domain tags.
+
+### The bundled domains
+
+| Domain | Own entity types (beyond the pool) | Example relations |
+|--------|------------------------------------|-------------------|
+| **hr** | `salary`, `grade` | `salary_of` |
+| **it** | `system`, `service`, `server`, `database`, `network_component` | `runs_on`, `uses_database`, `provides`, `depends_on`, `replicates_to` |
+| **product** | `product`, `feature`, `customer`, `competitor`, `market_segment` | `has_feature`, `purchased_by`, `competes_with`, `targets_segment` |
+
+Because the pool is merged in, every domain also has `employee`, `department`, `policy`, `role`, and `email` — which is exactly what makes cross-domain linking meaningful: the same product system can appear as an entity in `hr`, `it`, and `product` at once.
+
+## Adding a new domain
+
+1. Create `data/ontology/domains/domain_<name>.xml` with a `<domain name="<name>" …>` root and its entities, relations, and extraction rules.
+2. Restart the server — discovery runs at startup and the new domain is available for tagging and filtering.
+3. Tag your sources with the domain (in the `<sources>` block of `global.xml`, or via the sources configuration) so ingested documents and entities get it.
+
+## See also
+
+- [Cross-Domain Linking](./cross-domain-linking.mdx) — how same-named entities across domains get connected
+- [The Pipeline](./pipeline.mdx) — where domain tagging happens in ingestion
+- [Knowledge Graph](./knowledge-graph.mdx) — the domain boundary that graph traversals respect
+- [Quickstart](../quickstart.mdx) — get documents ingested and tagged with domains

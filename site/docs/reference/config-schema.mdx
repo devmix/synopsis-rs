@@ -1,0 +1,249 @@
+---
+title: Configuration Schema
+description: Complete annotated schema of the Synopsis configuration file with every key, type, and default
+sidebar_position: 2
+---
+
+# Configuration Schema
+
+This page is the authoritative schema for `configs/config.default.yaml`. Every key below is verified against the loader in `internal/config` and the shipped default configuration file. Defaults are the values the code applies when a key is absent or zero (**Default** column); the values actually shipped in `config.default.yaml` may differ and are noted where relevant.
+
+Config path resolution (which file is read) is documented in the [CLI Reference](./cli.mdx#config-path-resolution). The [Configuration guide](../guides/configuration.mdx) covers the same file as a task-oriented walk-through.
+
+## `database`
+
+Location and tuning of the single SQLite file (FTS5 index and vec0 vector index live inside it).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | `<paths.data_dir>/knowledge.db` | Path to the SQLite database file. Shipped config: `./data/knowledge.db`. The `--db` CLI flag overrides it. |
+| `cache_path` | string | `cache.db` beside the main database file | Explicit path for the separate embedding/result cache database. |
+| `pragma` | map[string]string | — | Custom PRAGMA overrides, parsed into the config. **Note:** pragma application currently uses a built-in set (see [PRAGMAs](#pragmas-applied-on-connection)); values in this map are not applied by the database layer today. |
+
+### PRAGMAs applied on connection
+
+The database layer sets these on every connection (overriding/shipping values of the same name):
+
+| PRAGMA | Value | Meaning |
+|---|---|---|
+| `journal_mode` | `WAL` | Write-ahead logging; readers do not block the writer |
+| `synchronous` | `NORMAL` | Safe with WAL; less fsync than `FULL` |
+| `cache_size` | `-64000` | 64 MB page cache (negative = KiB) |
+| `mmap_size` | `268435456` | 256 MB memory-mapped I/O window |
+| `foreign_keys` | `ON` | Enforce FK constraints |
+
+The connection DSN additionally sets `busy_timeout=5000` (5 s).
+
+## `embeddings`
+
+Embedding provider. Exactly one of the `local`/`api` blocks is used, selected by `mode`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `mode` | string | — (**required**) | `"local"` (in-process ONNX Runtime) or `"api"` (OpenAI-compatible HTTP endpoint). |
+| `auto_rebuild_vectors` | bool | `false` | Config-file equivalent of the `--auto-rebuild-vectors` flag: on a dimension mismatch, rebuild vectors automatically instead of failing. |
+
+### `embeddings.local`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `model_name` | string | `bge-m3-int8` (when both `model_name` and `model_path` are empty) | Model name from the registry in the ONNX config file (`configs/onnx.yaml`). Downloaded automatically on first use into `<paths.data_dir>/models/`. Shipped config: `bge-small-en-v1.5`. |
+| `model_path` | string | — | Legacy: explicit path to an ONNX model file. Skips registry resolution and auto-download. |
+| `tokenizer_path` | string | — | Optional explicit tokenizer path. |
+| `vector_dim` | int | — (**required**, must be > 0) | Embedding dimension. Must match the model in use; a mismatch fails at startup (or triggers auto-rebuild, see above). Shipped config: `384`. |
+
+### `embeddings.api`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `base_url` | string | — (**required**) | OpenAI-compatible endpoint, e.g. `http://localhost:1234/v1`. |
+| `api_key` | string | — | Bearer token; empty if the endpoint does not require one. |
+| `model_name` | string | — (**required**) | Embedding model name at the endpoint. |
+| `vector_dim` | int | — (**required**, must be > 0) | Dimension of the API's vectors. Shipped config: `3072`. |
+| `max_retries` | int | `3` | Retries for transient API errors. |
+| `timeout_ms` | int | `30000` | Per-request HTTP timeout in milliseconds. |
+
+## `ingestion`
+
+Pipeline settings: chunking, entity extraction (NER), batch size, entity resolution.
+
+### `ingestion.chunking.markdown`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `strategy` | string | `headers` | Chunker strategy: `headers` (split on heading structure), `fixed` (fixed-size windows), or `hybrid` (heading-aware with fixed-size re-splitting of oversized sections). Shipped config: `hybrid`. |
+| `max_chunk_size` | int | `1000` | Maximum chunk size in characters. Shipped config: `8192`. |
+| `overlap_size` | int | `100` | Overlap between adjacent fixed-size chunks in characters. |
+| `min_section_size` | int | `500` | In hybrid mode, sections smaller than this are merged with neighbors; oversized sections are re-split at fixed size. |
+
+### `ingestion.chunking.json`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `text_fields` | []string | `["description", "title", "wikitext", "html"]` | Which JSON object fields carry the text to index. Shipped config: `["description", "title", "details"]`. |
+| `combine_fields` | bool | `false` | Merge all text fields into a single chunk per object instead of one chunk per field. Shipped config: `true`. |
+| `max_objects` | int | `0` (unlimited) | Cap on the number of JSON objects processed per document. |
+
+### `ingestion.ner`
+
+Entity extraction runs a composite of two providers: an LLM provider (remote) and a prose provider (offline POS/NER + regex patterns).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `disabled` | bool | `false` | Disables all entity extraction when set to `true`. |
+
+#### `ingestion.ner.llm`
+
+OpenAI-compatible endpoint used for LLM-based entity extraction. `api_base_url` and `model_name` are **required** for the LLM provider to start.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `api_base_url` | string | — (**required**) | OpenAI-compatible base URL. |
+| `api_key` | string | — | Bearer token; empty if not required. |
+| `model_name` | string | — (**required**) | Model to call. |
+| `temperature` | float | `0` | Sampling temperature; `0` for determinism. |
+| `seed` | int | — | Random seed for reproducibility. |
+| `max_tokens` | int | `2048` | Maximum tokens per LLM response. |
+| `response_format` | string | `json_object` | `"json_object"` (sends `{"type": "json_object"}` + JSON example in the system prompt) or `"json_schema"` (sends the full JSON schema in the request body; requires API support). Shipped config: `json_schema`. |
+| `timeout_ms` | int | `60000` | Per-request HTTP timeout in milliseconds. |
+| `max_retries` | int | `3` | Retry attempts for transient errors (429, 5xx) with exponential backoff. |
+
+#### `ingestion.ner.prose`
+
+Offline prose NER. Note from the shipped config: the model is trained on news text and misclassifies some domain terms (e.g. HR vocabulary) as `LOCATION` — raise `location_min_confidence` or use the LLM provider for cleaner results.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enable_pos` | bool | `false` (shipped config: `true`) | Run part-of-speech tagging as part of extraction. |
+| `enable_ner` | bool | `false` (shipped config: `true`) | Run the statistical NER model. |
+| `custom_patterns` | []string | — | Extra regex patterns for domain-specific entity recognition. |
+| `entity_types` | []string | — | When non-empty, keep only entities of these types. |
+| `min_confidence` | float | `0.5` | Minimum extraction confidence for any entity. |
+| `location_min_confidence` | float | `0.9` | Stricter threshold applied to `LOCATION` entities to filter out common-noun noise. Shipped config: `0.75`. |
+
+### `ingestion.batch_size`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `batch_size` | int | `100` | Documents processed per embedding batch. |
+
+### `ingestion.resolver`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `similarity_threshold` | float | `0.8` | Jaro-Winkler similarity threshold for merging duplicate entity names (entity deduplication). Shipped config: `0.85`. |
+
+## `linker`
+
+Cross-domain entity linking (see [Cross-Domain Linking](../concepts/cross-domain-linking.mdx)). LLM-based linking activates when the ontology's `global.xml` declares the `llm` method and `disabled` is `false`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `disabled` | bool | `false` | Set `true` to deactivate the LLM cross-domain linker. |
+
+### `linker.llm`
+
+Same field set as [`ingestion.ner.llm`](#ingestionnerllm) (`api_base_url`, `api_key`, `model_name`, `temperature`, `seed`, `max_tokens`, `response_format`, `timeout_ms`, `max_retries`). `api_base_url` and `model_name` are **required** for the linker to run; the other defaults are as in the NER section (`max_tokens` `2048`, `response_format` `json_object`, `timeout_ms` `60000`, `max_retries` `3`).
+
+## `search`
+
+Hybrid search pipeline tuning (see [Hybrid Search](../concepts/hybrid-search.mdx) and [Searching](../guides/searching.mdx)).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `rrf_k` | int | `20` | Reciprocal Rank Fusion constant; lower values increase rank sensitivity. |
+| `lexical_top_k` | int | `20` | Candidate pool size for the lexical (FTS5/BM25) retriever. |
+| `semantic_top_k` | int | `20` | Candidate pool size for the semantic (vector) retriever. |
+| `final_top_k` | int | `10` | Merged result count after fusion/reranking (also the `top_k` default for the `search` tool). |
+| `enable_lexical` | bool | `true` | Enable the FTS5 retriever. |
+| `enable_semantic` | bool | `true` | Enable the vector retriever. (If both are disabled, both are re-enabled.) |
+| `timeout_ms` | int | `10000` | Per-search timeout in milliseconds. |
+| `deprecated_boost` | float | `0.2` | Penalty multiplier applied to deprecated content during reranking. |
+| `official_boost` | float | `1.5` | Boost for documents flagged official. |
+| `recent_boost` | float | `1.2` | Boost for recent content (updated within `recent_days`). |
+| `recent_days` | int | `90` | Recency window in days for `recent_boost`. |
+| `authority_boost` | map[string]float | `{"default": 1.0}` | Authority multipliers keyed by document source type, applied during reranking. Shipped config: `policy: 1.5`, `regulation: 1.3`, `default: 1.0`. |
+
+## `graph`
+
+In-memory knowledge graph used by search graph expansion and the graph traversal tools.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enable_graph` | bool | `true` (shipped config) | Enables graph loading and traversal. The key is not defaulted by the loader — if it is omitted entirely the graph is disabled, so keep it `true` explicitly. |
+| `max_depth` | int | `5` | Maximum BFS depth for graph traversals. |
+| `max_nodes` | int | `1000` | Maximum number of nodes returned per traversal query. |
+| `load_on_startup` | bool | `true` | Load the full graph into memory when the server starts. (Loader-forced: an explicit `false` is reset to `true` by the defaults.) |
+
+## `auto_update`
+
+File watching and startup sync during `serve` mode.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` if the `auto_update` section is absent; an explicit section is respected | Enable filesystem monitoring in `serve` mode. |
+| `debounce_seconds` | int | `30` | Minimum interval between re-indexings after file changes. Shipped config: `1`. |
+| `watch_sources` | bool | `true` (loader-forced: explicit `false` is reset to `true`) | Watch all enabled sources for changes. |
+| `initial_sync` | bool | `true` if the section is absent; an explicit section is respected | Run a full source scan on startup. Can also be skipped per run with `serve --no-initial-sync`. |
+
+## `scheduler`
+
+Universal job scheduler (gocron) for periodic background tasks during `serve`. Runs in singleton mode: overlapping executions of the same job are dropped (protects SQLite from concurrent writers).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `jobs.<name>.enabled` | bool | `false` when the job key is absent | Whether the job is scheduled. |
+| `jobs.<name>.interval_seconds` | int | `3600` | Run interval in seconds. |
+
+One job is currently registered:
+
+| Job | Effect |
+|---|---|
+| `orphan_cleanup` | Removes data (entities, facts, chunks, vectors) that no longer references any existing document. Disabled by default; shipped config enables it every `300` s. |
+
+## `logging`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `level` | string | `info` | Log level: `debug`, `info`, `warn`, `error`. Shipped config: `debug`. |
+| `format` | string | `console` | Output format: `console` or `json`. |
+| `output` | string | `stderr` | Destination: `stderr` or `stdout`. |
+
+## `paths`
+
+Filesystem locations. Relative paths are resolved against the working directory (or executable directory, for config auto-search).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `data_dir` | string | `data` | Where `knowledge.db`, `cache.db`, and `models/` live. |
+| `documents_dir` | string | `documents` | Default documents storage directory. |
+| `migrations_dir` | string | `migrations` | Directory of SQL migration files, applied in filename order at startup. See [Database Schema](./database-schema.mdx). |
+| `global_config_path` | string | — (shipped config: `data/ontology`) | **The ontology directory** (no separate `ontology` section exists): contains `global.xml` (global entities, sources, linking methods) and `domains/*.xml` (per-domain configs). Domain discovery runs at startup and reads this directory — missing or invalid domain configs are a **startup error**. See [Domains](../concepts/domains.mdx) and [Troubleshooting](../guides/troubleshooting.mdx#missing-or-invalid-domain-configs). |
+| `prompts_path` | string | `configs/prompts` | Prompt template files (`.tmpl`); embedded defaults serve as fallback if files are missing. |
+| `onnx_config` | string | `configs/onnx.yaml` | ONNX config file: model registry (`models.*`) and ONNX Runtime platform definitions (`runtime.*`). |
+
+## `server`
+
+MCP HTTP server identity and listen address (see [MCP Tools](./mcp-tools/index.mdx)).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | `synopsis` | Server name reported by the MCP server. |
+| `version` | string | `0.1.0-dev` | Server version reported by the MCP server. |
+| `host` | string | `0.0.0.0` | HTTP listen host. |
+| `port` | int | `8080` | HTTP listen port; `serve --port N` overrides it for a single run. |
+
+## Validation rules
+
+The configuration is validated after defaults are applied; violations are fatal at startup:
+
+- `embeddings.mode` must be `local` or `api`.
+- **Local mode:** `embeddings.local.model_path` or `embeddings.local.model_name` must be set, and `embeddings.local.vector_dim` must be positive.
+- **API mode:** `embeddings.api.base_url` and `embeddings.api.model_name` must be set, and `embeddings.api.vector_dim` must be positive.
+
+## See also
+
+- [CLI Reference](./cli.mdx) — global flags and config path resolution
+- [Configuration](../guides/configuration.mdx) — the same file as a guided walk-through with rationale
+- [Database Schema](./database-schema.mdx) — what the stored data looks like
+- [Model Management](../guides/model-management.mdx) — the `onnx_config` registry in depth

@@ -18,6 +18,10 @@ workspace/*
 # reproducible builds matter for parity testing against recorded fixtures.
 
 # Docusaurus website build artifacts
-docs/website/node_modules/
-docs/website/.docusaurus/
-docs/website/build/
+site/node_modules/
+site/.docusaurus/
+site/build/
+# The lockfile is local-only on purpose (user decision 2026-09-05, change
+# migrate-docs-site-to-rust task 1.1): its resolved URLs point at a private
+# LAN mirror; installs use `npm install`.
+site/package-lock.json

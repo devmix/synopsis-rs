@@ -1,0 +1,93 @@
+---
+title: 'get_chunk_by_id'
+description: Read a single chunk — full text, offsets and sequence number, parent document metadata, and associated entities
+sidebar_position: 12
+---
+
+# `get_chunk_by_id`
+
+Retrieves a single chunk by predicate with its full text, offsets in the source, sequence number, a brief of the parent document, and the entities associated with that chunk. Use it to re-read exactly the text returned by `search` (or listed by `get_document_context`), with provenance.
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `chunk_id` | string | yes | — | Chunk predicate, as a string (e.g. `"41"`). Chunk predicates appear in `search` results and in `get_document_context.chunks[].id`. |
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_chunk_by_id",
+    "arguments": {
+      "chunk_id": "41"
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `chunk` | object | The chunk. |
+| `chunk.id` | int | Chunk predicate. |
+| `chunk.doc_id` | int | Parent document predicate — pass it to `get_document_context`. |
+| `chunk.chunk_text` | string | Full chunk text. |
+| `chunk.sequence_num` | int | Position of the chunk within the document. |
+| `chunk.start_offset` | int | Offset of the chunk's first character in the source. Omitted when not recorded. |
+| `chunk.end_offset` | int | Offset of the chunk's last character in the source. Omitted when not recorded. |
+| `chunk.created_at` | string | Insertion timestamp. |
+| `document` | object | Parent document brief. Omitted when the parent row cannot be loaded. |
+| `document.id` | int | Document predicate. |
+| `document.source_type` | string | Ingested source type (e.g. `markdown`, `json`). |
+| `document.original_path` | string | Path of the source file as ingested. |
+| `entities` | array | Entities associated with this chunk. Omitted when the chunk has none. |
+| `entities[].id` | int | Entity predicate. |
+| `entities[].name` | string | Entity name. |
+| `entities[].type` | string | Entity type. |
+| `entities[].domain` | string | Entity domain. |
+
+Example:
+
+```json
+{
+  "chunk": {
+    "id": 41,
+    "doc_id": 7,
+    "chunk_text": "Eligible employees accrue 20 days of vacation per calendar year…",
+    "sequence_num": 0,
+    "start_offset": 0,
+    "end_offset": 486,
+    "created_at": "2026-08-01T09:12:44Z"
+  },
+  "document": {
+    "id": 7,
+    "source_type": "markdown",
+    "original_path": "./data/hr/policies/vacation.md"
+  },
+  "entities": [
+    { "id": 100, "name": "Alice", "type": "employee", "domain": "hr" }
+  ]
+}
+```
+
+## Error conditions
+
+| Condition | Result |
+|---|---|
+| `chunk_id` omitted or empty | `isError` result: `Error: 'chunk_id' argument is required` |
+| `chunk_id` is not an integer string | `isError` result: `Error: 'chunk_id' must be an integer, got "…"` |
+| No chunk with that predicate | `isError` result: `Chunk with Predicate … not found` |
+| Database failure (chunk, document, or entity phase) | `isError` result: `Error retrieving chunk: …`, `Error retrieving document: …`, or `Error retrieving entities: …` |
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [search](./search) — obtain `chunk_id`s from ranked results
+- [get_document_context](./get-document-context) — all chunks of a document with offsets
+- [Database Schema](../database-schema.mdx#chunks) — the `chunks` table

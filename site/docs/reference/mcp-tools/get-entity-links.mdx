@@ -1,0 +1,89 @@
+---
+title: 'get_entity_links'
+description: Cross-domain entity links of one entity with full provenance — method (rule / equals / llm), confidence, and evidence
+sidebar_position: 16
+---
+
+# `get_entity_links`
+
+Retrieves the cross-domain entity links stored for a given entity (the `entity_links` table), each with full provenance: how the link was established (`method`: `rule`, `equals`, or `llm`), its `confidence`, and the supporting `evidence` text. Links are created automatically during ingestion — see [Cross-Domain Linking](../../concepts/cross-domain-linking.mdx) for the candidate selection and linking methods.
+
+Links are stored bidirectionally (A→B and B→A) and the response deduplicates them per (target, `relation_type`), so each unique target appears once per relation type. Unlike [get_entity_relations](./get-entity-relations), this tool does **not** require the in-memory graph — it reads the database directly.
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | string | one of two | — | Entity predicate, as a string (e.g. `"100"`). Provide **either** this or `entity_name`, not both. |
+| `entity_name` | string | one of two | — | Entity name, case-insensitive exact match. Provide **either** this or `entity_id`, not both. |
+| `domain` | string | no | all | Used with `entity_name` to disambiguate when several entities share a name (e.g. `hr`). Case-insensitive. |
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_entity_links",
+    "arguments": {
+      "entity_name": "Alice"
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `entity` | object | The resolved entity (`id`, `name`, `type`, `domain`). |
+| `links` | array | The entity's cross-domain links, deduplicated per (target, `relation_type`). **Always an array** — `[]` when the entity has none. Order is deterministic (database order). |
+| `links[].target_entity_id` | int | The other endpoint of the link, as seen from the resolved entity. |
+| `links[].target_name` | string | Linked entity name. |
+| `links[].target_domain` | string | Domain of the linked entity — different from the resolved entity's for cross-domain links. |
+| `links[].relation_type` | string | Link relation type (default `same_entity`). |
+| `links[].method` | string | How the link was established: `rule`, `equals`, or `llm`. |
+| `links[].confidence` | float | Link confidence (0–1). |
+| `links[].evidence` | string | Supporting evidence text. Omitted when not recorded. |
+
+Example:
+
+```json
+{
+  "entity": { "id": 100, "name": "Alice", "type": "employee", "domain": "hr" },
+  "links": [
+    {
+      "target_entity_id": 112,
+      "target_name": "API Gateway",
+      "target_domain": "product",
+      "relation_type": "same_entity",
+      "method": "equals",
+      "confidence": 0.98,
+      "evidence": "Exact match of name and type across domains"
+    }
+  ]
+}
+```
+
+## Error conditions
+
+Entity resolution is shared with the other graph tools:
+
+| Condition | Result |
+|---|---|
+| Neither `entity_id` nor `entity_name` provided | `isError` result: `Error: either 'entity_id' or 'entity_name' must be provided` |
+| Both provided | `isError` result: `Error: provide either 'entity_id' or 'entity_name', not both` |
+| `entity_id` is not an integer string | `isError` result: `Error: 'entity_id' must be an integer, got "…"` |
+| Entity not found (by predicate or name) | `isError` result: `Entity Predicate … not found`, `Entity "…" not found. Check spelling.`, or the ambiguity message (see [get_entity_dossier](./get-entity-dossier#error-conditions)) |
+| Database failure (link or target lookup) | `isError` result: `Error retrieving entity links: …` or `Error retrieving target entity …: …` |
+
+Links whose target entity was deleted are **silently skipped** — not an error. An entity with no links is a **success**: `links` is `[]`.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [get_entity_dossier](./get-entity-dossier) — includes these links alongside facts and sources
+- [Cross-Domain Linking](../../concepts/cross-domain-linking.mdx#provenance) — what method, confidence, and evidence mean
+- [Database Schema](../database-schema.mdx#entity_links) — the `entity_links` table

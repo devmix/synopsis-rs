@@ -1,0 +1,58 @@
+/**
+ * synopsis[memex] — landing ticker (FSD-WIDGETS-1).
+ * Rules moved verbatim from src/pages/index.module.css (2026-08-16),
+ * incl. the two display:contents groups for the seamless loop.
+ */
+
+/* ===== ticker ===== */
+
+.ticker {
+  border-top: var(--bw) solid var(--line);
+  border-bottom: var(--bw) solid var(--line);
+  overflow: hidden;
+  padding: 20px 0;
+  background: var(--bg-2);
+}
+
+.tickerTrack {
+  display: flex;
+  width: max-content;
+  animation: ticker var(--dur-ticker) linear infinite;
+}
+
+.tickerGroup {
+  display: contents;
+}
+
+.ticker:hover .tickerTrack {
+  animation-play-state: paused;
+}
+
+@keyframes ticker {
+  to { transform: translateX(-50%); }
+}
+
+.tickItem {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--ls-wide);
+  color: var(--muted);
+  padding: 0 28px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  white-space: nowrap;
+}
+
+.tickItem::after {
+  content: '✦';
+  color: var(--accent);
+  font-size: var(--fs-mono-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tickerTrack {
+    animation: none;
+    width: auto;
+  }
+}

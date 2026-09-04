@@ -1,0 +1,16 @@
+.secTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secTag b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}

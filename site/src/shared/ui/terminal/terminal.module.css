@@ -1,0 +1,35 @@
+.tdot {
+  width: 11px;
+  height: 11px;
+  border-radius: var(--radius-circle);
+}
+
+.tdotR { background: var(--dot-red); }
+.tdotY { background: var(--dot-yellow); }
+.tdotG { background: var(--dot-green); }
+
+.tline {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tCmd { color: var(--text); }
+.tOk { color: var(--term-ok); }
+.tDim { color: var(--muted); }
+.tHl { color: var(--accent); }
+
+.cursor {
+  display: inline-block;
+  width: 9px;
+  height: 1.15em;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: blink var(--dur-blink) steps(1) infinite;
+  margin-left: 2px;
+}
+
+/* Kept alongside .cursor: CSS modules scope @keyframes names per file, so the
+   blink definition must live here for the cursor animation to resolve. */
+@keyframes blink {
+  50% { opacity: 0; }
+}

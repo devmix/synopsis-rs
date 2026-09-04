@@ -1,0 +1,98 @@
+---
+title: Coding Standards
+description: Go coding conventions for Synopsis — general principles, naming, documentation, and code style
+sidebar_position: 3
+---
+
+# Coding Standards
+
+The project is idiomatic Go. This page lists the conventions that apply beyond what `golangci-lint` and `go vet` check — the conventions code reviewers will expect.
+
+## General principles
+
+1. **Context propagation.** Every function that performs I/O or blocking work takes `context.Context` as its first parameter. Propagate it through the whole call chain — no detached contexts where a parent one is available.
+
+2. **Error handling.** Never ignore errors with `_`. Either handle them explicitly, wrap them with context (`fmt.Errorf("search: %w", err)`), or return them to the caller. Use sentinel errors (exported `Err` variables) for expected conditions such as "entity not found".
+
+3. **No panics.** Production code must not use `panic()` for error handling. Reserve `panic` for genuinely unrecoverable states (for example, a failed database initialization at startup).
+
+4. **Goroutine lifecycle.** Every goroutine launch must have a corresponding shutdown mechanism via context cancellation or channel close. Orphaned goroutines are a defect — the CI race detector and long-running `serve` mode make this visible.
+
+5. **Table-driven tests.** All unit tests use Go's table-driven pattern with `t.Run()` subtests per case, with descriptive subtest names (for example, `"empty_query_returns_error"`). See [Testing](./testing).
+
+6. **Transactions live outside DAOs.** DAOs contain no `BeginTx`/`Commit`/`Rollback` calls — they are constructed over `dao.DBTX` (satisfied by both `*sql.DB` and `*sql.Tx`). Multi-statement database work is wrapped in `dao.TxManager.ExecTx(ctx, func(ctx context.Context, tx dao.DBTX) error)`, which owns the transaction lifecycle centrally and guarantees rollback on error. Long-running or external work (network calls, embedding generation, chunking) must stay **outside** the transaction.
+
+## Naming conventions
+
+| Element | Convention | Example |
+|---|---|---|
+| Packages | lowercase, no underscores | `search`, `watcher` |
+| Exported types | PascalCase, noun | `Searcher`, `Graph` |
+| Unexported types | camelCase, noun | `providerImpl`, `edge` |
+| Functions | PascalCase/camelCase, verb first | `GenerateEmbeddings()`, `bfsTraversal()` |
+| Interfaces | `-er` suffix for single-method interfaces | `Provider`, `Parser`, `Chunker` |
+| Error variables | `Err` prefix | `ErrNotFound`, `ErrTimeout` |
+
+## Documentation requirements
+
+- **Package docs.** Every package has a doc comment on the package statement describing its purpose.
+- **Exported symbols.** All exported types, functions, and methods have doc comments following [Effective Go](https://go.dev/doc/effective_go#commentary) conventions — the comment starts with the symbol name as the subject (`// NewSearcher creates a hybrid search engine…`, not `// Creates a hybrid search engine`).
+- **Parameters.** Non-obvious parameters are documented in the comment or made self-explanatory through naming.
+
+## Code style
+
+```go
+// ✅ Good: table-driven test with subtests
+func TestHybridSearch(t *testing.T) {
+    tests := []struct {
+        name     string
+        query    string
+        wantErr  bool
+        minCount int
+    }{
+        {"valid_query_returns_results", "performance review", false, 1},
+        {"empty_query_returns_error", "", true, 0},
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            // test body
+        })
+    }
+}
+
+// ✅ Good: explicit error wrapping with context
+func (s *Searcher) Search(ctx context.Context, query string) ([]Result, error) {
+    results, err := s.lexicalSearch(ctx, query)
+    if err != nil {
+        return nil, fmt.Errorf("lexical search: %w", err)
+    }
+    return results, nil
+}
+
+// ❌ Bad: ignored error
+func bad() {
+    _ = someOperation() // Don't do this
+}
+
+// ❌ Bad: panic for an expected error
+func bad2() {
+    if err != nil {
+        panic(err) // Don't do this
+    }
+}
+```
+
+MCP handlers follow one additional convention: tool-level failures are returned **in-band** as `mcp.CallToolResult` with `IsError: true` and a human-readable message, not as Go errors or JSON-RPC protocol errors.
+
+## Enforcement
+
+- `make lint` (golangci-lint, default configuration) and `make vet` must be clean
+- `make test` (`go test -race ./...`) must pass — the race detector is mandatory, not optional
+- CI runs both on every push and pull request to `main` — see [CI/CD](./ci-cd)
+
+## See also
+
+- [Testing](./testing) — table-driven tests in practice
+- [Extending Synopsis](./extending) — step-by-step recipes (parser, chunker, MCP tool)
+- [Migrations](./migrations) — writing and testing schema changes

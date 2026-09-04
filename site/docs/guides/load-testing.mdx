@@ -1,0 +1,155 @@
+---
+title: Load Testing
+description: Populate the knowledge base with deterministic synthetic data and benchmark all MCP tool handlers with the synopsis load-test subcommand
+sidebar_position: 7
+---
+
+# Load Testing
+
+The `load-test` subcommand serves two purposes that the regular `sync`/`serve` workflow cannot:
+
+1. **Direct database population** — deterministic synthetic data is written straight into the SQLite tables, bypassing the ingestion pipeline (no file scanning, no parsers, no NER, no LLM calls).
+2. **MCP tool benchmarking** — the performance of every MCP tool is measured by invoking the handler functions directly, without HTTP. 14 benchmark cases in total: the 12 MCP tools, plus `search` measured as its lexical and semantic variants.
+
+Use it for performance investigation and regression checking: how fast is semantic KNN at a given scale? What do point lookups cost? How long does the graph load take?
+
+## Syntax
+
+```
+synopsis load-test [--scale small|medium|large] [--seed N] [--iterations N] [--json PATH] [--no-fill]
+```
+
+Global flags (`--config`, `--preset`, `--db`) precede the subcommand. Flag details: [CLI Reference — load-test](../reference/cli.mdx#load-test).
+
+:::warning[Before you run]
+
+`load-test` **overwrites the database by default**: all knowledge-base tables are cleared and repopulated, and `chunks_vec` is rebuilt. Always point `--db` at a throwaway path:
+
+```bash
+./bin/synopsis --db /tmp/loadtest.db load-test --scale small
+```
+
+Never run it against a production `knowledge.db`.
+
+In `mode: local` the embedding model **must already be downloaded** — `load-test` never pulls a model mid-run. Download it first, otherwise the command fails with a clear error:
+
+```bash
+./bin/synopsis model download bge-small-en-v1.5
+```
+
+:::
+
+## Dataset scales
+
+| Scale | Documents | Chunks | Entities | Facts |
+|---|---|---|---|---|
+| `small` (default) | 500 | 10,000 | 2,000 | 5,000 |
+| `medium` | 5,000 | 100,000 | 20,000 | 10,000 |
+| `large` | 10,000 | 200,000 | 40,000 | 20,000 |
+
+The generated data spans five domains (`hr`, `product`, `engineering`, `finance`, `security`) with realistic chunk text, per-domain entity types, subject–predicate–object facts with provenance, and cross-domain `same_entity` links. All randomness flows through a single seeded PRNG (`--seed`, default `42`), so two runs with the same seed produce the same data — within one Go build (see [Practical tips](#practical-tips)).
+
+## How a run works
+
+A run has three phases.
+
+### Phase 1 — fill (skipped with `--no-fill`)
+
+The generated dataset is written directly into the database:
+
+1. The FTS5 sync triggers are **suspended** for the duration of the fill — bulk DML must not maintain the full-text index row by row.
+2. All knowledge-base tables are cleared (children first) and repopulated in a single transaction; AUTOINCREMENT sequences are pinned above the inserted IDs.
+3. The FTS5 index is rebuilt from `chunks` in one step, and the sync triggers are restored.
+4. `chunks_vec` is dropped, recreated, and filled with **real embeddings** from the configured provider — batch by batch (batch size from the config, default 100) with a commit per batch.
+
+The fill is reported with its total duration, row counts per table, and the number of vectors embedded.
+
+### Phase 2 — knowledge graph load
+
+The knowledge graph is loaded from the database (the same code path `serve` uses at startup), and its load time is **measured separately** — node and edge counts are printed alongside it.
+
+### Phase 3 — tool benchmark
+
+Each of the 14 cases invokes the MCP handler functions directly, without HTTP: the hybrid `search`, `search_lexical` and `search_semantic` variants, `catalog_overview` plus the four cursor-paginated catalog/search tools, and the six ID-based point lookups. Every case runs `--iterations` measured units (default 100); paginated tools follow `next_cursor` for up to 3 pages per unit.
+
+## Report format
+
+The human-readable report goes to stdout; `--json PATH` additionally writes the same data as indented JSON (with the extra fields, e.g. `min_ms` and `total_ms`).
+
+Tool table columns:
+
+| Column | Meaning |
+|---|---|
+| `TOOL` | benchmark case name; a `!` suffix marks cases with at least one failed iteration |
+| `CALLS` | successful measured units (latency stats are computed over these) |
+| `PAGES` | cursor pages fetched in total (paginated cases; `-` otherwise) |
+| `ERR` | failed attempts; the first error message per failed tool is printed under the table |
+| `AVG ms`, `P50 ms`, `P95 ms`, `P99 ms`, `MAX ms` | latency distribution of successful units |
+| `QPS` | throughput computed over **all** attempts — failed iterations count as cost |
+
+Because QPS includes failures, an error-prone case shows the penalty in throughput even though its latency columns look clean.
+
+## Sample output
+
+The block below is from a successful `small` run (throwaway `--db`, seed `42`, 100 iterations, **warm** embedding cache). **All numbers are machine-dependent** — treat them as a reference point, not a baseline; the layout is stable:
+
+```
+Synopsis load test — scale=small seed=42 filled=true
+
+Fill: 2075 ms total, 55580 rows across tables, 10000 vectors embedded
+  documents:      500
+  chunks:         10000
+  entities:       2000
+  facts:          5000
+  fact_sources:   5000
+  entity_sources: 3000
+  chunk_entities: 20000
+  entity_links:   80
+  chunks_vec:     10000
+
+Knowledge graph: loaded in 19 ms — 2000 nodes, 3737 edges
+
+Tool benchmark (iterations=100, pages per call=3):
+TOOL                   CALLS  PAGES  ERR  AVG ms  P50 ms  P95 ms  P99 ms  MAX ms    QPS
+search                 100    -      0    19.162  18.634  23.905  29.418  36.772    52.22
+search_lexical         100    -      0    6.377   6.112   8.234   9.871   12.205    156.81
+search_semantic        100    -      0    21.054  20.587  26.108  31.240  38.664    47.50
+catalog_overview       100    -      0    0.318   0.301   0.402   0.487   0.611     3144.65
+catalog_documents      100    300    0    0.584   0.561   0.731   0.852   0.998     1712.33
+catalog_entities       100    300    0    0.662   0.639   0.824   0.947   1.091     1510.57
+search_entities_by_type 100    300    0    0.731   0.706   0.902   1.031   1.176     1368.00
+search_facts           100    300    0    0.952   0.921   1.169   1.327   1.508     1050.42
+get_document_context   100    -      0    0.052   0.050   0.062   0.071   0.089     19230.77
+get_chunk_by_id        100    -      0    0.029   0.028   0.034   0.041   0.052     34482.76
+get_fact_by_id         100    -      0    0.033   0.031   0.039   0.046   0.058     30303.03
+get_entity_dossier     100    -      0    0.037   0.035   0.044   0.052   0.066     27027.03
+get_entity_relations   100    -      0    0.035   0.033   0.042   0.049   0.061     28571.43
+get_entity_links       100    -      0    0.041   0.039   0.048   0.057   0.071     24390.24
+```
+
+The per-table row counts are determined by the scale and seed (for `small`: exactly 500/10 000/2 000/5 000 rows in `documents`/`chunks`/`entities`/`facts`, one `fact_sources` row per fact, ~1–2 `entity_sources` and ~1–3 `chunk_entities` per entity/chunk, and entities/25 cross-domain links). Timing numbers vary with the machine and the embedding cache state.
+
+## Interpreting the results
+
+From the sample run, at `small` scale:
+
+- **Point lookups are sub-millisecond.** ID-based cases (`get_chunk_by_id` down to `get_document_context`) land at 0.03–0.05 ms — 19k–35k QPS. For direct retrieval they are essentially free.
+- **Semantic KNN is the bottleneck.** `search_semantic` takes ~21 ms versus ~6.4 ms for the purely lexical case — the vec0 KNN pass dominates search cost.
+- **Hybrid search is almost no more expensive than the semantic half alone.** `search` (both branches in parallel + RRF fusion + enrichment) measures ~19 ms: the lexical branch runs under the semantic one, so fusion adds negligible overhead.
+- Catalog tools sit in between: 0.3–1 ms per multi-page unit (3 cursor pages).
+
+The practical takeaway: at this scale, query latency is driven by vector search, not by the database layer or the MCP plumbing.
+
+## Practical tips
+
+- **The embedding cache speeds up repeated fills.** Chunk vectors are cached by the embedding provider, so a second run with the same seed and texts skips most of the inference — that is why the sample fill is only ~2 s. Expect the *first* (cold-cache) fill to dominate run time: ~20–30 minutes for `small`, on the order of hours for `medium` and `large`.
+- **`--no-fill` benchmarks an existing database.** No data is generated or written; the runner samples IDs evenly from the tables and uses a fixed set of generic queries. Handy for measuring your real knowledge base — the database must not be empty (an empty one is a clear error).
+- **Determinism is guaranteed within one Go build.** The generator is a single seeded PRNG, and `math/rand` sequences are not stable across Go toolchain releases: identical seeds give identical *within-build* data, not byte-identical data across Go versions.
+- **Use `--json` for comparisons.** The JSON report carries every metric (including `min_ms`, `total_ms`, and the per-table fill breakdown), which makes run-to-run and scale-to-scale diffs easier than parsing the stdout table.
+
+## See also
+
+- [CLI Reference](../reference/cli.mdx) — `load-test` flags and exit codes
+- [MCP Tools](../reference/mcp-tools/index.mdx) — the tools being benchmarked
+- [Model Management](../guides/model-management.mdx) — downloading embedding models, the embedding cache
+- [Architecture](../developer/architecture.mdx) — the `internal/benchmark` package

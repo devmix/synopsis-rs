@@ -1,0 +1,257 @@
+---
+title: Configuration
+description: How Synopsis resolves its config file, the global CLI flags, and a full walkthrough of config.default.yaml
+sidebar_position: 2
+---
+
+# Configuration
+
+Synopsis is configured by a single YAML file. The repository ships `configs/config.default.yaml`, which is the active default; copy it (or use `--preset`) to create environment-specific variants.
+
+## Config file resolution
+
+The binary resolves the config path in this order:
+
+1. **`--config PATH`** — used verbatim if given.
+2. **Preset auto-search** — otherwise the binary looks for `config.{preset}.yaml` (default preset: `default`) using, in order:
+   1. `<executable dir>/configs/config.{preset}.yaml`
+   2. `<executable dir>/config.{preset}.yaml`
+   3. `<parent of executable dir>/config.{preset}.yaml`
+   4. `<parent of executable dir>/configs/config.{preset}.yaml`
+   5. `<CWD>/configs/config.{preset}.yaml`
+   6. `<CWD>/config.{preset}.yaml`
+
+   If none exist, it falls back to `configs/config.{preset}.yaml` and fails with a load error.
+
+Example with a custom preset:
+
+```bash
+cp configs/config.default.yaml configs/config.prod.yaml
+./bin/synopsis --preset prod serve
+```
+
+## Global flags
+
+Global flags are parsed **before the subcommand** and apply to every subcommand (`sync`, `serve`, `model`, `onnx-runtime`):
+
+| Flag            | Description                                                            |
+| --------------- | ---------------------------------------------------------------------- |
+| `--config PATH` | Path to the configuration file (skips auto-search)                     |
+| `--preset NAME` | Preset name; the binary searches for `config.{NAME}.yaml` (default: `default`) |
+| `--db PATH`     | Path to the SQLite database file; overrides `database.path`            |
+| `--version`     | Print the version and exit                                             |
+
+```bash
+# Use an explicit config and point at a scratch database
+./bin/synopsis --config configs/config.default.yaml --db /tmp/scratch.db sync
+```
+
+## Walkthrough of `config.default.yaml`
+
+### `database`
+
+```yaml
+database:
+  path: "./data/knowledge.db"
+  pragma:
+    mmap_size: "268435456"   # 256MB
+    journal_mode: WAL
+    synchronous: NORMAL
+    cache_size: "-64000"     # 64MB
+```
+
+Location of the single SQLite file (FTS5 index and vec0 vector index live inside it). The pragmas are applied on connection: WAL journal with normal synchronous is a good balance for a single-writer workload; the mmap and cache sizes speed up reads on large corpora.
+
+### `embeddings`
+
+```yaml
+embeddings:
+  mode: "local"
+  local:
+    model_name: "bge-small-en-v1.5"  # auto-download
+    # model_path: ""                 # legacy: explicit path to an ONNX file
+    vector_dim: 384
+  api:
+    base_url: "http://localhost:1234/v1"
+    api_key: ""
+    model_name: "text-embedding-3-large"
+    vector_dim: 3072
+    max_retries: 3
+    timeout_ms: 30000
+```
+
+- `mode: "local"` — embedding runs inside the process with ONNX Runtime. `model_name` selects a model from the registry in `configs/onnx.yaml` and is **downloaded automatically on first use** (stored in `<data_dir>/models/`). The legacy `model_path` field points at an explicit ONNX file instead; setting it skips auto-download.
+- `mode: "api"` — embeddings come from an OpenAI-compatible HTTP endpoint (`base_url`/`api_key`/`model_name`).
+- **`vector_dim` must match the model you actually use.** Switching to a model with a different dimension requires rebuilding the vectors — see [Troubleshooting](./troubleshooting.mdx#embedding-dimension-mismatch).
+- `auto_rebuild_vectors: true` is the config-file equivalent of the `--auto-rebuild-vectors` CLI flag: on a detected dimension mismatch the vectors are rebuilt automatically instead of failing.
+
+### `ingestion`
+
+```yaml
+ingestion:
+  chunking:
+    markdown:
+      strategy: "hybrid"
+      max_chunk_size: 8192
+      overlap_size: 100
+      min_section_size: 500
+    json:
+      text_fields:
+        - "description"
+        - "title"
+        - "details"
+      combine_fields: true
+  ner:
+    llm:
+      api_base_url: "http://192.168.1.7:1234/v1"
+      model_name: "openai/gpt-oss-20b"
+      api_key: "sk-none"
+      temperature: 0.01
+      seed: 12
+      max_tokens: 4096
+      response_format: "json_schema"   # or "json_object"
+      timeout_ms: 120000
+      max_retries: 3
+    prose:
+      enable_pos: true
+      enable_ner: true
+      custom_patterns: [ ]
+      entity_types: [ ]
+      min_confidence: 0.5
+      location_min_confidence: 0.75
+  batch_size: 100
+  resolver:
+    similarity_threshold: 0.85
+```
+
+- `chunking.markdown` — strategy is one of `headers`, `fixed`, or `hybrid`; `max_chunk_size`/`overlap_size` bound fixed-split chunk size and overlap; `min_section_size` (when set above 0, hybrid mode) enables fixed-size re-splitting of oversized sections. See [Ingestion](./ingestion.mdx#chunking) for behavior.
+- `chunking.json` — which JSON object fields carry text (`text_fields`) and whether they are combined into one document (`combine_fields`).
+- `ner` — two providers run as a composite: an **LLM provider** (OpenAI-compatible endpoint; `response_format` is `json_schema` when the API supports it, otherwise `json_object`) and a **prose provider** (offline POS/NER with regex patterns and per-type confidence thresholds).
+- `batch_size` — how many documents are processed per ingest batch.
+- `resolver.similarity_threshold` — Jaro-Winkler threshold (default 0.85) for merging duplicate entity names.
+
+### `linker`
+
+```yaml
+linker:
+  disabled: false
+  llm:
+    api_base_url: "http://192.168.1.7:1234/v1"
+    model_name: "openai/gpt-oss-20b"
+    api_key: "sk-none"
+    temperature: 0.01
+    seed: 12
+    max_tokens: 2048
+    timeout_ms: 120000
+    max_retries: 3
+    response_format: "json_schema"
+```
+
+Cross-domain entity linking configuration. The LLM-based linker activates when the ontology's `global.xml` declares `<method>llm</method>` and `disabled` is `false`. See [Cross-Domain Linking](../concepts/cross-domain-linking.mdx).
+
+### `search`
+
+```yaml
+search:
+  rrf_k: 20
+  lexical_top_k: 20
+  semantic_top_k: 20
+  final_top_k: 10
+  enable_lexical: true
+  enable_semantic: true
+  timeout_ms: 10000
+  deprecated_boost: 0.2
+  official_boost: 1.5
+  recent_boost: 1.2
+  recent_days: 90
+  authority_boost:
+    policy: 1.5
+    regulation: 1.3
+    default: 1.0
+```
+
+Controls the hybrid search pipeline: the RRF constant, per-retriever candidate pool sizes, overall timeout, and the reranking boost factors (deprecated/official/expired penalties, recency, and per-document-type authority weights). See [Searching](./searching.mdx#reranking).
+
+### `graph`
+
+```yaml
+graph:
+  enable_graph: true
+  max_depth: 5
+  max_nodes: 1000
+  load_on_startup: true
+```
+
+The in-memory knowledge graph used by search graph expansion and the graph traversal tools. `load_on_startup` loads the full entity/fact graph when the server starts. See [Knowledge Graph](../concepts/knowledge-graph.mdx).
+
+### `auto_update`
+
+```yaml
+auto_update:
+  enabled: true
+  debounce_seconds: 1
+  watch_sources: true
+  initial_sync: true    # full source scan on startup; false to skip
+```
+
+Behavior of `serve` mode: a file watcher re-indexes changed documents automatically (debounced), and an initial full source scan runs at startup unless `initial_sync` is `false` or `--no-initial-sync` is passed.
+
+### `scheduler`
+
+```yaml
+scheduler:
+  jobs:
+    orphan_cleanup:
+      enabled: true
+      interval_seconds: 300   # every 5 minutes
+```
+
+Periodic background jobs during `serve`. The scheduler runs in singleton mode — overlapping executions of the same job are dropped, which protects SQLite from concurrent writers. Currently registered: `orphan_cleanup` (removes data for documents that disappeared from the sources).
+
+### `logging`
+
+```yaml
+logging:
+  level: "debug"
+  format: "console"
+  output: "stderr"
+```
+
+Structured logging (zap): log level, output format, and destination.
+
+### `paths`
+
+```yaml
+paths:
+  data_dir: "data"
+  documents_dir: "documents"
+  migrations_dir: "migrations"
+  global_config_path: "data/ontology"   # global.xml + domains/*.xml
+  prompts_path: "configs/prompts"
+```
+
+- `data_dir` — where `knowledge.db`, `cache.db`, and `models/` live.
+- `documents_dir` — default documents storage directory.
+- `migrations_dir` — SQL migration files, applied in order at startup.
+- **`global_config_path`** — the ontology directory containing `global.xml` (global entities, relations, source list, linking methods) and `domains/*.xml` (per-domain configs). Missing or invalid domain configs are a **startup error** — see [Troubleshooting](./troubleshooting.mdx#missing-or-invalid-domain-configs). If the path is empty, cross-domain linking is disabled.
+- `prompts_path` — prompt template files (`.tmpl`); embedded defaults are used as fallback.
+
+Also available here: `onnx_config` (path to the ONNX/model registry file; defaults to `configs/onnx.yaml`).
+
+### `server`
+
+```yaml
+server:
+  name: "synopsis"
+  version: "0.1.0-dev"
+  host: "0.0.0.0"
+  port: 8080
+```
+
+MCP HTTP server identity and listen address. `serve --port N` overrides `port` for a single run; the endpoints are `/sse`, `/message`, and `/health` (see the [Quickstart](../quickstart.mdx)).
+
+## What's next
+
+- [Ingestion](./ingestion.mdx) — what `paths.global_config_path` drives at ingest time
+- [Model Management](./model-management.mdx) — the `onnx.yaml` registry and model lifecycle
+- [Troubleshooting](./troubleshooting.mdx) — common configuration-related failures

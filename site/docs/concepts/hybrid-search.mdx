@@ -1,0 +1,89 @@
+---
+title: Hybrid Search
+description: How the search tool combines FTS5/BM25 and vector search with Reciprocal Rank Fusion, then enriches, reranks, and graph-expands results
+sidebar_position: 2
+---
+
+# Hybrid Search
+
+The `search` tool runs two independent retrievers in parallel and fuses their ranked lists, then post-processes the fused pool before returning results. Keyword precision and semantic recall reinforce each other — a chunk that both retrievers find rises to the top.
+
+```
+                 ┌──────────────────────────────┐
+   query ────────┤ runs in parallel goroutines  │
+                 └──────────────┬───────────────┘
+                                │
+        ┌───────────────────────┴───────────────────────┐
+        ▼                                               ▼
+  Lexical: SQLite FTS5                      Semantic: sqlite-vec (vec0)
+  BM25 score (lower is better)              cosine distance (lower is better)
+        │                                               │
+        └───────────────────────┬───────────────────────┘
+                                ▼
+                 Reciprocal Rank Fusion (k = 20)
+                                ▼
+        enrich → rerank → truncate to top_k → graph expansion
+```
+
+A domain filter passed to `search` is applied **inside each sub-search at the database level** (case-insensitive, validated against known domains in the knowledge base) — there is no separate application-level filter step after fusion.
+
+## The two retrievers
+
+| | Lexical | Semantic |
+|---|---------|----------|
+| Index | SQLite **FTS5** virtual table (`chunks_fts`), kept in sync with chunk writes via triggers | **sqlite-vec** `vec0` virtual table (`chunks_vec`), co-located in the same SQLite file |
+| Scoring | **BM25** — in SQLite FTS5, lower is better | **Cosine distance** over chunk vectors — lower is better |
+| Query handling | FTS5 syntax: terms, phrases, prefix matching, boolean operators | The query is embedded by the same provider used at ingestion; nearest chunks are fetched with a KNN query |
+| Strong at | Exact terminology: names, codes, IDs, policy titles | Paraphrase: "how much do I get paid when away" matching "vacation salary" |
+
+Both sub-searches are independent: if one fails, the other's results are still returned; an error is propagated only if **both** fail. Each sub-search is bounded by a configurable timeout.
+
+## Fusion: Reciprocal Rank Fusion
+
+Fused scores are computed with **Reciprocal Rank Fusion (RRF)**, k = 20:
+
+```
+rrf(chunk)   = Σ over lists  1 / (k + rank(chunk in list))     # k = 20, ranks are 1-based
+final(chunk) = 0.7 · rrf_norm(chunk) + 0.3 · bm25_norm(chunk)
+```
+
+- Each retriever contributes a per-chunk term `1 / (k + rank)`; **chunks that appear in both lists accumulate both terms**, so agreement between the retrievers naturally lifts them.
+- Both the raw RRF score and the raw BM25 score are min-max normalized to [0, 1] before blending, so the two scales are comparable. BM25 is inverted first (SQLite reports lower-as-better). Pools with no usable BM25 data get a neutral 0.5, so neither side is favored.
+- The final score is the weighted blend above: **0.7 to the fused rank signal, 0.3 to the calibrated BM25 signal**.
+- Results are sorted by descending final score, with chunk ID as a deterministic tiebreaker, and trimmed to the fusion pool size (the larger of the two sub-search limits).
+- Every result is labeled with its origin: `lexical`, `semantic`, or `hybrid` (found by both).
+
+RRF was chosen over a weighted score combination on purpose: BM25 and cosine distance live on unrelated scales, so RRF needs no calibration — one parameter (k) instead of a bag of weights, and items found by both strategies win.
+
+## Post-search pipeline
+
+After fusion, the pool goes through four post steps (a domain filter, when given, was already applied inside the sub-searches):
+
+1. **Enrich** — each chunk is annotated with document metadata (original path, source type, domains, timestamps) and the entities associated with it, via a batched lookup.
+2. **Rerank** — business rules rescale scores and re-sort:
+
+   | Rule | Multiplier | Applied when |
+   |------|------------|--------------|
+   | Deprecated content | × 0.2 | the document is marked deprecated |
+   | Official policy | × 1.5 | the document is marked official |
+   | Expired document | × 0.1 | its `valid_to` date is in the past |
+   | Freshness boost | × 1.2 | the document was updated within the last 90 days |
+   | Authority boost | per document type | e.g. `policy: 1.5`, `regulation: 1.3` — configurable multipliers |
+
+3. **Truncate** — the reranked list is cut to `top_k` (default 10, range 1–100). Truncation happens *after* reranking so the best-adjusted results survive.
+4. **Graph expansion** — for each entity in the surviving results, the engine performs a breadth-first search over the knowledge graph and attaches the related edges and **approved** facts as `related_entities` metadata. Expansion is best-effort: if it fails, results are still returned without the graph context.
+
+See [Knowledge Graph](./knowledge-graph.mdx) for how traversals work and what an entity dossier contains.
+
+## Why it matters for your agent
+
+- A `search` result is a **chunk, not a score**: it carries document provenance (path, type, domain), exact offsets, rank, and the entities it mentions — everything the agent needs to cite and follow up.
+- `related_entities` means one search call already surfaces the neighborhood of what the agent found; deeper questions can be answered with `get_entity_relations` or `get_entity_dossier` instead of more full-text queries.
+- The `domain` argument is the cheapest way to scope a question ("which **hr** document says…") — it runs inside both retrievers, not as a post-filter over a smaller pool.
+
+## See also
+
+- [The Pipeline](./pipeline.mdx) — where search sits in the overall flow
+- [Knowledge Graph](./knowledge-graph.mdx) — entities, facts, and graph expansion
+- [Domains](./domains.mdx) — what the domain filter filters on
+- [Quickstart](../quickstart.mdx) — run your first `search` call

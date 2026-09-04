@@ -1,0 +1,122 @@
+---
+title: 'get_document_context'
+description: Full processing context for one document — metadata, domains, image paths, chunks with offsets, associated entities, and approved fact IDs, with selective inclusion
+sidebar_position: 11
+---
+
+# `get_document_context`
+
+Retrieves the full processing context of a single document: metadata, domains, image paths, all chunks (text, offsets, sequence numbers), the entities associated with its chunks, and optionally the IDs of approved facts linked to those entities. The `include_*` flags let an agent pull a lightweight metadata-only view or the complete view in one call.
+
+Get a `document_id` from [catalog_documents](./catalog-documents) or from a `search` result. Table definitions: [Database Schema](../database-schema.mdx).
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `document_id` | string | yes | — | Document predicate, as a string (e.g. `"7"`). |
+| `include_chunks` | boolean | no | `true` | Include the `chunks` array (text, offsets, sequence numbers). When `false` the array is omitted, but `chunk_count` is still returned. |
+| `include_entities` | boolean | no | `true` | Include the entities associated with the document's chunks. |
+| `include_facts` | boolean | no | `false` | Include `fact_ids` — the IDs of **approved** facts whose subject or object is one of the document's entities. Pass them to `get_fact_by_id`. |
+
+`include_entities` and `include_facts` are independent of `include_chunks`: when chunks are not loaded, entities and facts are resolved directly from the document ID.
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_document_context",
+    "arguments": {
+      "document_id": "7",
+      "include_facts": true
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `document` | object | Document metadata. |
+| `document.id` | int | Document predicate. |
+| `document.source_type` | string | Ingested source type (e.g. `markdown`, `json`). |
+| `document.original_path` | string | Path of the source file as ingested. |
+| `document.metadata` | string | The document's `metadata_json` as stored (a JSON string). Omitted when not set. |
+| `document.created_at` | string | Insertion timestamp. |
+| `document.updated_at` | string | Last re-ingestion timestamp. |
+| `document.domains` | string[] | Domains from `$.domain` in the metadata; a single-string domain is normalized to a one-element array. Omitted when the document declares none. |
+| `image_paths` | string[] | Image paths extracted from the `images`, `image_paths`, and `attachments` keys of the metadata. Omitted when none are found. |
+| `chunk_count` | int | Total number of chunks in the document. **Always present**, even with `include_chunks: false`. |
+| `chunks` | array | The document's chunks in document order. **Only when `include_chunks` is true.** |
+| `chunks[].id` | int | Chunk predicate — pass it to `get_chunk_by_id`. |
+| `chunks[].sequence_num` | int | Position of the chunk within the document. |
+| `chunks[].start_offset` | int | Offset of the chunk's first character in the source (0 when not recorded). |
+| `chunks[].end_offset` | int | Offset of the chunk's last character in the source (0 when not recorded). |
+| `chunks[].text` | string | Chunk text. |
+| `entities` | array | Unique entities associated with the document's chunks (deduplicated across chunks). **Only when `include_entities` is true** and at least one exists. |
+| `entities[].id` | int | Entity predicate. |
+| `entities[].name` | string | Entity name. |
+| `entities[].type` | string | Entity type. |
+| `entities[].domain` | string | Entity domain. |
+| `fact_ids` | array[int] | Deduplicated IDs of **approved** facts whose subject or object is one of the document's entities. **Only when `include_facts` is true** and at least one exists. |
+
+Example:
+
+```json
+{
+  "document": {
+    "id": 7,
+    "source_type": "markdown",
+    "original_path": "./data/hr/policies/vacation.md",
+    "metadata": "{\"title\": \"Vacation Policy\", \"valid_to\": \"2026-12-31\"}",
+    "created_at": "2026-08-01T09:12:44Z",
+    "updated_at": "2026-08-10T14:03:21Z",
+    "domains": ["hr", "policy"]
+  },
+  "chunk_count": 2,
+  "chunks": [
+    {
+      "id": 41,
+      "sequence_num": 0,
+      "start_offset": 0,
+      "end_offset": 486,
+      "text": "Eligible employees accrue 20 days of vacation per calendar year…"
+    },
+    {
+      "id": 42,
+      "sequence_num": 1,
+      "start_offset": 486,
+      "end_offset": 1023,
+      "text": "Vacation days not used by December 20 carry over, up to a maximum of…"
+    }
+  ],
+  "entities": [
+    { "id": 100, "name": "Alice", "type": "employee", "domain": "hr" }
+  ],
+  "fact_ids": [301, 307]
+}
+```
+
+## Error conditions
+
+| Condition | Result |
+|---|---|
+| `document_id` omitted or empty | `isError` result: `Error: 'document_id' argument is required` |
+| `document_id` is not an integer string | `isError` result: `Error: 'document_id' must be an integer, got "…"` |
+| No document with that predicate | `isError` result: `Document with Predicate … not found` |
+| Database failure (document, chunk, entity, or fact phase) | `isError` result: `Error retrieving document: …`, `Error retrieving chunks: …`, `Error retrieving entities: …`, or `Error retrieving facts: …` |
+
+Passing `include_chunks: false` is not an error — the response is complete except for the `chunks` array.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [catalog_documents](./catalog-documents) — list documents and obtain `document_id`s
+- [get_chunk_by_id](./get-chunk-by-id) — read a single chunk in isolation
+- [get_fact_by_id](./get-fact-by-id) — read one fact from `fact_ids`
+- [Database Schema](../database-schema.mdx) — the `documents`, `chunks`, and `chunk_entities` tables

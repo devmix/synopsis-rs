@@ -1,0 +1,160 @@
+---
+title: Troubleshooting
+description: Fixing the most common failures — embedding dimension mismatch, CGO build errors, missing domain configs, index problems, and invisible facts
+sidebar_position: 6
+---
+
+# Troubleshooting
+
+A field guide to the failures you are most likely to meet, in order of how often they bite. Symptom first, then cause, then fix.
+
+## Embedding dimension mismatch
+
+**Symptom** — startup (sync or serve) aborts with:
+
+```
+vector dimension mismatch detected; run with --auto-rebuild-vectors flag
+(or set embeddings.auto_rebuild_vectors in config) to automatically rebuild
+vectors, or delete data/knowledge.db
+```
+
+**Cause** — the vectors stored in the database were generated with a model of one dimension, but `embeddings.local.vector_dim` (or the active embedding model) now declares another. This happens after switching models or after editing `vector_dim` without touching the database.
+
+**Fix** — three options, from least destructive:
+
+1. **Auto-rebuild the vectors in place** (keeps documents and entities; re-embeds every chunk):
+
+   ```bash
+   ./bin/synopsis --config configs/config.default.yaml sync --auto-rebuild-vectors
+   # or start the server with the same flag
+   ./bin/synopsis --config configs/config.default.yaml serve --auto-rebuild-vectors
+   ```
+
+   Or make it permanent with `embeddings.auto_rebuild_vectors: true` in the config file.
+
+2. **Start from a clean database** (full re-ingest — slowest, cleanest):
+
+   ```bash
+   rm -rf data/knowledge.db*
+   make rebuild
+   ```
+
+3. **Full rebuild flag** — `sync --rebuild` clears everything and re-ingests; when a full rebuild is requested the vector re-embed step is skipped, because the reset already discards the stale vectors:
+
+   ```bash
+   make rebuild
+   ```
+
+Remember to update `embeddings.local.vector_dim` to match the model you actually use before re-running.
+
+## CGO build failures
+
+**Symptom** — `make build` fails, typically with one of:
+
+```
+cgo: C compiler "gcc" not found
+```
+or
+```
+# github.com/mattn/go-sqlite3
+cgo: unable to find "include" for ...
+```
+
+**Cause** — CGO is **mandatory** for Synopsis: go-sqlite3 compiles SQLite (FTS5 + sqlite-vec) into the binary, which requires a C compiler at build time. `CGO_ENABLED=0` or a missing toolchain will always fail — do not "fix" it by disabling CGO.
+
+**Fix**:
+
+- Install a C toolchain: `gcc` (Linux), `clang` (macOS; `xcode-select --install` if command-line tools are missing), and `make`.
+- On minimal Linux distributions, add the C library development package (e.g. `build-essential` on Debian/Ubuntu, or `musl-dev` when building for Alpine targets).
+- Re-run `make build` (it sets `CGO_ENABLED=1` and the FTS5/vec compilation flags for you).
+
+For cross-compilation failures, the issue is almost always a missing **Zig 0.14+** (the C toolchain for other platforms) — see [Installation: Cross-compilation](./installation.mdx#cross-compilation-with-zig).
+
+## Missing or invalid domain configs
+
+**Symptom** — startup (both `sync` and `serve`) exits before doing any work:
+
+```
+domain discovery failed: load global pool: ...
+```
+```
+global config at "data/ontology" is missing or empty
+```
+```
+load domain file data/ontology/domains/domain_x.xml: ...
+```
+
+**Cause** — `paths.global_config_path` (default `data/ontology`) must point to an ontology directory containing a valid `global.xml` and, optionally, `domains/*.xml`. A missing directory, an empty `global.xml`, or a malformed domain XML is a hard startup error — the binary refuses to run rather than guess at your schema. (A missing `domains/` subdirectory is tolerated: you simply get no domains.)
+
+**Fix**:
+
+- Check the path in your config and that it resolves relative to the working directory (or give it absolute).
+- Verify `global.xml` parses and is not empty, and validate each `domains/*.xml`.
+- Domain configs define the entity types, relations, and extraction rules for a domain — see [Domains](../concepts/domains.mdx).
+
+## FTS5 / vec0 and database problems
+
+**Symptom** — search returns nothing, FTS5/`vec0` query errors, or ingestion behaves inconsistently after an experiment.
+
+**Cause** — the database file is Synopsis's *only* state (search index and vector index both live inside it). Hand edits, interrupted runs, or a model switch can leave it in a state that no incremental sync will heal.
+
+**Fix** — treat a full rebuild as the standard remedy:
+
+```bash
+rm -rf data/knowledge.db*   # main DB + WAL/SHM side files
+make rebuild                # fresh schema (migrations apply in order) + full re-ingest
+```
+
+Migrations (`001_schema.sql` … `005_app_kv.sql`) run automatically at startup if you instead delete only stale side files. If the problem persists on a fresh database, it is upstream of the database — a source, a parser, or a config issue (check the logs at `logging.level: debug`).
+
+## Facts not appearing in search
+
+**Symptom** — `search` results carry no `related_entities` facts, or `get_entity_dossier` shows fewer facts than the documents actually contain.
+
+**Cause** — only facts with status **`approved`** are ever exposed: search graph expansion, entity dossiers, and graph loading all query `facts` with `status = 'approved'`. Pending or rejected facts are invisible by design.
+
+**Fix** — check the status of the facts in question:
+
+```bash
+sqlite3 data/knowledge.db "SELECT id, predicate, status FROM facts WHERE status != 'approved' LIMIT 20;"
+```
+
+Approve the ones that should be public (set `status` to `approved`), or re-ingest — facts created by the pipeline are inserted as `approved` automatically, so invisible facts usually come from manual edits or a partially failed run (in which case `make rebuild`).
+
+> **Note:** the fact review workflow (a UI/tooling to review pending facts) is **not implemented** yet — it is on the roadmap. Today, fact status is managed directly in the database.
+
+## Search returns no results or a domain warning
+
+**Symptom** — an empty `results` list, or a `warning: unknown domain "..."` in the response.
+
+**Cause / fix**:
+
+- **Unknown domain** — the `domain` argument must match a domain defined in the ontology and stamped onto ingested documents (domains come from the `<domains>` list under each `<source>` in `global.xml`). List what your corpus actually carries: `sqlite3 data/knowledge.db "SELECT domain, count(*) FROM documents GROUP BY domain;"`. An unknown domain warns but does not fail.
+- **No matching content** — the documents may not be ingested yet (run `make sync`), or the query terminology is too specific for both retrievers; try broader terms, or scope out the `domain` filter first to confirm the corpus is searchable.
+- **One retriever is down** — results still come back (the other retriever's), but check `search.enable_lexical` / `search.enable_semantic` if one side is unexpectedly always empty.
+
+## Auto-download fails on first run
+
+**Symptom** — first `sync`/`serve` exits with a download/ONNX error.
+
+**Cause** — in `local` mode the embedding model (and the ONNX Runtime library) are downloaded on first use and need network access.
+
+**Fix** — verify outgoing network, then pre-fetch explicitly so the failure is visible and retryable:
+
+```bash
+./bin/synopsis --config configs/config.default.yaml onnx-runtime install
+./bin/synopsis --config configs/config.default.yaml model download bge-small-en-v1.5
+```
+
+## Still stuck?
+
+Gather these and you can diagnose most anything:
+
+```bash
+./bin/synopsis --version
+sqlite3 data/knowledge.db "SELECT count(*) FROM documents; SELECT count(*) FROM chunks; SELECT count(*) FROM facts WHERE status='approved';"
+curl http://localhost:8080/health   # server up?
+cat configs/config.default.yaml     # effective config
+```
+
+Run with `logging.level: "debug"` for the full pipeline trace (per-stage progress, parse errors, watcher events).

@@ -1,0 +1,162 @@
+---
+title: 'get_entity_dossier'
+description: Complete dossier for one entity — approved facts with source quotes, source documents, related entities via BFS, and cross-domain links with provenance
+sidebar_position: 14
+---
+
+# `get_entity_dossier`
+
+Retrieves the complete dossier of a single entity in one call: the entity itself, all **approved** facts it participates in (each with its source quotes), the documents that mention it, neighboring entities from a BFS over the knowledge graph, and its cross-domain links with provenance (method, confidence, evidence).
+
+This is the primary "what do you know about X" tool for agents. For the raw node/edge view without facts and sources, use [get_entity_relations](./get-entity-relations) instead.
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | string | one of two | — | Entity predicate, as a string (e.g. `"100"`). Provide **either** this or `entity_name`, not both. |
+| `entity_name` | string | one of two | — | Entity name, case-insensitive exact match. Provide **either** this or `entity_id`, not both. |
+| `domain` | string | no | all | Used with `entity_name` to disambiguate when several entities share a name (e.g. `hr`). Case-insensitive. |
+| `depth` | number | no | `2` | BFS depth for `related_entities`. Clamped to 1–5: out-of-range values are clamped, not an error. |
+| `include_facts` | boolean | no | `true` | Include `facts` (approved ones only). |
+| `include_sources` | boolean | no | `true` | Include `sources` (documents that mention the entity). |
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_entity_dossier",
+    "arguments": {
+      "entity_name": "Alice",
+      "domain": "hr",
+      "depth": 2
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `entity` | object | The resolved entity. |
+| `entity.id` | int | Entity predicate. |
+| `entity.name` | string | Entity name. |
+| `entity.type` | string | Entity type. |
+| `entity.domain` | string | Entity domain. |
+| `entity.description` | string | Free-text description. Omitted when empty. |
+| `entity.confidence` | float | Extraction confidence (0–1). Omitted when `0`. |
+| `entity.metadata` | string | The entity's `metadata_json` as stored (a JSON string). Omitted when not set. |
+| `facts` | array | **Approved** facts where the entity is subject or object, newest first, **cap 100**. Only when `include_facts` is true and at least one exists. |
+| `facts[].id` | int | Fact predicate — pass it to `get_fact_by_id`. |
+| `facts[].predicate` | string | The relation. |
+| `facts[].subject_entity_id` | int | Subject entity predicate. Omitted when the fact has no subject. |
+| `facts[].object_entity_id` | int | Object entity predicate. Omitted when the fact has no object. |
+| `facts[].domain` | string | Domain the fact belongs to. |
+| `facts[].metadata` | string | Fact `metadata_json` (a JSON string). Omitted when not set. |
+| `facts[].status` | string | Review status. |
+| `facts[].valid_from` / `facts[].valid_to` | string | Temporal validity dates (ISO). Omitted when not set. |
+| `facts[].weight` | int | Relation weight (number of backing source quotes, default `1`). |
+| `facts[].sources` | array | Source quotes for this fact, same shape as `get_fact_by_id.sources[]` (`document_id`, optional `quote`, `extracted_at`). |
+| `sources` | array | Documents that mention the entity. Only when `include_sources` is true and at least one exists. |
+| `sources[].id` | int | Document predicate. |
+| `sources[].source_type` | string | Ingested source type. |
+| `sources[].original_path` | string | Path of the source file as ingested. |
+| `sources[].metadata` | string | The document's `metadata_json` (a JSON string). Omitted when not set. |
+| `related_entities` | array | Neighbors found by BFS from the entity — both directions, up to `depth` levels, up to 100 nodes, 5-second time limit; cross-domain neighbors are reachable only through entity links. The center entity itself is excluded. Omitted when the in-memory graph is unavailable or no neighbor is found. |
+| `related_entities[].id` | int | Entity predicate. |
+| `related_entities[].name` | string | Entity name. |
+| `related_entities[].type` | string | Entity type. |
+| `related_entities[].domain` | string | Entity domain. |
+| `cross_domain_links` | array | Cross-domain links of the entity, deduplicated per target (`relation_types` merged; provenance kept from the entry with the better confidence). Sorted by `target_entity_id`. Omitted when none. |
+| `cross_domain_links[].target_entity_id` | int | Linked entity predicate. |
+| `cross_domain_links[].target_name` | string | Linked entity name. |
+| `cross_domain_links[].target_domain` | string | Domain of the linked entity (links are cross-domain by design). |
+| `cross_domain_links[].relation_types` | string[] | Relation types connecting the pair. Omitted when empty. |
+| `cross_domain_links[].method` | string | How the link was established: `rule`, `equals`, or `llm`. Omitted when not recorded. |
+| `cross_domain_links[].confidence` | float | Link confidence. Omitted when `0`. |
+| `cross_domain_links[].evidence` | string | Supporting evidence text. Omitted when not recorded. |
+
+`cross_domain_links` merges two sources: edges from the BFS traversal and rows of the `entity_links` table. When both describe the same target, the entries are merged — `relation_types` is the union, and `method` / `confidence` / `evidence` are kept from the entry with the higher confidence (ties broken deterministically by method, then evidence).
+
+Example:
+
+```json
+{
+  "entity": {
+    "id": 100,
+    "name": "Alice",
+    "type": "employee",
+    "domain": "hr",
+    "description": "Senior engineer, API Gateway team",
+    "confidence": 0.97
+  },
+  "facts": [
+    {
+      "id": 301,
+      "predicate": "manages",
+      "subject_entity_id": 100,
+      "object_entity_id": 112,
+      "domain": "hr",
+      "status": "approved",
+      "weight": 1,
+      "sources": [
+        { "document_id": 7, "quote": "Alice manages the API Gateway team.", "extracted_at": "2026-08-01T09:12:44Z" }
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "id": 7,
+      "source_type": "markdown",
+      "original_path": "./data/hr/policies/vacation.md"
+    }
+  ],
+  "related_entities": [
+    { "id": 112, "name": "API Gateway", "type": "system", "domain": "product" }
+  ],
+  "cross_domain_links": [
+    {
+      "target_entity_id": 112,
+      "target_name": "API Gateway",
+      "target_domain": "product",
+      "relation_types": ["same_entity"],
+      "method": "equals",
+      "confidence": 0.98
+    }
+  ]
+}
+```
+
+## Error conditions
+
+Entity resolution is shared with the other graph tools:
+
+| Condition | Result |
+|---|---|
+| Neither `entity_id` nor `entity_name` provided | `isError` result: `Error: either 'entity_id' or 'entity_name' must be provided` |
+| Both provided | `isError` result: `Error: provide either 'entity_id' or 'entity_name', not both` |
+| `entity_id` is not an integer string | `isError` result: `Error: 'entity_id' must be an integer, got "…"` |
+| No entity with that predicate | `isError` result: `Entity Predicate … not found` |
+| Name matches nothing | `isError` result: `Entity "…" not found. Check spelling.` (with `domain`: `Entity "…" not found in domain "…". Check spelling.`) |
+| Name matches several entities | `isError` result: `Multiple entities match "…". Please specify one (optionally with a domain):` followed by a candidate list (`- Name (id=…, type=…) [domain]`) |
+| Database failure | `isError` result: `Error retrieving entity …: …`, `Error retrieving facts: …`, or `Error retrieving sources: …` |
+| In-memory graph unavailable | **Not an error** — `related_entities` is omitted; `cross_domain_links` is still populated from the `entity_links` table |
+
+Notes:
+
+- Facts are **approved only** and capped at the first 100 (newest first).
+- `depth` outside 1–5 is clamped silently, not an error.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [catalog_entities](./catalog-entities) — list entities to find a predicate or name
+- [get_entity_relations](./get-entity-relations) — raw node/edge traversal from the same entity
+- [get_entity_links](./get-entity-links) — the link provenance on its own
+- [Knowledge Graph](../../concepts/knowledge-graph.mdx#entity-dossiers) — what a dossier means
+- [Cross-Domain Linking](../../concepts/cross-domain-linking.mdx) — how the links in `cross_domain_links` are built

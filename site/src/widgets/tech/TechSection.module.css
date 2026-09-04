@@ -1,0 +1,152 @@
+/**
+  * synopsis[memex] — landing tech stack section (FSD-WIDGETS-4).
+  * Rules moved verbatim from src/pages/index.module.css (2026-08-16); the page
+  * drops these rules for good because no section remains in index.tsx after
+  * this batch — its module keeps only the .page/.noise shell. The `.wrap` and
+  * section header mirrors below keep tech rendering identical; other widgets
+  * carry their own copies (no cross-widget imports).
+  */
+
+/* ===== 8 · tech stack ===== */
+
+.tech {
+  padding: var(--section-pad) 0;
+  background: var(--bg-2);
+  border-top: var(--bw) solid var(--line);
+}
+
+/* Card frame per the site's card recipe (panel bg + line border + radius-md,
+   cf. .toolCard). `overflow: hidden` clips content at the rounded corners so
+   the header band stays inside the radius; `overflow-x: auto` after it keeps
+   horizontal scroll on narrow screens (`min-width` keeps columns readable),
+   while vertical overflow is clipped instead of scrolled. */
+.tableWrap {
+  margin-top: var(--gap-2xl);
+  background: var(--panel);
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  overflow-x: auto;
+}
+
+/* Infima ships bare table/th/td/tr rules in @layer docusaurus.infima. Our
+   unlayered module CSS beats the layer only for properties it actually sets,
+   so everything else leaks through — display:block, margin-bottom, 1px borders
+   on every cell side, zebra striping, thead stripe + a 2px header rule. Part A:
+   override the --ifm-table-* variables at .table scope (they inherit into
+   tr/th/td) and explicitly reset the rest of the leaked properties. */
+.table {
+  display: table; /* Infima sets display:block — restore the table box model */
+  margin-bottom: 0; /* Infima adds a --ifm-spacing-vertical gap inside the card frame */
+  overflow: visible; /* Infima sets overflow:auto on <table> itself */
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+  min-width: 640px;
+
+  --ifm-table-background: transparent; /* infima `table tr` row background */
+  --ifm-table-stripe-background: transparent; /* zebra rows + thead stripe */
+  --ifm-table-border-color: transparent; /* all cell borders + thead tr 2px rule */
+  --ifm-table-head-background: transparent; /* infima `table th` head background */
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: var(--gap-md);
+  border: none; /* kill Infima's full-border shorthand on every cell side */
+  border-bottom: var(--bw) solid var(--line); /* re-apply the site rule */
+  vertical-align: top;
+}
+
+.table thead th {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  font-weight: var(--fw-med);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel-deep);
+  border-bottom: var(--bw) solid var(--line-strong);
+}
+
+.table tbody th {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-med);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.table td {
+  color: var(--muted);
+}
+
+.table td:first-of-type {
+  color: var(--text);
+}
+
+.table tbody tr {
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.table tbody tr:hover {
+  background: var(--row-hover);
+}
+
+/* the card frame already closes the bottom edge — avoid a double line */
+.table tbody tr:last-child th,
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ===== page-level rules mirrored into widget scope (FSD-WIDGETS-4) ===== */
+/* No reveal-delay steps are mirrored — this section never used them. The
+   `.wrap` mirror includes the page’s ≤720px padding override so mobile
+   spacing stays byte-identical. */
+
+.wrap {
+  max-width: var(--wrap-max);
+  margin: 0 auto;
+  padding: 0 var(--pad-x);
+}
+
+.secTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secTag b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--ls-normal);
+  line-height: var(--lh-tight);
+  margin-bottom: 18px;
+}
+
+.sectionLead {
+  color: var(--muted);
+  max-width: var(--max-body);
+  font-size: var(--fs-lead);
+}
+
+/* ===== responsive (moved from the page) ===== */
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 var(--pad-x-narrow);
+  }
+}

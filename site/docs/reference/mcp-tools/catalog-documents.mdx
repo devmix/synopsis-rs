@@ -1,0 +1,91 @@
+---
+title: 'catalog_documents'
+description: List ingested documents with cursor pagination and filters (domain, source type, name) — returns metadata, domains, and timestamps
+sidebar_position: 7
+---
+
+# `catalog_documents`
+
+Lists the documents in the knowledge base with **cursor-based pagination** and optional filters by domain, source type, and name (substring match on the original path). Returns document metadata: ID, source type, original path, domains, parsed metadata, and timestamps.
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `page_size` | number | no | `20` | Items per page (1–200). Out-of-range values fall back to the default `20`. |
+| `cursor` | string | no | — | Base64-encoded pagination cursor; pass `next_cursor` from a previous response to continue. Omit or pass empty to start from the beginning. |
+| `domain` | string | no | all | Match documents whose metadata domain array (`$.domain`) contains this value (e.g. `hr`). |
+| `source_type` | string | no | all | Exact match on `source_type` (e.g. `json`, `markdown`). |
+| `name` | string | no | all | Case-insensitive substring match on `original_path` (e.g. `policy`). |
+
+Filters combine with AND. Results are ordered by document ID (ascending).
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "catalog_documents",
+    "arguments": {
+      "domain": "hr",
+      "source_type": "markdown",
+      "page_size": 10
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `documents` | array | Document entries for this page. |
+| `documents[].id` | int | Document predicate — pass it to `get_document_context` to read the document. |
+| `documents[].source_type` | string | The ingested source type (e.g. `json`, `markdown`). |
+| `documents[].original_path` | string | Path of the source file as ingested. |
+| `documents[].domain` | string[] | Domains from the document metadata (`$.domain`); empty array `[]` when the document declares none. A single-string domain in the metadata is normalized to a one-element array. |
+| `documents[].metadata` | object | Parsed `metadata_json` (or the raw string when it is not valid JSON). Omitted when the document has no metadata. |
+| `documents[].created_at` | string | Insertion timestamp. |
+| `documents[].updated_at` | string | Last re-ingestion timestamp. |
+| `total_count` | int | Total number of documents matching the filters (across all pages). |
+| `next_cursor` | string | Cursor for the next page; **omitted on the last page**. |
+
+Example:
+
+```json
+{
+  "documents": [
+    {
+      "id": 7,
+      "source_type": "markdown",
+      "original_path": "./data/hr/policies/vacation.md",
+      "domain": ["hr", "policy"],
+      "metadata": { "title": "Vacation Policy", "valid_to": "2026-12-31" },
+      "created_at": "2026-08-01T09:12:44Z",
+      "updated_at": "2026-08-10T14:03:21Z"
+    }
+  ],
+  "total_count": 1,
+  "next_cursor": "eyJvZmZzZXQiOiAxMCwgImxpbWl0IjogMTB9"
+}
+```
+
+To page through results, resend the same arguments plus `"cursor": "<next_cursor>"`.
+
+## Error conditions
+
+| Condition | Result |
+|---|---|
+| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `Error decoding cursor: …` |
+| `page_size` outside 1–200 | **Not an error** — silently falls back to the default `20` |
+| Database failure | `isError` result: `Error listing documents: …` |
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [catalog_entities](./catalog-entities) — the entity-side equivalent
+- [get_document_context](./get-document-context) — full metadata, chunks, and entities for a single document
+- [Ingestion](../../guides/ingestion.mdx) — how documents get into the catalog

@@ -1,0 +1,86 @@
+---
+title: Database Migrations
+description: Migration file conventions, how and when migrations are applied, the current migration list, and how to test a new migration
+sidebar_position: 5
+---
+
+# Database Migrations
+
+The SQLite schema evolves through SQL migrations applied automatically at startup — there is no migration binary and no manual step. Both `sync` and `serve` open the database through the same bootstrap, so migrations run in both modes.
+
+## File conventions
+
+- Location: `migrations/` (overridable via `paths.migrations_dir`).
+- Naming: `NNN_description.sql`, where `NNN` is a sequential integer (3+ digits so lexicographic order equals numeric order).
+- The **version** is the leading integer of the filename — the digits before the first underscore (`004_extracted_at_backfill.sql` → version `4`).
+- Only `*.sql` files are considered; they are applied in sorted filename order.
+- Use SQLite-compatible SQL. Keep each migration forward-only and idempotent where practical (`IF NOT EXISTS` / `IF EXISTS`).
+
+## How they are applied
+
+On database open, `internal/database` runs `Migrate()`:
+
+1. Creates the tracking table `_schema_migrations` if it does not exist.
+2. Reads the list of already-applied versions from it.
+3. Scans `migrations/`, sorts `*.sql` files, and applies each file whose version has not been recorded — one file at a time, recording the version on success.
+4. After the core migrations, initializes the `chunks_vec` vec0 virtual table with the configured `vector_dim` and runs the dimension compatibility check.
+
+Consequences:
+
+- A migration is applied exactly once per database file.
+- A missing `migrations/` directory is a **startup error** (fail loud).
+- An error in a migration fails the whole startup — there is no partial state; fix the SQL and retry.
+- Because versions are tracked by integer, never renumber or edit an already-released migration — add a new `NNN+1` file instead.
+
+## Current migrations
+
+| File | What it does |
+|---|---|
+| `001_schema.sql` | Complete schema: `documents`, `chunks`, `entities`, `chunk_entities`, `facts`, `fact_sources`, `entity_sources`, `entity_links`; all indexes; the `chunks_fts` FTS5 virtual table and its INSERT/UPDATE/DELETE sync triggers |
+| `002_dedup.sql` | Data migration: removes duplicate `documents` rows (keeps the highest ID per `original_path`) and creates the `idx_documents_original_path` unique index |
+| `003_drop_documents_domain.sql` | Drops the `documents.domain` column and its index — the domain was never reliably populated; `metadata_json` is the single source of truth |
+| `004_extracted_at_backfill.sql` | Backfills `fact_sources.extracted_at` rows with zero/empty timestamps using the last ingest time (max `updated_at` of documents or facts, falling back to now) |
+| `005_app_kv.sql` | Creates `app_kv` — a general-purpose key-value table for application state (for example, the last cross-domain linking run timestamp) |
+
+The full resulting schema, including indexes and triggers: [Database Schema](../reference/database-schema).
+
+## Writing a new migration
+
+1. **Create** `migrations/NNN_description.sql` with the next sequential number.
+2. **Write** SQLite-compatible DDL/DML. For schema changes, prefer `ALTER TABLE` operations SQLite supports; for anything heavier (rebuilding a table with an `ALTER`-incompatible change), do the classic create-copied-table → copy → drop → rename dance in one file.
+3. **Keep existing data safe.** New columns need defaults or `NULL`; unique indexes on existing data need dedup first (see `002_dedup.sql` for the pattern).
+4. **Do not touch** `migrations/001_schema.sql` history in place — it documents the baseline.
+
+## Testing a migration
+
+Migrations are easiest to get right on a **fresh database**:
+
+```bash
+# Wipe the local database (including -wal/-shm side files)
+rm -rf data/knowledge.db*
+
+# Rebuild: migrates from scratch and re-ingests everything
+make rebuild
+```
+
+Then verify:
+
+```bash
+sqlite3 data/knowledge.db "SELECT version FROM _schema_migrations ORDER BY version;"
+```
+
+Additional checks depending on the migration kind:
+
+- **New column/index** — inspect the table (`PRAGMA table_info(documents)`) and run a normal `make sync` to confirm ingestion still works.
+- **Data migration** (dedup, backfill) — assert row counts and spot-check values before and after.
+- **Old database upgrade path** — keep a copy of a pre-migration `data/knowledge.db`, start the service with the new code against that copy, and confirm the migration applies cleanly on top of real data, not just a fresh schema.
+
+## Vector dimension and migrations
+
+`chunks_vec` is created *after* the core migrations, sized by `embeddings.<mode>.vector_dim`. If a model change lands with a different dimension than an existing database, startup fails with a dimension mismatch until you either rebuild vectors (`sync --auto-rebuild-vectors` / `serve --auto-rebuild-vectors`) or reset the database — see [Troubleshooting — Embedding dimension mismatch](../guides/troubleshooting#embedding-dimension-mismatch).
+
+## See also
+
+- [Database Schema](../reference/database-schema) — the target schema, tables, and indexes
+- [Development Setup](./setup) — build and test commands
+- [Architecture](./architecture) — the database layer and DAO/transaction model

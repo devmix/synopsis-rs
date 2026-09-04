@@ -1,0 +1,91 @@
+---
+title: 'catalog_entities'
+description: List knowledge graph entities with cursor pagination and filters (type, domain, name) — returns name, type, domain, confidence, and metadata
+sidebar_position: 8
+---
+
+# `catalog_entities`
+
+Lists the entities in the knowledge base with **cursor-based pagination** and optional filters by entity type, domain, and name (substring match). Returns entity metadata: ID, name, type, domain, description, extraction confidence, and parsed metadata.
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `page_size` | number | no | `20` | Items per page (1–200). Out-of-range values fall back to the default `20`. |
+| `cursor` | string | no | — | Base64-encoded pagination cursor; pass `next_cursor` from a previous response to continue. Omit or pass empty to start from the beginning. |
+| `type` | string | no | all | Exact match on entity type (e.g. `employee`, `department`, `policy`). |
+| `domain` | string | no | all | Exact match on the entity's domain (e.g. `hr`, `product`). Entities carry a single domain, unlike documents. |
+| `name` | string | no | all | Case-insensitive substring match on the entity name (e.g. `alice`). |
+
+Filters combine with AND. Results are ordered by entity ID (ascending).
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "catalog_entities",
+    "arguments": {
+      "type": "employee",
+      "domain": "hr",
+      "page_size": 10
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `entities` | array | Entity entries for this page. |
+| `entities[].id` | int | Entity predicate — use it (or the name) in the graph tools. |
+| `entities[].name` | string | Entity name. |
+| `entities[].type` | string | Entity type (e.g. `employee`, `department`, `policy`, `system`). |
+| `entities[].domain` | string | Domain the entity belongs to. |
+| `entities[].description` | string | Free-text description. Omitted when empty. |
+| `entities[].confidence` | float | Extraction confidence (0–1). Omitted when `0`. |
+| `entities[].metadata` | object | Parsed `metadata_json` (or the raw string when it is not valid JSON). Omitted when the entity has no metadata. |
+| `total_count` | int | Total number of entities matching the filters (across all pages). |
+| `next_cursor` | string | Cursor for the next page; **omitted on the last page**. |
+
+Example:
+
+```json
+{
+  "entities": [
+    {
+      "id": 100,
+      "name": "Alice",
+      "type": "employee",
+      "domain": "hr",
+      "description": "Senior engineer, API Gateway team",
+      "confidence": 0.97,
+      "metadata": { "since": "2024-01-15" }
+    }
+  ],
+  "total_count": 22,
+  "next_cursor": "eyJvZmZzZXQiOiAxMCwgImxpbWl0IjogMTB9"
+}
+```
+
+## Error conditions
+
+| Condition | Result |
+|---|---|
+| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `Error decoding cursor: …` |
+| `page_size` outside 1–200 | **Not an error** — silently falls back to the default `20` |
+| Database failure | `isError` result: `Error listing entities: …` |
+
+A filter combination matching nothing is a **success** — return an empty `entities` array with `total_count: 0`.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [search_entities_by_type](./search-entities-by-type) — same listings, scoped to one required type
+- [get_entity_dossier](./get-entity-dossier) — full dossier (facts, sources, neighbors) for one entity
+- [Knowledge Graph](../../concepts/knowledge-graph.mdx) — what entities, types, and domains mean

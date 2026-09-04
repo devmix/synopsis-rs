@@ -1,0 +1,103 @@
+---
+title: 'get_fact_by_id'
+description: Read a single fact — relation triple with subject/object entity details, domain, status, validity dates, weight, and source quotes
+sidebar_position: 13
+---
+
+# `get_fact_by_id`
+
+Retrieves a single fact by predicate: the relation triple (subject —predicate→ object) with full details for both entities, plus the fact's domain, review status, temporal validity, weight, and the source quotes that back it (document references, exact quotes, extraction timestamps).
+
+Obtain a `fact_id` from [search_facts](./search-facts), from `search` graph expansion, or from `get_entity_dossier.facts[]`. Unlike the list and retrieval paths — which expose only `approved` facts — this direct lookup returns facts of **any** status; the `status` field in the response tells you the current one.
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `fact_id` | string | yes | — | Fact predicate, as a string (e.g. `"301"`). |
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_fact_by_id",
+    "arguments": {
+      "fact_id": "301"
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `fact` | object | Fact details. |
+| `fact.id` | int | Fact predicate. |
+| `fact.predicate` | string | The relation, e.g. `manages`, `reports_to`. |
+| `fact.subject_entity_id` | int | Subject entity predicate. Omitted when the fact has no subject. |
+| `fact.object_entity_id` | int | Object entity predicate. Omitted when the fact has no object. |
+| `fact.domain` | string | Domain the fact belongs to. |
+| `fact.metadata` | string | The fact's `metadata_json` as stored (a JSON string). Omitted when not set. |
+| `fact.status` | string | Review status: `draft`, `pending`, `approved`, or `rejected`. |
+| `fact.valid_from` | string | Temporal validity start (ISO date). Omitted when not set. |
+| `fact.valid_to` | string | Temporal validity end (ISO date). Omitted when not set. |
+| `fact.weight` | int | Relation weight — recomputed as the number of source quotes backing the fact (default `1`); used in graph traversal. |
+| `subject_entity` | object | Subject entity details. Omitted when the fact has no subject or the entity row is missing. |
+| `subject_entity.id` | int | Entity predicate. |
+| `subject_entity.name` | string | Entity name. |
+| `subject_entity.type` | string | Entity type. |
+| `subject_entity.domain` | string | Entity domain. |
+| `object_entity` | object | Object entity details (same shape as `subject_entity`). Omitted under the same conditions. |
+| `sources` | array | Source quotes backing the fact. Omitted when the fact has none. |
+| `sources[].document_id` | int | Document the quote was extracted from. |
+| `sources[].quote` | string | Exact quote from the source. Omitted when not recorded. |
+| `sources[].extracted_at` | string | Extraction timestamp. |
+
+Example:
+
+```json
+{
+  "fact": {
+    "id": 301,
+    "predicate": "manages",
+    "subject_entity_id": 100,
+    "object_entity_id": 112,
+    "domain": "hr",
+    "status": "approved",
+    "weight": 1
+  },
+  "subject_entity": { "id": 100, "name": "Alice", "type": "employee", "domain": "hr" },
+  "object_entity": { "id": 112, "name": "API Gateway", "type": "system", "domain": "product" },
+  "sources": [
+    {
+      "document_id": 7,
+      "quote": "Alice manages the API Gateway team.",
+      "extracted_at": "2026-08-01T09:12:44Z"
+    }
+  ]
+}
+```
+
+## Error conditions
+
+| Condition | Result |
+|---|---|
+| `fact_id` omitted or empty | `isError` result: `Error: 'fact_id' argument is required` |
+| `fact_id` is not an integer string | `isError` result: `Error: 'fact_id' must be an integer, got "…"` |
+| No fact with that predicate | `isError` result: `Fact with Predicate … not found` |
+| Database failure (fact or sources phase) | `isError` result: `Error retrieving fact: …` or `Error retrieving fact sources: …` |
+
+A dangling subject/object ID (entity row missing, e.g. after deletion) is **not** an error — the corresponding `subject_entity` / `object_entity` object is simply omitted.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [search_facts](./search-facts) — find fact IDs by predicate, entity, status, or domain
+- [get_document_context](./get-document-context) — `fact_ids` per document (`include_facts: true`)
+- [Knowledge Graph](../../concepts/knowledge-graph.mdx) — facts as graph edges
+- [Troubleshooting — Facts not appearing in search](../../guides/troubleshooting.mdx#facts-not-appearing-in-search)

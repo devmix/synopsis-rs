@@ -1,0 +1,71 @@
+---
+title: Roadmap
+description: What is planned but not implemented in Synopsis — the fact review workflow first, then the next directions for the service and its MCP API
+---
+
+# Roadmap
+
+This page lists what Synopsis **does not have yet**. If a feature is described here, it is a direction of travel, not current behavior — everything that works today is described in [Concepts](./concepts/pipeline) and [Reference](./reference/cli).
+
+Two things are especially common to expect from a knowledge service and worth being explicit about: **quality control over extracted facts**, and **write access over MCP**. Both are below.
+
+## Fact review workflow
+
+### What already exists
+
+- Every fact row carries a `status` (`draft`, `pending`, `approved`, `rejected`) with a CHECK constraint, indexed for queries — see [Database Schema — facts](./reference/database-schema#facts).
+- Facts are extracted during ingestion with confidence scores and source provenance (`fact_sources`: document + exact quote + extraction time).
+- **Only `approved` facts surface anywhere in read results** — search result expansion, entity dossiers, and related content all filter on `status = 'approved'`.
+
+That filter is live and documented in the [MCP Tools reference](./reference/mcp-tools).
+
+### What is not implemented
+
+There is **no review workflow**: no queue of `pending` facts, no MCP tools or UI to approve, reject, or re-extract facts, and no way to change a fact's status except by writing SQL. The status machinery (column, constraint, `approved`-only filtering) is in place in the schema, so read-side behavior is already safe — what's missing is the path that moves facts *into* `approved` deliberately.
+
+### Planned
+
+- **MCP write tools** — `approve_fact` (and the wider fact/entity management surface: reject, correct, re-extract). This is the P1 entry of the API gap analysis, and a prerequisite for managing knowledge-base quality from an agent instead of from the database.
+- **A review surface** — a lightweight UI or report that lists `pending` facts with their provenance (`fact_sources` quotes) and confidence, so a reviewer can decide per fact.
+- **Confidence thresholds** — making the auto-approve/pending/reject boundaries an explicit, documented, per-domain configuration rather than an ingestion detail (domain configs already carry per-domain confidence settings for entities).
+- **Re-extraction** — targeted re-run of fact extraction for a document or entity after ontologies or prompts change.
+
+## MCP API directions
+
+The current API is **read-only** (12 tools) — deliberately. The gap analysis below ranks the additions by priority (P1 = highest); each is scoped small enough to be its own task.
+
+| # | Feature | Priority | Size | Notes |
+|---|---|---|---|---|
+| 1 | **Write tools** (`approve_fact`, entity management) | P1 | L | New DB write path with transactions and index (FTS5/vec0) updates; prerequisite for KB quality control over MCP |
+| 2 | **MCP-level integration tests** | P1 | M | Automated regression: call tools over the wire, not just via Go handler tests; CI-integrated |
+| 3 | **Health/metrics over MCP** | P2 | S | `server_health`/`server_metrics` tool mirroring `GET /health` status, version, and KB counts |
+| 4 | **Similar chunks** | P2 | M | `similar_chunks(chunk_id)` — vector search around a given chunk's embedding for RAG context |
+| 5 | **Batch requests** | P2 | M | Multiple queries per call (batch search, batch get) to cut round-trips |
+| 6 | **Extended `search` filters** | P2 | M | Filter results by `source_type`, created/updated date, or associated entity |
+| 7 | **Score explainability** | P3 | S | Expose the lexical vs. semantic contribution per result — today the RRF score is a single opaque number |
+| 8 | **Cursor pagination for `search`** | P3 | M | Today `search` returns only `top_k` (≤ 100) results; cursor pagination for larger result sets |
+| 9 | **`list_domains` / `list_entity_types`** | P3 | S | Dedicated discovery tools instead of parsing `catalog_overview` |
+| 10 | **Server/API version in responses** | P3 | S | `server_version`/`api_version` metadata (or a `server_info` tool) for client compatibility checks |
+| 11 | **Streaming responses** | P3 | L | Stream large results (catalog pages, batch responses) instead of one full payload |
+
+Adjacent search-quality work: calibrating the RRF/reranker scoring so relevant and irrelevant chunks are measurably distinguishable (the control queries already defined in the API quality report), and exposing per-component timing (`traversal_time_ms` in `get_entity_relations` is currently always 0).
+
+## General directions
+
+- **More ingestion formats** — new parsers/chunkers are a first-class extension point (see [Extending Synopsis](./developer/extending)); candidates follow demand for the document formats the pipeline upstream produces.
+- **More embedding options** — more local ONNX models in the registry (see `model list` / `model benchmark`) and better `mode: api` provider coverage.
+- **Observability** — richer metrics (request metrics already power `/health`); structured logging is in place, per-tool and per-pipeline-stage instrumentation is not.
+- **Cross-domain linking quality** — the linkers (rule / equals / llm, with provenance) exist and are config-driven; refinement cycles on detection quality continue alongside the write tools, since linking management will land on the same write path.
+
+## What is explicitly out of scope
+
+Per the project vision, these are not on the roadmap:
+
+- **Full GraphRAG/KnowledgeRAG platform features** — community detection reports, graph summarization pipelines, autonomous multi-hop answering. Synopsis answers with structure and provenance; the agent reasons.
+- **Data cleaning / ETL** — input to the pipeline is assumed normalized; that work belongs upstream.
+
+## See also
+
+- [The Pipeline](./concepts/pipeline) — where Synopsis sits in your information pipeline
+- [MCP Tools](./reference/mcp-tools) — the complete read-only API as it exists today
+- [Database Schema](./reference/database-schema) — facts, statuses, and provenance tables

@@ -1,0 +1,173 @@
+/**
+ * synopsis[memex] — landing "how it works" section (FSD-WIDGETS-3).
+ * Rules moved verbatim from src/pages/index.module.css (2026-08-16); the page
+ * keeps its copies of `.wrap`, `.secTag`, `.display` and `.sectionLead` because
+ * sections that remain in index.tsx still consume them. These mirrors keep how
+ * rendering identical now; dedupe once every section is a widget (as done for
+ * Hero).
+ */
+
+/* ===== 4 · how it works ===== */
+
+.how {
+  padding: var(--section-pad) 0;
+  background: var(--bg-2);
+  border-top: var(--bw) solid var(--line);
+  border-bottom: var(--bw) solid var(--line);
+}
+
+.howGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap-2xl);
+  margin-top: var(--gap-2xl);
+}
+
+.howPanel {
+  background: var(--panel);
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 36px;
+}
+
+.howPanelHead {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  margin-bottom: var(--gap-lg);
+}
+
+.howBadge {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: var(--radius-circle);
+  background: var(--accent-soft);
+  border: var(--bw) solid var(--accent-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semi);
+  color: var(--accent);
+}
+
+.howPanelHead h3 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-semi);
+  font-size: var(--fs-h3);
+  letter-spacing: -0.01em;
+}
+
+.howSteps {
+  position: relative;
+  padding-left: 28px;
+}
+
+.howSteps::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: var(--bw);
+  background: var(--line-strong);
+}
+
+.howStep {
+  position: relative;
+  padding-bottom: var(--gap-lg);
+}
+
+.howStep:last-child {
+  padding-bottom: 0;
+}
+
+.howStep::before {
+  content: '';
+  position: absolute;
+  left: -33px;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+  background: var(--panel);
+  border: var(--bw-bold) solid var(--accent);
+  border-radius: var(--radius-circle);
+}
+
+.howStep h4 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-semi);
+  font-size: var(--fs-card-title);
+  margin-bottom: 6px;
+}
+
+.howStep p {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+/* ===== page-level rules mirrored into widget scope (FSD-WIDGETS-3) ===== */
+/* `.wrap` and the section header are still consumed by sections that remain in
+   index.tsx, so the page keeps its own copies. These mirrors keep how
+   rendering identical now; dedupe once every section is a widget (as done for
+   Hero). The grid only ever maps onto `.d2`, so that is the only delay step
+   mirrored here. */
+
+.wrap {
+  max-width: var(--wrap-max);
+  margin: 0 auto;
+  padding: 0 var(--pad-x);
+}
+
+.secTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secTag b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--ls-normal);
+  line-height: var(--lh-tight);
+  margin-bottom: 18px;
+}
+
+.sectionLead {
+  color: var(--muted);
+  max-width: var(--max-body);
+  font-size: var(--fs-lead);
+}
+
+.d2 { --reveal-delay: 0.16s; }
+
+@media (max-width: 1024px) {
+  .howGrid {
+    grid-template-columns: 1fr;
+    gap: var(--gap-xl);
+  }
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 var(--pad-x-narrow);
+  }
+
+  .howPanel {
+    padding: var(--gap-lg);
+  }
+}

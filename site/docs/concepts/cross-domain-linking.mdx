@@ -1,0 +1,96 @@
+---
+title: Cross-Domain Linking
+description: How the same entity is connected across domains — linking methods (expression / equals / llm), provenance, and when linking runs
+sidebar_position: 5
+---
+
+# Cross-Domain Linking
+
+The same real-world thing is often mentioned in several domains: a product appears in HR documents (compensation for product managers), in IT documents (the system itself), and in product documents (customer-facing materials). Each domain extracts its own entity for it — until linking says *these are the same* and connects them.
+
+Entity links are what allow the knowledge graph to **cross domain boundaries**: search stays domain-scoped, traversals cross only across explicit links, and every link carries the proof of how it was made.
+
+## Candidate pairs
+
+Linking considers pairs of entities that:
+
+- have the **same entity type** (e.g. both `product`), and
+- have the **same normalized name** (case and whitespace normalized), and
+- live in **different domains** (e.g. one in `hr`, one in `it`).
+
+Everything else is never linked — cross-domain linking never guesses across different types or different names.
+
+## Linking methods
+
+Three methods are available (configurable in priority order in the `<cross-domain-links>` block of `global.xml`). They run in the configured order, and **a pair already linked by an earlier method is skipped by later ones**, so link building is idempotent — re-running it never duplicates or overwrites links.
+
+| Method | What it does | Stored confidence |
+|--------|--------------|-------------------|
+| `expression` | **Rule-based**: evaluates CEL conditions from your configuration against each candidate pair (variables like `A.type`, `A.name`, `A.domain`, plus functions to inspect facts, chunks, and neighbors). Links every matching pair. | `1.0` |
+| `equals` | **Name matching**: exact match of normalized names, guarded by a minimum word count (default 2 words, so one-token names don't produce false matches). | `0.9` |
+| `llm` | **LLM-based identity resolution**: an OpenAI-compatible LLM decides whether the pair denotes the same entity, with context drawn from the entities' descriptions and their top source chunks. Links only when the model answers "same entity" **and** reports confidence at or above the threshold (default 0.7). Pairs are processed in batches (default 5) and decisions are cached in SQLite for determinism. | model-reported (must reach the threshold) |
+
+> **Naming note:** some Synopsis materials (including the `get_entity_links` tool description) refer to the rule-based method as "`rule`". The value actually stored in the database — and accepted in configuration — for that method is **`expression`**. Valid method values: `expression`, `equals`, `llm`.
+
+A typical configuration looks like this:
+
+```xml
+<cross-domain-links>
+    <!-- Methods, in priority order -->
+    <method>expression</method>
+    <method>equals</method>
+    <method>llm</method>
+
+    <equals>
+        <min-words>2</min-words>
+    </equals>
+
+    <!-- Rule-based expressions, evaluated per candidate pair -->
+    <expressions>
+        <expression>
+            <name>same-product</name>
+            <description>Link product entities with the same name between domains</description>
+            <priority>80</priority>
+            <where>A.type == 'product' &amp;&amp; A.type == B.type &amp;&amp; A.name == B.name</where>
+            <relation-type>same_entity</relation-type>
+        </expression>
+    </expressions>
+</cross-domain-links>
+```
+
+Each method that can set a custom relation type defaults to `same_entity`; an expression may override it.
+
+## Provenance
+
+Every stored link records **how it was made**:
+
+- **method** — `expression`, `equals`, or `llm`;
+- **confidence** — 1.0 for expression matches, 0.9 for equals matches, the model-reported value for llm links;
+- **evidence** — a human-readable explanation, truncated to 500 characters (e.g. `expression: same-product`, `equals: acme crm in hr and it`, or the LLM's reasoning).
+
+Links are stored **bidirectionally** (both A→B and B→A), so the connection is visible from either entity regardless of which domain it was found in.
+
+`get_entity_links` returns all links for an entity with this provenance intact — an agent can weigh a link, or simply ignore low-confidence LLM links, if it needs to.
+
+## When linking runs
+
+Linking is a **post step of the ingestion (sync) pipeline** — not a separate command:
+
+1. `sync` ingests all enabled sources (parse, chunk, embed, NER, entities, facts);
+2. orphan data is cleaned up;
+3. **link building runs** over all entities using the configured methods.
+
+It supports **incremental** mode: only entities created or changed since the last run (tracked by a timestamp in the database) are re-linked — their previous links are removed and rebuilt with current data. A full sync without a timestamp performs a full rebuild of all links. The file watcher during `serve` re-triggers this flow after re-indexing, so links stay consistent with the data.
+
+## Using links
+
+- **`get_entity_links`** — see the links and provenance for one entity.
+- **`get_entity_relations` with `include_cross_domain: true`** — include cross-domain neighbors in a graph traversal. The traversal may still only cross a boundary where an actual link exists between the current node and its neighbor; ordinary fact edges never do.
+- **`get_entity_dossier`** — includes the entity's cross-domain links alongside facts, sources, and related entities.
+
+## See also
+
+- [Domains](./domains.mdx) — the ontologies and the global pool that defines linking configuration
+- [Knowledge Graph](./knowledge-graph.mdx) — how links fit into traversal and dossiers
+- [The Pipeline](./pipeline.mdx) — where link building sits in the sync flow
+- [Quickstart](../quickstart.mdx) — run a first sync, which builds links as part of ingestion

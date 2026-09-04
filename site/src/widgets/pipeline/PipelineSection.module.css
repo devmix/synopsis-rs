@@ -1,0 +1,207 @@
+/**
+ * synopsis[memex] — landing pipeline section (FSD-WIDGETS-3).
+ * Rules moved verbatim from src/pages/index.module.css (2026-08-16); the page
+ * keeps its copies of `.wrap`, `.secTag`, `.display`, `.sectionLead`, `.d1–.d3`
+ * and `.chipRow/.chip` because sections that remain in index.tsx still consume
+ * them. These mirrors keep pipeline rendering identical now; dedupe once every
+ * section is a widget (as done for Hero).
+ */
+
+/* ===== 2 · pipeline (accordion, v5) ===== */
+
+.pipeline {
+  padding: var(--section-pad) 0 var(--section-pad-sm);
+}
+
+.capList {
+  margin-top: var(--gap-2xl);
+  border-top: var(--bw) solid var(--line);
+}
+
+.cap {
+  border-bottom: var(--bw) solid var(--line);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.cap:hover {
+  background: var(--row-hover);
+}
+
+.capHead {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto 46px;
+  align-items: center;
+  gap: var(--gap-lg);
+  padding: 30px 8px;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.capNum {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--muted);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.cap:hover .capNum,
+.capOpen .capNum {
+  color: var(--accent);
+}
+
+.capTitle {
+  font-family: var(--font-display);
+  font-weight: var(--fw-semi);
+  font-size: var(--fs-h3);
+  letter-spacing: -0.01em;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.cap:hover .capTitle {
+  transform: translateX(8px);
+}
+
+.capTags {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  color: var(--muted);
+  letter-spacing: var(--ls-mono);
+  display: none;
+}
+
+.capIcon {
+  width: 34px;
+  height: 34px;
+  border: var(--bw) solid var(--line-strong);
+  border-radius: var(--radius-circle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  color: var(--muted);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.capOpen .capIcon {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  transform: rotate(45deg);
+}
+
+.capBody {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.capInner {
+  padding: 0 8px 34px 110px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--gap-lg);
+  align-items: start;
+}
+
+.capInner p {
+  color: var(--muted);
+  max-width: 560px;
+  font-size: var(--fs-sm);
+}
+
+@media (min-width: 900px) {
+  .capTags {
+    display: block;
+  }
+}
+
+/* ===== page-level rules mirrored into widget scope (FSD-WIDGETS-3) ===== */
+/* `.wrap`, the section header, reveal delays and chips are still consumed by
+   sections that remain in index.tsx, so the page keeps its own copies. These
+   mirrors keep pipeline rendering identical now; dedupe once every section is
+   a widget (as done for Hero). The `.wrap` mirror includes the page's
+   ≤720px padding override so mobile spacing stays byte-identical. */
+
+.wrap {
+  max-width: var(--wrap-max);
+  margin: 0 auto;
+  padding: 0 var(--pad-x);
+}
+
+.secTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secTag b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--ls-normal);
+  line-height: var(--lh-tight);
+  margin-bottom: 18px;
+}
+
+.sectionLead {
+  color: var(--muted);
+  max-width: var(--max-body);
+  font-size: var(--fs-lead);
+}
+
+.d1 { --reveal-delay: 0.08s; }
+.d2 { --reveal-delay: 0.16s; }
+.d3 { --reveal-delay: 0.24s; }
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-xs);
+}
+
+.chip {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  padding: 6px 12px;
+  border: var(--bw) solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 var(--pad-x-narrow);
+  }
+
+  .capHead {
+    grid-template-columns: 70px minmax(0, 1fr) 46px;
+    gap: var(--gap-md);
+    padding: var(--gap-lg) 4px;
+  }
+
+  .capInner {
+    padding: 0 4px 28px 78px;
+  }
+}

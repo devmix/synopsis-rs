@@ -1,0 +1,80 @@
+---
+title: MCP Tools
+description: Overview of the 12 MCP tools exposed by Synopsis — transport, endpoints, and the full tool inventory
+sidebar_position: 4
+---
+
+# MCP Tools
+
+Synopsis exposes its knowledge base to AI agents through **12 MCP (Model Context Protocol) tools** served over HTTP using the **SSE transport**. The server is started by `synopsis serve` (see [CLI Reference](../cli.mdx#serve)) and identified by `server.name` / `server.version` (defaults `synopsis` / `0.1.0-dev`).
+
+## Transport and endpoints
+
+```
+MCP Client  ←── HTTP (SSE) ─── synopsis serve
+```
+
+| Endpoint | Description |
+|---|---|
+| `GET /sse` | SSE transport endpoint — the client opens an EventSource here and receives events, including the session endpoint URL with a `sessionId` |
+| `POST /message?sessionId=...` | JSON-RPC 2.0 messages (`tools/list`, `tools/call`, …); responses arrive on the SSE stream, not in the HTTP response |
+| `GET /health` | JSON health status: `status` (`healthy` / `degraded` / `unhealthy`), `uptime`, `metrics` (total/failed requests, success rate, last request time), and `components` (database, searcher, graph) |
+
+The listen address is `server.host:server.port` (default `0.0.0.0:8080`). A typical session:
+
+1. Client connects to `GET /sse` and receives a session event naming the `sessionId`.
+2. The client sends JSON-RPC requests to `POST /message?sessionId=...`.
+3. Each response (e.g. `tools/call` result) is delivered as an event on the open SSE stream.
+
+Example `tools/call` request:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "search",
+    "arguments": {"query": "vacation policy"}
+  },
+  "jsonrpc": "2.0",
+  "id": 1
+}
+```
+
+The full tool schemas are advertised by `tools/list`. Tool errors are returned in-band as `isError` results (JSON-RPC method errors only for protocol-level problems).
+
+## Tool inventory
+
+| # | Tool | Group | Summary |
+|---|---|---|---|
+| 1 | [`search`](./search) | Discovery | Hybrid lexical (FTS5/BM25) + semantic (vector) search with RRF fusion, reranking, and graph expansion |
+| 2 | [`catalog_overview`](./catalog-overview) | Discovery | Aggregate knowledge base statistics (counts, domains, entity types, graph size) |
+| 3 | [`catalog_documents`](./catalog-documents) | Catalog | List documents with cursor pagination and filters (domain, source type, name) |
+| 4 | [`catalog_entities`](./catalog-entities) | Catalog | List entities with cursor pagination and filters (type, domain, name) |
+| 5 | [`search_entities_by_type`](./search-entities-by-type) | Catalog | Search entities of a given type with pagination |
+| 6 | [`search_facts`](./search-facts) | Catalog | Search facts by predicate, entity name, status, and domain |
+| 7 | [`get_document_context`](./get-document-context) | Retrieval | Full document context: metadata, chunks with offsets, entities, fact IDs |
+| 8 | [`get_chunk_by_id`](./get-chunk-by-id) | Retrieval | A single chunk with full text, offsets, document metadata, and entities |
+| 9 | [`get_fact_by_id`](./get-fact-by-id) | Retrieval | A single fact with subject/object entities and source quotes |
+| 10 | [`get_entity_dossier`](./get-entity-dossier) | Graph | Complete entity dossier: approved facts, sources, related entities, cross-domain links |
+| 11 | [`get_entity_relations`](./get-entity-relations) | Graph | BFS traversal of the knowledge graph from an entity |
+| 12 | [`get_entity_links`](./get-entity-links) | Graph | Cross-domain entity links with provenance (method, confidence, evidence) |
+
+Each tool has its own page with the parameter table, a request example, the response format, and error conditions.
+
+## Common conventions
+
+- **Predicates as strings.** Database IDs (`document_id`, `chunk_id`, `fact_id`, `entity_id`) are accepted as **strings** containing integers (e.g. `"document_id": "42"`).
+- **Entity lookups.** Graph tools accept `entity_id` **or** `entity_name` (exactly one; `domain` disambiguates by name).
+- **Cursor pagination.** Catalog/search tools paginate with a base64 `cursor` (omit or pass empty to start) and `page_size` (1–200, default 20).
+- **Domain filter.** A `domain` parameter (e.g. `hr`, `product`) filters results; empty or omitted means all domains. An unknown domain yields a `warning` field rather than an error (for `search`).
+- **Approved facts only.** Facts appear in search expansion, dossiers, and related-content only when their status is `approved` (see [Database Schema](../database-schema.mdx#facts)).
+- **Graph availability.** `get_entity_relations` returns an error if the in-memory knowledge graph is unavailable (graph disabled or not loaded); the other tools do not require the graph.
+
+## See also
+
+- [Quickstart](../../quickstart.mdx) — first `search` call in five minutes
+- [Searching](../../guides/searching.mdx) — how to use `search` effectively (filters, reranking, graph expansion)
+- [Hybrid Search](../../concepts/hybrid-search.mdx) — the fusion algorithm behind `search`
+- [Knowledge Graph](../../concepts/knowledge-graph.mdx) — entities, facts, relations, and BFS traversal
+- [Cross-Domain Linking](../../concepts/cross-domain-linking.mdx) — how `entity_links` are built
+- [MCP specification](https://modelcontextprotocol.io) — the protocol itself

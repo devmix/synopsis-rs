@@ -1,0 +1,131 @@
+---
+title: 'get_entity_relations'
+description: BFS traversal of the knowledge graph from an entity — connected nodes, edges with relation types, counters, and optional cross-domain link provenance
+sidebar_position: 15
+---
+
+# `get_entity_relations`
+
+Traverses the in-memory knowledge graph from a given entity using breadth-first search and returns the connected nodes and edges with relation types, directions, and domains. Set `include_cross_domain: true` to let the traversal cross domain boundaries through entity links; crossed edges then carry their link provenance (`method`, `confidence`, `evidence`) in `metadata`.
+
+**This tool requires the in-memory graph.** If the graph is disabled or not loaded yet, the tool returns an error up front; no other tool has this requirement. See [Knowledge Graph — The in-memory graph](../../concepts/knowledge-graph.mdx#the-in-memory-graph).
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | string | one of two | — | Entity predicate, as a string (e.g. `"100"`). Provide **either** this or `entity_name`, not both. |
+| `entity_name` | string | one of two | — | Entity name, case-insensitive exact match. Provide **either** this or `entity_id`, not both. |
+| `domain` | string | no | all | Used with `entity_name` to disambiguate when several entities share a name (e.g. `hr`). Case-insensitive. |
+| `depth` | number | no | `2` | Maximum BFS depth. Clamped to 1–10: out-of-range values are clamped, not an error. |
+| `include_cross_domain` | boolean | no | `false` | Follow cross-domain entity links during traversal and expose their provenance on the crossed edges. |
+
+Traversal goes in both directions (outgoing and incoming facts). By default it stays inside the center entity's domain; when `include_cross_domain` is enabled, a neighbor in another domain is reachable **only** through an entity link between the two. The traversal is capped at 1000 nodes.
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_entity_relations",
+    "arguments": {
+      "entity_name": "Alice",
+      "domain": "hr",
+      "depth": 3,
+      "include_cross_domain": true
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `center_entity` | object | The traversal start entity (`id`, `name`, `type`, `domain`). |
+| `Nodes` | array | Connected entity nodes, **excluding the center entity** (it is reported in `center_entity`). |
+| `Nodes[].id` | int | Entity predicate. |
+| `Nodes[].name` | string | Entity name. |
+| `Nodes[].type` | string | Entity type. |
+| `Nodes[].domain` | string | Entity domain. Omitted when empty. |
+| `Edges` | array | Traversed edges — facts, plus cross-domain links when they were followed. Each edge is the one that led to a newly visited node, so `total_edges` ≤ `total_nodes`. |
+| `Edges[].source_id` / `Edges[].target_id` | int | Node predicates. |
+| `Edges[].source_name` / `Edges[].target_name` | string | Resolved node names. |
+| `Edges[].relation_type` | string | Fact predicate (e.g. `manages`), or a link relation type (e.g. `same_entity`) for a cross-domain link. |
+| `Edges[].domain` | string | The edge's domain. Omitted when empty (cross-domain link edges carry no domain). |
+| `Edges[].metadata` | object | Present only when `include_cross_domain` is true and the edge is an entity link: `{ "method": "…", "confidence": 0.98, "evidence": "…" }`, with `evidence` omitted when not recorded. |
+| `total_nodes` | int | Number of returned nodes (**excluding the center**). |
+| `total_edges` | int | Number of returned edges. |
+| `traversal_depth` | int | Depth actually used (after clamping). |
+| `traversal_time_ms` | int | Traversal duration in milliseconds. |
+
+> **Note:** the JSON keys `Nodes` and `Edges` are uppercase, unlike every other field in this response (the Go struct fields carry no JSON tag yet). Parsers must match them as-is.
+
+Example:
+
+```json
+{
+  "center_entity": { "id": 100, "name": "Alice", "type": "employee", "domain": "hr" },
+  "Nodes": [
+    { "id": 112, "name": "API Gateway", "type": "system", "domain": "product" },
+    { "id": 95, "name": "Engineering", "type": "department", "domain": "hr" }
+  ],
+  "Edges": [
+    {
+      "source_id": 100,
+      "target_id": 112,
+      "source_name": "Alice",
+      "target_name": "API Gateway",
+      "relation_type": "manages",
+      "domain": "hr"
+    },
+    {
+      "source_id": 100,
+      "target_id": 112,
+      "source_name": "Alice",
+      "target_name": "API Gateway",
+      "relation_type": "same_entity",
+      "metadata": { "method": "equals", "confidence": 0.98 }
+    },
+    {
+      "source_id": 100,
+      "target_id": 95,
+      "source_name": "Alice",
+      "target_name": "Engineering",
+      "relation_type": "works_in",
+      "domain": "hr"
+    }
+  ],
+  "total_nodes": 2,
+  "total_edges": 3,
+  "traversal_depth": 3,
+  "traversal_time_ms": 4
+}
+```
+
+## Error conditions
+
+Entity resolution is shared with the other graph tools:
+
+| Condition | Result |
+|---|---|
+| In-memory graph unavailable (disabled or not loaded) | `isError` result: `Knowledge graph is not available (disabled or not loaded yet)` |
+| Neither `entity_id` nor `entity_name` provided | `isError` result: `Error: either 'entity_id' or 'entity_name' must be provided` |
+| Both provided | `isError` result: `Error: provide either 'entity_id' or 'entity_name', not both` |
+| `entity_id` is not an integer string | `isError` result: `Error: 'entity_id' must be an integer, got "…"` |
+| Entity not found (by predicate or name) | `isError` result: `Entity Predicate … not found`, `Entity "…" not found. Check spelling.`, or the ambiguity message (see [get_entity_dossier](./get-entity-dossier#error-conditions)) |
+| Entity exists in the database but has no graph node | `isError` result: `Entity Predicate … not found in graph` |
+| BFS failure or context timeout | `isError` result: `Error during BFS traversal: …` |
+
+An entity with no neighbors is a **success**: `Nodes` and `Edges` are empty arrays with `total_nodes: 0`, `total_edges: 0`.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [get_entity_dossier](./get-entity-dossier) — facts and sources around the same entity
+- [Knowledge Graph](../../concepts/knowledge-graph.mdx#bfs-traversal) — how BFS traversal works
+- [Cross-Domain Linking](../../concepts/cross-domain-linking.mdx) — what the crossed links carry
+- [Configuration — `graph`](../../guides/configuration.mdx#graph) — enabling the in-memory graph

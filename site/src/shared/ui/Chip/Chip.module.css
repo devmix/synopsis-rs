@@ -1,0 +1,15 @@
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-xs);
+}
+
+.chip {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  padding: 6px 12px;
+  border: var(--bw) solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  white-space: nowrap;
+}

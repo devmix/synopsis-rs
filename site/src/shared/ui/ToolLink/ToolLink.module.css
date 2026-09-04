@@ -1,0 +1,12 @@
+.toolLink {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-mono);
+  color: var(--accent);
+  align-self: flex-start;
+}
+
+.toolLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

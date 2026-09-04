@@ -1,0 +1,117 @@
+---
+title: Docker
+description: Dockerfile overview, building and running the Synopsis container for sync and serve, volume mounts, and docker-compose
+sidebar_position: 8
+---
+
+# Docker
+
+Synopsis ships a single-binary, multi-stage `Dockerfile` — the container is just another way to run the same `synopsis` binary, with `/app/data` as the state directory.
+
+## The image
+
+| Stage | Base | What it does |
+|---|---|---|
+| `builder` | `golang:1.25.5-alpine` | adds `git gcc musl-dev`, `go mod download` (cached layer), then builds with `CGO_ENABLED=1` and the `TARGETOS`/`TARGETARCH` build args — so `docker buildx` can cross-build other architectures |
+| runtime | `alpine:3.21` | `ca-certificates` + `sqlite-libs`; copies the binary to `/app/synopsis`; creates `/app/data`, `/app/workspace`, `/app/models`; `EXPOSE 8080` |
+
+Default entrypoint:
+
+```
+ENTRYPOINT ["/app/synopsis"]
+CMD ["--config", "/app/configs/config.default.yaml", "serve"]
+```
+
+## Volume mounts
+
+The container is stateless by design — everything persistent lives on mounted volumes:
+
+| Container path | Purpose | Mount from |
+|---|---|---|
+| `/app/configs` | `config.default.yaml` (and any `config.*.yaml` preset) | `./configs` (read-only is fine) |
+| `/app/data` | SQLite database (`knowledge.db`, `cache.db`), downloaded models, ontology (`data/ontology/`) | `./data` |
+| `/app/workspace` | source documents to ingest | your documents directory |
+
+`/app/models` also exists inside the image, but models are written under `<paths.data_dir>/models` — with the default config that is `/app/data/models`, so the `./data` mount covers model persistence.
+
+## Build
+
+```bash
+docker build -t synopsis .
+```
+
+Cross-architecture build (uses the `TARGETOS`/`TARGETARCH` args in the Dockerfile):
+
+```bash
+docker buildx build --platform linux/arm64 -t synopsis:arm64 .
+```
+
+## Run: sync (batch ingestion)
+
+```bash
+docker run --rm \
+  -v $(pwd)/configs:/app/configs:ro \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/workspace:/app/workspace \
+  synopsis --config /app/configs/config.default.yaml sync
+```
+
+The container ingests everything under `/app/workspace` into `/app/data/knowledge.db` and exits. First run downloads the local embedding model into `/app/data/models/` — that state survives in the `./data` volume.
+
+## Run: MCP server
+
+```bash
+docker run --rm \
+  -p 8080:8080 \
+  -v $(pwd)/configs:/app/configs:ro \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/workspace:/app/workspace \
+  synopsis --config /app/configs/config.default.yaml serve
+```
+
+Then:
+
+- health check: `curl http://localhost:8080/health`
+- MCP clients connect to `http://<host>:8080/sse` — see [MCP Tools](../reference/mcp-tools) for the endpoints and a worked `tools/call` example
+- per the default config, `serve` also runs an initial source scan on startup (`auto_update.initial_sync: true`); pass `--no-initial-sync` to skip it
+
+If you mount the documents somewhere else, remember the ingestion sources are configured relative to the container's working directory (`/app`) — keep the mount consistent with `paths` in your config.
+
+## docker-compose
+
+`docker-compose.yml` defines the running server out of the box:
+
+```yaml
+services:
+  synopsis:
+    build: { context: ., dockerfile: Dockerfile }
+    container_name: synopsis-rag
+    restart: unless-stopped
+    ports: ["8080:8080"]
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data
+    environment: [TZ=UTC]
+  # optional: Ollama service for API-based embeddings / LLM NER (commented out)
+```
+
+```bash
+docker compose up --build      # build + start the server on :8080
+docker compose logs -f synopsis-rag
+```
+
+The compose file mounts `./configs` and `./data` but not a documents directory — add a `./<docs>:/app/workspace`-style volume (or adjust your config's `paths`) for your sources. The commented-out `ollama` service exists for environments that use `mode: api` embeddings or LLM-based NER/linking; uncomment it and point the relevant config values at `http://ollama:11434/v1`.
+
+## Notes and gotchas
+
+- **CGO binary, small image** — the Go toolchain only lives in the build stage; the runtime image is a stripped Alpine with the static binary and `sqlite-libs`.
+- **Network on first run** — the embedding model and (if needed) the ONNX Runtime library are auto-downloaded into `/app/data`; afterwards the service runs fully offline.
+- **Dimension mismatch** behaves the same as on the host: if the configured model disagrees with the existing database, `sync`/`serve` fail unless you pass `--auto-rebuild-vectors` — or wipe the volume's database and re-sync. See [Troubleshooting](../guides/troubleshooting#embedding-dimension-mismatch).
+- **Port conflicts** — the server binds `server.host:server.port` (default `0.0.0.0:8080`); override with the `serve --port N` flag in the `docker run` command.
+
+## See also
+
+- [Installation](../guides/installation) — build/Docker from a user's perspective
+- [Development Setup](./setup) — native builds and cross-compilation
+- [CLI Reference](../reference/cli) — the flags used in the commands above
+- [Configuration](../guides/configuration) — the config file mounted at `/app/configs`

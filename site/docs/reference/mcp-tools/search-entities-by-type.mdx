@@ -1,0 +1,91 @@
+---
+title: 'search_entities_by_type'
+description: List entities of one type (required) with cursor pagination and an optional domain filter
+sidebar_position: 9
+---
+
+# `search_entities_by_type`
+
+Returns all entities of a given **type**, with cursor-based pagination and an optional domain filter. The response shape is identical to [catalog_entities](./catalog-entities); use this tool when you know the type you want (e.g. every `policy` in the KB) rather than browsing the full entity catalog.
+
+:::note
+The type must be known in advance. Use [catalog_overview](./catalog-overview) → `entity_types` to discover what types exist.
+:::
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_type` | string | **yes** | — | The entity type to list (exact match, e.g. `employee`, `department`, `policy`). |
+| `domain` | string | no | all | Exact match on the entity's domain (e.g. `hr`, `product`). |
+| `page_size` | number | no | `20` | Items per page (1–200). Out-of-range values fall back to the default `20`. |
+| `cursor` | string | no | — | Base64-encoded pagination cursor; pass `next_cursor` from a previous response to continue. Omit or pass empty to start from the beginning. |
+
+Results are ordered by entity ID (ascending).
+
+## Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "search_entities_by_type",
+    "arguments": {
+      "entity_type": "policy",
+      "domain": "hr"
+    }
+  }
+}
+```
+
+## Response
+
+| Field | Type | Description |
+|---|---|---|
+| `entities` | array | Entity entries for this page — same fields as [catalog_entities](./catalog-entities): `id`, `name`, `type`, `domain`, and optional `description`, `confidence`, `metadata`. |
+| `total_count` | int | Total number of entities of the given type (filtered by domain) across all pages. |
+| `next_cursor` | string | Cursor for the next page; **omitted on the last page**. |
+
+Example:
+
+```json
+{
+  "entities": [
+    {
+      "id": 201,
+      "name": "Vacation Policy",
+      "type": "policy",
+      "domain": "hr",
+      "confidence": 0.98
+    },
+    {
+      "id": 214,
+      "name": "Anti-Harassment Policy",
+      "type": "policy",
+      "domain": "hr"
+    }
+  ],
+  "total_count": 7,
+  "next_cursor": "eyJvZmZzZXQiOjIwLCJsaW1pdCI6MjB9"
+}
+```
+
+## Error conditions
+
+| Condition | Result |
+|---|---|
+| `entity_type` missing or empty | `isError` result: `Error: 'entity_type' argument is required and must not be empty` |
+| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `Error decoding cursor: …` |
+| `page_size` outside 1–200 | **Not an error** — silently falls back to the default `20` |
+| Database failure | `isError` result: `Error listing entities: …` |
+
+A type that does not exist in the knowledge base is a **success** with an empty `entities` array and `total_count: 0` — there is no unknown-type error.
+
+## See also
+
+- [MCP Tools](./index.mdx) — transport, endpoints, and the full inventory
+- [catalog_entities](./catalog-entities) — browse all types at once
+- [catalog_overview](./catalog-overview) — discover available types via `entity_types`
+- [Knowledge Graph](../../concepts/knowledge-graph.mdx) — entities and their types

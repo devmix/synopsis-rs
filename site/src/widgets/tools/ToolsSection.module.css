@@ -1,0 +1,158 @@
+/**
+  * synopsis[memex] — landing mcp tools section (FSD-WIDGETS-4).
+  * Rules moved verbatim from src/pages/index.module.css (2026-08-16); the page
+  * drops these rules for good because no section remains in index.tsx after
+  * this batch — its module keeps only the .page/.noise shell. The `.wrap`,
+  * section header and reveal-delay mirrors below keep tools rendering identical;
+  * other widgets carry their own copies (no cross-widget imports).
+  */
+
+/* ===== 6 · mcp tools ===== */
+
+.tools {
+  background: var(--bg-2);
+  border-top: var(--bw) solid var(--line);
+  border-bottom: var(--bw) solid var(--line);
+  padding: var(--section-pad) 0;
+}
+
+.toolsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--gap-md);
+  margin-top: var(--gap-2xl);
+}
+
+.toolCard {
+  background: var(--panel);
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 148px;
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+
+.toolCard:hover {
+  border-color: var(--accent-border);
+  transform: translateY(-3px);
+}
+
+.toolTop {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-sm);
+}
+
+.toolIdx {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  color: var(--muted);
+}
+
+.toolCat {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  color: var(--muted);
+  letter-spacing: var(--ls-mono);
+  text-transform: uppercase;
+}
+
+.toolName {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  font-weight: var(--fw-med);
+  color: var(--text);
+  word-break: break-word;
+}
+
+.toolCard:hover .toolName {
+  color: var(--accent);
+}
+
+.toolDesc {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  flex: 1;
+}
+
+.toolLink {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-mono);
+  color: var(--accent);
+  align-self: flex-start;
+}
+
+.toolLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ===== page-level rules mirrored into widget scope (FSD-WIDGETS-4) ===== */
+/* The grid only ever maps onto `.d1`/`.d2` (`i % 3`), so those are the only
+   delay steps mirrored here. The `.wrap` mirror includes the page’s ≤720px
+   padding override so mobile spacing stays byte-identical. */
+
+.wrap {
+  max-width: var(--wrap-max);
+  margin: 0 auto;
+  padding: 0 var(--pad-x);
+}
+
+.secTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: var(--ls-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secTag b {
+  color: var(--accent);
+  font-weight: var(--fw-med);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--ls-normal);
+  line-height: var(--lh-tight);
+  margin-bottom: 18px;
+}
+
+.sectionLead {
+  color: var(--muted);
+  max-width: var(--max-body);
+  font-size: var(--fs-lead);
+}
+
+.d1 { --reveal-delay: 0.08s; }
+.d2 { --reveal-delay: 0.16s; }
+
+/* ===== responsive (moved from the page) ===== */
+
+@media (max-width: 1024px) {
+  .toolsGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 var(--pad-x-narrow);
+  }
+
+  .toolsGrid {
+    grid-template-columns: 1fr;
+  }
+}

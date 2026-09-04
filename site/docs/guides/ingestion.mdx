@@ -1,0 +1,153 @@
+---
+title: Ingestion
+description: Running the sync pipeline, supported source formats and parsers, chunking strategies, NER, entity dedup, and auto-updates
+sidebar_position: 3
+---
+
+# Ingestion
+
+Ingestion is the "processing" stage of the [pipeline](../concepts/pipeline.mdx): documents are parsed, chunked, embedded, enriched with entities and facts, and indexed for hybrid search. You trigger it explicitly with `sync`, and `serve` keeps it current with a file watcher.
+
+## Running the sync pipeline
+
+```bash
+make sync
+```
+
+This builds (if needed) and runs:
+
+```bash
+./bin/synopsis --config configs/config.default.yaml sync
+```
+
+`sync` processes every enabled source, exits, and is the right tool for a one-shot import (or a CI job). The incremental behavior:
+
+- **Unchanged documents are skipped** — deduplication is content-hash based, so re-running `sync` is cheap.
+- **Changed documents are re-indexed** (chunks, embeddings, entities, and facts are refreshed).
+- **Orphaned data is cleaned up** — entities, facts, and vectors belonging to documents that disappeared from the sources are removed.
+- **Cross-domain entity links are built** after ingestion (see [Cross-Domain Linking](../concepts/cross-domain-linking.mdx)).
+
+Useful flags:
+
+| Flag                      | Effect                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------ |
+| `--rebuild`               | Clear **all** existing data before re-indexing (also: `make rebuild`)                       |
+| `--auto-rebuild-vectors`  | If the stored vector dimension no longer matches the configured model, re-embed all chunks instead of failing |
+
+```bash
+./bin/synopsis --config configs/config.default.yaml sync --rebuild
+./bin/synopsis --config configs/config.default.yaml sync --auto-rebuild-vectors
+```
+
+A full rebuild is the escape hatch for any ingestion oddity: it guarantees a clean, consistent database.
+
+## Declaring sources
+
+Sources are declared in the ontology's `global.xml` (path `paths.global_config_path`, default `data/ontology/global.xml`):
+
+```xml
+<sources>
+    <source path="./data/storage/edtech/documents/hr" type="markdown">
+        <domains>
+            <domain>hr</domain>
+        </domains>
+    </source>
+    <source path="./data/storage/edtech/site/api.example.com" type="webpages">
+        <domains>
+            <domain>it</domain>
+        </domains>
+    </source>
+</sources>
+```
+
+- `path` — directory to scan (recursively), relative to the working directory.
+- `type` — source type: `markdown`, `json`, `mediawiki`, `unstructured`, or `webpages`. If omitted, it is inferred from the path name (paths containing `wiki`/`mediawiki` → `mediawiki`, `webpage` → `webpages`, otherwise `unstructured`).
+- `domains` — the domain(s) stamped onto every document from this source; this is what the `domain` filter in search matches against. See [Domains](../concepts/domains.mdx).
+
+A source can be disabled with the `disabled` attribute.
+
+## Supported formats
+
+Parsers walk a source directory and recognize files by extension:
+
+| Format | Files | How it is handled |
+| ------ | ----- | ----------------- |
+| Markdown | `.md` | Read as-is (recursive walk) |
+| JSON | `.json` | Parsed JSON objects; `ingestion.chunking.json.text_fields` selects which fields carry text |
+| MediaWiki | `.json` | Wiki-dataset layout: `space/wiki-type/by-type/entity-type/page.json` files with page JSON (title, wikitext, …); an optional `graph.json` contributes relations into document metadata |
+| Web page dataset | `.md`, `.html` | Files are grouped by page name per directory; `.md` is preferred, standalone `.html` is converted to Markdown (CommonMark) |
+| Unstructured | `.md` | Markdown grouped by ATX section headings; images referenced alongside a document are associated with it |
+
+All parsers skip `.git`, `node_modules`, and similar directories. Parse errors are logged and do not abort the run — other files in the source are still ingested.
+
+## Chunking
+
+### Markdown
+
+Configured under `ingestion.chunking.markdown`; the `strategy` picks the algorithm:
+
+| Strategy  | Behavior                                                                      |
+| --------- | ----------------------------------------------------------------------------- |
+| `headers` | Split at heading boundaries (h1–h6); each section becomes one chunk, however long       |
+| `fixed`   | No split by structure: fixed-size blocks of `max_chunk_size` with `overlap_size` overlap |
+| `hybrid`  | Header-based split first; sections larger than `max_chunk_size` are further split by the fixed algorithm (default in `config.default.yaml`) |
+
+Each section chunk is annotated with its heading (`section_title`, `heading_level`) and a breadcrumb of the heading hierarchy; in hybrid mode, `min_section_size` (when set above 0) enables the fixed-size re-split of oversized sections, and `overlap_size` keeps context across chunk borders.
+
+### JSON
+
+`ingestion.chunking.json` lists the object fields that contain text (`text_fields`, e.g. `title`, `description`, `details`; empty means all string fields) and how they become chunks:
+
+- `combine_fields: true` — all matching fields are merged into a **single chunk per object**, rendered as `**field**: value` lines.
+- `combine_fields: false` — **one chunk per field**, with the field name recorded in chunk metadata.
+
+If none of the configured fields match, the chunker falls back to all string fields of the object; an object with no string content at all produces no chunk. JSON arrays produce one (or more) chunk per array item.
+
+## Entity extraction (NER)
+
+Two providers run in sequence over every chunk, and their results are merged into one composite set:
+
+1. **LLM provider** (`ingestion.ner.llm`) — an OpenAI-compatible endpoint extracts entities (and facts) from the text. It is cached: repeated extractions of identical text hit the cache instead of the API. `response_format` selects `json_schema` (full JSON Schema in the request body) or `json_object` (example in the prompt) depending on API support.
+2. **Prose provider** (`ingestion.ner.prose`) — fully offline part-of-speech and NER tagging (with optional custom regex patterns and entity types). Entities below `min_confidence` (per type, e.g. `location_min_confidence`) are dropped. Note: general-purpose prose NER is trained on news text and misclassifies domain jargon (e.g. HR terms as locations) — for domain-heavy corpora the LLM provider or rule-based extraction gives better results.
+
+Extraction also respects per-domain auto-publish thresholds from the domain XML: entities below a domain's threshold are not published to the graph.
+
+The LLM endpoint is the same OpenAI-compatible interface as the embedding API (`base_url`, `api_key`, `model_name`, `temperature`, `seed`, `max_tokens`, `timeout_ms`, `max_retries`). To disable LLM extraction, raise the LLM provider's configuration accordingly or rely on the prose provider alone.
+
+## Entity deduplication
+
+Extracted entity names are normalized and compared for similarity with a **Jaro-Winkler** distance. Names scoring at or above `ingestion.resolver.similarity_threshold` (default **0.85**) are treated as the same entity and merged onto a single canonical record, so "DevOps Team", "devops-team", and "DevOps Team " do not fragment the graph.
+
+## Auto-update in serve mode
+
+`serve` keeps the knowledge base fresh without re-running `sync` (`auto_update` config section):
+
+- **Initial sync** — on startup, a full source scan runs (`initial_sync: true`, skipped with `--no-initial-sync`).
+- **File watcher** — source directories are watched recursively (fsnotify); changed files trigger an incremental re-index of the affected documents after a debounce (`debounce_seconds`, default 1 second).
+- `enabled` and `watch_sources` toggle the behavior.
+
+## End-to-end overview
+
+```
+source directory (global.xml)
+        │  parse by extension
+        ▼
+document (+ domain tags, metadata)
+        │  chunk (header/fixed/hybrid | json fields)
+        ▼
+chunks
+        │  embed (local ONNX or API) + NER (LLM + prose)
+        ▼
+chunks + entities + facts  →  entity dedup (Jaro-Winkler 0.85)
+        │  index (FTS5 + vec0), graph edges
+        ▼
+hybrid search index  →  MCP tools
+```
+
+The output side — querying this index with domain filters, reranking rules, and graph expansion — is covered in [Searching](./searching.mdx).
+
+## What's next
+
+- [Searching](./searching.mdx) — query what you just ingested
+- [Configuration](./configuration.mdx#ingestion) — every ingestion knob
+- [Troubleshooting](./troubleshooting.mdx) — when ingestion or vector rebuilds misbehave

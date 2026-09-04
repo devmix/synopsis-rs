@@ -1,0 +1,42 @@
+---
+title: Introduction
+description: What Synopsis is and where it fits in your AI agent pipeline
+sidebar_position: 1
+---
+
+# Introduction
+
+**Synopsis** is a zero-infrastructure service that provides **structured information to AI agents via MCP** (Model Context Protocol). It runs as a single Go binary backed by a single SQLite file — no external service, no cluster, nothing to operate.
+
+## Where Synopsis fits
+
+Synopsis is **one stage of a larger information pipeline**, not a standalone assistant. Upstream, raw data is cleaned and normalized; downstream, an AI agent does the reasoning. Everything in between — from normalized documents to MCP tools — belongs to Synopsis:
+
+![Synopsis architecture](/img/architecture.svg)
+
+- **Upstream (outside Synopsis)** — documents are cleaned and normalized to a unified format (Markdown, JSON, MediaWiki, HTML) and tagged with domains before they reach Synopsis
+- **Inside Synopsis** — parse → chunk → embed → NER → entities → facts → knowledge graph + hybrid search index; post steps: orphan cleanup and cross-domain linking. One Go binary, one SQLite file, then served as 12 MCP tools over HTTP/SSE with full provenance
+- **Downstream (outside Synopsis)** — AI agents (Claude, Cursor, any MCP client) call the MCP tools to retrieve chunks, entities, facts, and graph neighborhoods; the agent does the reasoning
+
+Each stage in detail: [The Pipeline](./concepts/pipeline.mdx).
+
+## Key capabilities
+
+- **Hybrid search** — lexical (FTS5/BM25) and semantic (sqlite-vec) retrieval fused with Reciprocal Rank Fusion
+- **Knowledge graph** — entities, facts, and relations with BFS traversal and full entity dossiers
+- **Cross-domain linking** — the same entity identified across domains, with provenance (rule / equals / llm) and confidence
+- **Domain-based configuration** — per-domain ontologies (HR, IT, Product, …) drive extraction, linking, and search filtering
+- **MCP-native** — standard Model Context Protocol over HTTP/SSE; no custom client code
+- **Zero infrastructure** — one Go binary, one SQLite file, embeddings computed locally with ONNX Runtime
+
+## What Synopsis is not
+
+- **Not a full GraphRAG/KnowledgeRAG platform.** Synopsis deliberately focuses on a single job: turning normalized documents into a queryable, structured knowledge base for AI agents — with zero infrastructure.
+- **Not a data-cleaning or ETL stage.** The pipeline input is assumed to arrive clean and normalized; prepare your documents before ingesting them.
+- **Not a chatbot or reasoning engine.** Synopsis exposes the knowledge base through tools; the connected agent does the reasoning.
+
+## Next steps
+
+- [Quickstart](./quickstart.mdx) — build, ingest, and serve in five minutes
+- The **Concepts** section explains the pipeline, hybrid search, the knowledge graph, domains, and cross-domain linking in depth.
+- The **Guides** and **Reference** sections cover installation, configuration, ingestion, searching, and the full CLI and MCP tool reference.

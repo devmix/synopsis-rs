@@ -1,0 +1,224 @@
+---
+title: Architecture
+description: Module map, ingestion-to-search data flow, and the technology decisions behind the Synopsis service
+sidebar_position: 1
+---
+
+# Architecture
+
+This page explains how the Synopsis service is built: the module layout (`cmd/app` and `internal/`), the data flow from ingestion to search, and the technology choices with their rationale.
+
+The user-facing story — what goes in, what comes out — is [The Pipeline](../concepts/pipeline). This page is about the code that makes it happen.
+
+## System overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Synopsis service                             │
+│                                                                     │
+│  ┌────────────┐    ┌───────────┐    ┌──────────┐     ┌────────────┐ │
+│  │ Ingestion  │──▶│ Embedding │──▶│ Database │◀───│   Search   │ │
+│  │  Pipeline  │    │  Provider │    │ (SQLite) │     │   Engine   │ │
+│  └────────────┘    └───────────┘    └────┬─────┘     └─────┬──────┘ │
+│                                          │                 │        │
+│                                   ┌──────▼──────┐    ┌─────▼──────┐ │
+│                                   │  Knowledge  │    │  MCP Server│ │
+│                                   │   Graph     │    │ (HTTP/SSE) │ │
+│                                   │ (in-memory) │    │            │ │
+│                                   └─────────────┘    └────────────┘ │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                File Watcher (auto-update in serve)           │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+One binary, four runtime modes:
+
+- **`sync`** — run the full ingestion pipeline over all configured sources, then exit
+- **`serve`** — load the knowledge graph into memory, start the MCP server (12 tools over HTTP/SSE), and optionally run a file watcher and the background scheduler
+- **`model` / `onnx-runtime`** — manage embedding models and the bundled ONNX Runtime library
+- **`load-test`** — fill the database with deterministic synthetic data and benchmark the MCP tool handlers directly (no HTTP)
+
+Global flags (`--config`, `--preset`, `--db`) precede the subcommand; each subcommand has its own flags. Full reference: [CLI Reference](../reference/cli).
+
+## Module map
+
+### `cmd/app/` — CLI entry point
+
+| File | Responsibility |
+|---|---|
+| `main.go` | Global flag parsing and top-level subcommand dispatch (`sync`, `serve`, `model`, `onnx-runtime`, `load-test`) |
+| `cmd.go` | Shared bootstrap: load and validate config, apply defaults, discover domains, open the database, ensure the embedding model |
+| `sync.go` | `sync` mode orchestration |
+| `serve.go` | `serve` mode startup sequence: initial sync, scheduler, graph load, MCP server, watcher, graceful shutdown |
+| `model_cmd.go` | `model` subcommands: `list`, `download`, `delete`, `info`, `benchmark` |
+| `onnx_runtime.go` | `onnx-runtime` subcommands: `install`, `status`, `uninstall` |
+| `loadtest.go` | `load-test` subcommand orchestration: database fill with generated data (real embeddings), separately-timed graph load, and the MCP tool benchmark via `internal/benchmark` |
+
+`model benchmark` measures embedding inference speed for installed models (production path with padding to `seq=512`, plus natural-length sequences; median of 9 runs after 3 warm-ups). With no name it benchmarks every installed model.
+
+### `internal/` — application packages
+
+| Package | Responsibility |
+|---|---|
+| `benchmark` | Deterministic synthetic data generation and load testing: seeded-PRNG dataset generator (scales `small`/`medium`/`large`), direct database fill with real embeddings (FTS5 sync triggers suspended during bulk DML), and a benchmark runner over the MCP tool handlers (14 cases: p50/p95/p99 latency, error counts, QPS over all attempts). Powers the `load-test` subcommand |
+| `cache` | SQLite-based cache store for embedding results (`data/cache.db`) |
+| `config` | YAML configuration: struct definitions, `Load()`, `Validate()`, `ApplyDefaults()` |
+| `database` | SQLite connection with PRAGMAs (WAL, 64 MB cache, 256 MB mmap), migration execution, vec0 table initialization and dimension checks |
+| `database/dao` | Typed data access objects (`DocumentDAO`, `ChunkDAO`, `EntityDAO`, `RelationDAO`, `ChunkEntityDAO`, `FactDAO`, `FactSourceDAO`, `EntityLinkDAO`, `EntitySourceDAO`, `AppKV`). DAOs are built over `DBTX` (satisfied by both `*sql.DB` and `*sql.Tx`) and contain **no** transaction calls — `TxManager.ExecTx` owns the lifecycle and guarantees rollback on error |
+| `domain` | Domain configuration and registry: parses XML domain files (entity types, relations, extraction rules, confidence thresholds), discovers domains from `paths.global_config_path` |
+| `embedding` | Embedding provider interface plus implementations: `ONNXProvider` (local, ONNX Runtime via `onnxruntime_go`, L2-normalized vectors) and `APIProvider` (OpenAI-compatible `/embeddings` HTTP endpoint with backoff retry). Batch processor with progress; shared in-memory embedding cache. Hosts the inference benchmark engine used by `model benchmark` |
+| `expression` | Generic CEL expression engine (`cel-go`) with TTL-cached scopes. Used by the cross-domain linker to evaluate domain-configured link conditions |
+| `gc` | Orphan cleanup: finds and removes documents, entities, facts, and vectors that no longer point at live data |
+| `graph` | In-memory knowledge graph: adjacency maps with O(1) name lookup, BFS traversal (depth, direction, relation-type filter, node limit), entity lookup by name/type, Graphviz DOT export |
+| `ingestion` | Ingestion pipeline orchestrator (parse → chunk → embed → NER → store) with sub-packages: `parsers/` (Markdown, JSON, MediaWiki, web page, unstructured), `chunkers/` (Markdown header/fixed/hybrid, JSON), `ner/` (offline `prose` NER, LLM NER), `entities/` (name normalization and similarity-based resolution), `sources/` (source registry), `runner/` (full-pipeline runner incl. cross-domain link building) |
+| `llm` | OpenAI-compatible chat completions client, shared by LLM NER and the LLM entity linker |
+| `logger` | Structured logging wrapper around `uber-go/zap`: level, format (`console`/`json`), output target |
+| `mcp` | MCP server wrapping `mcp-go`: `tools.go` (tool constants and schemas), logging middleware, request metrics, graceful shutdown. `handlers/` holds one handler per tool (12 tools) plus shared helpers (`pagination`, `entity_resolve`) |
+| `onnx` | ONNX Runtime lifecycle: library download/install/cache, model registry (loaded from `configs/onnx.yaml`), model download with checksum verification, installed-model cache |
+| `prompts` | Runtime-loadable prompt templates (`text/template` `.tmpl` files under `configs/prompts/`) with embedded defaults as fallback |
+| `relations` | Cross-domain entity linking: multi-method orchestration (`rule`, `equals`, `llm`), CEL-expression linker, entity link storage and provenance |
+| `scheduler` | Background job scheduler (`gocron`): periodic tasks during `serve` mode (orphan cleanup by default) |
+| `search` | Hybrid search engine: lexical (FTS5/BM25) and semantic (vec0/cosine) retrieval run in parallel, fused with Reciprocal Rank Fusion, then enriched (document metadata + entities), reranked (business rules, freshness, authority), and expanded through the knowledge graph |
+| `utils` | Filesystem, string normalization, and text truncation helpers |
+| `watcher` | File system watcher (`fsnotify`): recursive monitoring with debounce, re-indexing changed source files during `serve` |
+
+## Data flow: ingestion → search
+
+```
+Source files (.md, .json, .html)
+        │
+        ▼
+  Parser (format-specific, per source type)
+        │
+        ▼
+  Chunker (header / fixed-size / hybrid, or per-object for JSON)
+        │
+        ▼
+  Embedding provider ──▶ chunks_vec (vec0 table)
+        │
+        ▼
+  NER (regex rules from ontologies / prose / LLM)
+        │
+        ▼
+  Entity resolution + dedup ──▶ entities, chunk_entities, entity_sources
+        │
+        ▼
+  Fact extraction ──▶ facts, fact_sources (provenance)
+  Cross-domain linking ──▶ entity_links (method, confidence, evidence)
+        │
+        ▼
+  documents + chunks tables; FTS5 index kept in sync by triggers
+
+Orphan cleanup (gc) runs after ingestion, periodically during serve.
+```
+
+Query time:
+
+```
+MCP client ──▶ search(query, domain?, top_k?)
+                   │
+           ┌───────┴────────┐
+           ▼                ▼
+      FTS5 MATCH        vec0 KNN
+      (BM25)            (cosine distance)
+           │                │
+           └───────┬────────┘
+                   ▼
+            RRF fusion (k = 20)
+                   ▼
+      Enricher (document metadata + entities)
+                   ▼
+      Reranker (deprecated/official/expired, freshness, authority)
+                   ▼
+      GraphExpander (related entities + facts via BFS)
+                   ▼
+      JSON response ──▶ MCP client
+```
+
+Lexical and semantic searches run in parallel goroutines; if one fails, the other still returns results — only a double failure propagates as an error. Details: [Hybrid Search](../concepts/hybrid-search) and the [`search` tool](../reference/mcp-tools/search).
+
+## Technology decisions and rationale
+
+### SQLite over PostgreSQL/MySQL
+
+Single-file SQLite with extensions compiled in via CGO (`go-sqlite3` + `sqlite-vec-go-bindings`).
+
+- Zero infrastructure: no separate database server to manage
+- FTS5 is built into SQLite — no external full-text search service
+- sqlite-vec (vec0) provides vector similarity in the same process and the same file
+- WAL mode supports concurrent reads during ingestion
+- Adequate for documentation scale (tens of thousands of chunks)
+
+### FTS5 for lexical search
+
+Native FTS5 virtual table (`chunks_fts`) with BM25 scoring, kept in sync with `chunks` by INSERT/UPDATE/DELETE triggers.
+
+- Automatic index synchronization — the index never drifts from the data
+- Phrase queries, prefix matching, and boolean operators natively
+- No separate indexing step or reindex job
+- BM25 gives well-established relevance ranking for keyword search
+
+### sqlite-vec (vec0) for semantic search
+
+The `chunks_vec` virtual table co-locates vectors with the text data.
+
+- KNN queries join directly to `chunks` — no cross-database joins
+- Cosine distance computed natively
+- Vector dimension is validated at startup; a mismatch is detected before ingestion (`--auto-rebuild-vectors` auto-fixes it; see [Troubleshooting](../guides/troubleshooting#embedding-dimension-mismatch))
+
+### Reciprocal Rank Fusion over weighted scoring
+
+RRF with `k = 20` (tunable via `search.rrf_k`) instead of a weighted combination of BM25 and cosine scores.
+
+- No score normalization or calibration: BM25 and cosine live on different scales and RRF is rank-based
+- Items appearing in both result lists naturally rise to the top
+- One tunable parameter (`k`) instead of several weights
+- Proven approach (Craswell et al., TREC 2021)
+
+### In-memory graph over database queries
+
+The entire entity graph (nodes + directed edges) is loaded into memory at `serve` startup.
+
+- BFS traversal needs random access to adjacency lists; in-memory maps give O(1) lookups
+- Enterprise knowledge graphs here are typically well under 10,000 entities — easily resident in RAM
+- Avoids repeated SQL joins for multi-hop traversals
+- The graph is static during serve mode and only changes on re-ingestion
+
+### ONNX Runtime over hosted inference
+
+Local inference through ONNX Runtime (`onnxruntime_go`) with quantized models; the runtime library itself is downloaded and managed by the `onnx-runtime` subcommand.
+
+- No Python dependency — a single self-contained Go binary
+- INT8-quantized models run efficiently on CPU
+- Fully offline operation — no API key, no network at inference time
+- `mode: api` (OpenAI-compatible endpoint) remains as an alternative for environments without local inference
+- `model benchmark` provides measured per-model inference cost (see [Model Management](../guides/model-management))
+
+### MCP over REST/GraphQL
+
+Model Context Protocol (HTTP/SSE transport) is the sole interface.
+
+- Native integration with Claude Desktop, Cursor, and other AI tooling
+- Tool schemas are declared in code (`mcp.NewTool`) — the API is self-documenting via `tools/list`
+- A single HTTP endpoint surface: `/sse`, `/message`, plus `/health` for monitoring
+- Designed for LLM agent consumption rather than human browsing
+
+### Domain-based configuration over a single schema
+
+XML-based domain configurations (`data/ontology/global.xml` + `data/ontology/domains/*.xml`) with per-domain entity types, relation types, extraction rules, and confidence thresholds.
+
+- Heterogeneous knowledge bases (HR, IT, Product, …) can have different entity schemas and extraction rules in one knowledge base
+- Extraction rules (regex patterns, dictionaries, LLM prompts) are domain-specific
+- Linking methods and confidence thresholds are configured per domain
+- Domain discovery runs at startup; a missing or invalid domain config is a startup error (fail loud) — see [Domains](../concepts/domains)
+
+## See also
+
+- [The Pipeline](../concepts/pipeline) — the pipeline story from a user's perspective
+- [Hybrid Search](../concepts/hybrid-search) — fusion and reranking in depth
+- [Knowledge Graph](../concepts/knowledge-graph) — entities, facts, traversal
+- [Database Schema](../reference/database-schema) — tables, indexes, FTS5 triggers, vec0
+- [CLI Reference](../reference/cli) — every subcommand and flag
+- [MCP Tools](../reference/mcp-tools) — the 12 tools, schemas, and examples

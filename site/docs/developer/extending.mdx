@@ -1,0 +1,140 @@
+---
+title: Extending Synopsis
+description: Step-by-step recipes for adding a new document parser, a new chunker, a new MCP tool, and a new configuration field
+sidebar_position: 4
+---
+
+# Extending Synopsis
+
+The extension points are small and deliberate: format-specific work lives behind interfaces in `internal/ingestion/`, and the MCP surface is a registry of declarative tools. This page walks through each one with the actual code patterns.
+
+Conventions first: [Coding Standards](./coding-standards).
+
+## Adding a new document parser
+
+Synopsis ingests files through **sources**. A source combines a parser (file → structured document) with a chunker (content → searchable fragments):
+
+```go
+// internal/ingestion/sources/source.go
+type Source interface {
+    ingestion.Parser   // Parse(sourcePath string) ingestion.ParseResult
+    chunkers.Chunker   // Chunk(content string, metadata map[string]interface{}) ([]DocumentChunk, error)
+}
+```
+
+Sources are registered under a type string in `internal/ingestion/runner/runner.go`:
+
+```go
+reg.Register("markdown", mdSrc)
+reg.Register("json", jsonSrc)
+reg.Register("mediawiki", mwSrc)
+reg.Register("unstructured", unstructSrc)
+reg.Register("webpages", wpSrc)
+```
+
+To add a new format:
+
+1. **Create the parser** — `internal/ingestion/parsers/<format>_parser.go`:
+
+   ```go
+   type Parser interface {
+       // Parse walks the given source path and returns parsed documents.
+       Parse(sourcePath string) ParseResult
+       // SupportedExtensions returns the file extensions this parser can
+       // handle, including the leading dot (e.g. ".md", ".json").
+       SupportedExtensions() []string
+   }
+   ```
+
+2. **Create a chunker if the format needs custom chunking** — `internal/ingestion/chunkers/<format>_chunker.go`, implementing:
+
+   ```go
+   type Chunker interface {
+       Chunk(content string, metadata map[string]interface{}) ([]DocumentChunk, error)
+   }
+   ```
+
+   Reuse `MarkdownChunker` (header/fixed/hybrid with overlap) or `JSONChunker` if the extracted content fits their model — the `unstructured` source already routes to both based on `metadata["source_type"]`.
+
+3. **Create the source** — `internal/ingestion/sources/<format>_source.go`, composing your parser and chunker into a `Source`.
+
+4. **Register it** — add a `reg.Register("<type>", <src>)` call in `internal/ingestion/runner/runner.go` next to the existing sources. The type string is what appears in source configuration and in `documents.source_type`.
+
+5. **Add chunking config if needed** — most chunkers read settings from `ingestion.chunking.*` in the config. Add the struct fields in `internal/config/config.go`, wire them into your chunker, and document them in `configs/config.default.yaml` (see [Adding a configuration field](#adding-a-configuration-field)).
+
+6. **Write tests** — table-driven parser tests with sample documents next to the parser, and an end-to-end ingestion check. Ingestion tests: `internal/ingestion/ingester_test.go` and `e2e_test.go`.
+
+## Adding a new chunker
+
+For an existing format whose content needs a different splitting strategy:
+
+1. **Create** `internal/ingestion/chunkers/<format>_chunker.go` implementing the `Chunker` interface. Each `DocumentChunk` carries `Text`, `SequenceNum`, byte offsets (`StartOffset`/`EndOffset` into the original content), and `Metadata` (e.g. section title, image paths).
+2. **Wire it into the source** — either replace the chunker the source uses, or (like `unstructured`) select it at runtime from `metadata`.
+3. **Add configuration** under `ingestion.chunking.<format>` if the behavior is tunable — struct fields in `internal/config/config.go` + entries in `configs/config.default.yaml`.
+4. **Test with sample documents** — table-driven, one case per splitting boundary (short content, overlap region, oversized section, empty input).
+
+## Adding a new MCP tool
+
+The MCP server wraps [mcp-go](https://github.com/mark3labs/mcp-go) in `internal/mcp/`. Tools are declared in `tools.go` (constant + schema + registration) and implemented in `internal/mcp/handlers/`.
+
+1. **Add the tool name constant** in `internal/mcp/tools.go`:
+
+   ```go
+   const ToolMyNewTool = "my_new_tool"
+   ```
+
+2. **Define the schema** in `tools.go` with `mcp.NewTool()`:
+
+   ```go
+   // toolMyNewTool defines the my_new_tool MCP tool schema.
+   func toolMyNewTool() mcp.Tool {
+       return mcp.NewTool(
+           ToolMyNewTool,
+           mcp.WithDescription("One-sentence description an LLM will read when choosing the tool."),
+           mcp.WithString("query",
+               mcp.Required(),
+               mcp.Description("Search query string"),
+           ),
+           mcp.WithNumber("page_size",
+               mcp.Description("Number of items per page (1-200, default 20)"),
+               mcp.DefaultNumber(20),
+           ),
+       )
+   }
+   ```
+
+3. **Register the tool and handler** in `registerTools()`:
+
+   ```go
+   s.server.AddTool(toolMyNewTool(), s.handleMyNewTool)
+   ```
+
+4. **Add a thin server method** in `internal/mcp/server.go` that parses arguments and delegates to the handler package.
+
+5. **Implement the handler** in `internal/mcp/handlers/my_new_tool.go`. Handler conventions (see `search.go`, `catalog_documents.go`, …):
+   - Build the response as a typed struct and return it as JSON text content.
+   - Return tool-level failures **in-band**: `&mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("Error: …")}, IsError: true}` — not a Go error.
+   - Reuse shared helpers: `pagination.go` for cursor pagination, `entity_resolve.go` for resolving `entity_id`/`entity_name` lookups.
+
+6. **Write tests** — success path, parameter validation errors (missing/invalid arguments), edge cases (empty knowledge base, unknown ID), mirroring the existing `*_test.go` files in `handlers/`.
+
+7. **Update the reference docs** — add a page under `site/docs/reference/mcp-tools/` following the existing tool pages, and add the tool to the inventory table in `site/docs/reference/mcp-tools/index.mdx`.
+
+Existing tools and their parameter tables: [MCP Tools](../reference/mcp-tools).
+
+## Adding a configuration field
+
+1. Add the field to the appropriate struct in `internal/config/config.go` with its YAML tag.
+2. Add validation in `Validate()` if the field has constraints.
+3. Set a default in `ApplyDefaults()` if applicable.
+4. Add table-driven cases to `internal/config/config_test.go` covering valid, invalid, and missing values.
+5. Add the field to `configs/config.default.yaml` with an explanatory comment.
+
+The full annotated schema: [Configuration Schema](../reference/config-schema).
+
+## See also
+
+- [Architecture](./architecture) — where each package fits
+- [Testing](./testing) — writing the tests these recipes ask for
+- [MCP Tools](../reference/mcp-tools) — the current tool inventory
+- [Configuration Schema](../reference/config-schema) — every config key
