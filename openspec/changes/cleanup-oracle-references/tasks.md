@@ -129,7 +129,7 @@ the remaining oracle/Go/ported narrative; reframe the rationale.
 crate `crates/ingestion/src/` → **0** (final verify). Gates green. No code
 changed.
 
-- [ ] 1.7a Clean `mcp` `tools/` part 1 (~147 mentions)
+- [x] 1.7a Clean `mcp` `tools/` part 1 (~147 mentions)
 
 **Scope.** `crates/mcp/src/tools/{facts.rs, entities_catalog.rs, catalog.rs}`.
 Strip `//! Oracle mapping: ../synopsis/...`, inline Go symbols, "deviations
@@ -140,7 +140,7 @@ KEEP the `(`mcp-contract`)` pointer.
 **Acceptance.** the pattern above over those 3 files → **0**. Gates green. No
 behavior change.
 
-- [ ] 1.7b Clean `mcp` `tools/` part 2 (~117 mentions)
+- [x] 1.7b Clean `mcp` `tools/` part 2 (~117 mentions)
 
 **Scope.** `crates/mcp/src/tools/{dossier.rs, graph_tools.rs, documents.rs,
 search.rs, entity.rs}`. Same rule as 1.7a. OPTION A: rename the test function
@@ -150,7 +150,7 @@ search.rs, entity.rs}`. Same rule as 1.7a. OPTION A: rename the test function
 **Acceptance.** the pattern above over those 5 files → **0**. Gates green. No
 behavior change.
 
-- [ ] 1.7c Clean `mcp` `transport/` + top-level + Cargo.toml (~136 mentions)
+- [x] 1.7c Clean `mcp` `transport/` + top-level + Cargo.toml (~136 mentions)
 
 **Scope.** `crates/mcp/src/transport/{jsonrpc.rs, sse.rs, mod.rs}`,
 `crates/mcp/src/{server.rs, pagination.rs, lib.rs, health.rs, error.rs,
@@ -168,7 +168,7 @@ src/transport/`, the six top-level `crates/mcp/src/*.rs`, and
 `crates/mcp/Cargo.toml`) → **0**. Gates green. No behavior change.
 `mcp-contract` pointer + `mcp-go v0.57.0` kept.
 
-- [ ] 1.7d Clean `mcp` `tests/` (~83 mentions)
+- [x] 1.7d Clean `mcp` `tests/` (~83 mentions)
 
 **Scope.** `crates/mcp/tests/{documents.rs, dossier.rs, graph_tools.rs,
 server_units.rs, sse_units.rs, server_integration.rs}`. Same rule as the rest
