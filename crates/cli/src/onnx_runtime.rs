@@ -1,26 +1,22 @@
 //! `onnx-runtime` subcommand body (design D10): a thin CLI facade over
 //! `embedding::LibraryManager` for the ONNX Runtime shared library.
 //!
-//! Oracle mapping: `../synopsis/cmd/app/onnx_runtime.go`: `install` /
-//! `status` / `uninstall`. Download, extraction, verification, and the
-//! `.cache.json` manifest are NOT re-implemented here — `install` goes
-//! through `LibraryManager::ensure_library` (the same path the embedding
+//! `install` / `status` / `uninstall`. Download, extraction, verification,
+//! and the `.cache.json` manifest are NOT re-implemented here — `install`
+//! goes through `LibraryManager::ensure_library` (the same path the embedding
 //! factory uses), which brings the downloader's retries, SSRF protection,
 //! zip/tar extraction, and cache bookkeeping for free (design D10: the CLI
 //! is a facade).
 //!
-//! Re-architected deviations from the oracle (recorded per the migration
-//! principles):
-//! - a config or `onnx.yaml` load failure is a hard error. The oracle prints
-//!   a warning and continues with a zero-value config — in Go that either
-//!   dereferences a nil pointer (main config) or fails later with a
-//!   confusing "unsupported platform" (empty registry);
+//! Design decisions:
+//! - a config or `onnx.yaml` load failure is a hard error; continuing with a
+//!   zero-value config would either dereference a nil pointer (main config)
+//!   or fail later with a confusing "unsupported platform" (empty registry);
 //! - the `LibraryManager` is constructed before the "Installing..." line,
 //!   so an unsupported platform reports the error without a misleading
-//!   progress line (the oracle prints the line first);
-//! - the "Supported Platforms" table is rendered with the same column
-//!   geometry as the oracle's `text/tabwriter` (longest key + 2 spaces)
-//!   without a tabwriter dependency.
+//!   progress line;
+//! - the "Supported Platforms" table is rendered with tabwriter-style column
+//!   geometry (longest key + 2 spaces) without a tabwriter dependency.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -46,8 +42,7 @@ pub struct OnnxRuntimeRequest {
 ///
 /// Loads the config (data directory + `onnx.yaml` registry) and dispatches
 /// the sub-action. Human-readable output goes to stdout; on error the
-/// message goes to stderr and the exit code is non-zero (oracle parity:
-/// `Error: %v` + `os.Exit(1)`).
+/// message goes to stderr and the exit code is non-zero.
 pub fn run_onnx_runtime(req: &OnnxRuntimeRequest) -> ExitCode {
     match onnx_runtime_flow(req, &mut std::io::stdout()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -70,8 +65,7 @@ pub fn run_onnx_runtime(req: &OnnxRuntimeRequest) -> ExitCode {
 /// [`CliError::Embedding`] for library-manager, download, and uninstall
 /// failures, [`CliError::Io`] when `out` cannot be written.
 pub fn onnx_runtime_flow(req: &OnnxRuntimeRequest, out: &mut dyn Write) -> Result<(), CliError> {
-    // Oracle `loadConfig`: Load + ApplyDefaults only (the runtime commands
-    // need just the paths).
+    // Load + ApplyDefaults only (the runtime commands need just the paths).
     let mut config = load(&req.cfg_path)?;
     config.apply_defaults();
     let onnx = load_onnx_config(&config.paths.onnx_config)?;
@@ -84,11 +78,10 @@ pub fn onnx_runtime_flow(req: &OnnxRuntimeRequest, out: &mut dyn Write) -> Resul
     }
 }
 
-/// `onnx-runtime install`: ensure the runtime library is installed
-/// (oracle `runONNXRuntimeInstall`).
+/// `onnx-runtime install`: ensure the runtime library is installed.
 fn install(manager: &LibraryManager, out: &mut dyn Write) -> Result<(), CliError> {
-    // Oracle prints this line before the already-installed check, so both
-    // branches keep the byte-parity prefix.
+    // This line is printed before the already-installed check, so both
+    // branches keep the same prefix.
     writeln!(out, "Installing ONNX Runtime library...")?;
     if let Some(path) = manager.library_path() {
         writeln!(
@@ -111,7 +104,7 @@ fn install(manager: &LibraryManager, out: &mut dyn Write) -> Result<(), CliError
 }
 
 /// `onnx-runtime status`: installation status plus the supported-platforms
-/// table (oracle `runONNXRuntimeStatus`).
+/// table.
 fn status(
     manager: &LibraryManager,
     onnx: &OnnxConfig,
@@ -135,9 +128,8 @@ fn status(
     print_platforms(out, &onnx.runtime.platforms)
 }
 
-/// `onnx-runtime uninstall`: remove the installed library
-/// (oracle `runONNXRuntimeUninstall`). A no-installation is not an error
-/// (oracle: exit 0 with a message).
+/// `onnx-runtime uninstall`: remove the installed library. A no-installation
+/// is not an error (exit 0 with a message).
 fn uninstall(manager: &LibraryManager, out: &mut dyn Write) -> Result<(), CliError> {
     if manager.library_path().is_none() {
         writeln!(out, "ONNX Runtime is not installed")?;
@@ -148,9 +140,9 @@ fn uninstall(manager: &LibraryManager, out: &mut dyn Write) -> Result<(), CliErr
     Ok(())
 }
 
-/// Renders the "Supported Platforms" table (oracle: `text/tabwriter` with
-/// 2-space padding — each key is padded to the longest key, then two spaces
-/// before the library name).
+/// Renders the "Supported Platforms" table (tabwriter-style: 2-space
+/// padding — each key is padded to the longest key, then two spaces before
+/// the library name).
 fn print_platforms(out: &mut dyn Write, platforms: &[OnnxPlatformConfig]) -> Result<(), CliError> {
     writeln!(out, "\nSupported Platforms:")?;
     let width = platforms
@@ -460,7 +452,7 @@ mod tests {
         let (out, result) = run_flow(&dir, OnnxRuntimeAction::Uninstall);
         let stdout = stdout_of(&out);
 
-        result.expect("oracle: not installed is exit 0, not an error");
+        result.expect("not installed is exit 0, not an error");
         assert!(
             stdout.contains("ONNX Runtime is not installed"),
             "{stdout:?}"

@@ -73,7 +73,7 @@ fn subcommand_stub_prints_error_and_exits_one() {
 }
 
 /// `onnx-runtime` with an undeclared sub-action is a clap usage error:
-/// exit 1 (oracle parity: `Unknown command` + usage + `os.Exit(1)`).
+/// exit 1 with an `Unknown command` message and the usage text.
 #[test]
 fn onnx_runtime_unknown_subaction_exits_one() {
     let out = run(&["onnx-runtime", "bogus"]);

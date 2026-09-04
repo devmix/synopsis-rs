@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(err) => {
             // clap's try_get_matches reports `--version` as an error variant;
-            // the version line goes to stdout and the oracle exits 0.
+            // the version line goes to stdout and the process exits 0.
             if err.kind() == clap::error::ErrorKind::DisplayVersion {
                 let _ = err.print();
                 return ExitCode::SUCCESS;
@@ -132,8 +132,8 @@ fn run_load_test(
 
 /// Prints a clap usage error to stderr and exits 1.
 ///
-/// The oracle exits 1 on usage errors (unknown subcommand, missing
-/// subcommand); clap's built-in handler would exit 2.
+/// Usage errors (unknown subcommand, missing subcommand) exit 1; clap's
+/// built-in handler would exit 2.
 fn usage_error(err: &clap::Error) -> ExitCode {
     let _ = err.print();
     ExitCode::FAILURE

@@ -1,7 +1,5 @@
 //! Database fill procedure (design D11).
 //!
-//! Oracle: `../synopsis/internal/benchmark/filler.go`.
-//!
 //! The procedure: drop FTS triggers → clear + insert scalar tables in one
 //! transaction → rebuild FTS → restore triggers → embed + insert vectors
 //! in batches → build ANN index.

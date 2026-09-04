@@ -1,9 +1,8 @@
 //! `db` subcommand body: dataset statistics and full dataset clear
 //! (remove-direct-ingest task 1.1).
 //!
-//! New Rust operational command: the Go oracle has no equivalent (it clears
-//! data only inside `sync --rebuild`, which is removed by this change), so
-//! there is no oracle mapping and no parity requirement.
+//! New Rust operational command: dataset statistics and clear are first-class
+//! operations, not a side effect of another subcommand.
 //!
 //! - `db stats` opens the dataset-bound knowledge database and prints row
 //!   counts gathered through the existing DAOs (documents, chunks, entities,

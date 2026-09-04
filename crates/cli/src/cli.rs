@@ -3,9 +3,9 @@
 //! Invocation format: `synopsis [--config PATH] [--preset NAME]
 //! [--dataset NAME] <subcommand> [flags...]`. Global flags precede the
 //! subcommand; per-command flags follow it. Help text is Rust-idiomatic and
-//! deliberately NOT byte-matched to the Go oracle (user decision
+//! not byte-matched to a fixed format (user decision
 //! 2026-08-27); flags, defaults and behavior stay faithful to the frozen
-//! cli-surface spec and the oracle (`../synopsis/cmd/app/main.go`).
+//! cli-surface spec.
 
 use clap::{Arg, ArgAction, Command as ClapCommand};
 
@@ -62,7 +62,7 @@ pub enum Subcommand {
     Model {
         /// The model sub-action.
         action: ModelAction,
-        /// Model name (oracle: optional positional after the sub-action).
+        /// Model name (optional positional after the sub-action).
         name: Option<String>,
     },
     /// `onnx-runtime`: manage the ONNX runtime library.
@@ -85,7 +85,7 @@ pub enum Subcommand {
     },
 }
 
-/// `model` sub-actions (oracle: `cmd/app/model_cmd.go`).
+/// `model` sub-actions.
 pub enum ModelAction {
     /// List available models.
     List,
@@ -100,7 +100,7 @@ pub enum ModelAction {
 }
 
 /// `queue` sub-actions (new operational command, document-jobs-queue task
-/// 1.7; the Go oracle has no equivalent).
+/// 1.7).
 pub enum QueueAction {
     /// `status`: print the document job queue table.
     Status {
@@ -119,7 +119,7 @@ pub enum QueueAction {
 }
 
 /// `db` sub-actions (remove-direct-ingest task 1.1; new operational
-/// command, the Go oracle has no equivalent).
+/// command).
 pub enum DbAction {
     /// `stats`: print the dataset statistics (read-only).
     Stats,
@@ -128,7 +128,7 @@ pub enum DbAction {
     Clear,
 }
 
-/// `onnx-runtime` sub-actions (oracle: `cmd/app/onnx_runtime.go`).
+/// `onnx-runtime` sub-actions.
 pub enum OnnxRuntimeAction {
     /// Install the ONNX runtime library.
     Install,
@@ -247,7 +247,7 @@ fn auto_rebuild_vectors_flag() -> Arg {
 }
 
 /// Builds the `queue` subcommand: `status|reset-retries` (document-jobs-queue
-/// task 1.7; new operational command, no oracle equivalent).
+/// task 1.7; new operational command).
 fn build_queue_command() -> ClapCommand {
     let source_arg = || {
         Arg::new("source")
@@ -288,7 +288,7 @@ fn build_queue_command() -> ClapCommand {
 }
 
 /// Builds the `db` subcommand: `stats|clear` (remove-direct-ingest task
-/// 1.1; new operational command, no oracle equivalent).
+/// 1.1; new operational command).
 fn build_db_command() -> ClapCommand {
     ClapCommand::new("db")
         .about("inspect and clear the dataset knowledge database")
@@ -308,8 +308,8 @@ fn build_db_command() -> ClapCommand {
 
 /// Builds the `model` subcommand: `list|download|delete|info|benchmark`.
 ///
-/// Every action carries the same optional `MODEL_NAME` positional (oracle:
-/// `subArgs[1]` is parsed for all actions; `list` simply ignores it).
+/// Every action carries the same optional `MODEL_NAME` positional (parsed
+/// for all actions; `list` simply ignores it).
 fn build_model_command() -> ClapCommand {
     let name_arg = || {
         Arg::new("model_name")
@@ -363,7 +363,7 @@ impl Cli {
     /// Parses process arguments: global flags plus one required subcommand.
     ///
     /// Returns the clap error instead of exiting so the caller can control the
-    /// exit code (the oracle exits 1 on usage errors, not clap's default 2).
+    /// exit code (usage errors exit 1, not clap's default 2).
     pub fn parse() -> Result<Self, clap::Error> {
         let matches = build_command().try_get_matches()?;
         Ok(Self::from_matches(&matches))

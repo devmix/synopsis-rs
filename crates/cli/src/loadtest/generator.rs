@@ -1,10 +1,7 @@
 //! Deterministic synthetic data generation (design D11).
 //!
-//! Oracle: `../synopsis/internal/benchmark/generator.go`.
-//!
-//! **Deviation:** the oracle uses Go's `math/rand` LFG; this port uses
-//! SplitMix64 (the `rand` crate is not in the frozen workspace palette).
-//! Per-seed determinism is preserved within Rust.
+//! Uses SplitMix64 (the `rand` crate is not in the frozen workspace
+//! palette); per-seed determinism is preserved.
 
 use std::collections::HashMap;
 

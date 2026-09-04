@@ -1,31 +1,28 @@
 //! `model` subcommand body (design D9): a thin CLI facade over
 //! `embedding::ModelManager` for the embedding model registry in `onnx.yaml`.
 //!
-//! Oracle mapping: `../synopsis/cmd/app/model_cmd.go` (+ the `model` dispatch
-//! in `main.go`): `list` / `download` / `delete` / `info` / `benchmark`.
+//! `list` / `download` / `delete` / `info` / `benchmark`.
 //! Download/verify is NOT re-implemented here — `download` goes through
 //! `ModelManager::ensure_model` (the same path the bootstrap uses), which
 //! brings the downloader's retries, SSRF protection, progress bar, and
 //! size verification for free (design D9: the CLI is a facade).
 //!
-//! Re-architected deviations from the oracle (recorded per the migration
-//! principles):
+//! Design decisions:
 //! - the registry is the `models` section of `onnx.yaml` itself, so the
 //!   "all models" listing reads `OnnxConfig::models.entries` with the same
 //!   blank-name filter `ModelManager` applies internally;
 //! - installation status uses `ModelManager::is_installed` (manifest +
-//!   directory + every configured file), stricter than the oracle's
-//!   manifest+directory check;
+//!   directory + every configured file), stricter than a manifest+directory
+//!   check;
 //! - the ONNX Runtime version in the benchmark header comes from the library
-//!   cache manifest (`LibraryManager`) instead of the oracle's
-//!   directory-name glob;
+//!   cache manifest (`LibraryManager`) instead of a directory-name glob;
 //! - `benchmark` measures the production path through the real
 //!   `new_onnx_provider` (the exact code used by sync and search; batch-max
-//!   padding). The oracle's "padded to seq=512" measurement and the
-//!   natural-length section are not ported: they require raw ONNX session
-//!   access, which this codebase isolates inside the `embedding` crate
-//!   (`runtime.rs`), and the `embedding::benchmark_model` the task body
-//!   references does not exist yet.
+//!   padding). A padded (seq=512) measurement and a natural-length section
+//!   are intentionally omitted: they require raw ONNX session access, which
+//!   this codebase isolates inside the `embedding` crate (`runtime.rs`), and
+//!   the `embedding::benchmark_model` the task body references does not exist
+//!   yet.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -40,11 +37,11 @@ use embedding::{LibraryManager, ModelCache, ModelManager, new_onnx_provider};
 use crate::cli::ModelAction;
 use crate::error::CliError;
 
-/// Warmup iterations before measuring (oracle `BenchOptions` default).
+/// Warmup iterations before measuring (`BenchOptions` default).
 const BENCH_WARMUP: usize = 3;
-/// Measured iterations per benchmark section (oracle `BenchOptions` default).
+/// Measured iterations per benchmark section (`BenchOptions` default).
 const BENCH_RUNS: usize = 9;
-/// Deterministic benchmark text (~90 content tokens, oracle `benchSampleText`);
+/// Deterministic benchmark text (~90 content tokens);
 /// a unique suffix per run keeps results out of the embedding cache.
 const BENCH_SAMPLE_TEXT: &str = "The company operates across three regions and provides \
 enterprise analytics tooling to mid-market customers worldwide. The organization was \
@@ -66,8 +63,7 @@ pub struct ModelRequest {
 ///
 /// Loads the config (data directory + `onnx.yaml` registry) and dispatches
 /// the sub-action. Human-readable output goes to stdout; on error the
-/// message goes to stderr and the exit code is non-zero (oracle parity:
-/// `Error: %v` + `os.Exit(1)`).
+/// message goes to stderr and the exit code is non-zero.
 pub fn run_model(req: &ModelRequest) -> ExitCode {
     match model_flow(req, &mut std::io::stdout()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -91,8 +87,8 @@ pub fn run_model(req: &ModelRequest) -> ExitCode {
 /// [`CliError::Unsupported`] for unknown model names and missing arguments,
 /// [`CliError::Io`] when `out` cannot be written.
 pub fn model_flow(req: &ModelRequest, out: &mut dyn Write) -> Result<(), CliError> {
-    // Oracle `runModelCommand`: Load + ApplyDefaults only (no validate — the
-    // model commands need just the paths).
+    // Load + ApplyDefaults only (no validate — the model commands need just
+    // the paths).
     let mut config = load(&req.cfg_path)?;
     config.apply_defaults();
     let onnx = load_onnx_config(&config.paths.onnx_config)?;
@@ -113,8 +109,7 @@ pub fn model_flow(req: &ModelRequest, out: &mut dyn Write) -> Result<(), CliErro
     }
 }
 
-/// `model list`: the registry table with installation status
-/// (oracle `runModelList` + `printModelList`).
+/// `model list`: the registry table with installation status.
 fn list_models(
     manager: &ModelManager,
     onnx: &OnnxConfig,
@@ -148,8 +143,7 @@ fn list_models(
     Ok(())
 }
 
-/// `model download [<name>]`: ensure the model files are installed
-/// (oracle `runModelDownload`).
+/// `model download [<name>]`: ensure the model files are installed.
 fn download_model(
     manager: &ModelManager,
     name: Option<&str>,
@@ -179,8 +173,7 @@ fn download_model(
     Ok(())
 }
 
-/// `model delete <name>`: remove an installed model
-/// (oracle `runModelDelete`).
+/// `model delete <name>`: remove an installed model.
 fn delete_model(
     manager: &ModelManager,
     name: Option<&str>,
@@ -197,8 +190,7 @@ fn delete_model(
     Ok(())
 }
 
-/// `model info [<name>]`: detailed view of one registry entry
-/// (oracle `runModelInfo` + `printModelInfo`).
+/// `model info [<name>]`: detailed view of one registry entry.
 fn model_info(
     manager: &ModelManager,
     name: Option<&str>,
@@ -214,7 +206,7 @@ fn model_info(
     print_model_info(out, info, manager)
 }
 
-/// Renders the `model info` block (oracle `printModelInfo`).
+/// Renders the `model info` block.
 fn print_model_info(
     out: &mut dyn Write,
     info: &ModelInfo,
@@ -265,7 +257,7 @@ fn print_model_info(
 }
 
 /// `model benchmark [<name>]`: embedding speed of installed models
-/// (oracle `runModelBenchmark`, re-architected — see module docs).
+/// (see module docs).
 fn benchmark(
     manager: &ModelManager,
     onnx: &OnnxConfig,
@@ -314,8 +306,7 @@ fn benchmark(
 }
 
 /// Selects the benchmark targets: the named model (must be in the registry)
-/// or, with no name, every installed registry model
-/// (oracle `runModelBenchmark` target selection).
+/// or, with no name, every installed registry model.
 fn select_targets<'a>(
     manager: &'a ModelManager,
     onnx: &'a OnnxConfig,
@@ -346,7 +337,7 @@ fn select_targets<'a>(
     }
 }
 
-/// Machine description for the benchmark header (oracle `DetectRuntime`).
+/// Machine description for the benchmark header.
 struct RuntimeInfo {
     cpu_model: String,
     num_cpu: usize,
@@ -356,7 +347,7 @@ struct RuntimeInfo {
 
 /// Detects CPU model, logical CPU count, total RAM (from `/proc` on Linux;
 /// zero/empty when unavailable), and the installed ONNX Runtime version
-/// (from the library cache manifest instead of the oracle's directory glob).
+/// (from the library cache manifest).
 fn detect_runtime(data_dir: &str, onnx: &OnnxConfig) -> RuntimeInfo {
     let num_cpu = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -400,7 +391,7 @@ fn detect_runtime(data_dir: &str, onnx: &OnnxConfig) -> RuntimeInfo {
     }
 }
 
-/// Aggregated benchmark latencies in milliseconds (oracle `BenchStats`).
+/// Aggregated benchmark latencies in milliseconds.
 struct BenchStats {
     median_ms: f64,
     min_ms: f64,
@@ -411,7 +402,7 @@ struct BenchStats {
 /// Measures the production embedding path of one installed model: the real
 /// `new_onnx_provider` (explicit model path, no auto-download) with warmup +
 /// measured runs of unique sample texts (unique suffixes bypass the
-/// embedding cache, oracle `BenchmarkModel` step 1).
+/// embedding cache).
 ///
 /// # Errors
 ///
@@ -440,7 +431,7 @@ fn run_production_benchmark(
     Ok(stats_from_ms(&samples[BENCH_WARMUP..]))
 }
 
-/// Median/min/max of a sample (oracle `statsFromMS` + `medianMS`).
+/// Median/min/max of a sample.
 fn stats_from_ms(samples: &[f64]) -> BenchStats {
     if samples.is_empty() {
         return BenchStats {
@@ -466,7 +457,7 @@ fn stats_from_ms(samples: &[f64]) -> BenchStats {
     }
 }
 
-/// Renders the stats line (oracle `BenchStats.String`).
+/// Renders the stats line.
 fn format_stats(stats: &BenchStats) -> String {
     format!(
         "median {:.1} ms/text [min {:.1}, max {:.1}], {} runs",
@@ -474,8 +465,8 @@ fn format_stats(stats: &BenchStats) -> String {
     )
 }
 
-/// Formats an RFC 3339 UTC installation timestamp the way the oracle prints
-/// it (`2006-01-02 15:04:05`); a value of a different shape is printed as-is.
+/// Formats an RFC 3339 UTC installation timestamp as `YYYY-MM-DD HH:MM:SS`;
+/// a value of a different shape is printed as-is.
 fn format_installed_at(value: &str) -> String {
     let trimmed = value.strip_suffix('Z').unwrap_or(value);
     match trimmed.split_once('T') {
@@ -484,8 +475,8 @@ fn format_installed_at(value: &str) -> String {
     }
 }
 
-/// Human-readable byte count (port of the oracle's `utils.HumanFileSize`:
-/// `B` / `KiB` / `MiB` / `GiB` with 0/1/2 fraction digits).
+/// Human-readable byte count
+/// (`B` / `KiB` / `MiB` / `GiB` with 0/1/2 fraction digits).
 fn human_file_size(bytes: i64) -> String {
     const UNIT: i64 = 1024;
     if bytes < UNIT {
@@ -666,7 +657,7 @@ models:
             stdout.contains("not installed"),
             "uninstalled model: {stdout:?}"
         );
-        // Oracle parity: the version column is the registry version.
+        // The version column is the registry version.
         assert!(stdout.contains("1.0.0"), "{stdout:?}");
         assert!(stdout.contains("1024"), "{stdout:?}");
         assert!(stdout.contains("384"), "{stdout:?}");
@@ -718,7 +709,7 @@ models:
         assert!(stdout.contains("Repository:   BAAI/bge-m3"), "{stdout:?}");
         assert!(
             stdout.contains("Installed At: 2026-08-21 00:00:00"),
-            "oracle date format: {stdout:?}"
+            "date format: {stdout:?}"
         );
         assert!(stdout.contains("Status:       Installed ✓"), "{stdout:?}");
         assert!(stdout.contains("\nFiles:"), "{stdout:?}");
@@ -913,7 +904,7 @@ models:
     // --- helpers -------------------------------------------------------------------
 
     #[test]
-    fn format_installed_at_renders_oracle_date_format() {
+    fn format_installed_at_renders_date_format() {
         assert_eq!(
             format_installed_at("2026-08-21T10:15:30Z"),
             "2026-08-21 10:15:30"
@@ -926,10 +917,9 @@ models:
         );
     }
 
-    /// Golden values from the oracle's `TestHumanFileSize`
-    /// (`../synopsis/internal/utils/human_size_test.go`).
+    /// Golden values for the human-readable byte formatting.
     #[test]
-    fn human_file_size_matches_oracle_goldens() {
+    fn human_file_size_matches_goldens() {
         assert_eq!(human_file_size(0), "0 B");
         assert_eq!(human_file_size(366), "366 B");
         assert_eq!(human_file_size(724923), "708 KiB");

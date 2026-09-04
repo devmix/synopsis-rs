@@ -1,7 +1,5 @@
 //! Load-test subcommand: synthetic data generation, DB fill, and MCP
 //! tool benchmarking (design D11).
-//!
-//! Oracle: `../synopsis/cmd/app/loadtest.go` + `internal/benchmark/`.
 
 pub mod filler;
 pub mod generator;
@@ -142,8 +140,7 @@ pub fn run_load_test(
 ///
 /// When the stored index's dimension disagrees with the configured embedding
 /// dimension and `--no-fill` is off, the vector table is dropped and
-/// recreated — the fill phase below re-embeds every chunk (the Rust form of
-/// the oracle's `rebuildVectorsIfNeeded` → `ReEmbedChunks`). Under
+/// recreated — the fill phase below re-embeds every chunk. Under
 /// `--no-fill` the stored index is the very data being benchmarked, so the
 /// mismatch is fatal.
 fn open_vectors_with_recreate(boot: &mut Bootstrap, no_fill: bool) -> Result<(), CliError> {

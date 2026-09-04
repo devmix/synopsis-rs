@@ -1,6 +1,4 @@
-//! File watcher with debounce (design D5) — the port of the oracle's
-//! `setupFileWatcher` (`../synopsis/cmd/app/serve.go`) and
-//! `internal/watcher/filewatcher.go`.
+//! File watcher with debounce (design D5).
 //!
 //! A [`notify::PollWatcher`] backend feeds changed file paths into a
 //! debounced tokio loop; once a quiet period of
@@ -15,30 +13,27 @@
 //! later; the handler never ingests directly (state flows through the
 //! `document_jobs` table only).
 //!
-//! Architectural notes (functional copy, not a code copy):
+//! Architectural notes:
 //! - **Threading.** The ingestion [`Runner`] borrows the source
 //!   [`ingestion::Registry`], whose `Box<dyn Source>` is `!Send + !Sync`, so
 //!   the `Runner` is `!Send + !Sync`. A spawned tokio task must be `Send`, so
 //!   the debounce loop can only deal in [`PathBuf`]s: it coalesces events into
 //!   batches and hands them out over a channel. The *caller* (the serve loop,
 //!   task 1.6) invokes the [`ChangeHandler`] with each batch on the thread
-//!   that owns the `Runner`. The oracle ran the callback on the watcher
-//!   goroutine against a shared runner pointer; the Rust re-architecture keeps
-//!   the `!Send` collaborators on their owner thread instead.
-//! - The oracle debounced with a `debounce/2` ticker over fsnotify events;
-//!   here the debounce lives in [`Debouncer`] (trailing quiet period, same two
-//!   timing rules) driven by the tokio loop, with the clock injected for
+//!   that owns the `Runner` — the `!Send` collaborators stay on their owner
+//!   thread.
+//! - The debounce lives in [`Debouncer`] (trailing quiet period, two timing
+//!   rules) driven by the tokio loop, with the clock injected for
 //!   deterministic unit tests.
-//! - The oracle's manual sub-directory re-`Add` on directory-create events is
-//!   unnecessary: `PollWatcher` re-walks every watched tree on each poll.
-//! - The oracle filtered events to a hardcoded extension list; here the
-//!   filter is derived from the registered parsers
+//! - No manual sub-directory re-`Add` on directory-create events is needed:
+//!   `PollWatcher` re-walks every watched tree on each poll.
+//! - The event filter is derived from the registered parsers
 //!   ([`ingestion::Registry::supported_extensions`]), so it cannot drift
 //!   from what the pipeline actually ingests.
-//! - The oracle's `SetGraph` swap on the searcher + MCP server has no Rust
-//!   counterpart (the search crate is immutable by design — the CLI rebuilds
-//!   the searcher, search design D8). The `on_graph_reload` hook seam stands
-//!   in; the serve wiring (task 1.6) consumes it.
+//! - There is no `SetGraph`-style swap on the searcher + MCP server (the
+//!   search crate is immutable by design — the CLI rebuilds the searcher,
+//!   search design D8). The `on_graph_reload` hook seam stands in; the serve
+//!   wiring (task 1.6) consumes it.
 //! - The watcher runs entirely on a background task, so it never blocks
 //!   startup (acceptance criterion).
 
@@ -60,11 +55,11 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 /// Polling interval of the notify backend. notify's default is 30 s — too
-/// sluggish for interactive re-indexing on a laptop (the oracle's fsnotify
-/// backend was instant); 2 s keeps CPU cost negligible while feeling live.
+/// sluggish for interactive re-indexing on a laptop; 2 s keeps CPU cost
+/// negligible while feeling live.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Graceful-shutdown bound (oracle `FileWatcher.Stop`: 5 s).
+/// Graceful-shutdown bound (5 s).
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Errors surfaced while building or stopping a [`Watcher`].
@@ -103,7 +98,7 @@ pub trait ChangeHandler {
     fn handle_changes(&self, paths: &[PathBuf]);
 }
 
-/// Closure injection (oracle parity: the callback was a plain function).
+/// Closure injection.
 impl<F> ChangeHandler for F
 where
     F: Fn(&[PathBuf]),
@@ -113,14 +108,13 @@ where
     }
 }
 
-/// Production [`ChangeHandler`] (design D5): the oracle `setupFileWatcher`
-/// callback body, re-architected as a queue producer (document-jobs-queue
-/// task 1.5).
+/// Production [`ChangeHandler`] (design D5): a queue producer
+/// (document-jobs-queue task 1.5).
 ///
 /// `on_graph_reload` receives the freshly reloaded graph index after a
 /// successful reload; the serve wiring (task 1.6) uses it to rebuild the
-/// immutable searcher + MCP server (the Rust re-architecture has no
-/// `SetGraph`-style swap — search crate design D8).
+/// immutable searcher + MCP server (there is no `SetGraph`-style swap —
+/// search crate design D8).
 pub struct IngestChangeHandler<'a> {
     runner: &'a Runner<'a>,
     db: &'a Db,
@@ -216,8 +210,7 @@ impl ChangeHandler for IngestChangeHandler<'_> {
                 Ok(_) => {
                     // `load_on_startup=false`: the config models the index as
                     // Unavailable — swapping it in would only downgrade the
-                    // running server (deviation from the oracle, which would
-                    // load anyway).
+                    // running server, so it is left as-is.
                 }
                 Err(err) => tracing::warn!(error = %err, "graph reload failed"),
             }
@@ -225,8 +218,7 @@ impl ChangeHandler for IngestChangeHandler<'_> {
     }
 }
 
-/// Trailing debounce over a batch of changed paths (port of the oracle's
-/// `flushPending` timing rules).
+/// Trailing debounce over a batch of changed paths.
 ///
 /// The clock is a [`Duration`] (not an [`std::time::Instant`]) so unit tests
 /// can advance it deterministically; production feeds it from
@@ -258,8 +250,8 @@ impl Debouncer {
 
     /// Whether the batch is ready to flush at `now`: the quiet period after
     /// the newest change has elapsed AND at least `debounce` has passed since
-    /// the last flush (oracle parity; the second rule never binds under
-    /// trailing semantics and is kept as defensive parity).
+    /// the last flush (the second rule never binds under trailing semantics
+    /// and is kept defensively).
     fn ready(&self, now: Duration) -> bool {
         match self.last_change {
             Some(last) => {
@@ -291,8 +283,8 @@ impl Debouncer {
 /// paths) aborts the task as a safety net.
 pub struct Watcher {
     /// Keeps the notify backend (and its polling thread) alive; dropping the
-    /// watcher stops the poll loop (oracle `fw.watcher.Close()`). Never read —
-    /// retained purely for its drop side-effect.
+    /// watcher stops the poll loop. Never read — retained purely for its drop
+    /// side-effect.
     #[allow(dead_code)]
     poll: PollWatcher,
     stop_tx: watch::Sender<()>,
@@ -394,7 +386,7 @@ impl Watcher {
         self.batches.recv().await
     }
 
-    /// Graceful shutdown (oracle `FileWatcher.Stop`): signals the debounce
+    /// Graceful shutdown: signals the debounce
     /// loop and waits up to [`STOP_TIMEOUT`] for it to finish (aborting on
     /// timeout). The polling backend keeps running until the watcher is
     /// dropped ([`Drop`]), so the serve wiring drops the watcher after
@@ -462,9 +454,8 @@ async fn wait_timer(wait: Option<Duration>) {
     }
 }
 
-/// The watch list (oracle `setupFileWatcher` source loop): every non-disabled
-/// source of the global ontology, resolved to an absolute path and verified
-/// to be an existing directory.
+/// The watch list: every non-disabled source of the global ontology,
+/// resolved to an absolute path and verified to be an existing directory.
 fn watchable_sources(config: &Config) -> Result<Vec<PathBuf>, WatcherError> {
     // The ontology directory is per-dataset: <workspace_dir>/datasets/<name>/ontology.
     let Some(global) =
@@ -492,8 +483,7 @@ fn watchable_sources(config: &Config) -> Result<Vec<PathBuf>, WatcherError> {
     Ok(sources)
 }
 
-/// Resolves `path` against the current directory and normalizes it lexically
-/// (oracle `filepath.Abs`).
+/// Resolves `path` against the current directory and normalizes it lexically.
 fn abs_path(path: &str) -> Result<PathBuf, WatcherError> {
     let path = Path::new(path);
     let joined = if path.is_absolute() {
@@ -504,8 +494,8 @@ fn abs_path(path: &str) -> Result<PathBuf, WatcherError> {
     Ok(joined.components().collect())
 }
 
-/// Whether an event kind can change ingestable content (oracle parity:
-/// create, modify, remove; access/other/any are ignored).
+/// Whether an event kind can change ingestable content (create, modify,
+/// remove; access/other/any are ignored).
 fn relevant_kind(kind: &EventKind) -> bool {
     matches!(
         kind,

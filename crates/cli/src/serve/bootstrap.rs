@@ -1,15 +1,9 @@
 //! Bootstrap assembly (design D3): config → domains → onnx.yaml → db →
 //! model → provider → cache.
 //!
-//! Oracle mapping: `../synopsis/cmd/app/cmd.go` (`bootstrap`, `openDatabase`,
-//! `ensureEmbeddingModel`, `openCacheStore`) plus
-//! `internal/domain/domain_registry.go` (`DiscoveryWithLogger`).
-//!
-//! Architectural note on the dimension mismatch: in the Go oracle the
-//! mismatch surfaces from the vec0 SQLite virtual table at migrate time
-//! (`database.IsDimensionMismatchError`). In this codebase vectors live in
-//! the ANN index, not SQLite — the squashed DDL migrations can never produce
-//! a mismatch, and the check surfaces from the vector engine's `open` (the
+//! Note on the dimension mismatch: in this codebase vectors live in the ANN
+//! index, not SQLite — the squashed DDL migrations can never produce a
+//! mismatch, and the check surfaces from the vector engine's `open` (the
 //! [`create_vector_engine`] factory) as [`VectorsError::DimensionMismatch`].
 //! The [`Bootstrap::dimension_mismatch`] flag carries the non-fatal signal
 //! to the serve wiring (tasks 1.6/1.7); [`build_runner`] sets it when the
@@ -35,14 +29,13 @@ use vectors::{VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine
 
 use crate::error::CliError;
 
-/// Default local embedding model name (oracle `ensureEmbeddingModel` fallback).
+/// Default local embedding model name (fallback).
 const DEFAULT_MODEL_NAME: &str = "bge-m3-int8";
 
 /// Vector dimension mismatch between the configuration and the stored index.
 ///
-/// The Rust analogue of the oracle's `database.DimensionMismatchError`
-/// (`ConfigDim` / `DBDim`): `expected` is what the configuration declares
-/// (what new vectors will have), `actual` is what the stored index has.
+/// `expected` is what the configuration declares (what new vectors will
+/// have), `actual` is what the stored index has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DimensionMismatch {
     /// Dimensionality the configuration declares.
@@ -55,8 +48,7 @@ impl DimensionMismatch {
     /// Extracts the mismatch from a vectors error; `None` for every other
     /// variant.
     ///
-    /// The Rust analogue of the oracle's `database.IsDimensionMismatchError`:
-    /// the mismatch surfaces from the vector engine's `open` as
+    /// The mismatch surfaces from the vector engine's `open` as
     /// [`VectorsError::DimensionMismatch`], never from the DDL migrations.
     #[must_use]
     pub fn from_vectors_error(err: &VectorsError) -> Option<Self> {
@@ -84,14 +76,13 @@ pub struct Bootstrap {
     /// schema authority).
     pub db: Db,
     /// Separate LLM-NER cache database; `None` when it could not be opened
-    /// (nil-on-failure port of the oracle's `openCacheStore`).
+    /// (nil-on-failure).
     pub cache: Option<Db>,
     /// Ready embedding provider.
     pub embed: Arc<dyn EmbeddingProvider>,
     /// External ONNX registry (`onnx.yaml`).
     pub onnx: OnnxConfig,
-    /// Source-type registry (oracle `NewRunner` bookkeeping); `None` until
-    /// [`build_runner`] assembles it.
+    /// Source-type registry; `None` until [`build_runner`] assembles it.
     pub registry: Option<Registry>,
     /// NER prompt templates (loaded from `paths.prompts_path` with the
     /// embedded fallback); `None` until [`build_runner`] loads them.
@@ -126,9 +117,8 @@ pub fn has_active_dataset(config: &Config) -> bool {
 /// over `config.dataset.name` before any path resolution. The knowledge-DB
 /// path is derived, not configurable (revision 1.1):
 /// `<workspace_dir>/datasets/<name>/state/db/knowledge.db`. The assembly
-/// order mirrors the oracle: config → dataset gate → domain discovery →
-/// onnx.yaml → main database → model provisioning → provider → cache
-/// database.
+/// order: config → dataset gate → domain discovery → onnx.yaml → main
+/// database → model provisioning → provider → cache database.
 ///
 /// No-data semantics (design D2): without an active dataset
 /// ([`has_active_dataset`]) the ontology load is skipped, the server runs
@@ -152,7 +142,6 @@ pub fn bootstrap(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Boot
     }
 
     // 2. Embeddings mode gate: this build ships the local ONNX provider only.
-    //    (The oracle supports an api provider; see the change report.)
     match &config.embeddings.mode {
         EmbeddingsMode::Local => {}
         EmbeddingsMode::Api => {
@@ -171,8 +160,8 @@ pub fn bootstrap(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Boot
         }
     }
 
-    // 3. Dataset gate (design D2) + domain discovery (port of
-    //    domain.DiscoveryWithLogger). The ontology directory is per-dataset:
+    // 3. Dataset gate (design D2) + domain discovery. The ontology directory
+    //    is per-dataset:
     //    <workspace_dir>/datasets/<name>/ontology. Without an active dataset
     //    there is no ontology to load and nothing to ingest: run with no
     //    data (a warning, never an error).
@@ -229,8 +218,8 @@ pub fn bootstrap(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Boot
 /// the sole schema authority.
 ///
 /// All failures are fatal: the squashed DDL migrations contain no vector
-/// dimension, so the oracle's non-fatal `IsDimensionMismatchError` branch has
-/// no counterpart at this layer (see [`Bootstrap::dimension_mismatch`]).
+/// dimension, so a dimension mismatch cannot surface at this layer (see
+/// [`Bootstrap::dimension_mismatch`]).
 ///
 /// # Errors
 ///
@@ -242,13 +231,12 @@ pub fn open_db(path: &Path) -> Result<Db, CliError> {
 }
 
 /// Provisions the configured local embedding model, auto-downloading it on
-/// first use (oracle `ensureEmbeddingModel`).
+/// first use.
 ///
 /// No-op in api mode; skips the download when an explicit `model_path` is
-/// set (legacy mode). Deliberately does NOT mutate the config: the Rust
-/// provider factory resolves the registry model itself (with the dimension
-/// cross-check against `onnx.yaml`), so the oracle's
-/// `cfg.Embeddings.Local.ModelPath = modelPath` mutation has no counterpart.
+/// set (legacy mode). Deliberately does NOT mutate the config: the provider
+/// factory resolves the registry model itself (with the dimension
+/// cross-check against `onnx.yaml`).
 ///
 /// # Errors
 ///
@@ -277,8 +265,7 @@ pub fn ensure_model(config: &Config, onnx: &OnnxConfig) -> Result<(), CliError> 
 /// Opens the separate cache database (cache schema ONLY — never the
 /// knowledge schema; `Db::open_cache` applies the cache migrations, task
 /// 1.9, storage-layout-restructure). Returns `None` (not an error) when it
-/// cannot be opened — the application continues without caching (nil-on-
-/// failure port of the oracle's `openCacheStore`).
+/// cannot be opened — the application continues without caching.
 pub fn open_cache(path: &Path) -> Option<Db> {
     match Db::open_cache(path) {
         Ok(db) => {
@@ -297,12 +284,12 @@ pub fn open_cache(path: &Path) -> Option<Db> {
 }
 
 /// Discovers the global ontology and the per-domain ontologies under
-/// `<ontology_dir>/domains/*.xml` (port of `domain.DiscoveryWithLogger`).
+/// `<ontology_dir>/domains/*.xml`.
 ///
-/// File-presence semantics follow the oracle: an empty directory name or a
-/// missing `global.xml` / `domains/` directory yields an empty result, not
-/// an error. A domain name that appears in more than one file is a
-/// validation error (oracle `Register`).
+/// File-presence semantics: an empty directory name or a missing
+/// `global.xml` / `domains/` directory yields an empty result, not an
+/// error. A domain name that appears in more than one file is a
+/// validation error.
 ///
 /// # Errors
 ///
@@ -343,7 +330,7 @@ pub fn discover_domains(
             continue;
         }
         let path = entry.path();
-        // Oracle parity: `filepath.Match("*.xml", name)` — case-sensitive.
+        // Case-sensitive `*.xml` extension filter.
         if path.extension().is_none_or(|ext| ext != "xml") {
             continue;
         }
@@ -359,9 +346,9 @@ pub fn discover_domains(
     Ok((global, domains))
 }
 
-/// Builds the source-type registry from the chunking config (oracle
-/// `NewRunner` registry construction): every supported format gets its
-/// parser + chunker pair, keyed by the `global.xml` `type` word.
+/// Builds the source-type registry from the chunking config: every
+/// supported format gets its parser + chunker pair, keyed by the
+/// `global.xml` `type` word.
 ///
 /// Public because the serve wiring (task 1.6) builds the registry as an
 /// owned local before constructing the `Runner` (the runner borrows the

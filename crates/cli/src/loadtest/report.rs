@@ -1,6 +1,4 @@
 //! Report formatting (human-readable table + JSON).
-//!
-//! Oracle: `../synopsis/internal/benchmark/report.go`.
 
 use std::collections::HashMap;
 
@@ -131,7 +129,7 @@ pub fn render(report: &Report) -> String {
     out
 }
 
-/// Emulates Go's `text/tabwriter`: min width 2, padding 2, right-aligned columns.
+/// Tabwriter-style table: min width 2, padding 2, right-aligned columns.
 fn tabulate(header: &[String], rows: &[Vec<String>]) -> String {
     let ncols = header.len();
     let mut widths: Vec<usize> = header.iter().map(|h| h.len().max(2)).collect();

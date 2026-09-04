@@ -51,8 +51,8 @@ impl AsRef<Path> for TempDir {
     }
 }
 
-/// The ONNX registry platform key of this machine (oracle naming:
-/// `linux-amd64`, `darwin-arm64`, …).
+/// The ONNX registry platform key of this machine (`linux-amd64`,
+/// `darwin-arm64`, …).
 fn platform_key() -> (&'static str, &'static str) {
     let os = match std::env::consts::OS {
         "macos" => "darwin",
@@ -311,7 +311,7 @@ fn discover_domains_loads_global_and_domains() {
         r#"<domain name="beta" version="1.0"></domain>"#,
     )
     .expect("write beta.xml");
-    // Non-XML files are ignored (oracle `filepath.Match("*.xml", …)`).
+    // Non-XML files are ignored (only `*.xml` entries are matched).
     std::fs::write(ontology.join("domains").join("README.md"), b"ignored").expect("write md");
 
     let (global, domains) =

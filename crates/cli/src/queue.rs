@@ -1,9 +1,8 @@
 //! `queue` subcommand body: inspect and repair the document job queue
 //! (`document_jobs`, migration `2-document-jobs`).
 //!
-//! New Rust operational command (document-jobs-queue task 1.7): the Go oracle
-//! ingests synchronously and has no equivalent queue or command, so there is
-//! no oracle mapping and no parity requirement.
+//! New Rust operational command (document-jobs-queue task 1.7): the document
+//! job queue is a native concept with its own operational surface.
 //!
 //! - `queue status [--source PATH] [--status NAME]` prints the queue table
 //!   (columns: path, source, status, attempts, last_error, next_attempt_at)

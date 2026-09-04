@@ -3,9 +3,8 @@
 //! [`CliError`] wraps every upstream failure that can surface while the
 //! `synopsis` binary bootstraps or runs a subcommand (config, database,
 //! embedding, vectors) into one enum, and [`CliError::exit_code`] maps it to
-//! the process exit code. The Go oracle exits 1 for every fatal startup error
-//! (`os.Exit(1)` / `log.Fatal`) and 0 on success, so every variant maps to
-//! [`ExitCode::FAILURE`].
+//! the process exit code. The binary exits 1 for every fatal startup error
+//! and 0 on success, so every variant maps to [`ExitCode::FAILURE`].
 
 use std::process::ExitCode;
 
@@ -52,7 +51,7 @@ pub enum CliError {
 impl CliError {
     /// The process exit code for this error.
     ///
-    /// Oracle parity: every fatal startup error exits 1; success exits 0.
+    /// Every fatal startup error exits 1; success exits 0.
     /// Kept as a method so a future variant can map to a distinct code
     /// without touching the call sites.
     #[must_use]

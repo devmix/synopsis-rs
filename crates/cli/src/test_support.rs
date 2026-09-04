@@ -12,8 +12,8 @@ use std::time::Duration;
 use crate::error::CliError;
 use crate::serve::bootstrap::Bootstrap;
 
-/// The serve graceful-shutdown bound (oracle `shutdownCtx`: 10 s): the
-/// shutdown-timing assertions bound themselves against it plus margin.
+/// The serve graceful-shutdown bound (10 s): the shutdown-timing assertions
+/// bound themselves against it plus margin.
 pub const SHUTDOWN_TIMEOUT: Duration = crate::serve::server::SHUTDOWN_TIMEOUT;
 
 /// Delegate for the `pub(crate)`

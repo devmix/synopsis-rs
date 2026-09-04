@@ -1,17 +1,13 @@
 //! Startup health check (design D4).
 //!
-//! Oracle mapping: `../synopsis/cmd/app/serve.go` (`runHealthCheck`).
-//!
 //! Log-only by contract: the caller treats a returned error as a warning,
 //! never fatal. The database ping is the single hard probe (an error is
-//! returned, mirroring the oracle); the document count and the embedding
-//! probe are logged inline.
+//! returned); the document count and the embedding probe are logged inline.
 //!
-//! One deliberate deviation: the oracle builds a FRESH provider instance for
-//! the probe (its runner does not exist yet at health-check time). Here the
-//! provider is already built by the bootstrap, and building a second ONNX
-//! session for a probe would be pure waste — the probe verifies the live
-//! instance instead (name + dimension against the config).
+//! Design decision: the probe verifies the provider instance already built
+//! by the bootstrap (name + dimension against the config) instead of
+//! building a fresh one — a second ONNX session for a probe would be pure
+//! waste.
 
 use config::Config;
 use db::{ConnectionOrTx, Db, DocumentDao, DocumentFilter};
@@ -27,7 +23,7 @@ use crate::error::CliError;
 /// # Errors
 ///
 /// [`CliError::Db`] when the database ping fails (the caller logs a warning
-/// and continues, mirroring the oracle's `log.Warn` on the returned error).
+/// and continues).
 pub fn run_health_check(
     db: &Db,
     embed: &dyn EmbeddingProvider,
@@ -35,7 +31,7 @@ pub fn run_health_check(
 ) -> Result<(), CliError> {
     tracing::info!("startup health check started");
 
-    // 1. Database connectivity (oracle `db.DB().Ping()`).
+    // 1. Database connectivity.
     match db.with_conn(|conn| conn.query_row("SELECT 1", [], |row| row.get::<_, i32>(0))) {
         Ok(_) => tracing::info!(
             component = "database",
@@ -53,7 +49,7 @@ pub fn run_health_check(
         }
     }
 
-    // 2. Check for existing data (oracle `DocumentDAO.Count`).
+    // 2. Check for existing data.
     let count = db.with_conn(|conn| {
         DocumentDao::new(ConnectionOrTx::Connection(conn)).count(&DocumentFilter::default())
     });

@@ -1,9 +1,7 @@
 //! Benchmark runner: drives `mcp::Server::dispatch` for N iterations.
 //!
-//! Oracle: `../synopsis/internal/benchmark/runner.go`.
-//!
-//! **Deviation:** the oracle had 14 tools; `search_lexical` and
-//! `search_semantic` do not exist as MCP tools in the Rust port.
+//! Note: `search_lexical` and `search_semantic` are not MCP tools, so they
+//! are not benchmarked.
 
 use std::time::Instant;
 

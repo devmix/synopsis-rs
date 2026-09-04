@@ -1,14 +1,13 @@
 //! Configuration file path resolution (design D1).
 //!
-//! Port of the oracle's `resolveConfigPath` / `resolveConfigCandidates`
-//! (`../synopsis/cmd/app/main.go`): an explicit `--config` path wins outright;
-//! otherwise `config.{preset}.yaml` is searched relative to the executable
+//! An explicit `--config` path wins outright; otherwise
+//! `config.{preset}.yaml` is searched relative to the executable
 //! first, then relative to the CWD, with a final fallback that lets
 //! `config::load` surface the error.
 //!
-//! Deliberate deviation from the oracle (design D1): the oracle resolves
-//! symlinks of the executable path; Rust binaries are not symlinked in this
-//! deployment, so `std::env::current_exe()` is used as-is.
+//! Design (D1): the executable path is not symlink-resolved; Rust binaries
+//! are not symlinked in this deployment, so `std::env::current_exe()` is
+//! used as-is.
 
 use std::path::{Path, PathBuf};
 

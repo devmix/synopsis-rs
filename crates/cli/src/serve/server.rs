@@ -1,9 +1,8 @@
 //! MCP mount and graceful shutdown (design D4 + D7).
 //!
-//! Oracle mapping: `../synopsis/cmd/app/serve.go` (`runServe`): bootstrap →
-//! port override → dimension-mismatch handling → startup health check →
-//! runner → initial sync → document worker → graph load → searcher → MCP
-//! server → file watcher → signal wait → graceful shutdown.
+//! Flow: bootstrap → port override → dimension-mismatch handling → startup
+//! health check → runner → initial sync → document worker → graph load →
+//! searcher → MCP server → file watcher → signal wait → graceful shutdown.
 //!
 //! # Owner-thread architecture (verified runtime-context constraint)
 //!
@@ -48,31 +47,29 @@
 //! connection and assembles a fresh (cheap) hybrid searcher on it. After a
 //! graph reload the serve loop constructs a fresh handle (with the
 //! reloaded index) and swaps it — plus the graph handle — into the MCP
-//! server (design D8 re-architecture of the oracle's `SetGraph` mutation;
-//! see [`mcp::Server::set_searcher`] / [`mcp::Server::set_graph`]).
+//! server (design D8: an explicit handle swap instead of an in-place
+//! mutation; see [`mcp::Server::set_searcher`] / [`mcp::Server::set_graph`]).
 //!
 //! # Dimension-mismatch rebuild
 //!
 //! In the Rust codebase the mismatch surfaces from the ANN engine at open
 //! time, so the auto-rebuild drops the stored vector table and recreates
 //! the engine, then clears the knowledge DB tables in place and re-enqueues
-//! every source through the startup reconcile — clear-then-queue (the Rust
-//! form of the oracle's `DropVectorTable` + `ReEmbedChunks`); the worker
-//! re-embeds every file.
+//! every source through the startup reconcile — clear-then-queue; the
+//! worker re-embeds every file.
 //!
 //! # Shutdown
 //!
 //! SIGINT/SIGTERM (design D7) are installed as a spawned task (the tokio
 //! signal API needs a runtime handle) and feed a broadcast the owner loop
 //! selects on. axum stops accepting and drains in-flight requests; the
-//! serve task and the watcher debounce task stop under one 10 s bound
-//! (oracle `shutdownCtx`). The document worker runs inline on the owner
-//! thread, so it stops with the loop — no separate abort.
+//! serve task and the watcher debounce task stop under one 10 s bound.
+//! The document worker runs inline on the owner thread, so it stops with
+//! the loop — no separate abort.
 //!
-//! # Deviation
+//! # Exit behavior
 //!
-//! A serve error exits non-zero; the oracle logged the server error and
-//! exited 0 (a bug — a bind failure must not look like success).
+//! A serve error exits non-zero: a bind failure must not look like success.
 
 use std::io;
 use std::path::PathBuf;
@@ -102,9 +99,9 @@ use crate::serve::bootstrap::{self, Bootstrap};
 use crate::serve::health::run_health_check;
 use crate::serve::watcher::{ChangeHandler, IngestChangeHandler, Watcher};
 
-/// Graceful-shutdown bound (oracle `shutdownCtx`: 10 s). `pub(crate)` so
-/// the integration tests can bound their shutdown-timing assertions against
-/// it (re-exported through [`crate::test_support`]).
+/// Graceful-shutdown bound (10 s). `pub(crate)` so the integration tests
+/// can bound their shutdown-timing assertions against it (re-exported
+/// through [`crate::test_support`]).
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One `serve` invocation: the effective config path plus the per-command
@@ -315,7 +312,7 @@ pub fn serve_with_stop(
     // `apply_defaults` (bootstrap) materializes an absent section.
     let auto_update = boot.config.auto_update.clone().unwrap_or_default();
 
-    // Startup health check (log-only; the oracle continues on errors).
+    // Startup health check (log-only; serve continues on errors).
     if let Err(err) = run_health_check(&boot.db, boot.embed.as_ref(), &boot.config) {
         tracing::warn!(error = %err, "startup health check failed");
     }
@@ -324,7 +321,7 @@ pub fn serve_with_stop(
     // is cloned into owned locals before the ingestion `Runner` is
     // constructed. The `Runner` borrows these locals (not `boot`), so the
     // bootstrap state is no longer pinned by its borrow for the whole
-    // owner loop — the Rust form of the oracle's single shared struct.
+    // owner loop.
     let db = boot.db.clone();
     let cache = boot.cache.clone();
     let embed = boot.embed.clone();
@@ -334,8 +331,7 @@ pub fn serve_with_stop(
 
     // Runner assembly + vector dimension-mismatch handling (D4). The
     // mismatch surfaces from the ANN engine at open time; auto-rebuild
-    // recreates the engine and forces a clear + re-enqueue below (the Rust
-    // form of the oracle's `rebuildVectorsIfNeeded` → `ReEmbedChunks`). The
+    // recreates the engine and forces a clear + re-enqueue below. The
     // engine is opened before the runner so its `Arc` can be captured
     // into a local while `boot` is still borrowable.
     let mut force_rebuild = false;
@@ -406,12 +402,11 @@ pub fn serve_with_stop(
     if force_rebuild {
         // The vector engine was recreated: the stored vectors are gone, and
         // the producer's content-hash diff cannot force re-embedding of
-        // unchanged documents. The recovery is clear-then-queue (the Rust
-        // form of the oracle's `ReEmbedChunks`): clear the knowledge DB
-        // tables IN PLACE (the `Db` handle is still open and borrowed by
-        // the runner/job queue/worker — deleting the state directory would
-        // orphan the pooled connections), then run the same startup
-        // reconcile so the worker re-embeds every source file.
+        // unchanged documents. The recovery is clear-then-queue: clear the
+        // knowledge DB tables IN PLACE (the `Db` handle is still open and
+        // borrowed by the runner/job queue/worker — deleting the state
+        // directory would orphan the pooled connections), then run the same
+        // startup reconcile so the worker re-embeds every source file.
         tracing::info!("forced rebuild started (clear dataset tables + queue reconcile)");
         clear_dataset_tables(&db)?;
         let (enqueued_indexed, enqueued_deleted, failed_sources) =
@@ -525,7 +520,7 @@ pub fn serve_with_stop(
     // debounce task, so it runs inside a brief runtime-context entry; the
     // change handler itself runs on the owner thread (the `!Send` runner
     // seam, watcher module docs). Setup failure is a warning without the
-    // watcher (oracle parity).
+    // watcher.
     let mut watcher: Option<Watcher> = None;
     let mut handler: Option<IngestChangeHandler<'_>> = None;
     if auto_update.enabled && auto_update.watch_sources {
@@ -739,8 +734,7 @@ fn now_unix_seconds() -> i64 {
 }
 
 /// Drops the stored ANN table and recreates the engine with the configured
-/// dimension (the Rust form of the oracle's `DropVectorTable` +
-/// `InitVectorTable` inside `ReEmbedChunks`).
+/// dimension.
 pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
     let index_config = bootstrap::vectors_index_config(&boot.config)?;
     // The ANN index is per-dataset and per-engine:
