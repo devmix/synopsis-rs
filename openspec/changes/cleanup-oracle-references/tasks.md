@@ -247,7 +247,7 @@ text.
 \.tmpl' openspec/config.yaml docs/adr/` → **0** (except legitimate non-Go
 uses). `config.yaml` still valid YAML.
 
-- [ ] 2.3 Clean `openspec/specs/**` (Russian)
+- [x] 2.3 Clean `openspec/specs/**` (Russian)
 
 **Scope.** all `openspec/specs/*/spec.md` (Russian; refs found in
 `config-format`, `cli-surface`, `data-schema`, `db-storage`, `mcp-contract`,
