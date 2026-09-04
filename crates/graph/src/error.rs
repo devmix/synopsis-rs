@@ -34,24 +34,24 @@ pub enum GraphError {
     #[error("storage error: {0}")]
     Db(#[from] db::DbError),
     /// A finder input was empty after normalization (a caller bug: an empty
-    /// name or query cannot match — the oracle's "pattern must not be empty"
-    /// for `FindEntityPartial`, task 1.3).
+    /// name or query cannot match — the partial entity finder rejects an
+    /// empty pattern, task 1.3).
     #[error("empty query: {what} must not be empty")]
     EmptyQuery {
         /// Which argument was empty.
         what: &'static str,
     },
-    /// The requested entity is not present in the index (the oracle's
-    /// "start node %d not found" from `BFS`, task 1.4).
+    /// The requested entity is not present in the index (the BFS start-node
+    /// check, task 1.4).
     #[error("entity {entity_id} not found in graph")]
     EntityNotFound {
         /// The missing entity row id.
         entity_id: i64,
     },
     /// An ontology linking rule evaluated to a non-boolean value (task 1.9):
-    /// the oracle type-checks rules against `cel.BoolType` at compile time,
-    /// but the `cel` crate's `Program::compile` is parse-only, so the check
-    /// happens at evaluation.
+    /// rules are expected to evaluate to a boolean, but the `cel` crate's
+    /// `Program::compile` is parse-only, so the type check happens at
+    /// evaluation.
     #[error("linking rule {name:?} must evaluate to a boolean")]
     NonBooleanRule {
         /// The rule's name.

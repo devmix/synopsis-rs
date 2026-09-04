@@ -1,9 +1,6 @@
 //! Knowledge graph: entity storage over SQLite with a derived in-memory
 //! index, and CEL-based cross-domain entity linking.
 //!
-//! The Go code is a reference for behavior and contracts only, not a code
-//! blueprint.
-//!
 //! Architecture (design D1, hybrid storage): the `entities` / `entity_links`
 //! tables in SQLite (accessed through the `db` crate DAOs) are the single
 //! source of truth. This crate builds a `petgraph::DiGraph` plus

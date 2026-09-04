@@ -1,7 +1,5 @@
-//! Domain-bounded BFS traversal (task 1.4, design D4).
-//!
-//! The contract is ported verbatim; the implementation is re-architected
-//! on the petgraph `DiGraph`.
+//! Domain-bounded BFS traversal (task 1.4, design D4), implemented on the
+//! petgraph `DiGraph`.
 //!
 //! ## Contract (D4)
 //!
@@ -14,7 +12,7 @@
 //! - `relation_types` filter (empty = no filter);
 //! - `follow_entity_links`: the only key to cross-domain steps.
 //!
-//! **Domain boundary rules** (the oracle's contract):
+//! **Domain boundary rules**:
 //! - a **fact** edge to an entity in another domain is **never** traversed,
 //!   regardless of `follow_entity_links`;
 //! - an **entity-link** edge to another domain is traversed **only** when
@@ -23,42 +21,35 @@
 //! The result ([`TraverseResult`]) holds the center entity, all discovered
 //! nodes (center first, then discovery order) and exactly one edge per
 //! discovered non-center node — the edge that led to it — so
-//! `edges.len() == nodes.len() - 1 <= nodes.len()` (the oracle's
-//! `len(Edges) <= len(Nodes)`).
+//! `edges.len() == nodes.len() - 1 <= nodes.len()`.
 //!
 //! ## Determinism (pinned)
 //!
 //! The result does not depend on hash order, DB row order or edge insertion
 //! order:
 //! - within a BFS level, nodes are expanded in **ascending entity id**
-//!   order (the oracle's sorted levels);
+//!   order (sorted levels);
 //! - for each node, candidate edges are expanded **fact edges first**
 //!   (sorted by source id, target id, relation type), then **entity-link
 //!   edges** (same key). Fact-first keeps the fact edge's provenance when a
-//!   pair has both a fact edge and a link (the oracle's m-12 behavior);
-//!   ties on the same (source, target) pair break by relation type, so the
-//!   winner never depends on DB row order.
+//!   pair has both a fact edge and a link; ties on the same (source, target)
+//!   pair break by relation type, so the winner never depends on DB row
+//!   order.
 //!
-//! ## Conscious deviations from the oracle
+//! ## Design decisions
 //!
-//! - **Cross-domain fact edge with a link between the pair.** The oracle's
-//!   boundary check (`HasEntityLinkBetween`) allowed a cross-domain FACT
-//!   edge to be traversed when an entity link happened to exist between the
-//!   pair — contradicting its own comment ("Fact edges crossing domains are
-//!   never traversable even with FollowEntityLinks == true") and the D4
-//!   contract ("unconditional rule"). Here the edge KIND decides: a
-//!   cross-domain fact edge is always blocked; the neighbor is discovered
-//!   via the link edge instead (with link provenance in the result).
-//! - **Numeric sort keys.** The oracle sorted candidate edges by the
-//!   lexicographic string `"src-tgt"` (multi-digit ids misorder:
-//!   `"10-2" < "2-1"`). Here: numeric `(source id, target id, relation
-//!   type)`.
-//! - **No cancellation.** The oracle's `context.Context` is a Go idiom; the
-//!   Rust API is synchronous (callers wrap it in `spawn_blocking` where
-//!   cancellation is needed).
+//! - **Cross-domain fact edge with a link between the pair.** The edge KIND
+//!   decides: a cross-domain fact edge is always blocked (the D4
+//!   "unconditional rule"), even when an entity link exists between the
+//!   pair; the neighbor is discovered via the link edge instead (with link
+//!   provenance in the result).
+//! - **Numeric sort keys.** Candidate edges are sorted by the numeric
+//!   `(source id, target id, relation type)` key (a lexicographic `"src-tgt"`
+//!   string would misorder multi-digit ids: `"10-2" < "2-1"`).
+//! - **No cancellation.** The API is synchronous (callers wrap it in
+//!   `spawn_blocking` where cancellation is needed).
 //! - **Edge endpoints in the result.** Petgraph edge references are
-//!   internal, so [`TraversalEdge`] carries entity row ids (the oracle's
-//!   `SourceID`/`TargetID`).
+//!   internal, so [`TraversalEdge`] carries entity row ids.
 //!
 //! Task 1.8 (`path_exists`) reuses the same boundary rule.
 
@@ -71,27 +62,28 @@ use petgraph::visit::EdgeRef;
 use crate::error::GraphError;
 use crate::graph::{EdgeKind, EntityNode, Graph, GraphEdge};
 
-/// Default maximum depth (the oracle's `ApplyDefaults`).
+/// Default maximum depth (filled in by [`TraverseOptions::normalized`]).
 pub const DEFAULT_MAX_DEPTH: u32 = 5;
-/// Hard maximum depth (the oracle's `ApplyDefaults`).
+/// Hard maximum depth (values above it are clamped by
+/// [`TraverseOptions::normalized`]).
 pub const HARD_MAX_DEPTH: u32 = 10;
-/// Default maximum number of result nodes, start included (the oracle's
-/// `ApplyDefaults`).
+/// Default maximum number of result nodes, start included (filled in by
+/// [`TraverseOptions::normalized`]).
 pub const DEFAULT_MAX_NODES: usize = 1000;
 
-/// Which edges to follow during traversal (the oracle's `Direction`).
+/// Which edges to follow during traversal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Direction {
     /// Follow only edges leaving each expanded node.
     Outgoing,
     /// Follow only edges entering each expanded node.
     Incoming,
-    /// Follow both (the default; the oracle's `"both"`).
+    /// Follow both (the default).
     #[default]
     Both,
 }
 
-/// Traversal parameters (the oracle's `BFSOptions`).
+/// Traversal parameters.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TraverseOptions {
     /// Maximum BFS depth; `0` → [`DEFAULT_MAX_DEPTH`], values above
@@ -109,9 +101,8 @@ pub struct TraverseOptions {
 }
 
 impl TraverseOptions {
-    /// Effective parameters after normalization (the oracle's
-    /// `ApplyDefaults`): `max_depth` `0` → default, clamped to the hard
-    /// max; `max_nodes` `0` → default.
+    /// Effective parameters after normalization: `max_depth` `0` → default,
+    /// clamped to the hard max; `max_nodes` `0` → default.
     pub fn normalized(&self) -> Self {
         let max_depth = if self.max_depth == 0 {
             DEFAULT_MAX_DEPTH
@@ -133,8 +124,8 @@ impl TraverseOptions {
     }
 }
 
-/// An edge in the traversal result (the oracle's `Edge`): endpoints as
-/// entity row ids plus the edge's identity and provenance.
+/// An edge in the traversal result: endpoints as entity row ids plus the
+/// edge's identity and provenance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraversalEdge {
     /// Source entity row id (the edge's stored direction).
@@ -153,7 +144,7 @@ pub struct TraversalEdge {
     pub evidence: Option<String>,
 }
 
-/// The traversal result (the oracle's `GraphResult`).
+/// The traversal result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraverseResult {
     /// The center (start) entity.
@@ -166,8 +157,8 @@ pub struct TraverseResult {
 }
 
 impl Graph {
-    /// Breadth-first search from `start_entity_id` (the oracle's `BFS`)
-    /// with the D4 domain-boundary rules.
+    /// Breadth-first search from `start_entity_id` with the D4
+    /// domain-boundary rules.
     ///
     /// See the module docs for the full contract and the pinned
     /// determinism order. [`GraphError::EntityNotFound`] if the start
@@ -311,7 +302,7 @@ fn sort_candidates(
     });
 }
 
-/// The oracle's `matchesRelationType`: an empty filter passes everything.
+/// Relation-type filter check: an empty filter passes everything.
 fn relation_type_allowed(relation_type: &str, allowed: &[String]) -> bool {
     allowed.is_empty() || allowed.iter().any(|t| t == relation_type)
 }
@@ -415,9 +406,8 @@ mod tests {
         Graph::from_rows(entities, facts, Vec::new())
     }
 
-    /// Cross-domain pair with a fact edge A→D AND a link D→A (the oracle
-    /// bug-fix case: the fact edge must stay blocked, D is reached via the
-    /// link).
+    /// Cross-domain pair with a fact edge A→D AND a link D→A (the fact edge
+    /// must stay blocked, D is reached via the link).
     fn fact_plus_link_cross_graph() -> Graph {
         let entities = vec![
             entity(1, "PERSON", "Alice", "hr"),
@@ -479,8 +469,7 @@ mod tests {
 
     // ── domain boundary (the core D4 contract) ──────────────────────────────
 
-    // Acceptance: a cross-domain FACT edge is blocked under BOTH flag values
-    // (the oracle's `TestBFSWithFollowEntityLinks_FactEdgeNoCrossDomain`).
+    // Acceptance: a cross-domain FACT edge is blocked under BOTH flag values.
     #[test]
     fn fact_boundary_blocked_under_both_flag_values() {
         let graph = fact_only_cross_graph();
@@ -496,9 +485,7 @@ mod tests {
     }
 
     // Acceptance: an entity-link crossing is allowed ONLY when
-    // follow_entity_links=true (the oracle's
-    // `TestBFSWithoutFollowEntityLinks_SameDomainOnly` /
-    // `TestBFSWithFollowEntityLinks_CrossDomainViaLinks`).
+    // follow_entity_links=true.
     #[test]
     fn entity_link_crossing_allowed_per_flag() {
         let graph = two_domain_graph();
@@ -532,10 +519,9 @@ mod tests {
         }
     }
 
-    // Conscious deviation (oracle bug fix): a cross-domain fact edge stays
-    // blocked even when an entity link exists between the pair (the oracle's
-    // `HasEntityLinkBetween` check allowed it — against its own comment and
-    // the D4 "unconditional rule"). The neighbor is reached via the LINK edge.
+    // Design: a cross-domain fact edge stays blocked even when an entity
+    // link exists between the pair (the D4 "unconditional rule"). The
+    // neighbor is reached via the LINK edge.
     #[test]
     fn cross_domain_fact_blocked_even_when_link_exists() {
         let graph = fact_plus_link_cross_graph();
@@ -559,8 +545,8 @@ mod tests {
         );
     }
 
-    // The oracle's m-12 behavior, kept: for a pair that has BOTH a fact edge
-    // and a link (same domain), the fact edge's provenance wins.
+    // For a pair that has BOTH a fact edge and a link (same domain), the
+    // fact edge's provenance wins.
     #[test]
     fn fact_provenance_wins_for_dual_pair() {
         let entities = vec![
@@ -584,8 +570,8 @@ mod tests {
 
     // ── directions ──────────────────────────────────────────────────────────
 
-    // Acceptance: all three directions give the correct adjacency (the oracle's
-    // determinism tests for Outgoing/Incoming + the both-direction contract).
+    // Acceptance: all three directions give the correct adjacency (the
+    // both-direction contract).
     #[test]
     fn directions_give_correct_adjacency() {
         let graph = two_domain_graph();
@@ -730,8 +716,7 @@ mod tests {
 
     // ── errors, normalization, filters, degenerate graphs ───────────────────
 
-    // Acceptance: an unknown start entity is an explicit error (the oracle's
-    // "start node %d not found").
+    // Acceptance: an unknown start entity is an explicit error.
     #[test]
     fn unknown_start_entity_is_an_error() {
         let graph = two_domain_graph();
@@ -744,16 +729,12 @@ mod tests {
         );
     }
 
-    // Acceptance: option normalization (the oracle's zero value +
-    // `ApplyDefaults`): `Default` is the zero value, `normalized()` fills the
-    // effective defaults.
+    // Acceptance: option normalization: `Default` is the zero value,
+    // `normalized()` fills the effective defaults.
     #[test]
-    fn options_normalize_like_the_oracle() {
+    fn options_normalize_to_defaults() {
         let def = TraverseOptions::default();
-        assert_eq!(
-            def.max_depth, 0,
-            "zero value, like the oracle's zero-valued BFSOptions"
-        );
+        assert_eq!(def.max_depth, 0, "zero value");
         assert_eq!(def.max_nodes, 0);
         assert_eq!(def.direction, Direction::Both);
         assert!(def.relation_types.is_empty());
@@ -841,7 +822,7 @@ mod tests {
     }
 
     // Entity-link provenance (method/confidence/evidence) survives into the
-    // result (the oracle's m-10).
+    // result.
     #[test]
     fn entity_link_provenance_preserved() {
         let graph = two_domain_graph();

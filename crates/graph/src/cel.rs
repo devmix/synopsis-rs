@@ -17,10 +17,9 @@
 //!   `path_exists` over the in-memory graph, served by the lazy
 //!   [`ReachabilityIndex`] slot. [`register_graph_functions`] installs both
 //!   on an engine in one call.
-//! - [`ScopeCache`] — per-evaluation lazy indexes (the Rust re-design of the
-//!   oracle's `scope_cache.go`): heavy data is built by the first function
-//!   call that needs it and shared by every later call in the same
-//!   evaluation.
+//! - [`ScopeCache`] — per-evaluation lazy indexes: heavy data is built by
+//!   the first function call that needs it and shared by every later call
+//!   in the same evaluation.
 //!
 //! # Threading model (design D7)
 //!
@@ -92,14 +91,13 @@
 //! name).
 //!
 //! **Missing entity:** an entity id without rows yields the EMPTY list /
-//! `false` — never an error (oracle parity: `FactIndex.Lookup` /
-//! `ChunkIndex.Texts` return empty on a miss).
+//! `false` — never an error (a lookup miss is an empty result).
 //!
 //! **Storage failure:** a db error while building an index (e.g. the table
 //! was dropped) is bridged with `ExecutionError::function_error` and
 //! surfaces as [`GraphError::CelEval`] from ALL four functions — a broken
-//! database must not silently produce "no link" decisions (deviation from
-//! the oracle, see below).
+//! database must not silently produce "no link" decisions (see the design
+//! decisions below).
 //!
 //! # Verified `cel` 0.14 API notes (registry sources, re-verified in 1.6)
 //!
@@ -128,64 +126,48 @@
 //!   into CEL with `ExecutionError::function_error(name, msg)`; the engine
 //!   surfaces them as [`GraphError::CelEval`].
 //!
-//! # Deviations from the oracle (conscious)
+//! # Design decisions
 //!
-//! - The oracle's `ScopeCache` is ONE long-lived cache owned by the engine;
-//!   its TTL expiry field is never set by the linker, so entries can go
-//!   stale. Here every evaluation gets a FRESH cache that dies with the
-//!   evaluation: simpler, and a changed database is always re-read.
-//! - The oracle re-extends the cel-go environment per registration; the
-//!   `cel` crate has no environment extension — functions are installed on
-//!   the per-evaluation context instead (the installer pattern above).
+//! - Every evaluation gets a FRESH [`ScopeCache`] that dies with the
+//!   evaluation: simpler than a single long-lived engine-owned cache (whose
+//!   TTL expiry is never set, so entries can go stale), and a changed
+//!   database is always re-read.
+//! - The `cel` crate has no environment extension — functions are installed
+//!   on the per-evaluation context instead (the installer pattern above).
 //! - The D5 "GraphIndex" lazy slot is named [`ReachabilityIndex`]: the name
 //!   `GraphIndex` is already taken in this crate by the index-availability
 //!   enum (task 1.2).
 //! - (task 1.7) `facts(e)` takes ONE argument (the frozen contract, design
-//!   D5), not the oracle's two (`facts(id, predicate)`). Filtering by
-//!   predicate stays available in expressions through the built-in `exists`
-//!   / `filter` macros over the returned list (e.g.
+//!   D5). Filtering by predicate stays available in expressions through the
+//!   built-in `exists` / `filter` macros over the returned list (e.g.
 //!   `facts(e).exists(f, f.predicate == 'works_at')`); the cel crate's
 //!   function registry is one function per name, so overloading is
 //!   impossible anyway.
-//! - (task 1.7) The 3-arg `has_fact(e, k, v)` FIXES a Go bug: the oracle
-//!   compared `v` against the fact's predicate and domain
-//!   (`f.Predicate == value || f.Domain == value`), never against the fact's
-//!   value. Here `v` is the fact's value — the object entity's name — and
-//!   the predicate must equal `k` as well. The oracle's 2-arg overload is
-//!   not in the frozen contract and is not implemented.
-//! - (task 1.7) the `facts(e)` map gains the `value` key (object entity
-//!   name, `""` when the fact has no object endpoint) over the oracle's
-//!   `{id, predicate, domain}` — it makes the map self-consistent with the
-//!   fixed `has_fact`.
+//! - (task 1.7) The 3-arg `has_fact(e, k, v)` compares `v` against the
+//!   fact's VALUE — the object entity's name — and requires the predicate
+//!   to equal `k` as well. The 2-arg overload is not in the frozen contract
+//!   and is not implemented.
+//! - (task 1.7) the `facts(e)` map carries the `value` key (object entity
+//!   name, `""` when the fact has no object endpoint) in addition to
+//!   `{id, predicate, domain}` — it makes the map self-consistent with
+//!   `has_fact`.
 //! - (task 1.7) a db failure during index building surfaces as a CEL
-//!   function error from ALL FOUR functions. The oracle was inconsistent:
-//!   `facts`/`chunks` returned an error, but `has_fact`/`chunk_contains`
-//!   silently returned `false`. A broken database must not silently produce
-//!   "no link" decisions. (A MISSING entity is still empty/false, not an
-//!   error — oracle parity.)
+//!   function error from ALL FOUR functions. A broken database must not
+//!   silently produce "no link" decisions. (A MISSING entity is still
+//!   empty/false, not an error.)
 //! - (task 1.7) `chunk_contains` is an EXACT, case-SENSITIVE substring test
-//!   over the chunk texts (oracle parity: Go `strings.Contains`) — not FTS,
-//!   not `LIKE`, no normalization.
+//!   over the chunk texts — not FTS, not `LIKE`, no normalization.
 //! - (task 1.8) `neighbors(e)` takes ONE argument (the frozen contract,
 //!   design D5) and returns the DIRECT adjacency over ALL edge kinds, both
-//!   directions, deduplicated and ascending; the oracle's `neighbors(e,
-//!   hops)` returned the ids at EXACTLY `hops` distance over ENTITY LINKS
-//!   only.
-//! - (task 1.8) the oracle's `GraphIndex` hop layers are BROKEN: the "skip
-//!   if already seen at a lower hop" check compares against the PREVIOUS
-//!   layer, but layer 0 contains EVERY entity — so every layer >= 1 is
-//!   empty, `neighbors(e, hops)` is always empty and `path_exists(a, b, n)`
-//!   degenerates to `a == b`. No oracle test pins the broken behavior; here
-//!   both functions are real (a direct adjacency read and a depth-bounded
-//!   BFS, no prebuilt layers — see [`ReachabilityIndex`]).
+//!   directions, deduplicated and ascending.
+//! - (task 1.8) both graph functions are real (a direct adjacency read and
+//!   a depth-bounded BFS, no prebuilt layers — see [`ReachabilityIndex`]).
 //! - (task 1.8) `path_exists` traverses BOTH edge populations under the D4
 //!   boundary rule with entity-link crossing ENABLED (the traverse mode in
 //!   which cross-domain reachability is possible at all — the function's
 //!   purpose in the cross-domain linker): a fact edge never leaves the
-//!   START entity's domain, an entity-link edge may. The oracle applied no
-//!   domain rule in its CEL `path_exists` (domain-unaware, links only) —
-//!   the D4 rule is the contract-level fix. `max_depth` is used as given
-//!   (0 = identity only) and clamped to the D4 hard max; it is NOT
+//!   START entity's domain, an entity-link edge may. `max_depth` is used as
+//!   given (0 = identity only) and clamped to the D4 hard max; it is NOT
 //!   default-filled like traverse's zero-valued option.
 
 use std::collections::{HashMap, HashSet};
@@ -247,16 +229,12 @@ impl<T> LazySlot<T> {
 /// Facts indexed per entity for the `facts` / `has_fact` contract functions
 /// (task 1.7, design D5).
 ///
-/// The Rust re-design of the oracle's `FactIndex`
-/// (`internal/relations/scope_builders.go`): the APPROVED facts (the db
-/// crate's `FactDao::list_all` — same `status = 'approved'` `ORDER BY id`
-/// as the oracle's `ListAll`) are attached to BOTH endpoint entities (the
-/// oracle's `for _, eid := range []int{f.SubjectEntityID, f.ObjectEntityID}`),
-/// and a `names` map resolves a fact's value (see [`Self::value_of`]).
+/// The APPROVED facts (the db crate's `FactDao::list_all`, `status =
+/// 'approved'`, `ORDER BY id`) are attached to BOTH endpoint entities, and
+/// a `names` map resolves a fact's value (see [`Self::value_of`]).
 ///
 /// A fact with a `NULL` endpoint (the v5 schema allows it) is attached to
-/// its existing endpoint only — the oracle skipped its Go zero value `0`,
-/// which is the same attachment rule.
+/// its existing endpoint only.
 #[derive(Debug, Default)]
 pub struct FactIndex {
     /// Entity id → the approved facts attached to it (subject OR object
@@ -293,8 +271,7 @@ impl FactIndex {
 
     /// The approved facts attached to one entity (subject OR object side),
     /// in `facts.id` order; empty for an entity without facts or a missing
-    /// entity (oracle parity: a lookup miss is an empty result, not an
-    /// error).
+    /// entity (a lookup miss is an empty result, not an error).
     #[must_use]
     pub fn facts(&self, entity_id: i64) -> &[db::Fact] {
         match self.by_entity.get(&entity_id) {
@@ -326,8 +303,8 @@ impl FactIndex {
 }
 
 /// Build the facts index from SQLite in one pass (design D5): approved
-/// facts via `FactDao::list_all` (the oracle's `ListAll`) plus all entity
-/// names for value resolution.
+/// facts via `FactDao::list_all` plus all entity names for value
+/// resolution.
 pub fn build_fact_index(db: &db::Db) -> Result<FactIndex, GraphError> {
     db.with_conn(|conn| -> Result<FactIndex, GraphError> {
         let exec = db::ConnectionOrTx::Connection(conn);
@@ -340,10 +317,8 @@ pub fn build_fact_index(db: &db::Db) -> Result<FactIndex, GraphError> {
 /// Chunk texts per entity for the `chunks` / `chunk_contains` contract
 /// functions (task 1.7, design D5).
 ///
-/// The Rust re-design of the oracle's `ChunkIndex`
-/// (`internal/relations/scope_builders.go`): one query over the
-/// `chunk_entities` join — the oracle ran the same raw SQL, because no DAO
-/// covers the all-entities shape.
+/// One query over the `chunk_entities` join — no DAO covers the
+/// all-entities shape.
 #[derive(Debug, Default)]
 pub struct ChunkIndex {
     /// Entity id → its chunk texts, in `sequence_num` (id tie-break) order.
@@ -364,8 +339,7 @@ impl ChunkIndex {
     }
 
     /// The chunk texts of one entity; empty for an entity without chunks or
-    /// a missing entity (oracle parity: a lookup miss is an empty result,
-    /// not an error).
+    /// a missing entity (a lookup miss is an empty result, not an error).
     #[must_use]
     pub fn texts(&self, entity_id: i64) -> &[String] {
         match self.by_entity.get(&entity_id) {
@@ -375,8 +349,7 @@ impl ChunkIndex {
     }
 
     /// Whether any chunk text of the entity contains `text` as an EXACT,
-    /// CASE-SENSITIVE substring (oracle parity: `strings.Contains` — not
-    /// FTS, not `LIKE`, no normalization).
+    /// CASE-SENSITIVE substring (not FTS, not `LIKE`, no normalization).
     #[must_use]
     pub fn contains(&self, entity_id: i64, text: &str) -> bool {
         self.texts(entity_id)
@@ -387,7 +360,7 @@ impl ChunkIndex {
 
 /// Build the chunk-text index from SQLite in one pass (design D5): every
 /// (entity, chunk_text) pair of the `chunk_entities` join, ordered by
-/// `sequence_num` with an `id` tie-break (house convention; the oracle's
+/// `sequence_num` with an `id` tie-break (house convention; a
 /// `sequence_num`-only order ties across documents).
 pub fn build_chunk_index(db: &db::Db) -> Result<ChunkIndex, GraphError> {
     db.with_conn(|conn| -> Result<ChunkIndex, GraphError> {
@@ -418,10 +391,9 @@ pub fn build_chunk_index(db: &db::Db) -> Result<ChunkIndex, GraphError> {
 ///
 /// Scale reasoning (design D1): a personal corpus is thousands to hundreds
 /// of thousands of entities (an index of units of MB), so a per-call BFS is
-/// microseconds-to-milliseconds. A prebuilt transitive closure (the oracle's
-/// hop layers) would cost O(V^2) memory — infeasible at 100k entities — for
-/// no measurable gain; YAGNI. The oracle's layers are also broken (see the
-/// module docs, deviations).
+/// microseconds-to-milliseconds. A prebuilt transitive closure would cost
+/// O(V^2) memory — infeasible at 100k entities — for no measurable gain;
+/// YAGNI.
 #[derive(Debug)]
 pub struct ReachabilityIndex {
     graph: Graph,
@@ -536,8 +508,7 @@ impl ReachabilityIndex {
 /// Build the reachability index from SQLite in one pass (design D5): all
 /// entities, approved facts and entity links — the same rows as the startup
 /// index (`GraphIndex::from_db`), without its configuration gating: the CEL
-/// evaluation path always reads the current database state (oracle parity:
-/// the scope loader built the graph index unconditionally).
+/// evaluation path always reads the current database state.
 pub fn build_reachability_index(db: &db::Db) -> Result<ReachabilityIndex, GraphError> {
     db.with_conn(|conn| -> Result<ReachabilityIndex, GraphError> {
         let exec = db::ConnectionOrTx::Connection(conn);
@@ -552,13 +523,11 @@ pub fn build_reachability_index(db: &db::Db) -> Result<ReachabilityIndex, GraphE
 
 /// Per-evaluation shared state for the contract functions (design D5).
 ///
-/// The Rust re-design of the oracle's `ScopeCache`
-/// (`internal/expression/scope_cache.go`): heavy data is built by the FIRST
-/// function call that needs it and cached for the rest of the evaluation. A
-/// fresh cache is created by [`CelEngine::evaluate`] for EVERY evaluation
-/// and dies with it — nothing survives, so a changed database is always
-/// re-read (the oracle's single long-lived cache is a deliberate non-port,
-/// see the module docs).
+/// Heavy data is built by the FIRST function call that needs it and cached
+/// for the rest of the evaluation. A fresh cache is created by
+/// [`CelEngine::evaluate`] for EVERY evaluation and dies with it — nothing
+/// survives, so a changed database is always re-read (a single long-lived
+/// cache would allow stale entries — see the module docs).
 ///
 /// Functions reach the cache through the `Arc<ScopeCache>` captured in the
 /// closures installed via [`CelEngine::register`]. The cache is `Send +
@@ -735,8 +704,8 @@ fn fact_to_value(index: &FactIndex, fact: &db::Fact) -> Value {
 ///
 /// A db failure during the lazy build is bridged with
 /// `ExecutionError::function_error` and surfaces as [`GraphError::CelEval`]
-/// from every function (see the module docs for the deviation from the
-/// oracle); a missing entity is empty/false, never an error.
+/// from every function (see the module docs, design decisions); a missing
+/// entity is empty/false, never an error.
 pub fn register_data_functions(engine: &mut CelEngine, db: Arc<db::Db>) {
     engine.register(move |scope, ctx| {
         // Each registered function closure is 'static and outlives the
@@ -806,9 +775,8 @@ pub fn register_data_functions(engine: &mut CelEngine, db: Arc<db::Db>) {
 /// in an evaluation and cached for the rest of it (see the module docs for
 /// the installer pattern). A db failure during the lazy build is bridged
 /// with `ExecutionError::function_error` and surfaces as
-/// [`GraphError::CelEval`] from both functions (see the module docs for the
-/// deviation from the oracle); a missing entity is empty / false, never an
-/// error.
+/// [`GraphError::CelEval`] from both functions (see the module docs, design
+/// decisions); a missing entity is empty / false, never an error.
 pub fn register_graph_functions(engine: &mut CelEngine, db: Arc<db::Db>) {
     engine.register(move |scope, ctx| {
         // Each registered function closure is 'static and outlives the

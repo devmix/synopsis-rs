@@ -9,21 +9,19 @@
 //! [`EntityLinkerPrompts::notes`]: the crate has no logger, and the CLI /
 //! linker surfaces the note (the `LinkResult.notes` pattern).
 //!
-//! # Deliberate deviations
+//! # Template design
 //!
-//! - Go `text/template` → Jinja2 / [`minijinja`]. The oracle templates are
-//!   re-expressed functionally (same prompt text and data shape); the field
-//!   paths are `entity_a.*` / `entity_b.*` instead of `.EntityA.*` / `.EntityB.*`.
-//! - The oracle's `join`/`truncate` are template **functions** (not filters);
-//!   they are registered as minijinja functions with the same semantics
-//!   (`join(sep, list)`; `truncate(s, max)` rune-safe with a `...` suffix and
-//!   `max <= 0` → `""`).
-//! - Go `range` yields an index + value; Jinja2's `for i, x in seq` instead
-//!   *unpacks* each element. The oracle's `Context [{{ $i }}]:` numbering is
-//!   therefore produced with a registered `enumerate` filter
-//!   (`for i, chunk in context|enumerate`).
-//! - The oracle's system template example JSON is missing the comma after
-//!   `"confidence"`; the embedded default adds it (a valid JSON example).
+//! - The templates are Jinja2 / [`minijinja`]; the field paths are
+//!   `entity_a.*` / `entity_b.*`.
+//! - `join`/`truncate` are template **functions** (not filters), registered
+//!   as minijinja functions: `join(sep, list)` joins a list of strings;
+//!   `truncate(s, max)` shortens rune-safely with a `...` suffix and
+//!   `max <= 0` → `""`.
+//! - Jinja2's `for i, x in seq` *unpacks* each element, so the
+//!   `Context [{{ i }}]:` numbering is produced with a registered `enumerate`
+//!   filter (`for i, chunk in context|enumerate`).
+//! - The system template's example JSON is valid JSON (the comma after
+//!   `"confidence"` is present).
 //!
 //! # Cache key
 //!
@@ -43,11 +41,9 @@ use sha2::{Digest, Sha256};
 
 use crate::error::GraphError;
 
-/// Embedded system-prompt default (the functional Jinja2 rewrite of the oracle
-/// `configs/prompts/entity-linker/system.tmpl`).
+/// Embedded system-prompt default (the `system.tmpl` template).
 const EMBEDDED_SYSTEM: &str = include_str!("templates/entity-linker/system.tmpl");
-/// Embedded user-prompt default (the functional Jinja2 rewrite of the oracle
-/// `configs/prompts/entity-linker/user.tmpl`).
+/// Embedded user-prompt default (the `user.tmpl` template).
 const EMBEDDED_USER: &str = include_str!("templates/entity-linker/user.tmpl");
 
 /// One entity's data as bound into the user prompt template.
@@ -64,7 +60,7 @@ pub struct EntityData {
     pub domain: String,
     /// The entity's description (empty when absent).
     pub description: String,
-    /// Up to three context chunk texts (the oracle's `Context`).
+    /// Up to three context chunk texts (the template's `Context` field).
     pub context: Vec<String>,
 }
 
@@ -190,11 +186,11 @@ pub fn load_entity_linker_prompts(prompts_path: &str) -> Result<EntityLinkerProm
 
     let mut env = Environment::new();
     // Clean prompt output: block tags ({% for %}/{% endfor %}) on their own
-    // lines contribute no stray whitespace (the oracle trims with `{{- ... -}}`).
+    // lines contribute no stray whitespace (block tags are trimmed).
     env.set_trim_blocks(true);
     env.set_lstrip_blocks(true);
-    // Preserve the template's final newline (Go text/template does; keeps the
-    // rendered prompt byte-predictable).
+    // Preserve the template's final newline (keeps the rendered prompt
+    // byte-predictable).
     env.set_keep_trailing_newline(true);
     register_helpers(&mut env);
     // `add_template_owned` parses eagerly, so a broken override fails at load.
@@ -249,12 +245,12 @@ fn load_template(
 
 /// Register the template helpers used by the prompts.
 ///
-/// `join`/`truncate` are minijinja **functions** matching the oracle's
-/// funcmap.go signatures: `join(sep, list)` joins a list of strings;
-/// `truncate(s, max)` shortens a string rune-safely with a `...` suffix.
+/// `join`/`truncate` are minijinja **functions**: `join(sep, list)` joins a
+/// list of strings; `truncate(s, max)` shortens a string rune-safely with a
+/// `...` suffix.
 ///
-/// `enumerate` is a **filter** added because Jinja2 has no Go-style `range`
-/// index: the user template's `Context [{{ i }}]:` numbering is produced with
+/// `enumerate` is a **filter** added because Jinja2 has no range index: the
+/// user template's `Context [{{ i }}]:` numbering is produced with
 /// `for i, chunk in context|enumerate`.
 fn register_helpers(env: &mut Environment<'static>) {
     env.add_function("join", |sep: String, items: Vec<String>| -> Value {
@@ -273,9 +269,8 @@ fn register_helpers(env: &mut Environment<'static>) {
     });
 }
 
-/// The oracle's `utils.Truncate`: shorten `s` to at most `max` chars, appending
-/// `...` when truncated. `max <= 0` yields `""`. Rune-safe (never splits a
-/// multi-byte character).
+/// Shorten `s` to at most `max` chars, appending `...` when truncated.
+/// `max <= 0` yields `""`. Rune-safe (never splits a multi-byte character).
 ///
 /// Also used by the `llm` linking method (task 2.2) to bound the prompt's
 /// description and context-chunk lengths before rendering.

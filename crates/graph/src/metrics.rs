@@ -8,61 +8,53 @@
 //! ### Edge count: both populations
 //!
 //! `edge_count` covers fact edges AND entity-link edges — consistent with
-//! [`Graph::edge_count`] (task 1.2) and the oracle's `NewGraphFromDB`
-//! stats. The oracle's `Stats()` method, in contrast, reports fact edges
-//! only — an internal inconsistency in the oracle (its own `TestGraphStats`
-//! uses facts only, so it never catches it). Rust reports the superset.
+//! [`Graph::edge_count`] (task 1.2). The index stores both populations, so
+//! the stats report the superset rather than fact edges only.
 //!
 //! ### avg_degree = 2E/N (directed-graph formula)
 //!
 //! The average TOTAL degree (in + out) per node: every directed edge
 //! contributes exactly one out-degree and one in-degree, so the sum of all
 //! node degrees is `2E` and the average is `2E / N` (0.0 for an empty
-//! index — the oracle's zero-node guard).
+//! index — the zero-node guard).
 //!
-//! The oracle's `avgDegree` sums its outgoing and incoming adjacency maps
-//! (plus the cross-domain maps). Every edge is stored once in an outgoing
-//! map and once in an incoming map, so that sum is `2E` — the oracle's own
-//! tests pin exactly the `2E/N` values (2 nodes / 2 edges → 2.0 in
-//! `TestGraphStats` and `TestGraphStats_AvgDegreeIncludesEntityLinks`). An
-//! earlier note (task 1.2, graph.rs) read the outgoing + incoming summation
-//! as a double-counting bug producing `4E/N`; the oracle's source and tests
-//! do not bear that out. The Rust implementation derives the same `2E/N`
-//! directly from the `DiGraph` edge count, with no per-map bookkeeping.
+//! An earlier note (task 1.2, graph.rs) read the outgoing + incoming
+//! summation as a double-counting bug producing `4E/N`; that is not the
+//! case — each directed edge contributes exactly once to the sum. The
+//! implementation derives `2E/N` directly from the `DiGraph` edge count,
+//! with no per-map bookkeeping.
 //!
-//! ## DOT export (the oracle's `ToDOT`)
+//! ## DOT export
 //!
 //! [`Graph::to_dot`] renders the FULL index as Graphviz DOT through
 //! petgraph's `Dot` writer (design D1: DOT out of the box). Node labels are
 //! entity names and edge labels are relation types; petgraph's writer
 //! escapes both (`"` → `\"`, `\` → `\\`, newlines → `\l`).
 //!
-//! Deviations from the oracle:
-//! - The oracle exports a BFS-reachable SUBGRAPH from a start node under
-//!   `BFSOptions` (error on an unknown start node). No consumer of the
-//!   scoped variant exists — the full-index export is infallible and covers
-//!   the diagnostic purpose; a scoped variant is addable later without
-//!   breaking the contract.
-//! - Node attribution: the oracle put the entity type into a hardcoded
-//!   fillcolor palette (`typeColor`, oracle-specific lowercase types); here
-//!   domain and type are plain node ATTRIBUTES, plus the entity row id as
-//!   `entity_id` so the export maps back to the `entities` table.
+//! Design decisions:
+//! - Full-index export: no BFS-reachable subgraph scope (with an error on
+//!   an unknown start node) is provided — no consumer of a scoped variant
+//!   exists, the full-index export is infallible and covers the diagnostic
+//!   purpose; a scoped variant is addable later without breaking the
+//!   contract.
+//! - Node attribution: domain and type are plain node ATTRIBUTES, plus the
+//!   entity row id as `entity_id` so the export maps back to the `entities`
+//!   table.
 //! - Entity-link edges are drawn `style = dashed` to distinguish the two
-//!   edge populations (the oracle drew both solid).
-//! - The oracle names the digraph `KnowledgeBase`; petgraph writes an
-//!   unnamed `digraph {` (valid DOT; the writer has no name hook).
+//!   edge populations.
+//! - The digraph is unnamed: petgraph writes a plain `digraph {` (valid
+//!   DOT; the writer has no name hook).
 //! - Custom attribute strings are written verbatim by petgraph, so their
 //!   VALUES are escaped by [`escape_attr`] (same rules as petgraph's label
 //!   escaper).
 //!
-//! ## Not ported (YAGNI)
+//! ## Not implemented (YAGNI)
 //!
-//! - `MaxConnectedDepth`: defined in the oracle but never called (no
-//!   caller, no test, no MCP tool) and expensive (a BFS from every node).
-//!   Deferred; addable later without breaking the contract.
-//! - `GraphStats.LoadDuration`: the oracle sets it only in
-//!   `NewGraphFromDB` (the `Stats()` method leaves it zero). Callers that
-//!   need a load timing measure it around `GraphIndex::from_db`.
+//! - `MaxConnectedDepth`: a BFS from every node; no caller, no test, no MCP
+//!   tool, and expensive. Deferred; addable later without breaking the
+//!   contract.
+//! - A `load_duration` metric on [`GraphStats`]: callers that need a load
+//!   timing measure it around `GraphIndex::from_db`.
 
 use std::fmt;
 
@@ -71,11 +63,11 @@ use petgraph::graph::{DiGraph, EdgeReference, NodeIndex};
 
 use crate::graph::{EdgeKind, EntityNode, Graph, GraphEdge};
 
-/// DOT layout direction: left to right (the oracle's `rankdir=LR`).
+/// DOT layout direction: left to right (`rankdir=LR`).
 const DOT_CONFIG: [Config; 1] = [Config::RankDir(RankDir::LR)];
 
-/// Summary statistics of a built index (the oracle's `GraphStats`, minus the
-/// build-time-only `load_duration` — see the module docs).
+/// Summary statistics of a built index (the build-time-only `load_duration`
+/// metric is excluded — see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GraphStats {
     /// Number of nodes (entities).
@@ -89,7 +81,7 @@ pub struct GraphStats {
 }
 
 impl Graph {
-    /// Summary statistics of the index (the oracle's `Stats`).
+    /// Summary statistics of the index.
     pub fn stats(&self) -> GraphStats {
         GraphStats {
             node_count: self.node_count(),
@@ -98,11 +90,11 @@ impl Graph {
         }
     }
 
-    /// Average total degree (in + out) per node (the oracle's `avgDegree`):
-    /// `2 * E / N` — every directed edge contributes exactly one out-degree
-    /// and one in-degree, so the sum of all node degrees is `2E`.
+    /// Average total degree (in + out) per node: `2 * E / N` — every
+    /// directed edge contributes exactly one out-degree and one in-degree,
+    /// so the sum of all node degrees is `2E`.
     ///
-    /// An empty index yields 0.0 (the oracle's zero-node guard).
+    /// An empty index yields 0.0 (the zero-node guard).
     pub fn avg_degree(&self) -> f64 {
         let nodes = self.node_count();
         if nodes == 0 {
@@ -111,8 +103,8 @@ impl Graph {
         2.0 * self.edge_count() as f64 / nodes as f64
     }
 
-    /// Export the FULL index as Graphviz DOT (the oracle's `ToDOT` without
-    /// the BFS subgraph scope — see the module docs).
+    /// Export the FULL index as Graphviz DOT (no BFS subgraph scope — see
+    /// the module docs).
     ///
     /// Infallible: an empty index renders an empty, valid digraph. Node
     /// labels are entity names and edge labels are relation types (petgraph
@@ -252,8 +244,8 @@ mod tests {
         }
     }
 
-    // Acceptance: the counters match the built index — the oracle's
-    // TestGraphStats shape (2 nodes, 2 fact edges).
+    // Acceptance: the counters match the built index (2 nodes, 2 fact
+    // edges).
     #[test]
     fn stats_match_built_index() {
         let graph = Graph::from_rows(
@@ -267,15 +259,11 @@ mod tests {
         let stats = graph.stats();
         assert_eq!(stats.node_count, 2);
         assert_eq!(stats.edge_count, 2);
-        assert_eq!(
-            stats.avg_degree, 2.0,
-            "2E/N = 4/2 (the oracle's TestGraphStats)"
-        );
+        assert_eq!(stats.avg_degree, 2.0, "2E/N = 4/2");
     }
 
     // Acceptance: entity-link edges count toward the edge count and the
-    // average degree (the oracle's m-11 /
-    // TestGraphStats_AvgDegreeIncludesEntityLinks).
+    // average degree (entity-link edges are edges).
     #[test]
     fn stats_include_entity_links() {
         let graph = Graph::from_rows(
@@ -318,8 +306,7 @@ mod tests {
         );
     }
 
-    // Degenerate: an empty index → zeros, no NaN (the oracle's zero-node
-    // guard).
+    // Degenerate: an empty index → zeros, no NaN (the zero-node guard).
     #[test]
     fn empty_index_stats_are_zero() {
         let stats = Graph::empty().stats();

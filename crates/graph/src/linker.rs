@@ -13,20 +13,18 @@
 //! # Methods
 //!
 //! - `equals` — normalized name match across domains. A name needs at least
-//!   `min_words` words (default [`DEFAULT_EQUALS_MIN_WORDS`], the oracle's
-//!   `DefaultEqualsMinWords`); shorter names are skipped silently (oracle
-//!   parity: they count neither as created nor as skipped). Creates a
-//!   `same_entity` link with confidence [`EQUALS_CONFIDENCE`].
+//!   `min_words` words (default [`DEFAULT_EQUALS_MIN_WORDS`]); shorter names
+//!   are skipped silently (they count neither as created nor as skipped).
+//!   Creates a `same_entity` link with confidence [`EQUALS_CONFIDENCE`].
 //! - `expression` — ontology CEL rules evaluated against the pair bindings
-//!   `A`/`B` (the entity map, the oracle's `entityToMap`), with all six
-//!   contract functions (tasks 1.7/1.8) registered. Rules are applied in
-//!   priority order (higher first; ties keep the ontology's order — the
-//!   oracle's unstable sort made tie order nondeterministic), the first rule
-//!   evaluating to `true` wins, and its `relation-type` becomes the link's
-//!   relation with confidence [`RULE_CONFIDENCE`].
+//!   `A`/`B` (the entity map), with all six contract functions (tasks
+//!   1.7/1.8) registered. Rules are applied in priority order (higher
+//!   first; ties keep the ontology's order — `sort_by_key` is stable), the
+//!   first rule evaluating to `true` wins, and its `relation-type` becomes
+//!   the link's relation with confidence [`RULE_CONFIDENCE`].
 //! - `llm` — one chat completion per pair (llm change, design D6): up to
-//!   three context chunk texts per entity (truncated like the oracle:
-//!   description 200 chars, chunk 500 chars) are rendered into the user
+//!   three context chunk texts per entity (truncated: description 200 chars,
+//!   chunk 500 chars) are rendered into the user
 //!   prompt; the system prompt carries no data and is rendered once per run.
 //!   The response is parsed strictly to `{same_entity, confidence,
 //!   reasoning}` with the confidence clamped to [0, 1], and a `same_entity`
@@ -38,30 +36,28 @@
 //!   rendered_system_prompt:rendered_user_prompt)` — no entity IDs, no
 //!   dataset: the cache is checked BEFORE the call and written AFTER the
 //!   decision, including below-threshold ones. Without a cache database the
-//!   method runs uncached (the oracle's nil-store no-op). A pair whose
+//!   method runs uncached. A pair whose
 //!   context load, call, or parse fails is a non-fatal [`LinkResult::errors`]
 //!   entry; the run itself succeeds.
-//!   `LinkerConfig::disabled` excludes the method entirely (the oracle's
-//!   `Linker.Disabled` check in the ingestion runner).
+//!   `LinkerConfig::disabled` excludes the method entirely (the ingestion
+//!   runner checks the same flag).
 //!
-//! # Deviations from the oracle
+//! # Design decisions
 //!
-//! - No incremental mode (`since`): the Rust rebuild is always a full
-//!   rebuild (YAGNI, design D3 — the in-memory index is rebuilt from
-//!   scratch at startup anyway).
+//! - No incremental mode (`since`): the rebuild is always a full rebuild
+//!   (YAGNI, design D3 — the in-memory index is rebuilt from scratch at
+//!   startup anyway).
 //! - The LLM decision cache is keyed by the LLM **request signature**
 //!   (`model:temperature:max_tokens:rendered_system_prompt:
 //!   rendered_user_prompt`, task 1.10): global-safe — no entity IDs, no
 //!   dataset — so a rebuilt (renumbered) knowledge database still hits the
-//!   shared cache database. The oracle keyed it by (type, normalized name,
-//!   normalized domain) + template hashes; the rendered prompts subsume both
-//!   the entity data and the template content.
-//! - Non-boolean rule results are detected at evaluation time: the oracle
-//!   type-checks rules against `cel.BoolType` at compile time, but the
-//!   `cel` crate's `Program::compile` is parse-only.
-//! - The oracle's `metadata(entity, key)` helper is not in the frozen
-//!   six-function contract (design D5); rules read `A.metadata_json`
-//!   directly.
+//!   shared cache database. The rendered prompts subsume both the entity
+//!   data and the template content, so no separate entity key is needed.
+//! - Non-boolean rule results are detected at evaluation time: the `cel`
+//!   crate's `Program::compile` is parse-only, so the boolean check happens
+//!   at evaluation.
+//! - A `metadata(entity, key)` helper is not in the frozen six-function
+//!   contract (design D5); rules read `A.metadata_json` directly.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -83,26 +79,24 @@ use crate::prompts::{
     EntityData, EntityLinkerPrompts, LinkerInput, load_entity_linker_prompts, sha256_hex, truncate,
 };
 
-/// The oracle's `config.DefaultEqualsMinWords`: names shorter than this many
-/// words are too ambiguous for `equals` linking.
+/// Default minimum word count for `equals` linking: names shorter than this
+/// many words are too ambiguous.
 const DEFAULT_EQUALS_MIN_WORDS: i32 = 2;
-/// The oracle's `config.DefaultRelationType`.
+/// The default link relation type.
 const DEFAULT_RELATION_TYPE: &str = "same_entity";
-/// The oracle's `equalsConfidence`.
+/// Confidence of `equals` links.
 const EQUALS_CONFIDENCE: f64 = 0.9;
-/// The oracle's `ruleConfidence`.
+/// Confidence of `expression` links.
 const RULE_CONFIDENCE: f64 = 1.0;
-/// Max context chunk texts per entity in the LLM prompt (the oracle's
-/// `contextLimit`).
+/// Max context chunk texts per entity in the LLM prompt.
 const LLM_CONTEXT_LIMIT: i64 = 3;
-/// Max description length in the LLM prompt (the oracle's `defaultDescLen`).
+/// Max description length in the LLM prompt.
 const LLM_DESCRIPTION_LEN: i64 = 200;
-/// Max length of one context chunk in the LLM prompt (the oracle's
-/// `defaultChunkLen`).
+/// Max length of one context chunk in the LLM prompt.
 const LLM_CHUNK_LEN: i64 = 500;
-/// The static `json_schema` payload for the LLM decision (design D6; the
-/// oracle's `GenerateJSONSchema`). Sent on every call in `json_schema`
-/// response-format mode; the client ignores it in `json_object` mode.
+/// The static `json_schema` payload for the LLM decision (design D6). Sent
+/// on every call in `json_schema` response-format mode; the client ignores
+/// it in `json_object` mode.
 const LINK_DECISION_SCHEMA: &str = r#"{
   "title": "EntityComparison",
   "type": "object",
@@ -126,7 +120,7 @@ const LINK_DECISION_SCHEMA: &str = r#"{
   "additionalProperties": false
 }"#;
 
-/// The outcome of one linking run (the oracle's `BuildEntityLinksResult`).
+/// The outcome of one linking run.
 #[derive(Debug, Default, PartialEq)]
 pub struct LinkResult {
     /// Candidate pairs for which at least one new link row was inserted (a
@@ -145,7 +139,7 @@ pub struct LinkResult {
 }
 
 /// A candidate pair: two entities of the same type with equal normalized
-/// names in different (normalized) domains (the oracle's `entityPair`).
+/// names in different (normalized) domains.
 #[derive(Debug, Clone)]
 struct CandidatePair {
     /// The entity from the lexicographically smaller normalized domain.
@@ -154,7 +148,7 @@ struct CandidatePair {
     b: Entity,
 }
 
-/// Enumerate the candidate pairs (the oracle's `crossDomainEntityPairs`):
+/// Enumerate the candidate pairs:
 /// group by (type, normalized name), then within each group cross-product
 /// the entities of different normalized domains.
 ///
@@ -201,7 +195,7 @@ fn cross_domain_pairs(entities: &[Entity]) -> Vec<CandidatePair> {
     pairs
 }
 
-/// Insert the A→B and B→A rows (the oracle's `createBidirectionalLink`);
+/// Insert the A→B and B→A rows;
 /// `true` when at least one row was newly inserted. A self-link cannot arise
 /// from the pipeline (the pair's normalized domains differ) and is rejected
 /// by the DAO regardless.
@@ -233,7 +227,7 @@ fn create_bidirectional_link(
     Ok(created)
 }
 
-/// The `equals` method (the oracle's `buildEqualsLinks`).
+/// The `equals` method.
 fn run_equals(
     db: &Db,
     config: &CrossDomainLinksConfig,
@@ -249,7 +243,7 @@ fn run_equals(
     for pair in pairs {
         let name = normalize(&pair.a.name);
         if name.split_whitespace().count() < min_words as usize {
-            continue; // not enough words: oracle parity, counts nothing
+            continue; // not enough words: counts nothing
         }
         let evidence = format!(
             "equals: {name} in {} and {}",
@@ -277,7 +271,7 @@ fn run_equals(
     }
 }
 
-/// One compiled ontology rule (the oracle's `CompiledExpr` keyed by name).
+/// One compiled ontology rule (keyed by name).
 struct CompiledRule {
     /// The rule's `<name>`.
     name: String,
@@ -287,11 +281,10 @@ struct CompiledRule {
     program: Arc<cel::Program>,
 }
 
-/// CEL rule evaluation for the `expression` method (the oracle's
-/// `ExpressionLinker`): all six contract functions (tasks 1.7/1.8) are
-/// registered on the engine, so rules can use `facts`, `has_fact`, `chunks`,
-/// `chunk_contains`, `neighbors` and `path_exists` in addition to the `A`/`B`
-/// entity fields.
+/// CEL rule evaluation for the `expression` method: all six contract
+/// functions (tasks 1.7/1.8) are registered on the engine, so rules can use
+/// `facts`, `has_fact`, `chunks`, `chunk_contains`, `neighbors` and
+/// `path_exists` in addition to the `A`/`B` entity fields.
 struct ExpressionLinker {
     /// The engine with the contract functions installed.
     engine: CelEngine,
@@ -301,17 +294,15 @@ struct ExpressionLinker {
 }
 
 impl ExpressionLinker {
-    /// Compile the rules (the oracle's `Init`): a parse error in any rule
-    /// fails the whole method (oracle parity).
+    /// Compile the rules: a parse error in any rule fails the whole method.
     fn new(db: &Db, expressions: &[LinkExpression]) -> Result<Self, GraphError> {
         let mut engine = CelEngine::new();
         let db = Arc::new(db.clone());
         register_data_functions(&mut engine, Arc::clone(&db));
         register_graph_functions(&mut engine, db);
 
-        // Priority order: higher first. `sort_by_key` is STABLE, so ties keep
-        // the ontology's order — the oracle's unstable `sort.Slice` made tie
-        // order nondeterministic (a Go bug, fixed here).
+        // Priority order: higher first. `sort_by_key` is STABLE, so ties
+        // keep the ontology's order (deterministic across runs).
         let mut ordered: Vec<&LinkExpression> = expressions.iter().collect();
         ordered.sort_by_key(|expression| std::cmp::Reverse(expression.priority));
 
@@ -328,7 +319,7 @@ impl ExpressionLinker {
     }
 
     /// Evaluate all rules against one pair in priority order; the first rule
-    /// that evaluates to `true` wins (the oracle's `EvaluatePair`).
+    /// that evaluates to `true` wins.
     fn evaluate_pair(&self, a: &Entity, b: &Entity) -> Result<Option<&CompiledRule>, GraphError> {
         let bindings = [("A", entity_to_value(a)), ("B", entity_to_value(b))];
         for rule in &self.rules {
@@ -336,9 +327,8 @@ impl ExpressionLinker {
             match value {
                 Value::Bool(true) => return Ok(Some(rule)),
                 Value::Bool(false) => continue,
-                // The oracle type-checks rules against `cel.BoolType` at
-                // compile time; the `cel` crate's compile is parse-only, so
-                // the check happens here.
+                // Rules must evaluate to a boolean; the `cel` crate's
+                // compile is parse-only, so the check happens here.
                 _ => {
                     return Err(GraphError::NonBooleanRule {
                         name: rule.name.clone(),
@@ -350,7 +340,7 @@ impl ExpressionLinker {
     }
 }
 
-/// The entity's CEL map (the oracle's `entityToMap`): the `A`/`B` bindings.
+/// The entity's CEL map: the `A`/`B` bindings.
 ///
 /// Keys: `id` (int), `type` (string), `name` (string), `domain` (string, raw
 /// — not normalized), `confidence` (double or null), `description` (string
@@ -395,7 +385,7 @@ fn entity_to_value(entity: &Entity) -> Value {
     Value::Map(CelMap { map: Arc::new(map) })
 }
 
-/// The `expression` method (the oracle's `buildExpressionLinks`).
+/// The `expression` method.
 fn run_expression(
     db: &Db,
     config: &CrossDomainLinksConfig,
@@ -436,8 +426,8 @@ fn run_expression(
                     }
                 }
             }
-            // No rule matched: oracle parity — the pair counts neither as
-            // created nor as skipped.
+            // No rule matched: the pair counts neither as created nor as
+            // skipped.
             Ok(None) => {}
             Err(err) => {
                 result.errors.push(format!(
@@ -450,7 +440,7 @@ fn run_expression(
     }
 }
 
-/// The structured LLM decision (the oracle's `LinkDecision`, design D6).
+/// The structured LLM decision (design D6).
 ///
 /// Also the wire format of the `llm_linker_cache` value (task 1.10).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -503,8 +493,8 @@ impl<'conn> LlmLinkerCache<'conn> {
     /// Return the cached decision for `key`, or `None` on a miss.
     ///
     /// A miss is: no row, or a row whose JSON payload does not deserialize
-    /// into [`LinkDecision`] (corrupted entry — oracle behavior: the next
-    /// [`set`](Self::set) overwrites it). Database failures are NOT misses:
+    /// into [`LinkDecision`] (corrupted entry — the next [`set`](Self::set)
+    /// overwrites it). Database failures are NOT misses:
     /// they propagate as [`GraphError::Db`].
     pub fn get(&self, key: &str) -> Result<Option<LinkDecision>, GraphError> {
         self.ensure_table()?;
@@ -524,8 +514,8 @@ impl<'conn> LlmLinkerCache<'conn> {
         }
     }
 
-    /// Store `decision` under `key`, replacing any existing entry (oracle
-    /// `INSERT OR REPLACE` semantics).
+    /// Store `decision` under `key`, replacing any existing entry (`INSERT
+    /// OR REPLACE` semantics).
     pub fn set(&self, key: &str, decision: &LinkDecision) -> Result<(), GraphError> {
         let json = serde_json::to_string(decision)
             .map_err(|source| GraphError::DecisionJson { source })?;
@@ -570,8 +560,7 @@ fn llm_cache_key(
 }
 
 /// Read the cached decision for `key` from `cache` (the cache database), or
-/// `None` on a miss — including when `cache` is `None` (caching disabled,
-/// the oracle's nil-store no-op).
+/// `None` on a miss — including when `cache` is `None` (caching disabled).
 fn read_cached_decision(cache: Option<&Db>, key: &str) -> Result<Option<LinkDecision>, String> {
     let Some(cache) = cache else {
         return Ok(None);
@@ -599,7 +588,7 @@ fn write_cached_decision(
 }
 
 /// One entity's prompt data (name/type/domain + truncated description + up to
-/// [`LLM_CONTEXT_LIMIT`] truncated chunk texts), the oracle's `entityData`.
+/// [`LLM_CONTEXT_LIMIT`] truncated chunk texts).
 fn load_entity_data(db: &Db, entity: &Entity) -> Result<EntityData, String> {
     let chunks = db
         .with_conn(|conn| {
@@ -625,11 +614,10 @@ fn load_entity_data(db: &Db, entity: &Entity) -> Result<EntityData, String> {
     })
 }
 
-/// The per-run `llm` context (the oracle's linker setup): the initialized
-/// client, the loaded prompt templates, the pre-rendered system prompt (it
-/// carries no data, so one render serves the whole run), and the sampling
-/// parameters (together with the rendered prompts, the request-signature
-/// cache-key inputs, task 1.10).
+/// The per-run `llm` context: the initialized client, the loaded prompt
+/// templates, the pre-rendered system prompt (it carries no data, so one
+/// render serves the whole run), and the sampling parameters (together with
+/// the rendered prompts, the request-signature cache-key inputs, task 1.10).
 struct LlmRun {
     client: LlmClient,
     prompts: EntityLinkerPrompts,
@@ -692,9 +680,9 @@ enum PairOutcome {
     NotLinked,
 }
 
-/// One candidate pair under the `llm` method (the oracle's `LinkPair` + the
-/// threshold gate): cache check BEFORE the call, decision, cache write AFTER
-/// the decision (including below-threshold ones), then the threshold gate.
+/// One candidate pair under the `llm` method (plus the threshold gate):
+/// cache check BEFORE the call, decision, cache write AFTER the decision
+/// (including below-threshold ones), then the threshold gate.
 ///
 /// `Err` carries a pair-level failure message (non-fatal for the run); a
 /// failed cache write is recorded in `result` and does not fail the pair.
@@ -724,8 +712,8 @@ fn process_llm_pair(
         None => {
             let decision = call_llm(run, &user_prompt)?;
             // Cache AFTER the decision — including below-threshold ones: a
-            // "not the same" verdict is as reusable as a match (no TTL, oracle
-            // parity). A failed write is non-fatal (the oracle logs only).
+            // "not the same" verdict is as reusable as a match (no TTL). A
+            // failed write is non-fatal (recorded as a pair error).
             if let Err(err) = write_cached_decision(cache, &key, &decision) {
                 result.errors.push(format!("cache write: {err}"));
             }
@@ -754,14 +742,13 @@ fn process_llm_pair(
     })
 }
 
-/// The `llm` method (the oracle's `LLMCrossDomainLinker`): one chat
-/// completion per pair, decisions cached in `llm_linker_cache` on the cache
-/// database (task 1.10).
+/// The `llm` method: one chat completion per pair, decisions cached in
+/// `llm_linker_cache` on the cache database (task 1.10).
 ///
 /// A broken LLM configuration or prompt load fails the whole method
 /// (recorded in [`LinkResult::errors`], the `expression` init pattern); a
 /// per-pair failure never aborts the run. `cache` is the cache database
-/// (`None` runs the method uncached — the oracle's nil-store no-op).
+/// (`None` runs the method uncached).
 fn run_llm(
     db: &Db,
     cache: Option<&Db>,
@@ -800,18 +787,16 @@ fn run_llm(
     }
 }
 
-/// Run the cross-domain linking pipeline (the oracle's `BuildEntityLinks`):
-/// the methods in the ontology's configured order, each idempotent.
+/// Run the cross-domain linking pipeline: the methods in the ontology's
+/// configured order, each idempotent.
 ///
-/// `linker_config.disabled` (the preset's `LinkerConfig`, the oracle's
-/// `Linker.Disabled` check in the ingestion runner) excludes the `llm`
+/// `linker_config.disabled` (the preset's `LinkerConfig`) excludes the `llm`
 /// method. `prompts_path` is the preset's `paths.prompts_path` (design D3):
 /// the `llm` method loads its prompt templates from
 /// `{prompts_path}/entity-linker/` (embedded defaults when the files are
 /// absent); it is ignored by every other method. `cache` is the cache
 /// database (task 1.10): the `llm` method stores its decisions in its
-/// `llm_linker_cache` table; `None` runs the method uncached (the oracle's
-/// nil-store no-op).
+/// `llm_linker_cache` table; `None` runs the method uncached.
 pub fn build_entity_links(
     db: &Db,
     cache: Option<&Db>,
