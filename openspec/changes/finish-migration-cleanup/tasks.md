@@ -28,7 +28,7 @@ touched (historical audit trail). The full REMOVE/KEEP rule + acceptance pattern
 
 ## 1 — Cleanup
 
-- [ ] 1.1 Remove the v5 parity fixture
+- [x] 1.1 Remove the v5 parity fixture
 
 **Goal.** Delete the gitignored copy of the Go v5 knowledge base and its only
 test consumers. It can no longer be regenerated once `../synopsis` is gone, ships
@@ -68,7 +68,7 @@ orchestrator, not this agent). `rg -n 'gitignore.*fixtures/\*|ignores
 fixtures' crates/config/tests/data/README.md` → **0** (stale note fixed). No
 code logic, public API, or dependency changed.
 
-- [ ] 1.2 Reframe stale oracle/Go comments (comments only)
+- [x] 1.2 Reframe stale oracle/Go comments (comments only)
 
 **Goal.** Remove the migration-provenance framing from the 4 remaining
 comment-bearing files, keeping every design decision.
@@ -91,7 +91,7 @@ warnings`, `cargo test --workspace` green. Comments only: no SQL statement, no
 dependency/version, and no CI job/step/matrix entry changed (verify with
 `git diff` that only comment lines differ).
 
-- [ ] 1.3 Delete the port-verification report
+- [x] 1.3 Delete the port-verification report
 
 **Goal.** Remove the one-time migration milestone report; its deliberate
 decisions are already recorded in the archived OpenSpec changes + ADRs.
@@ -103,7 +103,7 @@ decisions are already recorded in the archived OpenSpec changes + ADRs.
 → **0** (no dangling links). Gates green (fmt/clippy/test — this is a docs file,
 so behavior is unaffected).
 
-- [ ] 1.4 Reframe the two `workspace/` READMEs (oracle/Go → legacy; keep commands as historical)
+- [x] 1.4 Reframe the two `workspace/` READMEs (oracle/Go → legacy; keep commands as historical)
 
 **Goal.** `workspace/README.md` and `workspace/configs/README.md` document how the
 workspace data (models, ONNX runtime, ontology, demo corpus, config presets) was seeded
@@ -142,7 +142,7 @@ path neutralized, not deleted.
 
 ## 2 — Verification
 
-- [ ] 2.1 Final whole-repo verification
+- [x] 2.1 Final whole-repo verification
 
 **Goal.** Confirm the repo is fully autonomous: zero migration-provenance
 references outside the untouched archive, and all gates green.
