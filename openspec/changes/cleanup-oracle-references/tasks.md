@@ -51,7 +51,7 @@ NOT touched (historical audit trail).
 ## 1 — Crates (whole-crate scope; the narrative is in more files than just the
 path-ref files)
 
-- [ ] 1.1 Clean `db` crate (~136 mentions)
+- [x] 1.1 Clean `db` crate (~136 mentions)
 
 **Scope.** all of `crates/db/src/`. Strip oracle/Go/ported narrative from every
 doc comment; reframe "deviations from the oracle" as "Design:", keep the
