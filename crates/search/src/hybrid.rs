@@ -8,16 +8,16 @@
 //! [`HybridSearcher::new`] taking every collaborator; the leg/enricher/
 //! expander handles are cheap references, so no builder and no public
 //! fields are needed. The CLI assembles the parts once and the searcher is
-//! immutable for its lifetime (design D8: no `SetGraph`-style swap — the
+//! immutable for its lifetime (design D8: no graph-swap API — the
 //! CLI rebuilds the searcher after re-indexing).
 //!
 //! **Hybrid flow** (design D2/D5/D9):
-//! 1. empty or whitespace-only query → `Ok(empty)` (oracle `nil, nil`),
+//! 1. empty or whitespace-only query → `Ok(empty)`,
 //!    without touching a leg;
 //! 2. `top_k <= 0` → `config.final_top_k`;
-//! 3. the legs run **sequentially** (recorded deviation: the oracle ran
-//!    goroutines under a context timeout; `timeout_ms` stays in the frozen
-//!    config but is not plumbed) — the lexical leg when `enable_lexical`,
+//! 3. the legs run **sequentially** (no task spawning or timeout plumbing;
+//!    `timeout_ms` stays in the frozen config) — the lexical leg when
+//!    `enable_lexical`,
 //!    the semantic leg when `enable_semantic`; a disabled leg is an empty
 //!    success;
 //! 4. both legs fail → [`SearchError::BothSubSearchesFailed`] carrying both
@@ -30,23 +30,19 @@
 //!    rerank → truncate to topK → graph expand (non-fatal). Domain
 //!    filtering happens inside the sub-searches, never after fusion.
 //!
-//! **Standalone legs** (oracle `LexicalSearch` / `SemanticSearch`): one leg
+//! **Standalone legs**: one leg
 //! only, `top_k <= 0` → that leg's config top-K, raw hits mapped to
 //! [`SearchResult`] with the score inverted (lower-is-better →
 //! higher-is-better, `invert_score`) and 1-based ranks in leg order, then
 //! the same finalize pipeline.
 //!
-//! **Conscious deviations from the oracle:**
+//! **Design:**
 //! - sequential legs, no timeout (design D2; `timeout_ms` not plumbed);
-//! - one-leg degradation logs a warning on stderr (crate convention; the
-//!   oracle degraded silently);
+//! - one-leg degradation logs a warning on stderr (crate convention);
 //! - `domain` is `Option<&str>` (the sub-search legs' convention) instead
-//!   of the oracle's empty-string sentinel;
-//! - a non-positive finalize `topK` skips the truncation (the oracle's
-//!   `enriched[:topK]` slice would panic on a negative `FinalTopK` from
-//!   config);
-//! - the `Searcher` contract is a Rust trait (oracle Go interface)
-//!   implemented by [`HybridSearcher`].
+//!   of an empty-string sentinel;
+//! - a non-positive finalize `topK` skips the truncation, so a negative
+//!   `FinalTopK` from config is harmless.
 
 use config::preset::SearchConfig;
 use serde_json::Map;
@@ -193,8 +189,8 @@ impl<'conn> HybridSearcher<'conn> {
         self.finalize(fused, top_k)
     }
 
-    /// RRF fusion pool size: `max(lexical_top_k, semantic_top_k)` (oracle
-    /// `fusionPool`). Each leg already truncates to its own top-K, so this
+    /// RRF fusion pool size: `max(lexical_top_k, semantic_top_k)`. Each
+    /// leg already truncates to its own top-K, so this
     /// is a defensive cap on the fused candidate set.
     fn fusion_pool(&self) -> i32 {
         self.config.lexical_top_k.max(self.config.semantic_top_k)
@@ -334,7 +330,7 @@ impl RawHit for SemanticHit {
 
 /// Map raw leg hits to pre-enrichment results for a standalone leg: the
 /// score is inverted (lower-is-better → higher-is-better), 1-based ranks
-/// are assigned in leg order (oracle `LexicalSearch` / `SemanticSearch`),
+/// are assigned in leg order,
 /// and the chunk's metadata bag is parsed from `metadata_json` (NULL or
 /// malformed → an empty bag, design D5). The enrichment slots
 /// (`document_path`, `metadata`, `entities`) start empty — the finalize
@@ -361,7 +357,7 @@ fn standalone_results<H: RawHit>(hits: Vec<H>, source: SourceType) -> Vec<Search
 }
 
 /// Convert a lower-is-better score (FTS5 bm25, cosine distance) to
-/// higher-is-better (oracle `invertScore`): the reciprocal, with a zero
+/// higher-is-better: the reciprocal, with a zero
 /// score mapping to [`f64::MAX`]. Negative bm25 values stay negative and
 /// order-preserving (a more negative bm25 is the better match and inverts
 /// to the higher value).
@@ -545,8 +541,7 @@ mod tests {
     // ── hybrid entry point ───────────────────────────────────────────────
 
     // The fusion pool is max(lexical_top_k, semantic_top_k): it caps the
-    // fused candidate set when the legs together return more (oracle
-    // `fusionPool`).
+    // fused candidate set when the legs together return more.
     #[test]
     fn hybrid_fusion_pool_is_max_of_leg_tops() {
         let db = in_memory_db();
@@ -593,7 +588,7 @@ mod tests {
 
     // ── pure helpers ─────────────────────────────────────────────────────
 
-    // Oracle invertScore: 0 → f64::MAX, otherwise the reciprocal.
+    // Score inversion: 0 → f64::MAX, otherwise the reciprocal.
     #[test]
     fn invert_score_reciprocal() {
         assert_eq!(invert_score(0.0), f64::MAX);

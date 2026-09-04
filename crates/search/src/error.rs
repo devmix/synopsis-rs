@@ -3,8 +3,8 @@
 //! `SearchError` is a [`thiserror`] enum (workspace convention, cf.
 //! `config::ConfigError`). A hybrid search where **both** sub-search legs
 //! fail is a hard error carrying both causes; a single leg failing degrades
-//! to the other leg (task 4.6). An empty query returns `Ok(empty vec)`
-//! (oracle returns `nil, nil`), never an error.
+//! to the other leg (task 4.6). An empty query returns `Ok(empty vec)`,
+//! never an error.
 
 use thiserror::Error;
 

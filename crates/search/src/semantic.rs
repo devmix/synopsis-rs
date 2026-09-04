@@ -1,9 +1,8 @@
 //! Semantic (vector) sub-search leg.
 //!
-//! Re-architected for the usearch-backed index (design D3): the oracle's vec0
-//! `SearchVector` filtered by domain inside SQL; our [`vectors::VectorIndex`]
-//! is domain-blind, so the domain filter moves to the application side with
-//! over-fetch.
+//! Built around the usearch-backed index (design D3): the
+//! [`vectors::VectorIndex`] is domain-blind, so the domain filter lives on
+//! the application side with over-fetch.
 //!
 //! Flow: embed the query (an empty embedding is an error) → top-k index
 //! search with `topK × OVERFETCH_FACTOR` → resolve chunk rows, skipping
@@ -11,7 +10,7 @@
 //! requested, resolve document domains from `metadata_json` and filter by
 //! normalized domain → truncate to `topK`.
 //!
-//! **Conscious deviations from the oracle:**
+//! **Design:**
 //! - application-side domain filtering with over-fetch (design D3);
 //! - chunk resolution is per-id [`db::ChunkDao::get_by_id`]: the DAO has no
 //!   batch `get_by_ids`, and the round-trips are cheap on local SQLite with a
@@ -21,7 +20,7 @@
 //!   validation default) instead of reaching the index, which rejects
 //!   `k == 0`;
 //! - an empty or whitespace-only query returns `Ok(empty)` (same as the
-//!   lexical leg); the oracle checked only `== ""`.
+//!   lexical leg).
 //!
 //! **Over-fetch starvation:** `OVERFETCH_FACTOR` = 3 bounds the candidate
 //! pool at `topK × 3`, so a domain-starved corpus (fewer than ~1/3 of the

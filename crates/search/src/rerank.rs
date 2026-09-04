@@ -13,21 +13,18 @@
 //!
 //! then re-sorts the pool by score descending and reassigns 1-based ranks.
 //!
-//! **Conscious deviations from the oracle:**
+//! **Design:**
 //! - `rerank` mutates the pool in place (`&mut [SearchResult]`) — the same
-//!   idiom as the enricher (design D6); the oracle returned the slice it
-//!   mutated;
+//!   idiom as the enricher (design D6);
 //! - the stage methods are module-private: the public surface is `rerank`
-//!   only (the oracle exposed every stage);
+//!   only;
 //! - "now" comes from [`std::time::SystemTime`]; the recency window is
-//!   `recent_days × 86400` seconds — the oracle's `time.AddDate(0, 0, -n)`
-//!   is calendar-day arithmetic, identical for UTC instants;
+//!   `recent_days × 86400` seconds;
 //! - timestamp parsing goes through the workspace date/time seam
 //!   [`utils::temporal::parse_epoch_seconds`], so the SQLite
 //!   `CURRENT_TIMESTAMP` layout (`"YYYY-MM-DD HH:MM:SS"`) is also accepted
-//!   — the oracle's strict `time.Parse(time.RFC3339, …)` silently ignored
-//!   such values (notably for `valid_to`, where an expired document then
-//!   escaped the penalty).
+//!   — a strict RFC3339-only parse would drop such values, notably for
+//!   `valid_to`, where an expired document would then escape the penalty.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -162,7 +159,7 @@ impl Reranker {
     }
 
     /// Combined business-rule multiplier for one result (1.0 when no rule
-    /// fires; wrong-typed flags are ignored, as in the oracle).
+    /// fires; wrong-typed flags are ignored).
     fn boost_factor(&self, metadata: &serde_json::Map<String, serde_json::Value>) -> f64 {
         let mut factor = 1.0;
         if metadata
@@ -242,7 +239,7 @@ mod tests {
         map
     }
 
-    /// Scores within 1e-4 of the expected values (the oracle's absDiff).
+    /// Scores within 1e-4 of the expected values.
     fn assert_scores(results: &[SearchResult], expected: &[f64]) {
         assert_eq!(results.len(), expected.len(), "pool size");
         for (result, expected) in results.iter().zip(expected) {
@@ -261,8 +258,7 @@ mod tests {
         assert_eq!(ids.as_slice(), expected);
     }
 
-    /// Scores non-increasing and ranks 1..=n sequential (oracle
-    /// TestReranker_Rerank's invariants).
+    /// Scores non-increasing and ranks 1..=n sequential.
     fn assert_sorted_and_ranked(results: &[SearchResult]) {
         for pair in results.windows(2) {
             assert!(
@@ -279,7 +275,7 @@ mod tests {
 
     // ── constructor ──────────────────────────────────────────────────────
 
-    // Oracle TestNewReranker.
+    // Default boost factors.
     #[test]
     fn new_defaults() {
         let reranker = Reranker::new(None);
@@ -315,7 +311,7 @@ mod tests {
         assert_eq!(reranker.authority_boost.get("policy"), Some(&2.0));
     }
 
-    // ── rerank (oracle TestReranker_Rerank) ──────────────────────────────
+    // ── rerank ────────────────────────────────────────────────────────────
 
     #[test]
     fn rerank_empty_pool_is_noop() {
@@ -416,7 +412,7 @@ mod tests {
         assert_sorted_and_ranked(&results);
     }
 
-    // ── business rules (oracle TestReranker_ApplyBusinessRules) ──────────
+    // ── business rules ────────────────────────────────────────────────────
 
     #[test]
     fn business_rules_empty_pool() {
@@ -490,7 +486,7 @@ mod tests {
         assert_scores(&results, &[0.2, 1.5, 1.0]);
     }
 
-    // ── freshness (oracle TestReranker_ApplyFreshnessBoost) ──────────────
+    // ── freshness ─────────────────────────────────────────────────────────
 
     #[test]
     fn freshness_empty_pool() {
@@ -567,9 +563,9 @@ mod tests {
         assert_scores(&results, &[1.0]);
     }
 
-    // Freshness boundary: strictly after `now − recent_days` (oracle
-    // `parsedTime.After(recentThreshold)`). A 60-second margin keeps the
-    // wall clock from drifting across the boundary mid-test.
+    // Freshness boundary: strictly after `now − recent_days`. A 60-second
+    // margin keeps the wall clock from drifting across the boundary
+    // mid-test.
     #[test]
     fn freshness_boundary_around_recent_days() {
         let reranker = Reranker::new(None); // 90 days
@@ -584,7 +580,7 @@ mod tests {
         assert_scores(&results, &[1.0, 1.2]);
     }
 
-    // ── authority (oracle TestReranker_ApplyAuthorityBoost) ──────────────
+    // ── authority ─────────────────────────────────────────────────────────
 
     fn authority_reranker(pairs: &[(&str, f64)]) -> Reranker {
         let mut reranker = Reranker::new(None);
@@ -661,9 +657,9 @@ mod tests {
         assert_scores(&results, &[1.0]);
     }
 
-    // ── boost factor (oracle TestReranker_boostFactor) ───────────────────
-    // The oracle's per-case setups set exactly the default boosts, so one
-    // default reranker covers the whole table.
+    // ── boost factor ──────────────────────────────────────────────────────
+    // The per-case setups set exactly the default boosts, so one default
+    // reranker covers the whole table.
 
     #[test]
     fn boost_factor_table() {
@@ -709,8 +705,7 @@ mod tests {
         }
     }
 
-    // ── enricher → reranker chain (oracle enricher_test.go, deferred from
-    // task 4.3) ───────────────────────────────────────────────────────────
+    // ── enricher → reranker chain (deferred from task 4.3) ───────────────
 
     fn seed_doc(db: &Db, source_type: &str, path: &str, metadata_json: Option<&str>) -> i64 {
         db.exec_tx(|tx| {
@@ -748,9 +743,8 @@ mod tests {
         .expect("connection checkout")
     }
 
-    // Oracle TestEnricherReranker_OfficialBoost: a document flagged
-    // is_official in metadata_json is boosted above a non-official one
-    // through the full enrich → rerank chain.
+    // A document flagged is_official in metadata_json is boosted above a
+    // non-official one through the full enrich → rerank chain.
     #[test]
     fn enrich_then_rerank_official_boost_chain() {
         let db = in_memory_db();
@@ -783,9 +777,8 @@ mod tests {
         assert_scores(&results, &[0.75, 0.7]);
     }
 
-    // Oracle TestEnricher_NormalizesUpdatedAt: SQLite-layout updated_at is
-    // normalized to RFC3339 by the enricher, so the reranker's freshness
-    // boost actually fires.
+    // SQLite-layout updated_at is normalized to RFC3339 by the enricher, so
+    // the reranker's freshness boost actually fires.
     #[test]
     fn enrich_then_rerank_normalizes_updated_at() {
         let db = in_memory_db();

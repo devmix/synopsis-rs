@@ -1,12 +1,8 @@
 //! Reciprocal Rank Fusion with BM25 calibration (design D4).
 //!
-//! Faithful port of the oracle's `rrf.go` — every numeric behavior is
-//! preserved. One internal simplification, no behavior change: the oracle
-//! detects "semantic-only" entries via a `BM25Score == 0` sentinel combined
-//! with a source-type check; here a missing BM25 score is
-//! `Option::<f64>::None`, so a lexical entry with a raw BM25 score of
-//! exactly 0.0 is handled by the same code path as any other lexical entry
-//! (the oracle's sentinel logic did the same, via the source-type guard).
+//! A missing BM25 score is `Option::<f64>::None`, so a lexical entry with
+//! a raw BM25 score of exactly 0.0 is handled by the same code path as
+//! any other lexical entry.
 //!
 //! Algorithm (design D4):
 //! 1. `score += 1 / (k + rank)` per list the chunk appears in (1-based
@@ -24,7 +20,7 @@ use std::collections::HashMap;
 use crate::{LexicalHit, SearchResult, SemanticHit, SourceType, chunk_metadata_bag};
 
 /// Calibrated RRF constant `k` applied when the caller passes `k <= 0`
-/// (oracle parity: lower `k` increases rank sensitivity, ~8× vs `k = 60`).
+/// (lower `k` increases rank sensitivity, ~8× vs `k = 60`).
 pub const DEFAULT_RRF_K: i32 = 20;
 
 /// RRF weight in the final calibrated score (design D4).
@@ -37,8 +33,8 @@ const BM25_WEIGHT: f64 = 0.3;
 /// every score pool with zero spread (all-equal values).
 const NEUTRAL: f64 = 0.5;
 
-/// Fused entry accumulated per chunk across both ranked lists (oracle
-/// `rrfEntry`). Private: the public surface is [`SearchResult`].
+/// Fused entry accumulated per chunk across both ranked lists. Private:
+/// the public surface is [`SearchResult`].
 #[derive(Debug)]
 struct FusionEntry {
     chunk_id: i64,
@@ -167,7 +163,7 @@ pub fn reciprocal_rank_fusion(
     results
 }
 
-/// Min-max normalize BM25 scores in place (oracle `normalizeBM25`).
+/// Min-max normalize BM25 scores in place.
 ///
 /// BM25 in SQLite FTS5 is "lower is better" (distance-like); the
 /// normalization inverts so higher is better. The min/max range is computed
@@ -208,8 +204,8 @@ fn normalize_bm25(entries: &mut [FusionEntry]) {
     }
 }
 
-/// Min-max normalize RRF scores in place to `[0, 1]` (oracle
-/// `normalizeRRF`) so they blend fairly with the normalized BM25 scores.
+/// Min-max normalize RRF scores in place to `[0, 1]` so they blend fairly
+/// with the normalized BM25 scores.
 /// A zero-spread pool yields [`NEUTRAL`] for everyone.
 fn normalize_rrf(entries: &mut [FusionEntry]) {
     let (min_score, max_score) = entries
@@ -237,7 +233,7 @@ fn normalize_rrf(entries: &mut [FusionEntry]) {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    // Table-driven parity cases use wide tuples (oracle rrf_test.go shape).
+    // Table-driven cases use wide tuples.
     #![allow(clippy::type_complexity)]
 
     use super::*;
@@ -251,7 +247,7 @@ mod tests {
             sequence_num: 0,
             start_offset: None,
             end_offset: None,
-            score: 0.0, // BM25 zero value (oracle default)
+            score: 0.0, // BM25 zero value
         }
     }
 
@@ -321,7 +317,7 @@ mod tests {
         );
     }
 
-    // Parity with oracle TestReciprocalRankFusion (rrf_test.go).
+    // Table-driven fusion cases.
     // Named `fusion_table` (not `reciprocal_rank_fusion`) so this test item
     // does not shadow the function under test for the rest of the module.
     #[test]
@@ -468,7 +464,7 @@ mod tests {
         }
     }
 
-    // Parity with oracle TestReciprocalRankFusion_ScoreCalculation.
+    // Score calculation across both lists.
     #[test]
     fn score_calculation() {
         let k = 60;
@@ -500,7 +496,7 @@ mod tests {
         assert_eq!(got[0].chunk_id, 2, "top result chunk_id mismatch");
     }
 
-    // Parity with oracle TestReciprocalRankFusion_SourceType.
+    // Source type per chunk position in the ranked lists.
     #[test]
     fn source_type() {
         let cases: Vec<(&str, Vec<LexicalHit>, Vec<SemanticHit>, i64, &str)> = vec![
@@ -539,7 +535,7 @@ mod tests {
         }
     }
 
-    // Parity with oracle TestReciprocalRankFusion_StableTiebreak:
+    // Stable tiebreak:
     // equal-score chunks are ordered by ascending chunk_id (deterministic).
     #[test]
     fn stable_tiebreak() {
@@ -583,7 +579,7 @@ mod tests {
         }
     }
 
-    // Parity with oracle TestReciprocalRankFusion_TopNGuard: top_n <= 0
+    // Top-N guard: top_n <= 0
     // returns all results without truncation (and does not panic).
     #[test]
     fn top_n_guard() {
@@ -599,7 +595,7 @@ mod tests {
         }
     }
 
-    // Parity with oracle TestNormalizeBM25_MixedPool: semantic-only entries
+    // Mixed pool: semantic-only entries
     // (no BM25 data) do not skew the min/max range; they receive neutral
     // 0.5 while lexical entries span [0, 1].
     #[test]
@@ -634,8 +630,8 @@ mod tests {
         );
     }
 
-    // Parity with oracle TestReciprocalRankFusion_BM25Calibration: BM25
-    // scores are normalized and blended into the final calibrated score.
+    // BM25 calibration: scores are normalized and blended into the final
+    // calibrated score.
     #[test]
     fn bm25_calibration() {
         // (1) BM25 differentiation — lower BM25 (better) ranks higher.

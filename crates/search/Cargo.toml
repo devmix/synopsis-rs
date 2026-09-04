@@ -19,6 +19,5 @@ utils = { workspace = true }
 # thiserror for SearchError (workspace convention, config-module D4).
 thiserror = { workspace = true }
 # Result metadata bag: `serde_json::Map<String, Value>` (workspace convention,
-# same as ingestion — BTreeMap-backed: deterministic key order for parity
-# diffs).
+# same as ingestion — BTreeMap-backed: deterministic key order).
 serde_json = { workspace = true }

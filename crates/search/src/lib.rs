@@ -1,8 +1,5 @@
 //! Hybrid (full-text + vector) search with Reciprocal Rank Fusion.
 //!
-//! The Go code is a reference for behavior and contracts only — this crate
-//! is the Rust re-architecture (functional copy, not a code copy).
-//!
 //! # Pipeline
 //!
 //! [`HybridSearcher`] composes the full pipeline (design D2/D5):
@@ -11,9 +8,9 @@
 //!    [`db::ChunkDao::search_fts`]) and [`SemanticSearcher`] (embedding
 //!    provider + [`vectors::VectorIndex`], with application-side domain
 //!    filtering and over-fetch, design D3). The legs run sequentially
-//!    (recorded deviation: the oracle used goroutines under a context
-//!    timeout; `timeout_ms` stays in the frozen config but is not
-//!    plumbed); a disabled leg is an empty success.
+//!    (no task spawning or timeout plumbing; `timeout_ms` stays in the
+//!    frozen config but is not plumbed); a disabled leg is an empty
+//!    success.
 //! 2. **Fusion** — [`reciprocal_rank_fusion`] (design D4: `1/(k+rank)`
 //!    accumulation, BM25 min-max over the lexical entries only, RRF
 //!    min-max, `0.7·rrf + 0.3·bm25` calibration, `chunk_id` tiebreak).
@@ -36,8 +33,7 @@
 //! contract (the MCP layer holds `&dyn Searcher`); [`HybridSearcher`] is
 //! its sole implementation.
 //!
-//! Result types (oracle `search.go` / `lexical_search.go` /
-//! `semantic_search.go`):
+//! Result types:
 //!
 //! - [`LexicalHit`] / [`SemanticHit`] are raw sub-search hits before
 //!   fusion. Both carry a `score` where **lower is better** (FTS5 `bm25()`
@@ -68,7 +64,7 @@ pub use rerank::Reranker;
 pub use rrf::{DEFAULT_RRF_K, reciprocal_rank_fusion};
 pub use semantic::SemanticSearcher;
 
-/// The search contract (oracle `Searcher` interface): the hybrid entry
+/// The search contract: the hybrid entry
 /// point plus the two standalone legs. Implemented by [`HybridSearcher`].
 ///
 /// All entry points take `top_k` in the config's width (`i32`); `<= 0`
@@ -121,8 +117,8 @@ pub enum SourceType {
 }
 
 impl SourceType {
-    /// The wire word used in MCP tool responses and parity diffs (frozen
-    /// contract: `"lexical" | "semantic" | "hybrid"`).
+    /// The wire word used in MCP tool responses (frozen contract:
+    /// `"lexical" | "semantic" | "hybrid"`).
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Lexical => "lexical",
@@ -132,7 +128,7 @@ impl SourceType {
     }
 }
 
-/// One raw FTS5 hit before fusion (oracle `LexicalSearchResult`).
+/// One raw FTS5 hit before fusion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LexicalHit {
     /// Chunk row id.
@@ -157,7 +153,7 @@ pub struct LexicalHit {
     pub score: f64,
 }
 
-/// One raw vector hit before fusion (oracle `SemanticSearchResult`).
+/// One raw vector hit before fusion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticHit {
     /// Chunk row id.
@@ -182,7 +178,7 @@ pub struct SemanticHit {
     pub score: f64,
 }
 
-/// One fused, ranked hit (oracle `SearchResult`).
+/// One fused, ranked hit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
     /// Chunk row id.

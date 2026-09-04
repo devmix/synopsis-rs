@@ -5,28 +5,26 @@
 //! [`db::FactDao::list_by_entity_ids`] (approved facts only) → per entity:
 //! BFS both directions via [`Graph::traverse`] (`max_depth`/`max_nodes` from
 //! [`GraphConfig`]) → serialize the edges and facts into
-//! `metadata["related_entities"]` in the oracle's wire shape
+//! `metadata["related_entities"]` in the wire shape
 //! (`entity_id`/`name`/`domain` + optional `edges[]` + optional `facts[]`).
 //!
 //! **Non-fatal by contract (D8):** any expansion failure (fact batch query,
 //! traversal) is a warning via `eprintln!` (crate convention — no logger in
 //! the frozen stack) and the results are returned WITHOUT `related_entities`.
 //!
-//! **Conscious deviations from the oracle:**
-//! - The Go `atomic.Pointer` graph swap (`SetGraph`) is gone: the expander
-//!   borrows an immutable `&Graph` — the CLI rebuilds the searcher after
-//!   re-indexing instead (D8).
+//! **Design:**
+//! - The expander borrows an immutable `&Graph` — the CLI rebuilds the
+//!   searcher after re-indexing instead of swapping the graph (D8).
 //! - No context cancellation: the synchronous [`Graph::traverse`] cannot be
-//!   cancelled, so the oracle's per-entity "expansion cancelled" warning has
-//!   no trigger; a traversal error still degrades to that entity carrying no
-//!   edges (defensive, mirrors the oracle).
-//! - `expand` returns `()` instead of `(results, error)`: the oracle's error
-//!   return is always `nil` (non-fatal by contract); a fallible signature
-//!   would force every caller to write a no-op error arm.
+//!   cancelled; a traversal error degrades to that entity carrying no edges
+//!   (defensive).
+//! - `expand` returns `()`: expansion is non-fatal by contract, and a
+//!   fallible signature would force every caller to write a no-op error
+//!   arm.
 //! - Each unique entity is serialized ONCE; the `serde_json::Value` is
-//!   cloned per result reference (the oracle re-serialized per result).
-//! - Facts with a `NULL` endpoint serialize the endpoint as `0` (the
-//!   oracle's Go `int` zero value), preserving the wire shape.
+//!   cloned per result reference.
+//! - Facts with a `NULL` endpoint serialize the endpoint as `0`, preserving
+//!   the wire shape.
 
 use std::collections::{HashMap, HashSet};
 
@@ -53,9 +51,8 @@ impl<'conn> GraphExpander<'conn> {
     /// Bind the expander to its collaborators. `max_depth`/`max_nodes` come
     /// from `config` (`0` → the traverser's defaults; an over-max depth is
     /// clamped by [`TraverseOptions::normalized`]). Direction is always
-    /// Both (the oracle's `BFSOptions{Direction: DirectionBoth}`) and
-    /// `follow_entity_links` stays `false`, matching the oracle: expansion
-    /// never crosses domain boundaries.
+    /// Both and `follow_entity_links` stays `false`: expansion never
+    /// crosses domain boundaries.
     pub fn new(graph: &'conn Graph, facts: &'conn FactDao<'conn>, config: &GraphConfig) -> Self {
         Self {
             graph,
@@ -86,9 +83,8 @@ impl<'conn> GraphExpander<'conn> {
     /// the graph (entity id → one `related_entities` entry).
     ///
     /// Entity ids are de-duplicated across the pool in first-seen order
-    /// (one BFS + one facts lookup per entity — the oracle's `visited`
-    /// set); id `0` (impossible by schema) and ids missing from the index
-    /// are skipped.
+    /// (one BFS + one facts lookup per entity); id `0` (impossible by
+    /// schema) and ids missing from the index are skipped.
     fn collect_expansions(&self, results: &[SearchResult]) -> Result<HashMap<i64, Value>, String> {
         let mut ids: Vec<i64> = Vec::new();
         let mut seen: HashSet<i64> = HashSet::new();
@@ -125,8 +121,7 @@ impl<'conn> GraphExpander<'conn> {
             let edges = match self.graph.traverse(id, &self.options) {
                 Ok(result) => result.edges,
                 Err(err) => {
-                    // Non-fatal per entity (the oracle's "expansion
-                    // cancelled" path): the entity keeps its node data
+                    // Non-fatal per entity: the entity keeps its node data
                     // without edges.
                     eprintln!("graph expansion: BFS from entity {id} failed: {err}");
                     Vec::new()
@@ -141,7 +136,7 @@ impl<'conn> GraphExpander<'conn> {
 
 /// Attach the serialized expansions to each result's
 /// `metadata["related_entities"]`: one entry per result entity present in
-/// the graph, in result-entity order (oracle `Expand`).
+/// the graph, in result-entity order.
 fn attach_related_entities(results: &mut [SearchResult], expansions: &HashMap<i64, Value>) {
     if expansions.is_empty() {
         return;
@@ -164,8 +159,8 @@ fn attach_related_entities(results: &mut [SearchResult], expansions: &HashMap<i6
 }
 
 /// One `related_entities` entry: the graph node identity plus the BFS
-/// edges and the entity's approved facts (oracle `entityData`). The
-/// `edges`/`facts` keys are absent when empty (oracle contract).
+/// edges and the entity's approved facts. The `edges`/`facts` keys are
+/// absent when empty (wire contract).
 fn serialize_entity(node: &EntityNode, edges: &[TraversalEdge], facts: &[db::Fact]) -> Value {
     let mut data = Map::new();
     data.insert("entity_id".to_owned(), node.id.into());
@@ -182,7 +177,7 @@ fn serialize_entity(node: &EntityNode, edges: &[TraversalEdge], facts: &[db::Fac
     Value::Object(data)
 }
 
-/// BFS edges in the oracle's wire shape (oracle `serializeEdges`):
+/// BFS edges in the wire shape:
 /// `source_id`/`target_id`/`relation_type` always; `method` (when
 /// non-empty), `confidence` (when > 0) and `evidence` (when present)
 /// only when they carry a value.
@@ -211,10 +206,10 @@ fn serialize_edges(edges: &[TraversalEdge]) -> Vec<Value> {
         .collect()
 }
 
-/// Approved facts in the oracle's wire shape (oracle `serializeFacts`):
+/// Approved facts in the wire shape:
 /// `id`/`predicate`/`subject_entity_id`/`object_entity_id` always (a
-/// `NULL` endpoint is `0`, the oracle's Go `int` zero value), `metadata`
-/// only when present (the raw JSON string, NOT parsed).
+/// `NULL` endpoint is `0`), `metadata` only when present (the raw JSON
+/// string, NOT parsed).
 fn serialize_facts(facts: &[db::Fact]) -> Vec<Value> {
     facts
         .iter()
@@ -382,7 +377,7 @@ mod tests {
 
     // ── degenerate inputs ───────────────────────────────────────────────
 
-    // Oracle TestGraphExpander_Expand_EmptyResults: an empty pool is a no-op.
+    // An empty pool is a no-op.
     #[test]
     fn expand_empty_results_is_noop() {
         let db = in_memory_db();
@@ -394,8 +389,7 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    // Oracle TestGraphExpander_Expand_NoGraph / TestGraphExpansionDisabled:
-    // entities absent from the graph (empty index) → no related_entities.
+    // Entities absent from the graph (empty index) → no related_entities.
     #[test]
     fn expand_ignores_entities_absent_from_graph() {
         let db = in_memory_db();
@@ -410,7 +404,7 @@ mod tests {
         );
     }
 
-    // A result without entities is skipped (oracle `len(Entities) == 0`).
+    // A result without entities is skipped.
     #[test]
     fn expand_skips_results_without_entities() {
         let db = in_memory_db();
@@ -430,9 +424,8 @@ mod tests {
 
     // ── expansion content ───────────────────────────────────────────────
 
-    // Oracle TestGraphExpander_MultipleEntities: every result entity present
-    // in the graph gets an entry with the graph node's identity; the
-    // connected entity carries its BFS edges.
+    // Every result entity present in the graph gets an entry with the graph
+    // node's identity; the connected entity carries its BFS edges.
     #[test]
     fn expand_multiple_entities() {
         let db = in_memory_db();
@@ -492,8 +485,8 @@ mod tests {
         assert!(list[0].get("facts").is_none(), "no facts → no facts key");
     }
 
-    // Oracle TestGraphExpander_Deduplication: an entity shared by two
-    // results is expanded once and both results carry the entry.
+    // An entity shared by two results is expanded once and both results
+    // carry the entry.
     #[test]
     fn expand_deduplicates_shared_entities() {
         let db = in_memory_db();
@@ -520,9 +513,8 @@ mod tests {
         }
     }
 
-    // Oracle TestGraphExpander_DanglingEdge: an edge to a non-existent
-    // entity never appears — the index builder skips dangling endpoints, so
-    // the expansion carries no edges at all.
+    // An edge to a non-existent entity never appears — the index builder
+    // skips dangling endpoints, so the expansion carries no edges at all.
     #[test]
     fn expand_dangling_edge_excluded() {
         let db = in_memory_db();
@@ -586,7 +578,7 @@ mod tests {
         assert_eq!(edges_at(10), vec![(1, 2), (2, 3), (3, 4)]);
     }
 
-    // Oracle TestGraphExpander_MaxNodesLimit: a star with 200 neighbors and
+    // A star with 200 neighbors and
     // max_nodes=10 caps the result (max_nodes counts the center too).
     #[test]
     fn expand_respects_max_nodes() {
@@ -617,9 +609,8 @@ mod tests {
 
     // ── facts ───────────────────────────────────────────────────────────
 
-    // Oracle TestGraphExpander_serializeFacts(_WithMetadata): the fact wire
-    // shape — id/predicate/endpoints always; metadata (raw JSON string)
-    // only when present.
+    // The fact wire shape — id/predicate/endpoints always; metadata (raw
+    // JSON string) only when present.
     #[test]
     fn expand_facts_wire_shape() {
         let db = in_memory_db();
@@ -673,7 +664,7 @@ mod tests {
         );
     }
 
-    // Oracle TestGraphExpander_ExcludesDraftFacts: only approved facts reach
+    // Only approved facts reach
     // related_entities (the DAO filters `status = 'approved'`).
     #[test]
     fn expand_excludes_non_approved_facts() {
@@ -712,10 +703,8 @@ mod tests {
 
     // ── non-fatal failure ───────────────────────────────────────────────
 
-    // Oracle TestGraphExpander_Expand_FactBatchErrorNonFatal: a fact batch
-    // failure (here: the facts table dropped — the oracle closed the
-    // database) is a warning: the results return intact, without
-    // related_entities.
+    // A fact batch failure (here: the facts table dropped) is a warning:
+    // the results return intact, without related_entities.
     #[test]
     fn expand_fact_batch_failure_is_non_fatal() {
         let db = in_memory_db();
@@ -758,9 +747,9 @@ mod tests {
 
     // ── wire shape (unit) ───────────────────────────────────────────────
 
-    // Oracle TestGraphExpander_serializeEdges: the edge wire shape —
-    // source/target/relation always; method/confidence/evidence only with
-    // values (empty method and zero confidence are dropped).
+    // The edge wire shape — source/target/relation always;
+    // method/confidence/evidence only with values (empty method and zero
+    // confidence are dropped).
     #[test]
     fn serialize_edges_wire_shape() {
         let fact_edge = TraversalEdge {

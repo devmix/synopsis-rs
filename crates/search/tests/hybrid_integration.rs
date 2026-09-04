@@ -637,7 +637,7 @@ fn reranker_official_boost_reorders_results() {
 // ── empty queries ─────────────────────────────────────────────────────────
 
 // Empty and whitespace-only queries return Ok(empty) on every entry point
-// without touching a leg (oracle `nil, nil`).
+// without touching a leg.
 #[test]
 fn empty_queries_return_empty() {
     let db = in_memory_db();

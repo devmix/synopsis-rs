@@ -4,8 +4,7 @@
 //! shrink the source file. They exercise the PUBLIC crate-root API against
 //! an in-memory SQLite database (`db::test_util::in_memory_db`) with the
 //! model-level seams mocked: a canned embedding provider and a canned
-//! search-only index. Oracle mapping: Go `internal/search/hybrid_search.go`
-//! (`hybridSearcher`, `finalize`, `LexicalSearch`, `SemanticSearch`).
+//! search-only index.
 //!
 //! The three tests that reach private production items (`invert_score`,
 //! `standalone_results`, `HybridSearcher::fusion_pool`) remain inline in

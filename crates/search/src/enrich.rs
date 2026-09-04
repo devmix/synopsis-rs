@@ -11,16 +11,14 @@
 //! The whole pool is returned enriched (no truncation here — that is the
 //! finalize pipeline, design D5).
 //!
-//! **Conscious deviations from the oracle:**
+//! **Design:**
 //! - `enrich` mutates the pool in place (`&mut [SearchResult]`) instead of
-//!   returning a new slice (Rust idiom; the oracle returned the same slice
-//!   it mutated);
-//! - the enricher is bound to concrete DAO handles (no Go-style interface
-//!   mocks): the batch queries are pinned by in-memory SQLite tests;
-//! - chunk ids are de-duplicated before the batch entity lookup (the oracle
-//!   passed every result's id, duplicates included);
+//!   returning a new slice (Rust idiom);
+//! - the enricher is bound to concrete DAO handles (no trait-object mocks):
+//!   the batch queries are pinned by in-memory SQLite tests;
+//! - chunk ids are de-duplicated before the batch entity lookup;
 //! - `SearchResult::source_type` is the wire string, so the merge writes
-//!   `"lexical+pdf"` into the same field the oracle wrote to.
+//!   `"lexical+pdf"` directly into that field.
 
 use std::collections::{HashMap, HashSet};
 
@@ -146,7 +144,7 @@ fn merge_source_type(search_source: &str, doc_source: &str) -> String {
 /// Copy the reranker-relevant keys (`is_deprecated`, `is_official`,
 /// `valid_to`) from the parsed document metadata into the result metadata.
 /// Missing or wrong-typed keys are skipped — the reranker ignores absent
-/// keys (an empty `valid_to` is treated as absent, as in the oracle).
+/// keys (an empty `valid_to` is treated as absent).
 fn extract_reranker_flags(
     meta: &serde_json::Value,
     out: &mut serde_json::Map<String, serde_json::Value>,
@@ -336,8 +334,7 @@ mod tests {
     }
 
     // Reranker flags: right types extracted (false is a value, not an
-    // absence), wrong types and empty valid_to skipped (oracle
-    // TestEnricher_MetadataFlags).
+    // absence), wrong types and empty valid_to skipped.
     #[test]
     fn enrich_extracts_reranker_flags() {
         let db = in_memory_db();
@@ -386,7 +383,7 @@ mod tests {
         }
     }
 
-    // End-to-end (oracle TestEnricher_InvalidUpdatedAtSkipped): an
+    // End-to-end: an
     // unparseable or empty `updated_at` on a real document row skips the
     // key instead of failing enrichment.
     #[test]
@@ -488,8 +485,7 @@ mod tests {
     }
 
     // Batch enrichment over a pool wider than the distinct documents:
-    // every result is enriched from the shared batched lookups (the
-    // oracle's FIX-037 single-query property holds by construction: one
+    // every result is enriched from the shared batched lookups (one
     // get_by_ids + one get_entities_by_chunks per pool).
     #[test]
     fn enrich_batches_multiple_documents() {

@@ -4,16 +4,15 @@
 //! filter and the limit clamping all live SQL-side in the DAO (it orders by
 //! `bm25()` and applies the domain `EXISTS` before `LIMIT`).
 //!
-//! **Conscious deviations from the oracle:**
-//! - an empty *or whitespace-only* query returns `Ok(empty)` (the oracle
-//!   checked only `== ""`; a whitespace-only FTS5 MATCH expression would be a
-//!   syntax error at the DAO);
+//! **Design:**
+//! - an empty *or whitespace-only* query returns `Ok(empty)` (a
+//!   whitespace-only FTS5 MATCH expression would be a syntax error at the
+//!   DAO);
 //! - the domain is normalized (`crate::normalize_domain`) before the SQL
-//!   comparison: the oracle passed the raw string through, so the SQL
-//!   `json_each.value = ?` comparison was case-sensitive even though the
-//!   oracle's app-side `filterByDomain` normalized both sides. Stored domains
-//!   are canonically lowercase (ontology XML), so normalizing the input makes
-//!   the filter case-insensitive without touching the db crate.
+//!   comparison so the `json_each.value = ?` filter is case-insensitive.
+//!   Stored domains are canonically lowercase (ontology XML), so
+//!   normalizing the input alone makes the filter case-insensitive without
+//!   touching the db crate.
 
 use db::{ChunkDao, FtsHit};
 
@@ -210,8 +209,8 @@ mod tests {
         });
     }
 
-    // Deviation: the domain comparison is case-insensitive (the oracle's SQL
-    // pass-through was case-sensitive).
+    // The domain comparison is case-insensitive: the input is normalized
+    // before the SQL filter.
     #[test]
     fn search_domain_filter_is_case_insensitive() {
         let db = in_memory_db();
@@ -228,8 +227,7 @@ mod tests {
         });
     }
 
-    // Deviation: whitespace-only queries are empty queries (the oracle only
-    // checked `== ""`).
+    // Whitespace-only queries are empty queries.
     #[test]
     fn search_empty_query_returns_empty() {
         let db = in_memory_db();
