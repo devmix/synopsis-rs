@@ -4,11 +4,6 @@
 .archive/spikes/target/
 *.rs.bk
 
-# knowledge.db fixture binary (2.2 MB) is gitignored; provenance and the
-# regeneration command live in fixtures/README.md, which stays tracked.
-fixtures/*
-!fixtures/README.md
-
 # Runtime artifacts under workspace/ (storage-layout-restructure task 1.4):
 # ONNX Runtime .so (~24 MB), model files (~2.3 GB), the global cache DB, and
 # per-dataset state (knowledge.db + vectors) are all gitignored; provenance and
@@ -19,4 +14,4 @@ workspace/*
 !workspace/datasets/edtech/content/
 
 # Cargo.lock is committed on purpose: this workspace produces a binary and
-# reproducible builds matter for parity testing against the Go oracle.
+# reproducible builds matter for parity testing against recorded fixtures.

@@ -102,6 +102,4 @@ grep -vE '^[[:space:]]*</?(entities|relations|attributes|synonyms|regex-rules)>[
 sha256sum crates/config/tests/data/domains/*.xml   # must match the table above
 ```
 
-> Note on location: fixtures live under `tests/data/`, not `fixtures/` — the root
-> `.gitignore` ignores `fixtures/*` at any depth, which would drop these files from
-> version control (design D10).
+> Note on location: fixtures live under `tests/data/`, not a top-level `fixtures/` directory (design D10).
