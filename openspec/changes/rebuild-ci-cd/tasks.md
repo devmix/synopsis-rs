@@ -38,7 +38,7 @@ machine-checkable acceptance all fit in the body.
 
 ## 1 — Pipeline files
 
-- [ ] 1.1 Restructure `ci.yml` — drop `cross-builds`, keep `checks` + `coverage`
+- [x] 1.1 Restructure `ci.yml` — drop `cross-builds`, keep `checks` + `coverage`
 
 **Goal.** Remove the `cross-builds` job from `.github/workflows/ci.yml` so the dev CI is
 fast (D1). Keep the `checks` job (fmt + clippy + test — the native build check) and the
@@ -60,7 +60,7 @@ Go structure — "Keeping dev runs fast").
 - YAML still parses: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` → no error.
 - Gates green: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 
-- [ ] 1.2 Add `release.yml` — 5-target build + package + publish on `v*` tag
+- [x] 1.2 Add `release.yml` — 5-target build + package + publish on `v*` tag
 
 **Goal.** Create `.github/workflows/release.yml` — the CD pipeline (D1–D4). On `push:
 tags: 'v*'` it cross-builds the 5 targets, packages per-platform archives, generates
@@ -114,7 +114,7 @@ tags: 'v*'` it cross-builds the 5 targets, packages per-platform archives, gener
 
 ## 2 — Verification
 
-- [ ] 2.1 Whole-pipeline verification
+- [x] 2.1 Whole-pipeline verification
 
 **Goal.** Confirm both workflow files are valid, the split is correct (D1), the release
 is complete (D2–D4), and no oracle/Go narrative leaked in.
