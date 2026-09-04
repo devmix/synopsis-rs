@@ -8,7 +8,7 @@
             <method>expression</method>
         </methods>
 
-        <!-- One word is enough for this fixture (the oracle default is 2). -->
+        <!-- One word is enough for this fixture (the default is 2). -->
         <equals>
             <min-words>1</min-words>
         </equals>

@@ -8,7 +8,7 @@ workspace = true
 
 # D1 edges: config is the only internal dependency this crate needs — the
 # chunkers take their `ChunkingConfig` / `MarkdownChunkerConfig` from it
-# (task 1.3+). The oracle's imports of database/embedding/relations come back
+# (task 1.3+). The imports of database/embedding/relations come back
 # with later changes (pipeline DB writes, NER via the embedding crate); YAGNI.
 [dependencies]
 config = { workspace = true }
@@ -33,7 +33,7 @@ regex = { workspace = true }
 ignore = { workspace = true }
 # HTML -> Markdown conversion for the webpage parser (task 1.8): `.html`
 # pages are converted to Markdown so the injected markdown chunker can split
-# them on ATX headings, like the oracle's html-to-markdown library.
+# them on ATX headings, like a standard html-to-markdown library.
 html-to-markdown-rs = { workspace = true }
 # Jinja2 engine for the NER prompt templates (ingestion-ner task 2.2):
 # embedded defaults via include_str! + user overrides, same pattern as the

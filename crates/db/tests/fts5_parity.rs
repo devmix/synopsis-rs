@@ -1,4 +1,5 @@
-//! FTS5 bm25 parity against the Go-oracle fixture (`fixtures/knowledge.db`).
+//! FTS5 bm25 parity against the recorded fixture (`fixtures/knowledge.db`,
+//! a v5-shape knowledge database).
 //!
 //! Recorded expectations (spike S1, `.archive/spikes/src/bin/s1_sqlite.rs`,
 //! verified once against the fixture):
@@ -12,13 +13,13 @@
 //! The fixture is a gitignored binary (provenance in `fixtures/README.md`);
 //! the tests skip cleanly when it is absent (fresh checkout).
 //!
-//! The fixture is the Go-oracle v5 shape: its `chunks` table has no
-//! `search_text` column and its `chunks_fts` indexes `chunk_text`, so the
-//! [`ChunkDao`] queries (which read `search_text`, a column the Rust
-//! init migration adds) cannot run against it. The tests therefore issue the
-//! equivalent raw SQL — the same MATCH + bm25 join the DAO issues, minus
-//! the `search_text` column — to keep verifying FTS5 engine parity (Rust
-//! vs Go bm25 on identical data).
+//! The fixture is the v5 shape: its `chunks` table has no `search_text`
+//! column and its `chunks_fts` indexes `chunk_text`, so the [`ChunkDao`]
+//! queries (which read `search_text`, a column the Rust init migration
+//! adds) cannot run against it. The tests therefore issue the equivalent
+//! raw SQL — the same MATCH + bm25 join the DAO issues, minus the
+//! `search_text` column — to keep verifying FTS5 engine behavior
+//! (identical bm25 scoring on identical data).
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -51,9 +52,8 @@ fn with_fixture(f: impl FnOnce(&Connection)) {
 }
 
 /// The DAO's `FTS_QUERY` in its fixture-compatible form: FTS5 MATCH +
-/// `bm25()` ranking + `ORDER BY bm25` (the DAO's conscious deviation from
-/// the oracle's unranked `SearchFTS`), without the Rust `search_text`
-/// column the Go fixture does not have.
+/// `bm25()` ranking + `ORDER BY bm25` (the DAO ranks its results), without
+/// the Rust `search_text` column the fixture does not have.
 fn match_ranked(conn: &Connection, expr: &str, limit: i64) -> Vec<(i64, f64)> {
     conn.prepare(
         "SELECT c.id, bm25(chunks_fts) \
@@ -95,7 +95,7 @@ fn match_ranked_domain(conn: &Connection, expr: &str, domain: &str, limit: i64) 
 }
 
 /// (г) term `knowledge`: 17 hits, top-3 chunk ids and bm25 scores match the
-/// recorded oracle values.
+/// recorded expected values.
 #[test]
 fn fts5_parity_knowledge_term() {
     with_fixture(|conn| {

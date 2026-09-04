@@ -339,7 +339,7 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
     );
     assert_eq!(
         config.llm_confidence_threshold, 0.7,
-        "the loader must apply the oracle default threshold"
+        "the loader must apply the default threshold"
     );
 
     // The SHARED cache database (task 1.10): it outlives both knowledge

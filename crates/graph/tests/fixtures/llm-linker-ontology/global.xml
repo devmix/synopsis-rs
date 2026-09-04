@@ -10,7 +10,7 @@
             <method>llm</method>
         </methods>
 
-        <!-- No <equals> block: min-words keeps the oracle default (2), so the
+        <!-- No <equals> block: min-words keeps the default (2), so the
              one-word "Acme" name is too short for equals — only the llm
              method can link that pair. -->
 

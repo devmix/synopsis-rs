@@ -1,9 +1,9 @@
-//! Integration tests for [`crate::onnx`] against the verbatim oracle fixture.
+//! Integration tests for [`crate::onnx`] against the verbatim fixture.
 //!
-//! The fixture `tests/data/onnx.yaml` is copied byte-for-byte from
-//! `../synopsis/configs/onnx.yaml` (see `tests/data/README.md`). These tests assert that
-//! the whole registry parses with its exact values and that both lookups behave like the
-//! oracle's `PlatformForKey` / `ModelForName`; criteria (a)-(e) of task 2.1.
+//! The fixture `tests/data/onnx.yaml` is a byte-for-byte copy of the recorded onnx registry
+//! (see `tests/data/README.md`). These tests assert that the whole registry parses with its
+//! exact values and that both lookups resolve known keys/names and reject unknown ones;
+//! criteria (a)-(e) of task 2.1.
 
 // Test target: expect on fixture loading is intentional (the files always exist).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -103,7 +103,7 @@ fn fixture_parses_registry_with_expected_values() {
 }
 
 #[test]
-fn platform_for_key_matches_oracle_semantics() {
+fn platform_for_key_semantics() {
     // Criterion (b): known key -> Some with the file's archive_url; unknown -> None.
     let cfg: OnnxConfig = load_onnx_config(fixture()).expect("onnx.yaml must parse");
 
@@ -120,7 +120,7 @@ fn platform_for_key_matches_oracle_semantics() {
 }
 
 #[test]
-fn model_for_name_matches_oracle_semantics() {
+fn model_for_name_semantics() {
     // Criterion (c): known name -> Some (vector_dim=1024, 3 files); unknown -> None.
     let cfg: OnnxConfig = load_onnx_config(fixture()).expect("onnx.yaml must parse");
 

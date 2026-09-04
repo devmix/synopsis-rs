@@ -1,16 +1,15 @@
-//! Integration tests for [`crate::ontology`] against the D15-adapted oracle fixture and edge-case
+//! Integration tests for [`crate::ontology`] against the D15-adapted fixture and edge-case
 //! documents written to temp dirs (tasks 3.1 + 3.1b).
 //!
-//! The fixture `tests/data/global.xml` derives from `../synopsis/data/ontology/global.xml`: per
-//! design D15 revision 4 (2026-08-19) every group of repeated elements sits inside a plural
-//! wrapper, so the adaptation adds wrapper lines (`<attributes>`, `<synonyms>`, `<methods>` x2,
+//! The fixture `tests/data/global.xml` is the D15-adapted ontology fixture: per design D15
+//! revision 4 (2026-08-19) every group of repeated elements sits inside a plural wrapper, so
+//! the adaptation adds wrapper lines (`<attributes>`, `<synonyms>`, `<methods>` x2,
 //! `<regex-rules>`) and changes nothing else — see `tests/data/README.md` for provenance,
 //! SHA-256 and the adaptation recipe. These tests assert that the whole document **loads** with
-//! its exact values after oracle defaulting: absent threshold elements carry the defaults (0.7 /
-//! 5), every source has a domain, and the regex rule is compiled in place (design D5) — criteria
+//! its exact values after defaulting: absent threshold elements carry the defaults (0.7 / 5),
+//! every source has a domain, and the regex rule is compiled in place (design D5) — criteria
 //! (a) and (e). Edge-case documents cover the task 3.1b validation matrix — criteria (г), (д),
-//! (ж), (з) — with error messages byte-parity to `../synopsis/internal/config/global_config.go`
-//! and `internal/domain/global_pool.go`.
+//! (ж), (з) — with the exact expected error messages.
 //!
 //! Also hosts the tests relocated from the inline `#[cfg(test)]` module in `src/ontology.rs`
 //! (change `test-hygiene-phase-2`, task 2.7) — criterion (б): they exercise only the public API
@@ -56,7 +55,7 @@ impl Drop for TempOntology {
 }
 
 /// Loads `document` and asserts it fails with a [`ConfigError::Validation`] carrying exactly the
-/// oracle's message.
+/// expected message.
 fn assert_validation_error(name: &str, document: &str, expected_message: &str) {
     let dir = TempOntology::new(name, document);
     match dir.load() {
@@ -67,7 +66,7 @@ fn assert_validation_error(name: &str, document: &str, expected_message: &str) {
 
 #[test]
 fn fixture_parses_complete_ontology() {
-    // Criterion (a): every block of the oracle file loads with its exact values.
+    // Criterion (a): every block of the fixture loads with its exact values.
     let cfg = load_global_config(fixture_dir())
         .expect("global.xml must load")
         .expect("fixture directory holds a global.xml");
@@ -119,17 +118,16 @@ fn assert_fixture_cross_domain_links(cfg: &config::GlobalConfig) {
         .expect("fixture has cross-domain-links");
 
     // Methods in file order. Note the fixture's attribute-only spelling `<method>equals</method>`:
-    // both Go's encoding/xml and quick-xml surface that single empty-valued attribute name as the
-    // element's string content, so it parses to `Equals` in both parsers — kept verbatim precisely
-    // because this quirk preserves parity (see also the unit test of the same name in
-    // src/ontology.rs).
+    // quick-xml surfaces a lone empty-valued attribute name as the element's string content, so
+    // it parses to `Equals` — the spelling is kept verbatim in the fixture precisely because of
+    // this quirk (see also the unit test of the same name in src/ontology.rs).
     assert_eq!(
         cdl.methods,
         vec![LinkMethod::Expression, LinkMethod::Equals, LinkMethod::Llm]
     );
-    // Literal value from the file; it already equals the oracle default (2).
+    // Literal value from the file; it already equals the default (2).
     assert_eq!(cdl.equals.expect("fixture defines <equals>").min_words, 2);
-    // The fixture omits both threshold elements: the loader applies the oracle defaults on top of
+    // The fixture omits both threshold elements: the loader applies the defaults on top of
     // the raw zero values (task 3.1b criterion (a)).
     assert!((cdl.llm_confidence_threshold - 0.7).abs() < f64::EPSILON);
     assert_eq!(cdl.batch_size, 5);
@@ -137,9 +135,9 @@ fn assert_fixture_cross_domain_links(cfg: &config::GlobalConfig) {
     let expression = cdl.expressions.first().expect("fixture has one expression");
     assert_eq!(expression.name, "same-product");
     assert_eq!(expression.priority, 80);
-    // Literal value from the file (the oracle default happens to coincide here).
+    // Literal value from the file (the default happens to coincide here).
     assert_eq!(expression.relation_type, "same_entity");
-    // `&amp;` entities decode to literal `&&`; full text matches the oracle file exactly.
+    // `&amp;` entities decode to literal `&&`; full text matches the fixture exactly.
     assert_eq!(
         expression.where_,
         "A.type == 'product' && A.type == B.type && A.name == B.name"
@@ -224,7 +222,7 @@ fn assert_fixture_ner_entities_relations_extraction(cfg: &config::GlobalConfig) 
 
 #[test]
 fn source_without_path_fails_validation() {
-    // Criterion (г): the oracle's message, 1-based numbering.
+    // Criterion (г): the expected message, 1-based numbering.
     let doc = "<global><sources>\
                <source type=\"markdown\"><domains><domain>x</domain></domains></source>\
                </sources></global>";
@@ -239,8 +237,8 @@ fn source_without_type_fails_validation() {
 
 #[test]
 fn invalid_regex_pattern_is_a_typed_error_with_file_and_rule() {
-    // Criterion (д): the oracle panics here (`regexp.MustCompile`); the typed error names both
-    // the ontology file and the offending rule id.
+    // Criterion (д): an uncompilable pattern is a typed error naming both the ontology file and
+    // the offending rule id.
     let dir = TempOntology::new(
         "bad-regex",
         "<global><extraction><regex-rules>\
@@ -258,7 +256,7 @@ fn invalid_regex_pattern_is_a_typed_error_with_file_and_rule() {
 
 #[test]
 fn duplicate_entity_id_fails_validation() {
-    // Criterion (ж): oracle message with the copy-paste bug fixed ("entity Predicate" → "entity id").
+    // Criterion (ж): duplicate id fails with the expected message.
     let doc = "<global><entities>\
                <entity id=\"a\" name=\"A\"/><entity id=\"a\" name=\"B\"/>\
                </entities></global>";
@@ -267,9 +265,8 @@ fn duplicate_entity_id_fails_validation() {
 
 #[test]
 fn empty_domain_element_yields_default_domain() {
-    // Criterion (з) + parity action: Go's encoding/xml contributes nothing to []string for an
-    // element without text; quick-xml yields "" — the loader filters it, so the oracle's
-    // "no domains → default" fallback still fires.
+    // Criterion (з): an element without text contributes no domain — quick-xml yields "" and
+    // the loader filters it, so the "no domains → default" fallback still fires.
     let dir = TempOntology::new(
         "empty-domain",
         "<global><sources>\
@@ -294,7 +291,7 @@ fn empty_domain_element_yields_default_domain() {
 #[test]
 fn ner_defaults_apply_when_absent_or_empty() {
     // Absent <ner> block and an empty <methods> list both parse to an empty vec; the loader fills
-    // the oracle fallback in both cases (the oracle's two branches, one check).
+    // the fallback in both cases (two branches, one check).
     let dir = TempOntology::new("ner-absent", "<global></global>");
     let cfg = dir.load().expect("must load").expect("file present");
     assert_eq!(cfg.ner.methods, vec![NerMethod::Regex, NerMethod::Llm]);
@@ -317,7 +314,7 @@ fn ner_defaults_apply_when_absent_or_empty() {
 
 #[test]
 fn cross_domain_links_without_methods_fail_validation() {
-    // Oracle message kept verbatim; membership itself fails earlier at parse (strict enums).
+    // The expected message; membership itself fails earlier at parse (strict enums).
     let doc = "<global><cross-domain-links></cross-domain-links></global>";
     assert_validation_error(
         "cdl-empty",
@@ -328,8 +325,7 @@ fn cross_domain_links_without_methods_fail_validation() {
 
 #[test]
 fn entity_without_id_uses_fixed_message() {
-    // Deviation (recorded in the change report): the oracle's copy-paste bug said "global entity
-    // Predicate is required"; the fixed message names what it actually checks.
+    // The fixed message names the id, the field actually checked.
     let doc = "<global><entities><entity name=\"A\"/></entities></global>";
     assert_validation_error("no-entity-id", doc, "global entity id is required");
 }
@@ -362,8 +358,8 @@ fn relation_endpoints_must_exist_in_the_pool() {
 }
 
 #[test]
-fn confidence_out_of_range_fails_with_oracle_message() {
-    // Byte-parity with the oracle's `%f` formatting (6 decimal places).
+fn confidence_out_of_range_fails_with_expected_message() {
+    // The message formats the confidence with 6 decimal places.
     let dir = TempOntology::new(
         "bad-confidence",
         "<global><extraction><regex-rules>\
@@ -470,7 +466,7 @@ fn load_keeps_absolute_source_paths_verbatim() {
 
 #[test]
 fn minimal_document_parses_to_empty_structure() {
-    // Parse-only: absent blocks stay empty — task 3.1b applies the oracle defaults on top.
+    // Parse-only: absent blocks stay empty — task 3.1b applies the defaults on top.
     let cfg = parse("<global></global>").unwrap();
     assert!(cfg.sources.is_empty());
     assert!(cfg.cross_domain_links.is_none(), "absent block stays None");
@@ -500,7 +496,7 @@ fn minimal_document_parses_to_empty_structure() {
 #[test]
 fn source_fields_parse_to_raw_values() {
     // Parse-only: absent fields keep raw zero values; 3.1b defaults empty domains to
-    // ["default"] and rejects missing path/type with the oracle's messages. D15 revision 4:
+    // ["default"] and rejects missing path/type with the expected messages. D15 revision 4:
     // <domain> items sit inside a <domains> wrapper.
     let cfg = parse("<global><sources><source type=\"markdown\"/></sources></global>").unwrap();
     assert!(cfg.sources[0].path.is_empty());
@@ -511,7 +507,7 @@ fn source_fields_parse_to_raw_values() {
     assert_eq!(cfg.sources[0].path, "a");
     assert_eq!(cfg.sources[0].source_type, SourceType::default());
 
-    // Unknown (non-empty) types are tolerated at parse time — the oracle only checks presence.
+    // Unknown (non-empty) types are tolerated at parse time — only presence is checked.
     let cfg = parse(
         "<global><sources><source path=\"a\" type=\"confluence\"></source></sources></global>",
     )
@@ -536,8 +532,8 @@ fn source_fields_parse_to_raw_values() {
 
 #[test]
 fn unknown_method_values_are_rejected_at_parse() {
-    // Strict enums (design D15 revision 4): the Go oracle validates exactly these sets in
-    // Validate(), so an unknown word is a parse error here instead of a 3.1b validation one.
+    // Strict enums (design D15 revision 4): the accepted method sets are validated exactly, so
+    // an unknown word is a parse error here instead of a 3.1b validation one.
     let err = parse(
         "<global><cross-domain-links>\
          <methods><method>bogus</method></methods>\
@@ -551,8 +547,8 @@ fn unknown_method_values_are_rejected_at_parse() {
     let msg = err.to_string();
     assert!(msg.contains("\"bogus\""), "message names the word: {msg}");
 
-    // Matching is case-sensitive (the oracle compares exact words; derived matching of
-    // rename_all-lowercase identifiers is too).
+    // Matching is case-sensitive: the accepted words are compared exactly, as are the
+    // derived rename_all-lowercase identifiers.
     let err = parse(
         "<global><cross-domain-links>\
          <methods><method>Expression</method></methods>\
@@ -568,9 +564,9 @@ fn unknown_method_values_are_rejected_at_parse() {
 }
 
 #[test]
-fn empty_method_elements_contribute_nothing_like_the_oracle() {
-    // Go's encoding/xml skips a text-less <method> element when unmarshalling into []string;
-    // the helpers mirror that by dropping empty items before strict mapping.
+fn empty_method_elements_contribute_nothing() {
+    // A text-less <method> element contributes nothing; the helpers drop empty items before
+    // strict mapping.
     let cfg = parse(
         "<global><ner>\
          <methods><method></method><method>regex</method></methods>\
@@ -582,10 +578,10 @@ fn empty_method_elements_contribute_nothing_like_the_oracle() {
 
 #[test]
 fn attribute_only_method_element_parses_as_its_attribute_name() {
-    // The oracle fixture writes the equals method as `<method>equals</method>` (an attribute,
-    // not text). Go's encoding/xml and quick-xml both surface that element's single empty
-    // attribute name as its string value, so it parses to `Equals` in both — the spelling is
-    // preserved verbatim in the fixture precisely because this quirk keeps parity.
+    // The fixture writes the equals method as `<method>equals</method>` (an attribute, not
+    // text). quick-xml surfaces that element's single empty attribute name as its string
+    // value, so it parses to `Equals` — the spelling is preserved verbatim in the fixture
+    // precisely because of this quirk.
     let cfg = parse(
         "<global><cross-domain-links>\
          <methods><method>expression</method><method>equals</method><method>llm</method></methods>\
@@ -667,7 +663,7 @@ fn wrapped_attribute_and_synonym_blocks_parse_independently() {
 #[test]
 fn relation_children_parse_with_attributes() {
     // D15 revision 4: <relation> sits inside a <relations> wrapper; its <attribute> items
-    // keep the oracle's attribute-only shape inside an <attributes> wrapper.
+    // keep the attribute-only shape inside an <attributes> wrapper.
     let cfg = parse(
         "<global><relations>\
          <relation source=\"a\" predicate=\"p\" target=\"b\" description=\"d\">\
@@ -687,9 +683,8 @@ fn relation_children_parse_with_attributes() {
 
 #[test]
 fn attribute_types_match_known_words_and_tolerate_others() {
-    // Tolerant enum via pure derive + #[serde(other)]: known words (case-insensitive per the
-    // rename_all-lowercase identifiers are exact — the oracle ships lowercase words, so match
-    // the fixture's spelling) map to variants; anything else lands in Unknown.
+    // Tolerant enum via pure derive + #[serde(other)]: known words (matched exactly, in the
+    // fixture's lowercase spelling) map to variants; anything else lands in Unknown.
     let cfg = parse(
         "<global><entities>\
          <entity id=\"a\" name=\"A\"><attributes>\

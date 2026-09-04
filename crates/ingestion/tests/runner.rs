@@ -8,10 +8,6 @@
 //! copies of the ones kept inline in `src/runner/mod.rs`, which the
 //! `runner/cleanup.rs` inline tests import (task 1.12 Revision 1, design
 //! D4).
-//!
-//! Oracle reference: Go `internal/ingestion/runner/runner.go`
-//! (`NewRunner`, `detectSourceType`, `findSourceForPath`,
-//! `belongsToSource`, `processDocumentByPath`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -458,7 +454,7 @@ fn disabled_sources_produce_no_jobs() {
 }
 
 #[test]
-fn detect_source_type_matches_the_oracle_cases() {
+fn detect_source_type_matches_expected_cases() {
     assert_eq!(detect_source_type("/data/my-wiki"), "mediawiki");
     assert_eq!(detect_source_type("/data/mediawiki"), "mediawiki");
     assert_eq!(detect_source_type("/data/MY-WIKI"), "mediawiki");
@@ -542,7 +538,7 @@ fn find_source_for_path_longest_prefix_wins_and_component_boundary() {
     assert_eq!(found.path, inner.to_string_lossy().into_owned());
 
     // Component boundary: `<root>/docs2` is NOT inside `<root>/docs`
-    // (the oracle's raw string prefix would have matched).
+    // (the legacy raw string prefix would have matched).
     let sibling = root.sub("docs2");
     assert!(
         runner

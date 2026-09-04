@@ -49,7 +49,7 @@ fn insert_fact(db: &Db, subject: i64, predicate: &str, object: i64) {
 }
 
 /// Insert a fact with a NULL subject (allowed by the v5 schema) — the
-/// regression trigger for the oracle's `NOT IN` bug.
+/// regression trigger for the legacy `NOT IN` bug.
 fn insert_null_subject_fact(db: &Db, predicate: &str, object: i64) {
     db.with_conn(|conn| {
         conn.execute(
@@ -209,7 +209,7 @@ fn update() {
         assert_eq!(ent.entity_type, "EMPLOYEE");
         assert_eq!(ent.description.as_deref(), Some("updated"));
         assert_eq!(ent.metadata_json.as_deref(), Some(r#"{"k":1}"#));
-        // Name and domain are NOT changeable via update (oracle contract).
+        // Name and domain are NOT changeable via update.
         assert_eq!(ent.name, "Alice");
         assert_eq!(ent.domain, "hr");
         assert!(
@@ -505,8 +505,7 @@ fn get_or_create_repeated_returns_same_id() {
 }
 
 // (c2) get_or_create: same name+domain, DIFFERENT type → second row
-// (the full unique key is the contract; the oracle would have returned
-// the other type's row — documented deviation).
+// (the full unique key is the contract).
 #[test]
 fn get_or_create_different_type_creates_second_row() {
     let db = in_memory_db();
@@ -660,8 +659,8 @@ fn delete_orphaned_entity_ids() {
     });
 }
 
-// (e1b) Go-bug regression: a fact with a NULL subject must not disable
-// the whole cleanup (the oracle's `NOT IN` would match nothing).
+// (e1b) REGRESSION: a fact with a NULL subject must not disable
+// the whole cleanup (the legacy `NOT IN` would match nothing).
 #[test]
 fn delete_orphaned_entity_ids_with_null_fact_endpoint() {
     let db = in_memory_db();

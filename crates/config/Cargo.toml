@@ -19,7 +19,7 @@ regex = { workspace = true }
 # XML deserialization for global.xml (config-module D3, format per D15 revision 4 of
 # 2026-08-19): typed serde structs instead of the event stream. `serialize` is the core;
 # `overlapped-lists` (both named in the task's dependency list) keeps quick-xml tolerant of
-# interleaved children like the oracle's encoding/xml: with the revision-4 format every run now
+# interleaved children like a standard XML parser: with the revision-4 format every run now
 # sits inside its own plural wrapper, so this file parses either way — but a stray foreign child
 # would otherwise truncate a repeated-element list. Version verified online by the implementer
 # against crates.io 2026-08-19: quick-xml 0.41.x current stable; MSRV 1.86 below our pinned

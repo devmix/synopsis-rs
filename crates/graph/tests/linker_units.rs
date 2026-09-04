@@ -3,15 +3,12 @@
 //! Extracted from the inline `#[cfg(test)]` module in `src/linker.rs` to
 //! shrink the source file. They exercise the public `build_entity_links`
 //! pipeline (the `equals` and `expression` methods) against an in-memory
-//! SQLite database (`db::test_util::in_memory_db`). Oracle mapping: Go
-//! `internal/relations/{entity_links.go,expression_linker.go}` (a
-//! functional reference for behavior and contracts only, not a code
-//! blueprint).
+//! SQLite database (`db::test_util::in_memory_db`).
 //!
 //! The nine tests that reach private production items (the
 //! `cross_domain_pairs` fn and the `MockLlm` mock server) remain inline in
 //! `src/linker.rs` (design D7). The test fixtures shared with those
-//! stay-inline tests are copied here (design D4), as are the oracle-parity
+//! stay-inline tests are copied here (design D4), as are the
 //! confidence/relation constants (private in `src/linker.rs`; an
 //! integration test cannot reach private items).
 
@@ -29,15 +26,15 @@ use graph::linker::build_entity_links;
 /// with the stay-inline tests in `src/linker.rs`.
 const TEST_PROMPTS_PATH: &str = "/nonexistent/prompts";
 
-/// The oracle's `config.DefaultRelationType`. Design D4: a local copy of the
-/// private constant in `src/linker.rs`; keep in sync.
+/// The default relation type. Design D4: a local copy of the private
+/// constant in `src/linker.rs`; keep in sync.
 const DEFAULT_RELATION_TYPE: &str = "same_entity";
 
-/// The oracle's `equalsConfidence`. Design D4: a local copy of the private
+/// The equals-method confidence. Design D4: a local copy of the private
 /// constant in `src/linker.rs`; keep in sync.
 const EQUALS_CONFIDENCE: f64 = 0.9;
 
-/// The oracle's `ruleConfidence`. Design D4: a local copy of the private
+/// The expression-rule confidence. Design D4: a local copy of the private
 /// constant in `src/linker.rs`; keep in sync.
 const RULE_CONFIDENCE: f64 = 1.0;
 
@@ -267,7 +264,7 @@ fn expression_priority_order_and_first_true_wins() {
 
 #[test]
 fn expression_errors_are_recorded_not_fatal() {
-    // A parse error fails the whole method (oracle parity).
+    // A parse error fails the whole method.
     let db1 = db::test_util::in_memory_db();
     insert_entities(&db1, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
     let bad = LinkExpression {

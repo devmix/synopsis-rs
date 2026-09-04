@@ -1,5 +1,4 @@
-//! Integration tests for the [`llm::LlmClient`] call core (oracle: Go
-//! `internal/llm/client.go`).
+//! Integration tests for the [`llm::LlmClient`] call core.
 //!
 //! Relocated from the inline test module in `src/client.rs` (change
 //! test-hygiene-phase-1, task 1.9): the 32 tests that use only the public

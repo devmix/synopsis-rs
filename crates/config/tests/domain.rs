@@ -1,16 +1,15 @@
-//! Integration tests for [`crate::domain`] against the D15-adapted oracle fixtures and edge-case
+//! Integration tests for [`crate::domain`] against the D15-adapted fixtures and edge-case
 //! documents written to temp dirs (task 3.2).
 //!
-//! The fixtures `tests/data/domains/domain_{hr,it,product}.xml` derive from
-//! `../synopsis/data/ontology/domains/*.xml`: per design D15 revision 4 every group of repeated
-//! elements sits inside a plural wrapper, so the adaptation adds wrapper lines
+//! The fixtures `tests/data/domains/domain_{hr,it,product}.xml` are the D15-adapted domain
+//! fixtures: per design D15 revision 4 every group of repeated elements sits inside a plural
+//! wrapper, so the adaptation adds wrapper lines
 //! (`<entities>`, `<relations>`, `<attributes>`, `<synonyms>`, `<regex-rules>`) and changes
 //! nothing else — see `tests/data/README.md` for provenance, SHA-256 and the adaptation recipe.
 //! These tests assert that every document **loads** with its exact values (entities, relations,
-//! extraction, confidence — criteria а) and that the oracle's `Validate` matrix rejects the same
-//! documents with byte-parity messages (criteria б–е plus the `domain_config_test.go` cases;
-//! error messages follow `../synopsis/internal/domain/domain_config.go`, with the two copy-paste
-//! "entity Predicate" messages fixed to "entity id" per the task's non-transcription rule).
+//! extraction, confidence — criteria а) and that the validation matrix rejects the same
+//! documents with the expected messages (criteria б–е; the two copy-paste "entity Predicate"
+//! messages are fixed to "entity id").
 
 // Test target: unwrap/expect on fixture loading is intentional (the files always exist).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -48,7 +47,7 @@ impl Drop for TempDomain {
 }
 
 /// Loads `document` and asserts it fails with a [`ConfigError::Validation`] carrying exactly the
-/// oracle's message.
+/// expected message.
 fn assert_validation_error(name: &str, document: &str, expected_message: &str) {
     let dir = TempDomain::new(name, document);
     match dir.load() {
@@ -59,7 +58,7 @@ fn assert_validation_error(name: &str, document: &str, expected_message: &str) {
 
 #[test]
 fn fixture_hr_parses_complete_domain() {
-    // Criterion (а): every block of the oracle file loads with its exact values.
+    // Criterion (а): every block of the fixture loads with its exact values.
     let cfg =
         load_domain_config(fixture_dir().join("domain_hr.xml")).expect("domain_hr.xml must load");
 
@@ -231,7 +230,7 @@ fn missing_file_is_an_io_error_carrying_the_path() {
 
 #[test]
 fn malformed_xml_is_an_xml_error_carrying_the_path() {
-    // Criterion (в): the oracle's own "invalid XML" document (unclosed tag) is a parse error.
+    // Criterion (в): an "invalid XML" document (unclosed tag) is a parse error.
     let dir = TempDomain::new(
         "malformed",
         "<domain name=\"invalid\" version=\"1.0\">\n    <entity id=\"test\" <!-- missing closing bracket -->\n</domain>",
@@ -246,8 +245,8 @@ fn malformed_xml_is_an_xml_error_carrying_the_path() {
 
 #[test]
 fn invalid_regex_pattern_is_a_typed_error_with_file_and_rule() {
-    // Criterion (г): the oracle panics on an uncompilable pattern (regexp.MustCompile); the
-    // typed error names both the file and the rule id.
+    // Criterion (г): an uncompilable pattern is a typed error naming both the file and the rule
+    // id.
     let dir = TempDomain::new(
         "bad_regex",
         r#"<domain name="d" version="1.0">
@@ -268,8 +267,8 @@ fn invalid_regex_pattern_is_a_typed_error_with_file_and_rule() {
 
 #[test]
 fn duplicate_entity_id_fails_validation() {
-    // Criterion (д). Message fixed from the oracle's copy-paste "duplicate entity Predicate: %s"
-    // (EntityDef has no Predicate field) — the same fix as task 3.1b's pool twin.
+    // Criterion (д). The message names the id, not the predicate — the same fix as
+    // task 3.1b's pool twin.
     assert_validation_error(
         "dup_entity",
         r#"<domain name="d" version="1.0">
@@ -309,9 +308,8 @@ fn relation_to_missing_entity_fails_validation() {
 }
 
 #[test]
-fn missing_name_and_version_use_oracle_messages() {
-    // Parity with Go TestDomainConfigValidate: absent attributes parse to "" and fail in the
-    // oracle's order (name before version).
+fn missing_name_and_version_use_expected_messages() {
+    // Absent attributes parse to "" and fail in a fixed order (name before version).
     assert_validation_error(
         "missing_name",
         "<domain version=\"1.0\"></domain>",
@@ -343,7 +341,7 @@ fn ref_attribute_without_target_fails_validation() {
 
 #[test]
 fn duplicate_relation_predicate_fails_validation() {
-    // Kept verbatim from the oracle (its own wording names the Predicate field).
+    // The expected message wording names the Predicate field.
     assert_validation_error(
         "dup_predicate",
         r#"<domain name="d" version="1.0">
@@ -361,7 +359,7 @@ fn duplicate_relation_predicate_fails_validation() {
 }
 
 #[test]
-fn out_of_range_confidence_thresholds_fail_with_oracle_messages() {
+fn out_of_range_confidence_thresholds_fail_with_expected_messages() {
     let document = |auto: &str, reject: &str| {
         format!(
             r#"<domain name="d" version="1.0">

@@ -69,8 +69,8 @@ fn delete_fact_source(db: &Db, fact_id: i64, document_id: i64) {
     .unwrap();
 }
 
-/// Set a fact's status directly (the DAO has no status update; the oracle
-/// tested status transitions with raw SQL too).
+/// Set a fact's status directly (the DAO has no status update, so status
+/// transitions are exercised with raw SQL).
 fn set_fact_status(db: &Db, fact_id: i64, status: &str) {
     db.with_conn(|conn| {
         conn.execute(
@@ -124,7 +124,7 @@ fn create_then_get_by_id_round_trip() {
         assert_eq!(fact.object_entity_id, Some(object));
         assert_eq!(fact.domain, "hr");
         assert_eq!(fact.metadata_json.as_deref(), Some(r#"{"threshold":100}"#));
-        assert_eq!(fact.status, "approved", "the oracle's constructor status");
+        assert_eq!(fact.status, "approved", "the constructor's default status");
         assert_eq!(fact.valid_from.as_deref(), Some("2024-01-01"));
         assert_eq!(fact.valid_to.as_deref(), Some("2024-12-31"));
         assert_eq!(fact.weight, 1, "schema default");
@@ -141,7 +141,7 @@ fn create_then_get_by_id_round_trip() {
 }
 
 // (a2) create: metadata variants (None / JSON / empty string) and NULL
-// endpoints (stored as NULL, not the oracle's zero value 0).
+// endpoints (stored as NULL, not the zero value 0).
 #[test]
 fn create_metadata_and_null_endpoint_variants() {
     let db = in_memory_db();
@@ -553,8 +553,8 @@ fn create_or_ignore_distinct_predicate_inserts() {
 }
 
 // (c1) list_by_entity_ids: a fact is attached to its subject AND its
-// object entry, approved only (the oracle's ListByEntityIDs scenario);
-// single-id and multi-id calls are both asserted.
+// object entry, approved only; single-id and multi-id calls are both
+// asserted.
 #[test]
 fn list_by_entity_ids_groups_subject_and_object() {
     let db = in_memory_db();
@@ -681,12 +681,11 @@ fn list_by_entity_ids_deduplicates_input_ids() {
 
 // (c4) REGRESSION (fixed by task 1.17): the SQL carries TWO `IN` lists
 // (subject, object) with n placeholders each, and the parameters must be
-// bound full-list-then-full-list (the oracle's `append(args, args...)`).
-// The first port passed them INTERLEAVED as [b0, b0, b1, b1, ...]
-// (`flat_map(|id| [*id, *id])`), so positional binding filled the
-// subject list with the first half of the batch and the object list with
-// the second half — half of the requested ids were missing from each
-// list. The batch order comes from a HashSet (random per call), so EVERY
+// bound full-list-then-full-list. An earlier implementation passed them
+// INTERLEAVED as [b0, b0, b1, b1, ...] (`flat_map(|id| [*id, *id])`), so
+// positional binding filled the subject list with the first half of the
+// batch and the object list with the second half — half of the requested
+// ids were missing from each list. The batch order comes from a HashSet (random per call), so EVERY
 // multi-id call was order-dependent (this is what made the first version
 // of the (c1)/(c3) tests flake).
 //
@@ -925,8 +924,8 @@ fn orphan_cleanup_batches_over_500() {
 
 /// Search fixture: 4 entities and 6 facts covering every filter axis —
 /// approved/draft statuses, hr/it domains, LIKE wildcards in predicates,
-/// and a fact whose BOTH endpoint names match one pattern (the fact the
-/// oracle's `INNER JOIN` duplicated in the page).
+/// and a fact whose BOTH endpoint names match one pattern (the fact a
+/// naive `INNER JOIN` duplicated in the page).
 fn seed_search_db() -> (Db, [i64; 6]) {
     let db = in_memory_db();
     let e1 = insert_entity(&db, "PERSON", "Alpha One", "hr");
@@ -974,10 +973,10 @@ fn search_paginated_no_filter() {
     });
 }
 
-// (e5, search) THE ORACLE BUG REGRESSION: a fact whose subject AND object
-// names both match the entity-name filter must appear ONCE in the page
-// and ONCE in the total (the oracle's INNER JOIN duplicated it in the
-// page while its COUNT(DISTINCT) total did not).
+// (e5, search) REGRESSION: a fact whose subject AND object names both
+// match the entity-name filter must appear ONCE in the page and ONCE in
+// the total (the legacy `INNER JOIN` duplicated it in the page while its
+// COUNT(DISTINCT) total did not).
 #[test]
 fn search_paginated_entity_name_both_endpoints_match_once() {
     let (db, ids) = seed_search_db();

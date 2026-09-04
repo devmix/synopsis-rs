@@ -3,32 +3,33 @@
 //! One test per source format (markdown, json, mediawiki, webpage,
 //! unstructured) runs the FULL pipeline through the public [`Source`]
 //! composite — parse → chunk, exactly what the pipeline (series change 3)
-//! will call — with fixtures and expectations pinned from the Go oracle's
-//! tests; a final cross-cutting test re-runs all five formats and asserts
-//! the crate's byte-offset invariant on every chunk.
+//! will call — with fixtures and expectations recorded from the original
+//! implementation's ingestion tests; a final cross-cutting test re-runs all
+//! five formats and asserts the crate's byte-offset invariant on every
+//! chunk.
 //!
-//! **Fixture provenance.** The oracle's ingestion tests are inline-only
-//! (`t.TempDir()` + inline strings); the only on-disk testdata is
-//! `internal/ingestion/runner/testdata/global.xml`, a runner *config*
-//! fixture outside this crate's scope. The fixtures below are the oracle's
-//! inline strings, copied verbatim from
-//! `internal/ingestion/parsers/{markdown,json,mediawiki,webpage,unstructured}_parser_test.go`,
-//! `internal/ingestion/chunkers/{markdown,json}_chunker_test.go` and
-//! `internal/ingestion/runner/runner_test.go` (e2e JSON fixture).
+//! **Fixture provenance.** The fixtures below are recorded test fixtures
+//! for this crate: the expected values were recorded from the original
+//! implementation's ingestion tests, which are inline-only (`t.TempDir()` +
+//! inline strings); the only on-disk testdata is a runner *config* fixture
+//! outside this crate's scope. The per-format trees in the test bodies
+//! below carry the same inline strings.
 //!
 //! **Deliberate deviations pinned here** (documented in the module docs of
-//! `src/parsers/*.rs` / `src/chunkers/*.rs`): where the oracle's behavior
-//! conflicts with the crate's byte-offset invariant (`text` is a pure
-//! slice of the content, offsets always valid), the span and the metadata
-//! are asserted instead of the oracle's prefixed text: (1) the oracle
-//! prefixed breadcrumbs / `**field**: value` labels / file names into
-//! `Text`; (2) invalid JSON is a non-fatal parse-stage error (the oracle
-//! ingested it with structure `"unknown"` and hard-errored in the chunker);
-//! (3) the mediawiki source injects the dedicated `MediawikiChunker` (the
-//! oracle's markdown chunker never matched wikitext headings); (4) JSON
-//! scalars produce one chunk (the oracle hard-errored). Oracle-pinned
-//! expectations that survive the deviations (chunk counts, section titles,
-//! breadcrumbs, field routing, document counts) are asserted as-is.
+//! `src/parsers/*.rs` / `src/chunkers/*.rs`): the crate's byte-offset
+//! invariant (`text` is a pure slice of the content, offsets always valid)
+//! takes precedence over a prefixed-text representation, so where the two
+//! differ the span and the metadata are asserted instead of a prefixed
+//! text: (1) the Rust chunkers keep breadcrumbs / `**field**: value`
+//! labels / file names in the chunk metadata rather than prefixing them
+//! into `Text`; (2) invalid JSON is a non-fatal parse-stage error rather
+//! than being ingested with structure `"unknown"` and hard-erroring in the
+//! chunker; (3) the mediawiki source injects the dedicated
+//! `MediawikiChunker` (the markdown chunker does not match wikitext
+//! headings); (4) JSON scalars produce one chunk rather than hard-erroring
+//! on a non-array/non-object value. The recorded expectations that survive
+//! the deviations (chunk counts, section titles, breadcrumbs, field
+//! routing, document counts) are asserted as-is.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -200,9 +201,9 @@ fn pipeline(source: &dyn Source, tree: &TempTree, expect_errors: bool) -> usize 
     total
 }
 
-/// Oracle `markdown_parser_test.go` "multiple md files" (b.md, c/nested.md)
-/// plus the `markdown_chunker_test.go` `TestMarkdownChunker_Breadcrumbs`
-/// "two-level hierarchy" content for the chunking half (a.md).
+/// The markdown fixture tree: the "multiple md files" case (b.md,
+/// c/nested.md) plus the "two-level hierarchy" content for the chunking
+/// half (a.md).
 fn markdown_tree() -> TempTree {
     let tree = TempTree::new();
     tree.write(
@@ -214,9 +215,8 @@ fn markdown_tree() -> TempTree {
     tree
 }
 
-/// Oracle `json_parser_test.go` "single json file" / "array json file"
-/// plus `json_chunker_test.go` `TestJSONChunker_ChunkObject` content and
-/// `TestJSONChunker_InvalidJSON` input.
+/// The JSON fixture tree: the "single json file" and "array json file"
+/// cases plus the chunk-object content and the invalid-JSON input.
 fn json_tree() -> TempTree {
     let tree = TempTree::new();
     tree.write(
@@ -228,9 +228,8 @@ fn json_tree() -> TempTree {
     tree
 }
 
-/// Oracle `mediawiki_parser_test.go` "single page" (rich fields),
-/// "skip graph.json" and `TestMediawikiParser_GraphJSON` (the graph fixture
-/// keyed by page title).
+/// The mediawiki fixture tree: the "single page" (rich fields) and "skip
+/// graph.json" cases plus the graph fixture (keyed by page title).
 fn mediawiki_tree() -> TempTree {
     let tree = TempTree::new();
     tree.write(
@@ -263,9 +262,8 @@ fn mediawiki_tree() -> TempTree {
     tree
 }
 
-/// Oracle `webpage_parser_test.go` "mixed md and html pages",
-/// "md preferred over html for same page name" and "static directory
-/// excluded".
+/// The webpage fixture tree: the "mixed md and html pages", "md preferred
+/// over html for same page name" and "static directory excluded" cases.
 fn webpage_tree() -> TempTree {
     let tree = TempTree::new();
     tree.write("pages/home.md", "# Home MD");
@@ -280,9 +278,9 @@ fn webpage_tree() -> TempTree {
     tree
 }
 
-/// Oracle `unstructured_parser_test.go` "single md file" (readme.md) and
-/// `TestUnstructuredParser_ImageAssociation` (article.md + images) plus the
-/// `runner_test.go` e2e JSON fixture (policies.json).
+/// The unstructured fixture tree: the "single md file" (readme.md) and
+/// image-association (article.md + images) cases plus the e2e JSON fixture
+/// (policies.json).
 fn unstructured_tree() -> TempTree {
     let tree = TempTree::new();
     tree.write("docs/readme.md", "# Hello\nSome text.");
@@ -297,24 +295,22 @@ fn unstructured_tree() -> TempTree {
 }
 
 #[test]
-fn markdown_pipeline_matches_oracle() {
+fn markdown_pipeline_matches_expected() {
     let tree = markdown_tree();
     let source: Box<dyn Source> = Box::new(markdown_source());
 
     let result = source.parse(&tree.0);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    // Oracle "multiple md files": one document per .md file, nested dirs
-    // walked.
+    // "Multiple md files": one document per .md file, nested dirs walked.
     assert_eq!(source_files(&result), vec!["a.md", "b.md", "c/nested.md"]);
     for doc in &result.documents {
         assert_eq!(doc.metadata.source_type, MarkdownSource::SOURCE_TYPE);
     }
 
-    // Oracle TestMarkdownChunker_Breadcrumbs "two-level hierarchy" (a.md):
-    // 2 chunks with breadcrumbs "> A\n > A.1" / "> A\n > A.2" (the same
-    // expectations are pinned by TestMarkdownChunker_AcceptanceCriteria).
-    // Deviation: the oracle prefixes the breadcrumb into Text; here the text
-    // is a pure slice and the breadcrumb lives in the metadata.
+    // "Two-level hierarchy" (a.md): 2 chunks with breadcrumbs
+    // "> A\n > A.1" / "> A\n > A.2". Deviation: the Rust chunker does not
+    // prefix the breadcrumb into Text; the text is a pure slice and the
+    // breadcrumb lives in the metadata.
     let a = document(&result, "a.md");
     let chunks = source.chunk(&a.content, &a.metadata).unwrap();
     assert_invariant(&a.content, &chunks);
@@ -327,8 +323,7 @@ fn markdown_pipeline_matches_oracle() {
     assert_eq!(chunks[0].text, "## A.1\ntext under a1\n\n");
     assert_eq!(chunks[1].text, "## A.2\ntext under a2");
 
-    // Oracle TestMarkdownChunker_HeaderOnlySkip (b.md, c/nested.md):
-    // header-only documents produce no chunks.
+    // Header-only documents (b.md, c/nested.md) produce no chunks.
     for file in ["b.md", "c/nested.md"] {
         let doc = document(&result, file);
         let chunks = source.chunk(&doc.content, &doc.metadata).unwrap();
@@ -337,14 +332,15 @@ fn markdown_pipeline_matches_oracle() {
 }
 
 #[test]
-fn json_pipeline_matches_oracle() {
+fn json_pipeline_matches_expected() {
     let tree = json_tree();
     let source: Box<dyn Source> = Box::new(json_source(JsonChunkerConfig::default()));
 
     let result = source.parse(&tree.0);
-    // Oracle "single json file" + "array json file": both files parse.
-    // Deviation: bad.json is a non-fatal parse-stage error (the oracle
-    // ingested it with structure "unknown" and hard-errored in the chunker).
+    // "Single json file" + "array json file": both files parse.
+    // Deviation: bad.json is a non-fatal parse-stage error (rather than
+    // ingesting it with structure "unknown" and hard-erroring in the
+    // chunker).
     assert_eq!(source_files(&result), vec!["data.json", "items.json"]);
     assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
     assert!(
@@ -367,11 +363,11 @@ fn json_pipeline_matches_oracle() {
         Some("array")
     );
 
-    // Oracle TestJSONChunker_ChunkObject "single object per field": 2 chunks
-    // (title + description). Deviation: the oracle's text is
-    // "**title**: Page Title\n\n**description**: ..." (not a slice); here
-    // the text is the raw JSON value, the field name lives in the metadata,
-    // and the configured field order puts description before title.
+    // "Single object per field": 2 chunks (title + description).
+    // Deviation: the Rust text is the raw JSON value, the field name lives
+    // in the metadata, and the configured field order puts description
+    // before title — rather than a `**title**: Page Title\n\n**description**:
+    // ...` prefixed text that is not a slice.
     let data = document(&result, "data.json");
     let chunks = source.chunk(&data.content, &data.metadata).unwrap();
     assert_invariant(&data.content, &chunks);
@@ -384,7 +380,7 @@ fn json_pipeline_matches_oracle() {
     assert_eq!(chunks[1].text, r#""Page Title""#);
     assert_eq!(extra_str(&chunks[1].metadata, "field_name"), Some("title"));
 
-    // Oracle "single object combined": 1 chunk for the whole object.
+    // "Single object combined": 1 chunk for the whole object.
     let combined: Box<dyn Source> = Box::new(json_source(JsonChunkerConfig {
         combine_fields: true,
         ..Default::default()
@@ -398,15 +394,15 @@ fn json_pipeline_matches_oracle() {
         vec!["description".to_owned(), "title".to_owned()]
     );
 
-    // Objects without any configured text field produce no chunks (oracle
+    // Objects without any configured text field produce no chunks (the
     // "empty array" case, per object).
     let items = document(&result, "items.json");
     let chunks = source.chunk(&items.content, &items.metadata).unwrap();
     assert!(chunks.is_empty(), "{chunks:?}");
 
     // Deviation pin: a valid JSON scalar produces one chunk for the whole
-    // content (the oracle hard-errored on non-array/non-object values — see
-    // the chunker module docs).
+    // content (rather than hard-erroring on non-array/non-object values —
+    // see the chunker module docs).
     let scalar = "42";
     let chunks = source.chunk(scalar, &data.metadata).unwrap();
     assert_invariant(scalar, &chunks);
@@ -415,13 +411,13 @@ fn json_pipeline_matches_oracle() {
 }
 
 #[test]
-fn mediawiki_pipeline_matches_oracle() {
+fn mediawiki_pipeline_matches_expected() {
     let tree = mediawiki_tree();
     let source: Box<dyn Source> = Box::new(mediawiki_source());
 
     let result = source.parse(&tree.0);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    // Oracle "skip graph.json": the graph file is not a page document.
+    // "Skip graph.json": the graph file is not a page document.
     assert_eq!(
         source_files(&result),
         vec![
@@ -434,8 +430,7 @@ fn mediawiki_pipeline_matches_oracle() {
     }
 
     let gateway = document(&result, "space/wiki-type/by-type/services/api_gateway.json");
-    // Oracle TestMediawikiParser_ExtractContent "wikitext priority": the
-    // wikitext wins over the html field.
+    // "Wikitext priority": the wikitext wins over the html field.
     assert_eq!(
         gateway.content,
         "== API Gateway ==\nA service mesh component."
@@ -448,8 +443,7 @@ fn mediawiki_pipeline_matches_oracle() {
         extra_str(&gateway.metadata.extra, "url"),
         Some("https://example.com/API_Gateway")
     );
-    // Oracle TestMediawikiParser_ExtractPathComponents "full path": the
-    // by-type layer yields space / wiki type / entity.
+    // "Full path": the by-type layer yields space / wiki type / entity.
     assert_eq!(extra_str(&gateway.metadata.extra, "space"), Some("space"));
     assert_eq!(
         extra_str(&gateway.metadata.extra, "wiki_type"),
@@ -472,7 +466,7 @@ fn mediawiki_pipeline_matches_oracle() {
         extra_strings(&gateway.metadata.extra, "categories"),
         vec!["Services".to_owned(), "Networking".to_owned()]
     );
-    // Oracle TestMediawikiParser_GraphJSON: relations keyed by title.
+    // Relations keyed by title.
     assert_eq!(
         extra_strings(&gateway.metadata.extra, "graph_relations"),
         vec!["Service Catalog".to_owned(), "Load Balancer".to_owned()]
@@ -490,7 +484,7 @@ fn mediawiki_pipeline_matches_oracle() {
     );
 
     // Chunking through the dedicated wikitext chunker (deviation: the
-    // oracle's markdown chunker never matched wikitext headings).
+    // markdown chunker does not match wikitext headings).
     let chunks = source.chunk(&gateway.content, &gateway.metadata).unwrap();
     assert_invariant(&gateway.content, &chunks);
     assert_eq!(chunks.len(), 1);
@@ -511,7 +505,7 @@ fn mediawiki_pipeline_matches_oracle() {
     assert!(extra_str(&chunks[0].metadata, "section_title").is_none());
 
     // Deviation pin: a heading-rich page is split at the wikitext headings
-    // (the oracle's markdown chunker would emit one unsplit chunk).
+    // (the markdown chunker would emit one unsplit chunk).
     let rich = "== One ==\ntext one\n\n== Two ==\ntext two";
     let chunks = source.chunk(rich, &gateway.metadata).unwrap();
     assert_invariant(rich, &chunks);
@@ -520,15 +514,14 @@ fn mediawiki_pipeline_matches_oracle() {
 }
 
 #[test]
-fn webpage_pipeline_matches_oracle() {
+fn webpage_pipeline_matches_expected() {
     let tree = webpage_tree();
     let source: Box<dyn Source> = Box::new(webpage_source());
 
     let result = source.parse(&tree.0);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    // Oracle "mixed md and html pages" (3 documents) + "md preferred over
-    // html" (1) + "static directory excluded" (static/ never yields
-    // documents).
+    // "Mixed md and html pages" (3 documents) + "md preferred over html"
+    // (1) + "static directory excluded" (static/ never yields documents).
     assert_eq!(
         source_files(&result),
         vec![
@@ -544,11 +537,11 @@ fn webpage_pipeline_matches_oracle() {
         assert!(doc.metadata.modified_at.is_some());
     }
 
-    // Oracle "md preferred over html for same page name": the md file wins.
+    // "Md preferred over html for same page name": the md file wins.
     let page1 = document(&result, "pages/page-1.md");
     assert_eq!(page1.content, "# MD Content\nThis should win.");
 
-    // Oracle "html page converted to markdown": structural conversion — the
+    // "Html page converted to markdown": structural conversion — the
     // heading becomes an ATX heading (what the injected markdown chunker
     // splits on) and the body text survives.
     let pricing = document(&result, "pages/pricing.html");
@@ -573,7 +566,7 @@ fn webpage_pipeline_matches_oracle() {
     );
 
     // One chunk per md page with a body; the header-only page (home.md)
-    // yields none (oracle TestMarkdownChunker_HeaderOnlySkip).
+    // yields none (header-only documents produce no chunks).
     let docs_md = document(&result, "pages/docs.md");
     let chunks = source.chunk(&docs_md.content, &docs_md.metadata).unwrap();
     assert_invariant(&docs_md.content, &chunks);
@@ -589,15 +582,16 @@ fn webpage_pipeline_matches_oracle() {
 }
 
 #[test]
-fn unstructured_pipeline_matches_oracle() {
+fn unstructured_pipeline_matches_expected() {
     let tree = unstructured_tree();
     let source: Box<dyn Source> = Box::new(unstructured_source());
 
     let result = source.parse(&tree.0);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    // Oracle "single md file" (readme) + ImageAssociation (article) +
-    // runner e2e (policies.json). One global sorted order (deviation: the
-    // oracle concatenated all md documents before all json documents).
+    // "Single md file" (readme) + image-association (article) + e2e
+    // (policies.json). One global sorted order (deviation: the Rust
+    // pipeline sorts all documents together instead of concatenating all
+    // md documents before all json documents).
     assert_eq!(
         source_files(&result),
         vec!["data/policies.json", "docs/article.md", "docs/readme.md"]
@@ -609,8 +603,7 @@ fn unstructured_pipeline_matches_oracle() {
     for file in ["docs/article.md", "docs/readme.md"] {
         let doc = document(&result, file);
         assert_eq!(doc.metadata.source_type, UnstructuredSource::SOURCE_TYPE);
-        // Oracle TestUnstructuredParser_ImageAssociation: the image files
-        // of the same directory, sorted.
+        // Image association: the image files of the same directory, sorted.
         assert_eq!(
             extra_strings(&doc.metadata.extra, "image_paths"),
             vec!["banner.png".to_owned(), "logo.svg".to_owned()]
@@ -641,16 +634,15 @@ fn unstructured_pipeline_matches_oracle() {
         extra_str(&chunks[0].metadata, "section_title"),
         Some("Article")
     );
-    // The markdown chunker re-derives image_paths from the section body
-    // (oracle sectionBody + imageRe): only the body's own image.
+    // The markdown chunker re-derives image_paths from the section body:
+    // only the body's own image.
     assert_eq!(
         extra_strings(&chunks[0].metadata, "image_paths"),
         vec!["banner.png".to_owned()]
     );
 
-    // Routing: the JSON document goes to the JSON chunker (oracle
-    // runner_test.go e2e fixture; per-field mode, configured field order:
-    // description before title).
+    // Routing: the JSON document goes to the JSON chunker (the e2e fixture;
+    // per-field mode, configured field order: description before title).
     let chunks = source.chunk(&policies.content, &policies.metadata).unwrap();
     assert_invariant(&policies.content, &chunks);
     assert_eq!(chunks.len(), 2);

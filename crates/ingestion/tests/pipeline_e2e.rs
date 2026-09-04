@@ -1,13 +1,11 @@
 //! End-to-end pipeline test (change `ingestion-pipeline`, task 3.9).
 //!
-//! Oracle reference: `internal/ingestion/e2e_test.go` — the oracle's e2e
-//! scenario set (ingest → rerun → modify → delete → cleanup) adapted to the
-//! Rust architecture: two real sources (markdown + json) over a temp tree,
-//! the real [`Runner`] with a mock embedding provider, the real
-//! [`RegexNer`] over a temp domain config (the config loader is the only
-//! public way to obtain compiled patterns), an in-memory SQLite database and
-//! an in-memory vector index. Every DB assertion goes through the db-crate
-//! DAOs.
+//! Scenario set (ingest → rerun → modify → delete → cleanup): two real
+//! sources (markdown + json) over a temp tree, the real [`Runner`] with a
+//! mock embedding provider, the real [`RegexNer`] over a temp domain config
+//! (the config loader is the only public way to obtain compiled patterns),
+//! an in-memory SQLite database and an in-memory vector index. Every DB
+//! assertion goes through the db-crate DAOs.
 //!
 //! The file deliberately uses crate-root re-exports (`ingestion::Runner`,
 //! `ingestion::Ingester`, …) plus the queue modules (`ingestion::DocumentJobQueue`,

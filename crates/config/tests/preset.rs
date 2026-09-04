@@ -1,7 +1,7 @@
-//! Integration tests for [`crate::preset`] against the verbatim oracle fixture.
+//! Integration tests for [`crate::preset`] against the verbatim fixture.
 //!
 //! The fixture `tests/data/config.default.yaml` is a byte-for-byte copy of the
-//! oracle's default preset (see `tests/data/README.md`). These tests assert that
+//! recorded default preset (see `tests/data/README.md`). These tests assert that
 //! every section of that file parses and that its values match, which is
 //! acceptance criterion (a) for task 1.1; the defaulting test covers criterion
 //! (b) of task 1.2.
@@ -35,10 +35,10 @@ fn fixture_parses_all_sections_with_expected_values() {
     let cfg: Config = load(fixture()).expect("config.default.yaml must parse and be valid YAML");
 
     // database --------------------------------------------------------------
-    // The verbatim oracle fixture still carries `database.path`, but the
+    // The verbatim fixture still carries `database.path`, but the
     // field is gone (revision 1.1: the DB path is derived from
     // workspace_dir + dataset.name, not configurable) — the key is now
-    // ignored like any unknown key (Go parity).
+    // ignored like any unknown key.
     assert_eq!(
         cfg.database.pragma.get("mmap_size").map(String::as_str),
         Some("268435456")
@@ -157,15 +157,15 @@ fn fixture_parses_all_sections_with_expected_values() {
     assert_eq!(cfg.logging.output, LogOutput::Stderr);
 
     // paths -----------------------------------------------------------------
-    // The verbatim oracle fixture predates the storage-layout-restructure: its
+    // The verbatim fixture predates the storage-layout-restructure: its
     // `data_dir` / `documents_dir` / `global_config_path` keys are now ignored
-    // (unknown-key tolerance, Go parity), so the fields resolve to their new
+    // (unknown-key tolerance), so the fields resolve to their new
     // defaults.
     let p = &cfg.paths;
     assert_eq!(p.workspace_dir, "workspace");
     assert_eq!(p.migrations_dir, "migrations");
     // Explicit fixture value survives: `prompts_path` still exists in the new
-    // schema, so the oracle's "configs/prompts" is respected.
+    // schema, so the fixture's "configs/prompts" is respected.
     assert_eq!(p.prompts_path, "configs/prompts");
     // Absent in the fixture -> normalized to its default at parse time (D12).
     assert_eq!(p.onnx_config, "workspace/configs/onnx.yaml");
@@ -182,7 +182,7 @@ fn fixture_parses_all_sections_with_expected_values() {
     assert_eq!(sv.port, 8080);
 
     // vectors (additive section, design D7) ---------------------------------
-    // The verbatim oracle fixture predates the section: it parses fine and the
+    // The verbatim fixture predates the section: it parses fine and the
     // section stays absent, resolving to the ADR 0003 defaults.
     assert!(cfg.vectors.is_none());
     assert_eq!(cfg.vectors_config().dim, 1024);
@@ -213,7 +213,7 @@ fn apply_defaults_does_not_change_explicit_fixture_values() {
     let mut cfg: Config = load(fixture()).expect("config.default.yaml must parse");
     cfg.apply_defaults();
 
-    // Explicit values that differ from the oracle defaults (survival checks).
+    // Explicit values that differ from the defaults (survival checks).
     // (The fixture's `database.path` no longer exists in the schema —
     // revision 1.1 — so it has nothing to survive.)
     assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Local);
@@ -320,9 +320,9 @@ fn unknown_top_level_key_does_not_break_parse() {
 
 #[test]
 fn validate_rejects_unknown_embeddings_mode() {
-    // Oracle parity (criterion г): `mode` parses as a plain value, so a bogus
+    // Parity (criterion г): `mode` parses as a plain value, so a bogus
     // mode does NOT fail parsing; it is rejected by `validate()` with the
-    // oracle's exact message — a ConfigError::Validation, not a YAML/parse error.
+    // expected message — a ConfigError::Validation, not a YAML/parse error.
     let cfg = parse("embeddings:\n  mode: bogus\n");
     assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Unknown("bogus".into()));
     match cfg.validate() {
@@ -451,9 +451,9 @@ fn auto_update_presence_is_carried_by_option() {
 // ── apply_defaults + helpers (task 1.2) ────────────────────────────────
 
 #[test]
-fn empty_config_gets_all_oracle_defaults() {
+fn empty_config_gets_all_defaults() {
     // Criterion (a): Config::default() after apply_defaults, checked against
-    // every value in Go's ApplyDefaults (config.go).
+    // every documented default.
     let mut cfg = Config::default();
     cfg.apply_defaults();
 
@@ -463,7 +463,7 @@ fn empty_config_gets_all_oracle_defaults() {
     let md = &cfg.ingestion.chunking.markdown;
     assert_eq!(md.strategy, ChunkingStrategy::Headers);
     assert_eq!(md.max_chunk_size, 1000);
-    // Go checks `< 0`: a zero overlap is preserved, not defaulted to 100.
+    // A zero overlap is preserved, not defaulted to 100 (the check is `< 0`).
     assert_eq!(md.overlap_size, 0);
     assert_eq!(md.min_section_size, 500);
     assert_eq!(
@@ -477,7 +477,7 @@ fn empty_config_gets_all_oracle_defaults() {
     assert_eq!(s.lexical_top_k, 20);
     assert_eq!(s.semantic_top_k, 20);
     assert_eq!(s.final_top_k, 10);
-    // Both legs absent -> both force-enabled (Go: only when BOTH are false).
+    // Both legs absent -> both force-enabled (only when BOTH are false).
     assert!(s.enable_lexical && s.enable_semantic);
     assert_eq!(s.timeout_ms, 10_000);
     assert_eq!(s.deprecated_boost, 0.2);
@@ -488,7 +488,7 @@ fn empty_config_gets_all_oracle_defaults() {
     assert_eq!(s.authority_boost.get("default"), Some(&1.0));
 
     // Graph: presence semantics (design D13) — absent keys mean the documented
-    // default true; Go left enable_graph false despite its "default true" comment.
+    // default true.
     let g = &cfg.graph;
     assert!(g.enable_graph);
     assert_eq!(g.max_depth, 5);
@@ -525,7 +525,8 @@ fn empty_config_gets_all_oracle_defaults() {
     // No dataset by default (revision 1.1): empty name means "no data".
     assert_eq!(cfg.dataset.name, "");
 
-    // NER LLM defaults; linker.llm must stay untouched (Go: NER provider only).
+    // NER LLM defaults; linker.llm must stay untouched (defaults apply to the
+    // NER provider only).
     let llm = &cfg.ingestion.ner.llm;
     assert_eq!(llm.response_format, ResponseFormat::JsonObject);
     assert_eq!(llm.timeout_ms, 60_000);
@@ -568,7 +569,7 @@ ingestion:
     similarity_threshold: 0.42
 search:
   rrf_k: 60
-  enable_lexical: false   # single leg off -> respected (Go flips only when BOTH are off)
+  enable_lexical: false   # single leg off -> respected (defaults flip only when BOTH are off)
   enable_semantic: true
 graph:
   max_depth: 3
@@ -654,7 +655,7 @@ fn auto_update_absent_section_defaults_to_fully_enabled() {
 #[test]
 fn auto_update_present_section_respects_parsed_flags() {
     // D8 criterion (c): explicit `auto_update:` with enabled=false stays false —
-    // Go's autoUpdateConfigured flag skips the force-enable for present sections.
+    // the force-enable is skipped for present sections.
     let mut cfg = parse("auto_update:\n  enabled: false\n");
     cfg.apply_defaults();
     let au = cfg.auto_update.expect("present section survives as Some");
@@ -842,14 +843,14 @@ fn vector_dim_follows_embeddings_mode() {
     cfg.embeddings.api.vector_dim = 3072;
     assert_eq!(cfg.vector_dim(), 3072);
 
-    // Unrecognized mode -> 0 (Go default branch).
+    // Unrecognized mode -> 0 (default branch).
     let bogus = parse("embeddings:\n  mode: bogus\n");
     assert_eq!(bogus.vector_dim(), 0);
 }
 
 #[test]
 fn orphan_cleanup_explicit_enabled_keeps_default_interval() {
-    // Criterion (f) / Go "explicitly enabled job preserved":
+    // Criterion (f) / "explicitly enabled job preserved":
     // {enabled: true} -> interval still defaults to 3600.
     let mut cfg = parse("scheduler:\n  jobs:\n    orphan_cleanup:\n      enabled: true\n");
     cfg.apply_defaults();
@@ -860,7 +861,7 @@ fn orphan_cleanup_explicit_enabled_keeps_default_interval() {
 
 #[test]
 fn orphan_cleanup_explicit_interval_respected() {
-    // Criterion (f) / Go "explicitly configured interval preserved".
+    // Criterion (f) / "explicitly configured interval preserved".
     let mut cfg = parse(
         r#"
 scheduler:
@@ -884,7 +885,7 @@ scheduler:
 
 #[test]
 fn orphan_cleanup_explicit_disabled_with_interval_preserved() {
-    // Criterion (f) / Go "explicitly disabled with custom interval preserved".
+    // Criterion (f) / "explicitly disabled with custom interval preserved".
     let mut cfg = parse(
         r#"
 scheduler:
@@ -902,8 +903,8 @@ scheduler:
 
 #[test]
 fn explicit_false_presence_bools_are_respected() {
-    // Design D13 (BREAKING vs Go): an explicit false survives defaulting — Go's
-    // `if !x { x = true }` pattern made these settings non-functional.
+    // Design D13: an explicit false survives defaulting — a naive
+    // `if !x { x = true }` pattern would make these settings non-functional.
     let mut cfg = parse(
         r#"
 graph:
@@ -992,11 +993,11 @@ ingestion:
 }
 
 #[test]
-fn absent_sections_default_to_oracle_values_at_parse_time() {
+fn absent_sections_default_to_expected_values_at_parse_time() {
     // Design D12: a whole section missing from YAML yields the struct's Default —
     // serde does not run per-field attributes on an absent struct.
     // The fixture's `database.path` key no longer exists in the schema
-    // (revision 1.1): it is ignored like any unknown key (Go parity).
+    // (revision 1.1): it is ignored like any unknown key.
     let cfg = parse("database:\n  path: x\n");
     assert_eq!(cfg.paths.workspace_dir, "workspace");
     assert_eq!(cfg.paths.onnx_config, "workspace/configs/onnx.yaml");
@@ -1010,9 +1011,9 @@ fn absent_sections_default_to_oracle_values_at_parse_time() {
 
 #[test]
 fn empty_embeddings_mode_is_still_rejected_by_validate() {
-    // EmbeddingsMode has no oracle default, so it is NOT one of D12's normalized
-    // enums: "" stays Unknown("") and validate() rejects it with the oracle's
-    // exact message (Go parity), like any other unrecognized mode.
+    // EmbeddingsMode has no default, so it is NOT one of D12's normalized
+    // enums: "" stays Unknown("") and validate() rejects it with the expected
+    // message, like any other unrecognized mode.
     let cfg = parse("embeddings:\n  mode: \"\"\n");
     assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Unknown(String::new()));
     match cfg.validate() {
@@ -1032,7 +1033,7 @@ fn negative_overlap_size_defaults_to_100_but_zero_is_kept() {
     cfg.apply_defaults();
     assert_eq!(cfg.ingestion.chunking.markdown.overlap_size, 100);
 
-    // Zero value stays zero (Go checks `< 0`, not `<= 0`).
+    // Zero value stays zero (the check is `< 0`, not `<= 0`).
     let mut zeroed = Config::default();
     zeroed.apply_defaults();
     assert_eq!(zeroed.ingestion.chunking.markdown.overlap_size, 0);

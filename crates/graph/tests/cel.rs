@@ -2,11 +2,6 @@
 //! engine, the per-evaluation scope cache, and the six contract functions
 //! over a fixed database (the four data functions and the two graph
 //! functions).
-//!
-//! Oracle mapping: Go `internal/expression/{engine.go,scope_cache.go}` plus
-//! the function registration in `internal/relations/expression_linker.go` —
-//! a functional reference for behavior and contracts only, not a code
-//! blueprint.
 
 // Test code: unwrap/expect/panic are intentional (the fixtures are
 // compile-time constants).
@@ -338,7 +333,7 @@ fn facts_attached_to_both_endpoints() {
     );
 }
 
-/// A missing entity yields the EMPTY list, not an error (oracle parity).
+/// A missing entity yields the EMPTY list, not an error.
 #[test]
 fn facts_missing_entity_is_empty_not_error() {
     let (db, ..) = fixture_db();
@@ -348,7 +343,7 @@ fn facts_missing_entity_is_empty_not_error() {
 }
 
 /// `has_fact(e, k, v)`: predicate == k AND object entity name == v
-/// (the Go bug fix). Draft facts never match; a missing entity is
+/// (exact name match). Draft facts never match; a missing entity is
 /// false, not an error.
 #[test]
 fn has_fact_matches_predicate_and_object_name() {
@@ -409,7 +404,7 @@ fn chunks_returns_texts_in_sequence_order() {
     );
 }
 
-/// A missing entity yields the EMPTY list, not an error (oracle parity).
+/// A missing entity yields the EMPTY list, not an error.
 #[test]
 fn chunks_missing_entity_is_empty_not_error() {
     let (db, ..) = fixture_db();
@@ -419,7 +414,7 @@ fn chunks_missing_entity_is_empty_not_error() {
 }
 
 /// `chunk_contains(e, t)`: exact, case-SENSITIVE substring over the
-/// chunk texts (oracle parity: Go `strings.Contains`).
+/// chunk texts.
 #[test]
 fn chunk_contains_is_exact_case_sensitive_substring() {
     let (db, alice, bob, ..) = fixture_db();
@@ -453,7 +448,7 @@ fn chunk_contains_is_exact_case_sensitive_substring() {
 
 /// The returned maps are consumable in expressions: field access, the
 /// built-in `exists`/`all` macros and `size` — so the 1-arg `facts(e)`
-/// loses no filtering power versus the oracle's 2-arg overload.
+/// loses no filtering power versus a 2-arg overload.
 #[test]
 fn returned_maps_are_consumable_in_expressions() {
     let (db, alice, ..) = fixture_db();
@@ -468,9 +463,8 @@ fn returned_maps_are_consumable_in_expressions() {
 }
 
 /// A db failure during the lazy index build surfaces as
-/// `GraphError::CelEval` from ALL FOUR data functions (deviation from
-/// the oracle: `has_fact`/`chunk_contains` must not silently return
-/// false).
+/// `GraphError::CelEval` from ALL FOUR data functions (`has_fact` and
+/// `chunk_contains` must not silently return false).
 #[test]
 fn storage_failure_surfaces_as_cel_eval_error() {
     let (db, alice, ..) = fixture_db();
