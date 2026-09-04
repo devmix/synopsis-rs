@@ -163,9 +163,23 @@ v0.57.0" + handler refs, drop "the oracle's server". Cargo.toml: replace
 pagination.go" clause. OPTION A: rename the test function
 `wire_format_matches_the_go_oracle` (pagination.rs) → drop "oracle".
 
-**Acceptance.** the pattern above over `crates/mcp/src/ crates/mcp/Cargo.toml`
-→ **0** (whole crate + Cargo.toml, final verify). Gates green. No behavior
-change. `mcp-contract` pointer + `mcp-go v0.57.0` kept.
+**Acceptance.** the pattern above over the 1.7c scope files (`crates/mcp/
+src/transport/`, the six top-level `crates/mcp/src/*.rs`, and
+`crates/mcp/Cargo.toml`) → **0**. Gates green. No behavior change.
+`mcp-contract` pointer + `mcp-go v0.57.0` kept.
+
+- [ ] 1.7d Clean `mcp` `tests/` (~83 mentions)
+
+**Scope.** `crates/mcp/tests/{documents.rs, dossier.rs, graph_tools.rs,
+server_units.rs, sse_units.rs, server_integration.rs}`. Same rule as the rest
+of 1.7: strip oracle/Go/ported narrative from test docs/comments; keep the
+`mcp-contract` pointers and behavioral assertions. OPTION A: rename any test
+function names that contain "oracle" and edit any test string literals that
+mention "oracle".
+
+**Acceptance.** the pattern above over `crates/mcp/src/ crates/mcp/tests/
+crates/mcp/Cargo.toml` → **0** (WHOLE crate, final verify). Gates green. No
+behavior change.
 
 - [ ] 1.8 Clean `cli` crate + Cargo.toml (~195 mentions)
 
