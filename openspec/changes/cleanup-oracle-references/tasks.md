@@ -81,7 +81,7 @@ tokenizer pad/attention_mask rationale. Cargo.toml already clean.
 **Acceptance.** the pattern above over `crates/embedding/src/` → **0**. Gates
 green.
 
-- [ ] 1.4 Clean `graph` crate (~210 mentions)
+- [x] 1.4 Clean `graph` crate (~210 mentions)
 
 **Scope.** all of `crates/graph/src/`. Strip "The Go code is a reference…",
 "Verified against the oracle", "functional copy, re-architected for Rust",
