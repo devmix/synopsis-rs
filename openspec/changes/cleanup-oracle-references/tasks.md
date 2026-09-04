@@ -204,7 +204,7 @@ any oracle/Go/ported narrative; keep the design.
 
 ## 2 — Top-level living docs
 
-- [ ] 2.1 Clean `AGENTS.md` + `README.md`
+- [x] 2.1 Clean `AGENTS.md` + `README.md`
 
 **Scope.** `AGENTS.md` and `README.md` (English).
 - **AGENTS.md:** remove the `## Oracle` section and the `## Migration
