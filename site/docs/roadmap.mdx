@@ -1,13 +1,27 @@
 ---
 title: Roadmap
-description: What is planned but not implemented in Synopsis — the fact review workflow first, then the next directions for the service and its MCP API
+description: What Synopsis already ships from the Rust rewrite, and what is planned next — the fact review workflow and MCP write tools first, then the next directions for the service and its API
 ---
 
 # Roadmap
 
-This page lists what Synopsis **does not have yet**. If a feature is described here, it is a direction of travel, not current behavior — everything that works today is described in [Concepts](./concepts/pipeline) and [Reference](./reference/cli).
+The Rust rewrite is done: Synopsis is a local RAG + knowledge-graph MCP server in Rust — one binary, no external services, built for a 16 GB laptop. What it ships today is listed below under **Done**; the rest of this page is what is **not implemented yet**. If a feature is described in a planned section, it is a direction of travel, not current behavior — everything that works today is described in [Concepts](./concepts/pipeline) and [Reference](./reference/cli).
 
 Two things are especially common to expect from a knowledge service and worth being explicit about: **quality control over extracted facts**, and **write access over MCP**. Both are below.
+
+## Done — the implemented feature set
+
+- **11-crate Rust workspace** — `config`, `db`, `vectors`, `embedding`, `ingestion`, `graph`, `search`, `mcp`, `llm`, `utils`, `cli`, with a fixed dependency graph and one `synopsis` binary — [Architecture](./developer/architecture)
+- **Hybrid search** — lexical (FTS5 BM25) + semantic (vector) with RRF fusion and recency/authority reranking — [Hybrid Search](./concepts/hybrid-search)
+- **Disk-backed quantized ANN** — usearch HNSW (mmap, scalar-quantized, WAL + segments, compaction); vectors are rebuilt from chunk text, and the query path never loads the embedding model — [Vector Rebuild](./concepts/vector-rebuild)
+- **Two SQLite databases** — the per-dataset knowledge DB and the global cache DB; the DB is always built from scratch (`PRAGMA user_version` as the sole schema state), existing `knowledge.db` files are never opened or upgraded — [Database Schema](./reference/database-schema)
+- **Double MCP transport** — Streamable HTTP on `/mcp` with the legacy HTTP+SSE pair (`GET /sse` + `POST /message`) also served, plus `GET /health`; 12 read-only tools — [MCP Transport](./concepts/mcp-transport), [MCP Tools](./reference/mcp-tools)
+- **Knowledge graph** — petgraph index; entity extraction with composable NER (regex rules + a remote LLM — ONNX serves embeddings only); CEL linkers and cross-domain entity linking — [Knowledge Graph](./concepts/knowledge-graph), [Cross-domain Linking](./concepts/cross-domain-linking)
+- **Local embeddings** — ONNX Runtime with bge models, downloaded and verified by the binary per `onnx.yaml` — [Model Management](./guides/model-management)
+- **Job-queue ingestion** — `document_jobs` with startup reconcile + file watcher, a background worker with retries, and content-hash dedup (unchanged docs are skipped) — [Job Queue](./concepts/job-queue)
+- **CLI surface** — `serve`, `queue status|reset-retries`, `db stats|clear`, `model list|download|delete|info|benchmark`, `onnx-runtime install|status|uninstall`, `load-test` — [CLI Reference](./reference/cli)
+- **Self-contained build + Gitea CI** — SQLite/FTS5 compiled in-tree, no system dependencies; CI runs fmt + clippy + test, and `v*` tags publish prebuilt archives for the 5 targets via zigbuild — [CI/CD](./developer/ci-cd), [Gitea Releases](./developer/gitea-releases)
+- **Spec-driven development** — the OpenSpec workflow (proposal → design → specs → tasks → apply → archive) and ADRs 0001–0004 for the SQLite/FTS5, ONNX runtime, and ANN decisions — [OpenSpec Workflow](./developer/openspec-workflow), [ADRs](./developer/adrs)
 
 ## Fact review workflow
 
@@ -25,7 +39,7 @@ There is **no review workflow**: no queue of `pending` facts, no MCP tools or UI
 
 ### Planned
 
-- **MCP write tools** — `approve_fact` (and the wider fact/entity management surface: reject, correct, re-extract). This is the P1 entry of the API gap analysis, and a prerequisite for managing knowledge-base quality from an agent instead of from the database.
+- **MCP write tools** — `approve_fact` (and the wider fact/entity management surface: reject, correct, re-extract). The MCP contract marks write tools as a separate future change; this is the P1 entry of the API gap analysis below, and a prerequisite for managing knowledge-base quality from an agent instead of from the database.
 - **A review surface** — a lightweight UI or report that lists `pending` facts with their provenance (`fact_sources` quotes) and confidence, so a reviewer can decide per fact.
 - **Confidence thresholds** — making the auto-approve/pending/reject boundaries an explicit, documented, per-domain configuration rather than an ingestion detail (domain configs already carry per-domain confidence settings for entities).
 - **Re-extraction** — targeted re-run of fact extraction for a document or entity after ontologies or prompts change.
@@ -36,8 +50,8 @@ The current API is **read-only** (12 tools) — deliberately. The gap analysis b
 
 | # | Feature | Priority | Size | Notes |
 |---|---|---|---|---|
-| 1 | **Write tools** (`approve_fact`, entity management) | P1 | L | New DB write path with transactions and index (FTS5/vec0) updates; prerequisite for KB quality control over MCP |
-| 2 | **MCP-level integration tests** | P1 | M | Automated regression: call tools over the wire, not just via Go handler tests; CI-integrated |
+| 1 | **Write tools** (`approve_fact`, entity management) | P1 | L | New DB write path with transactions and index (FTS5 + usearch) updates; prerequisite for KB quality control over MCP |
+| 2 | **MCP-level integration tests** | P1 | M | Automated regression: call tools over the wire, not just via in-process unit tests; CI-integrated |
 | 3 | **Health/metrics over MCP** | P2 | S | `server_health`/`server_metrics` tool mirroring `GET /health` status, version, and KB counts |
 | 4 | **Similar chunks** | P2 | M | `similar_chunks(chunk_id)` — vector search around a given chunk's embedding for RAG context |
 | 5 | **Batch requests** | P2 | M | Multiple queries per call (batch search, batch get) to cut round-trips |
@@ -50,10 +64,14 @@ The current API is **read-only** (12 tools) — deliberately. The gap analysis b
 
 Adjacent search-quality work: calibrating the RRF/reranker scoring so relevant and irrelevant chunks are measurably distinguishable (the control queries already defined in the API quality report), and exposing per-component timing (`traversal_time_ms` in `get_entity_relations` is currently always 0).
 
+## Deferred
+
+- **Prose/statistical NER** — deferred by human decision (2026-08-23, `ProseNerDeferred`): a second ONNX stack for statistical NER was rejected, so ONNX serves embeddings only and NER stays composable from regex rules and the remote LLM. Reconsidering it is a separate explicit decision, not a default.
+
 ## General directions
 
 - **More ingestion formats** — new parsers/chunkers are a first-class extension point (see [Extending Synopsis](./developer/extending)); candidates follow demand for the document formats the pipeline upstream produces.
-- **More embedding options** — more local ONNX models in the registry (see `model list` / `model benchmark`) and better `mode: api` provider coverage.
+- **More embedding options** — more local ONNX models in the `onnx.yaml` registry (see `model list` / `model benchmark`).
 - **Observability** — richer metrics (request metrics already power `/health`); structured logging is in place, per-tool and per-pipeline-stage instrumentation is not.
 - **Cross-domain linking quality** — the linkers (rule / equals / llm, with provenance) exist and are config-driven; refinement cycles on detection quality continue alongside the write tools, since linking management will land on the same write path.
 

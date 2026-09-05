@@ -788,7 +788,7 @@ usage examples. There is NO `sync` subcommand (full re-ingest = `db clear` +
   (cross-check the spec's table list; report any missing table as a deviation).
 - 'PRAGMA user_version' present; `git grep -n 'vec0\|sqlite-vec' -- site/docs/reference/database-schema.mdx` → **0**.
 
-- [ ] 7.3 Update `reference/mcp-tools/` (index + 12 tool pages)
+- [x] 7.3 Update `reference/mcp-tools/` (index + 12 tool pages)
 
 **Goal.** Update the MCP tools reference (13 pages) to match the Rust
 implementation: double transport, result shapes, per-tool parameter parity.
@@ -906,6 +906,13 @@ docs change.
   "embeddings **+ NER**". Stale: the implementation's NER is `RegexNer`
   (rule-based) + `LlmNer` (remote OpenAI-compatible HTTP client via
   `crates/llm`); prose/statistical NER was rejected by human decision
-  2026-08-23 (`ProseNerDeferred` — "a second ONNX stack was rejected"). ONNX
-  serves **embeddings only**. (The task 6.2 body inherited this stale claim and
-  was corrected in place; the docs site now documents NER correctly.)
+   2026-08-23 (`ProseNerDeferred` — "a second ONNX stack was rejected"). ONNX
+   serves **embeddings only**. (The task 6.2 body inherited this stale claim and
+   was corrected in place; the docs site now documents NER correctly.)
+- **vector-index/spec.md:103** — says the IVF-only fields `num_partitions`/
+  `nprobes` "were removed with the lance engine (they do not apply to pure
+  HNSW)". Stale: the config struct still carries both fields
+  (`crates/config/src/preset.rs:916-920`, serde defaults 256/32) — they are
+  vestigial (present for tolerant parsing, unused by `UsearchEngine`). The docs
+  site documents them as config keys (accurate to the code); correct the spec to
+  say the fields persist as unused/vestigial rather than "removed".
