@@ -600,7 +600,7 @@ after docker's slot 8 is freed).
 
 ## 6 — Guides
 
-- [ ] 6.1 Rewrite guides: `installation.mdx` + `configuration.mdx`
+- [x] 6.1 Rewrite guides: `installation.mdx` + `configuration.mdx`
 
 **Goal.** Rewrite the two setup guides for the Rust implementation.
 
@@ -858,3 +858,38 @@ SVGs, and run the global parity audit (design D9).
 
 **Acceptance.** All 7 audit checks pass; the report includes the check
 outputs and the 14-spec table.
+
+## Deferred follow-ups (spec corrections — separate OpenSpec change)
+
+These are spec-vs-implementation drifts surfaced during the docs rewrite
+(tasks 5.2, 5.3, 6.1). They are NOT fixed by this change (the specs are frozen
+for docs tasks, and each is a separate explicit spec decision). The docs site
+documents the ACTUAL current behavior in every case; these items correct the
+specs themselves. They should become a dedicated spec-correction change
+(`opsx-propose` → edit the spec deltas → `opsx-sync`), NOT be folded into this
+docs change.
+
+- **config-format/spec.md** — names 4 legacy keys removed/renamed by the
+  archived `storage-layout-restructure` change: `database.path`,
+  `paths.data_dir`, `paths.documents_dir`, `paths.global_config_path`.
+  Actual keys: `paths.workspace_dir`; the knowledge-DB path is derived from
+  `workspace_dir` + `dataset.name`. (The archived change carried no spec
+  delta, so this was never synced.)
+- **cli-surface/spec.md** — still lists a `--db PATH` global flag the Rust CLI
+  no longer has. Actual globals: `--config`, `--preset`, `--dataset`,
+  `--version`.
+- **data-schema/spec.md:9** and **db-storage/spec.md:43** — list `app_kv` among
+  knowledge-DB tables; the actual init migrations place it in the **cache** DB
+  (`migrations/cache/1-init/up.sql:13`).
+- **knowledge-graph/spec.md:87** — says the linker decision cache lives in
+  `app_kv`; the code keys it in the `llm_linker_cache` table.
+- **AGENTS.md** (and the task 5.3 body) — the "shipped `workspace/configs/
+  prompts/**` are byte-identical to the embedded defaults" claim is stale for
+  `ner/user.tmpl` (shipped uses a `CONTENT SECTION` fence; the embedded
+  `crates/ingestion/src/ner/templates/user.tmpl` uses `Document context:`).
+  The entity-linker pair IS byte-identical. Re-sync the template or amend the
+  claim.
+- **onnx.yaml checksum** (minor) — the config docs say downloads are "verified
+  by URL + size + SHA-256"; the code enforces **size** (design D8) and the
+  `checksum` field is optional/unverified (no shipped entry sets one). Align the
+  spec/wording with the enforced size check.
