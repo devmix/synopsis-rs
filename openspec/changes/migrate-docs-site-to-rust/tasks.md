@@ -436,7 +436,7 @@ frontmatter `title: Workspace Layout`, `sidebar_position: 6`),
 
 ## 5 — Developer docs
 
-- [ ] 5.1 Rewrite developer: `architecture.mdx` + `setup.mdx`
+- [x] 5.1 Rewrite developer: `architecture.mdx` + `setup.mdx`
 
 **Goal.** Rewrite the two foundational developer docs for the Rust workspace.
 
@@ -514,7 +514,7 @@ migrations for the Rust workspace.
 - G1, G2 green.
 - Go-era sweep → **0** over all 3 files.
 - 'PRAGMA user_version' present in migrations.mdx;
-  `git grep -n 'golangci\|go test' -- site/docs/developer/migrations.mdx site/docs/developer/testing.mdx site/docs/developer/coding-standards.mdx` → **0**.
+  `git grep -Pn 'golangci|\bgo test\b' -- site/docs/developer/migrations.mdx site/docs/developer/testing.mdx site/docs/developer/coding-standards.mdx` → **0** (PCRE word-boundary form — the literal BRE `'golangci\|go test'` false-positives on the substring "go test" inside the required `cargo test` commands; see the task 2.2/3.1 sweep revisions).
 
 - [ ] 5.3 Rewrite developer: `ci-cd.mdx` + `extending.mdx`; DELETE `docker.mdx`
 

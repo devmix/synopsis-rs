@@ -1,86 +1,59 @@
 ---
 title: Database Migrations
-description: Migration file conventions, how and when migrations are applied, the current migration list, and how to test a new migration
+description: How the SQLite schema is created and evolves — the squashed init migration, PRAGMA user_version as the sole schema state, and the forward-only rules
 sidebar_position: 5
 ---
 
 # Database Migrations
 
-The SQLite schema evolves through SQL migrations applied automatically at startup — there is no migration binary and no manual step. Both `sync` and `serve` open the database through the same bootstrap, so migrations run in both modes.
+There is no migration binary and no manual step: the schema is created by SQL migrations embedded into the binary and applied automatically at startup. The rules below are strict — read them before touching anything under `migrations/`.
 
-## File conventions
+## The layout
 
-- Location: `migrations/` (overridable via `paths.migrations_dir`).
-- Naming: `NNN_description.sql`, where `NNN` is a sequential integer (3+ digits so lexicographic order equals numeric order).
-- The **version** is the leading integer of the filename — the digits before the first underscore (`004_extracted_at_backfill.sql` → version `4`).
-- Only `*.sql` files are considered; they are applied in sorted filename order.
-- Use SQLite-compatible SQL. Keep each migration forward-only and idempotent where practical (`IF NOT EXISTS` / `IF EXISTS`).
+Migrations live at the **repository root**, not in a crate, in one directory per database:
 
-## How they are applied
+```
+migrations/
+├── knowledge/          # per-dataset knowledge DB
+│   └── 1-init/up.sql   # the squashed init migration
+└── cache/              # global cache DB
+    └── 1-init/up.sql
+```
 
-On database open, `internal/database` runs `Migrate()`:
+`crates/db` embeds both trees at compile time with `include_dir!` (`crates/db/src/connection.rs`) and applies them with `rusqlite_migration` 2.x (the `from-directory` feature). The SQL ships inside the binary — there is no migration directory to ship or locate at runtime.
 
-1. Creates the tracking table `_schema_migrations` if it does not exist.
-2. Reads the list of already-applied versions from it.
-3. Scans `migrations/`, sorts `*.sql` files, and applies each file whose version has not been recorded — one file at a time, recording the version on success.
-4. After the core migrations, initializes the `chunks_vec` vec0 virtual table with the configured `vector_dim` and runs the dimension compatibility check.
+## One squashed init migration
 
-Consequences:
+Each database has exactly **one** migration: `1-init/up.sql`, the squashed init. For the knowledge DB it creates the full schema in a single file — all tables (`documents`, `chunks`, `entities`, `facts`, the link tables, and the `usearch_vectors_log` ANN write-ahead log), all indexes, the FTS5 `chunks_fts` table with its sync triggers, and the `document_jobs` queue (folded into the init at squash time — there is no separate `2-document-jobs` migration). The cache DB's init creates its own tables (the LLM/NER caches and the `app_kv` markers) in its own `1-init/up.sql`.
 
-- A migration is applied exactly once per database file.
-- A missing `migrations/` directory is a **startup error** (fail loud).
-- An error in a migration fails the whole startup — there is no partial state; fix the SQL and retry.
-- Because versions are tracked by integer, never renumber or edit an already-released migration — add a new `NNN+1` file instead.
+## `PRAGMA user_version` is the sole source of schema state
 
-## Current migrations
+- `PRAGMA user_version` records the applied schema version — it is **1** after the init migration, and it is the **sole** source of truth about the schema state.
+- The `_schema_migrations` tracking table is **deliberately not created** — there is no table of applied versions to drift out of sync with the PRAGMA.
+- On open, the `db` crate reads `PRAGMA user_version`: `0` (a new file) → run the init migration; `1` → already initialized, apply nothing further, preserve the data.
 
-| File | What it does |
-|---|---|
-| `001_schema.sql` | Complete schema: `documents`, `chunks`, `entities`, `chunk_entities`, `facts`, `fact_sources`, `entity_sources`, `entity_links`; all indexes; the `chunks_fts` FTS5 virtual table and its INSERT/UPDATE/DELETE sync triggers |
-| `002_dedup.sql` | Data migration: removes duplicate `documents` rows (keeps the highest ID per `original_path`) and creates the `idx_documents_original_path` unique index |
-| `003_drop_documents_domain.sql` | Drops the `documents.domain` column and its index — the domain was never reliably populated; `metadata_json` is the single source of truth |
-| `004_extracted_at_backfill.sql` | Backfills `fact_sources.extracted_at` rows with zero/empty timestamps using the last ingest time (max `updated_at` of documents or facts, falling back to now) |
-| `005_app_kv.sql` | Creates `app_kv` — a general-purpose key-value table for application state (for example, the last cross-domain linking run timestamp) |
+## Forward-only
 
-The full resulting schema, including indexes and triggers: [Database Schema](../reference/database-schema).
+- Migrations are numbered directories: `<id>-<slug>/up.sql` (the current init is `1-init`).
+- **No `down.sql`** — there are no rollbacks; a migration is applied once and never undone.
+- **Shipped migrations are never edited.** A schema change is a **new** numbered directory continuing the sequence (for example `2-<slug>/up.sql`), applied on top of existing databases at the next startup.
+- Migrations are idempotent where practical (`IF NOT EXISTS`); a subsequent startup is a no-op.
 
-## Writing a new migration
+## Existing knowledge.db files are never opened
 
-1. **Create** `migrations/NNN_description.sql` with the next sequential number.
-2. **Write** SQLite-compatible DDL/DML. For schema changes, prefer `ALTER TABLE` operations SQLite supports; for anything heavier (rebuilding a table with an `ALTER`-incompatible change), do the classic create-copied-table → copy → drop → rename dance in one file.
-3. **Keep existing data safe.** New columns need defaults or `NULL`; unique indexes on existing data need dedup first (see `002_dedup.sql` for the pattern).
-4. **Do not touch** `migrations/001_schema.sql` history in place — it documents the baseline.
+The Rust binary always builds its database **from scratch**. A pre-existing `knowledge.db` (for example, from an older version of the project) is **not opened and not upgraded** — there is no data-migration path in either direction. Vectors are handled the same way: they are rebuilt from chunk text into the usearch index and never read from any previous store — see [Vector Rebuild](../concepts/vector-rebuild).
 
 ## Testing a migration
 
-Migrations are easiest to get right on a **fresh database**:
+The init migration runs on every fresh database — the `db` crate's test helper builds a database from scratch in tests and asserts `PRAGMA user_version = 1` plus the full schema. For a new numbered migration:
 
-```bash
-# Wipe the local database (including -wal/-shm side files)
-rm -rf data/knowledge.db*
-
-# Rebuild: migrates from scratch and re-ingests everything
-make rebuild
-```
-
-Then verify:
-
-```bash
-sqlite3 data/knowledge.db "SELECT version FROM _schema_migrations ORDER BY version;"
-```
-
-Additional checks depending on the migration kind:
-
-- **New column/index** — inspect the table (`PRAGMA table_info(documents)`) and run a normal `make sync` to confirm ingestion still works.
-- **Data migration** (dedup, backfill) — assert row counts and spot-check values before and after.
-- **Old database upgrade path** — keep a copy of a pre-migration `data/knowledge.db`, start the service with the new code against that copy, and confirm the migration applies cleanly on top of real data, not just a fresh schema.
-
-## Vector dimension and migrations
-
-`chunks_vec` is created *after* the core migrations, sized by `embeddings.<mode>.vector_dim`. If a model change lands with a different dimension than an existing database, startup fails with a dimension mismatch until you either rebuild vectors (`sync --auto-rebuild-vectors` / `serve --auto-rebuild-vectors`) or reset the database — see [Troubleshooting — Embedding dimension mismatch](../guides/troubleshooting#embedding-dimension-mismatch).
+1. Add `migrations/knowledge/<id>-<slug>/up.sql` (and/or the `cache/` side) with the next number.
+2. Keep it forward-only and SQLite-compatible; new columns need defaults or `NULL`, and unique indexes on existing data need dedup first.
+3. Run `cargo test -p db` — fresh-database initialization must still pass, with `PRAGMA user_version` ending at the new value.
+4. Apply it to a copy of a real dataset DB and confirm it lands cleanly on top of existing data, not just on a fresh schema.
 
 ## See also
 
-- [Database Schema](../reference/database-schema) — the target schema, tables, and indexes
+- [Database Schema](../reference/database-schema) — the resulting tables, indexes, and FTS5 setup
 - [Development Setup](./setup) — build and test commands
-- [Architecture](./architecture) — the database layer and DAO/transaction model
+- [Architecture](./architecture) — the storage layer and ADR 0001 (the migration mechanism)

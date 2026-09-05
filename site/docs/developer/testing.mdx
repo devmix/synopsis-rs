@@ -1,125 +1,59 @@
 ---
 title: Testing
-description: Go testing conventions for Synopsis — table-driven tests with t.Run, the mandatory race detector, coverage, and where tests live
+description: The cargo test suite, single-crate and single-test filters, machine-checked parity (fixtures + ANN gates), and measure-first coverage
 sidebar_position: 6
 ---
 
 # Testing
 
-Synopsis is tested with the standard Go toolchain: table-driven unit tests co-located with the code, an end-to-end ingestion suite, and — in CI — the race detector on everything.
+Synopsis is tested with the standard cargo toolchain: unit and integration tests co-located in each crate, differential parity tests against recorded fixtures, and — in CI — the full workspace suite on every push.
 
-## The mandatory race detector
-
-**Every test run that matters uses `-race`** — local or CI. The service runs goroutines for parallel lexical/semantic search, the file watcher, the scheduler, and the MCP server; the race detector is the only reliable way to catch data races before `serve` mode exposes them.
+## Running the suite
 
 ```bash
-make test            # go test -race ./...  — the pre-PR gate
+cargo test                                # full workspace, ~20 s warm; no services or network needed
+cargo test -p <crate>                     # a single crate
+cargo test -p <crate> -- <TestNameFilter> # a single test (name filter after --)
 ```
 
-A failing race detector run blocks a merge. If it fires, fix the synchronization (shared state behind a mutex, or channel/context-based communication) — do not suppress the check.
+The suite is hermetic: no network, no running services, no downloaded models. The embedding and LLM paths are exercised against local test doubles and the cache, so `cargo test` works on a fresh checkout.
 
-## Table-driven tests with `t.Run`
+## Parity is checked by the machine
 
-All unit tests use the table-driven pattern with `t.Run()` subtests, one case per row, named in `snake_case` so the failure output reads like a spec:
+Behavioral parity is not reviewed by hand — it is asserted by tests:
 
-```go
-func TestRerank(t *testing.T) {
-    tests := []struct {
-        name  string
-        in    []Result
-        want  int
-        want0 float64
-    }{
-        {"empty_input_returns_empty", nil, 0, 0},
-        {"deprecated_penalised", ...},
-        {"official boosted", ...},
-    }
+- **Differential tests against recorded fixtures.** The same read queries (FTS5 search, catalog, entity and fact tools) run against the same database copy and must match the recorded fixtures — the same query, the same rows (except the ANN fields, which the recall gates below cover).
+- **ANN gates.** Vector search is checked with recall@k against a brute-force ground truth on the same embedding model, plus p50/p95 latency gates. The laptop budget (16 GB RAM, disk-backed index) is enforced by numbers, not by review.
 
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            got := rerank(t.Context(), tt.in)
-            if len(got) != tt.want {
-                t.Fatalf("len = %d, want %d", len(got), tt.want)
-            }
-        })
-    }
-}
-```
-
-Rules that come with the pattern:
-
-- **Descriptive subtest names** — `empty_query_returns_error`, `unknown_entity_returns_error`, not `test1`/`test2`.
-- **One assertion focus per row** — each row states a behavior, not an arrangement of inputs.
-- **Subtests may fail independently** — keep them self-contained so `go test -run 'TestName/subtest_name'` works:
-
-  ```bash
-  go test -race -run 'TestHybridSearch/empty_query_returns_error' ./internal/search/...
-  ```
-
-## Running tests
-
-```bash
-# Everything (mandatory pre-PR)
-go test -race ./...
-
-# A single package (and its sub-packages)
-go test -race ./internal/search/...
-go test -race ./internal/ingestion/...
-
-# A single test function
-go test -race -run TestHybridSearch ./internal/search/...
-
-# A single subtest
-go test -race -run 'TestHybridSearch/empty_query_returns_error' ./internal/search/...
-
-# Coverage (report to coverage.html)
-make test-coverage
-# equivalent to:
-go test -coverprofile=coverage.out -race ./...
-go tool cover -html=coverage.out -o coverage.html
-
-# Benchmarks
-go test -bench=BenchmarkGraphExpansion -benchmem ./internal/search/...
-go test -bench=BenchmarkSugarmeTokenizer -benchmem ./internal/embedding/...
-```
-
-`make test-coverage` is the quickest way to find untested branches after a change; CI runs the same suite with `-covermode=atomic` and prints the total to its job log (see [CI/CD](./ci-cd#ci-workflow-ciyml)).
+A parity failure blocks a merge exactly like any other test failure: fix the code, or re-record the fixture as an explicit decision — never loosen the assertion.
 
 ## Where the tests live
 
-Tests are co-located in the same package (`_test.go` files), including integration-level ones:
+Tests are co-located in each crate (`#[cfg(test)]` modules and integration tests). A test module may opt out of the `unwrap_used`/`expect_used` lints with `#![allow(clippy::unwrap_used)]` — assertions in tests make the failure explicit (see [Coding Standards](./coding-standards)).
 
-| Area | Tests |
+| Crate | What is tested |
 |---|---|
-| `internal/database/dao/` | DAO CRUD against **in-memory SQLite** via shared `testutil.go` helpers — no disk, no fixtures |
-| `internal/search/` | Per-component tests (RRF, enricher, reranker, lexical, semantic, graph expansion) plus `e2e`-style hybrid tests and `BenchmarkGraphExpansion_*` benchmarks |
-| `internal/ingestion/` | Parser and chunker unit tests with sample documents, `ingester_test.go`, and `e2e_test.go` (full pipeline: parse → chunk → embed → store) |
-| `internal/graph/` | Traversal correctness, direction filters, cycle detection, node limits |
-| `internal/watcher/` | Event debouncing and file-type filtering |
-| `internal/config/` | Table-driven validation of every config field (valid, invalid, missing) |
-| `internal/mcp/handlers/` | One `_test.go` per tool handler: success, parameter validation, edge cases |
-| `cmd/app/` | CLI-level tests (subcommand dispatch, config path resolution) |
+| `db` | DAO CRUD, pagination with filters, batch operations, transactions, FTS5 search against the knowledge DB fixture, PRAGMA parity |
+| `search` | the two legs (FTS5 BM25, vector), RRF fusion, reranking, and the hybrid end-to-end path |
+| `vectors` | the usearch engine, WAL + segments, compaction, and the recall/latency gates |
+| `ingestion` | parsers, chunkers, NER pipelines, the `document_jobs` queue state machine |
+| `graph` | traversal, CEL linkers, cross-domain linking with the decision cache |
+| `mcp` | one test module per tool handler: success, parameter validation, edge cases |
+| `cli` | subcommand dispatch and config path resolution |
 
-Practical notes:
+## Coverage
 
-- **DAO tests use in-memory databases** (`testutil.go`) — keep it that way; they are the fast path.
-- **Embedding tests must not hit the network** — `APIProvider` is exercised against a local test HTTP server, and ONNX paths use the cache.
-- **Time-dependent behavior** (freshness boosts, debounce) takes its clock/sleep parameters as fields so tests can control them.
+Coverage is measured with `cargo-llvm-cov` (a cargo-installed, dev-only tool — it is not a workspace dependency):
 
-## What to test when you change X
+```bash
+cargo llvm-cov --workspace --html   # HTML report in target/llvm-cov/html/
+cargo llvm-cov --workspace --text   # per-file table
+```
 
-| Change | Minimum |
-|---|---|
-| New parser / chunker | Table-driven tests with sample documents, including an edge case per rejection path |
-| New MCP tool | Handler tests: success, missing/invalid arguments, empty knowledge base, unknown ID |
-| New config field | `config_test.go` row per state (valid / invalid / missing) |
-| Migration | Fresh-database rebuild (`rm -rf data/knowledge.db* && make rebuild`) plus the upgrade path on a pre-migration copy — see [Migrations](./migrations) |
-| Search scoring or ranking | Existing `internal/search` suite green **and** a re-check of the control queries (ranking regressions are otherwise invisible) |
-
-Then, always: `make test` with `-race`, `make vet`, `make lint`.
+The policy is **measure-first, no gates**: per-crate targets are documented ranges, not CI checks — no `--fail-under-*` flag is used locally or in CI. The per-crate target table and the current baseline numbers live in `COVERAGE.md` in the repository root.
 
 ## See also
 
-- [Coding Standards](./coding-standards) — testing conventions as a general principle
-- [CI/CD](./ci-cd) — what runs automatically (race detector, lint, coverage in the job log)
-- [Migrations](./migrations) — testing schema changes
+- [Coding Standards](./coding-standards) — the lint baseline the suite runs under
+- [Development Setup](./setup) — build and gate commands
+- [CI/CD](./ci-cd) — what runs automatically
