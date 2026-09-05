@@ -1,16 +1,16 @@
 ---
 title: Searching
-description: Using the search MCP tool — parameters, the hybrid pipeline, reranking rules, and graph expansion
+description: Using the search MCP tool — parameters, the hybrid pipeline, reranking, graph expansion, and the entity/fact tools
 sidebar_position: 4
 ---
 
 # Searching
 
-The `search` tool is the primary way AI agents read the knowledge base: one hybrid query over all ingested documents, scoped by domain, enriched with metadata, entities, and graph context.
+The `search` tool is the primary way AI agents read the knowledge base: one hybrid query over all ingested documents, scoped by domain, enriched with chunk metadata, entities, and graph context. The full fusion math (FTS5/BM25 + usearch + Reciprocal Rank Fusion) is explained in [Hybrid Search](../concepts/hybrid-search).
 
 ## How to search
 
-Point any MCP client at the SSE endpoint (`http://localhost:8080/sse` by default) and call `search`:
+Point any MCP client at the server — Streamable HTTP on `http://localhost:8080/mcp` (primary) or the legacy `http://localhost:8080/sse` (see [MCP Transport](../concepts/mcp-transport)) — and call `search`:
 
 ```json
 {
@@ -28,32 +28,34 @@ Point any MCP client at the SSE endpoint (`http://localhost:8080/sse` by default
 }
 ```
 
-| Argument | Type   | Required | Description                                                              |
-| -------- | ------ | -------- | ------------------------------------------------------------------------ |
-| `query`  | string | yes      | Search query. Empty query is an error.                                    |
-| `domain` | string | no       | Restrict results to a domain (e.g. `hr`, `product`, `it`); empty = all    |
-| `top_k`  | number | no       | Maximum results to return. Default 10, range 1–100                        |
+| Argument | Type   | Required | Description                                                        |
+| -------- | ------ | -------- | ------------------------------------------------------------------ |
+| `query`  | string | yes      | Search query; an empty or missing query is an error                |
+| `domain` | string | no       | Restrict results to a domain (e.g. `hr`, `product`, `it`); empty = all |
+| `top_k`  | number | no       | Maximum results to return. Default 10, range 1–100 (out of range is an error) |
 
-The tool returns JSON containing `results`, `total_count`, `search_time_ms`, and an optional `warning`. Each result item:
+The tool returns `results`, `total_count`, `search_time_ms`, and an optional `warning` (set when the requested domain is unknown to the knowledge base — the search still runs, but results may be incomplete). Each result item:
 
-| Field            | Meaning                                                            |
-| ---------------- | ------------------------------------------------------------------ |
-| `document_id`    | ID of the source document                                          |
-| `chunk_id`       | ID of the matched chunk                                            |
-| `text`           | Chunk text                                                         |
-| `sequence_num`   | Chunk position within its document                                 |
-| `start_offset` / `end_offset` | Byte offsets of the match inside the original document    |
-| `document_path`  | Original file path (provenance)                                    |
-| `score`          | Normalized relevance score — higher is better                      |
-| `source_type`    | `lexical`, `semantic`, or `hybrid` (found by both retrievers)      |
-| `domains`        | Domain(s) the document belongs to                                  |
-| `entities`       | Entities associated with the chunk (id, name, type)                |
+| Field                    | Meaning                                                                                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `document_id`            | ID of the source document                                                                                   |
+| `chunk_id`               | ID of the matched chunk                                                                                     |
+| `text`                   | The chunk's pure body — the section context is **not** glued into the text, it travels in `metadata`        |
+| `sequence_num`           | Chunk position within its document                                                                          |
+| `start_offset` / `end_offset` | Byte offsets of the chunk inside the original document (omitted when absent)                          |
+| `document_path`          | Original file path (provenance)                                                                             |
+| `score`                  | Final calibrated score — higher is better                                                                   |
+| `source_type`            | `lexical`, `semantic`, or `hybrid` (found by both retrievers)                                               |
+| `metadata`               | The chunk's own metadata bag: `section_title`, `heading_level`, `breadcrumb`, `image_paths`, … — omitted when empty |
+| `domains`                | Domain(s) the document belongs to (omitted when empty)                                                      |
+| `entities`               | Entities associated with the chunk (id, name, type; omitted when empty)                                     |
+| `updated_at`             | The owning document's freshness in RFC 3339 (omitted when the document has no parseable timestamp)          |
 
 A few practical notes:
 
-- **The domain filter runs inside both sub-searches at the database level** — it is not a post-filter over a shrunken pool, so `top_k` results are always computed within the requested domain. If you pass a domain Synopsis does not know, the search still runs but the response carries a `warning` (unknown domain, results may be incomplete).
+- **The domain filter runs inside both sub-searches** — at the SQL level for the lexical leg, on the application side for the semantic leg — not as a post-filter over a shrunken pool, so `top_k` results are always computed within the requested domain.
 - If one retriever (lexical or semantic) fails, the other's results are still returned; an error is only returned when both fail. Each sub-search is bounded by the `search.timeout_ms` setting.
-- The full fusion math (FTS5/BM25 + sqlite-vec cosine + Reciprocal Rank Fusion) is explained in [Hybrid Search](../concepts/hybrid-search.mdx).
+- **`updated_at`** lets a RAG client see hit freshness without a second `get_document_context` call — it is a top-level result field, distinct from the chunk's `metadata` bag.
 
 ## Reranking
 
@@ -67,7 +69,7 @@ After RRF fusion, results pass through a reranker that rescores them with busine
 | Freshness  | × 1.2 | the document was updated within the last 90 days          |
 | Authority  | per document type | e.g. `policy: 1.5`, `regulation: 1.3`, other types 1.0    |
 
-All factors are configurable under `search:` in the config file (`deprecated_boost`, `official_boost`, `recent_boost`, `recent_days`, `authority_boost`). The effect: current, official policy documents float to the top, while deprecated and expired content sinks — exactly what an agent answering "what is the current rule?" needs.
+All factors are configurable under `search:` in the config file (`deprecated_boost`, `official_boost`, `recent_boost`, `recent_days`, `authority_boost`; the fusion itself is tuned via `rrf_k`, `lexical_top_k`, `semantic_top_k`, `final_top_k`). The effect: current, official policy documents float to the top, while deprecated and expired content sinks — exactly what an agent answering "what is the current rule?" needs.
 
 ## Graph expansion
 
@@ -78,18 +80,121 @@ What this buys you:
 - One search call already surfaces the *neighborhood* of the match — the agent can answer follow-up questions without additional full-text queries.
 - If graph expansion fails, it is non-fatal: you still get the (enriched, reranked) results, just without graph context.
 
-See [Knowledge Graph](../concepts/knowledge-graph.mdx) for traversal and dossiers, and [Cross-Domain Linking](../concepts/cross-domain-linking.mdx) for how the same entity is connected across domains.
+See [Knowledge Graph](../concepts/knowledge-graph) for traversal and dossiers, and [Cross-Domain Linking](../concepts/cross-domain-linking) for how the same entity is connected across domains.
 
 ## Beyond `search`
 
-For deeper follow-ups the server exposes 11 more MCP tools: cataloging documents and entities, searching facts and entities by type, retrieving full document context and single chunks/facts, and traversing the graph (`get_entity_relations`, `get_entity_dossier`, `get_entity_links`). A worked flow: `search` → note the `entities` in the result → `get_entity_dossier` for the full picture with sources and cross-domain links.
+The server exposes 12 tools in total (full reference: [MCP tools](../reference/mcp-tools)); the eight entity/fact tools below cover the deeper follow-ups. All are read-only, and all fact data is **`approved`-only** — the one exception, `get_fact_by_id`, is documented where it happens.
+
+### `search_entities_by_type`
+
+Lists entities of a given type, with cursor pagination.
+
+| Argument      | Type   | Required | Description                                                    |
+| ------------- | ------ | -------- | -------------------------------------------------------------- |
+| `entity_type` | string | yes      | The entity type to filter by; an empty value is an error       |
+| `domain`      | string | no       | Restrict to a domain; empty = all                              |
+| `page_size`   | number | no       | Items per page. Default 20, range 1–200 (out of range clamps to the default) |
+| `cursor`      | string | no       | Opaque cursor from the previous page; empty/omitted = first page |
+
+Returns `entities` (id, name, type, domain, plus optional `description`, `confidence`, `metadata`), `total_count`, and `next_cursor` when more pages exist.
+
+### `search_facts`
+
+Searches facts by predicate, entity name, status, and domain, with cursor pagination.
+
+| Argument      | Type   | Required | Description                                                                  |
+| ------------- | ------ | -------- | ---------------------------------------------------------------------------- |
+| `predicate`   | string | no       | Case-insensitive substring of the relation predicate                          |
+| `entity_name` | string | no       | Subject- or object-entity name                                               |
+| `status`      | string | no       | Fact status filter. Default `approved` — an empty value applies the default, it does **not** mean "all" |
+| `domain`      | string | no       | Restrict to a domain; empty = all                                            |
+| `page_size`   | number | no       | Items per page. Default 20, range 1–200 (out of range clamps to the default)  |
+| `cursor`      | string | no       | Opaque cursor from the previous page; empty/omitted = first page             |
+
+Returns `facts` (id, predicate, subject/object entity ids and names, domain — `''` = global, status, optional `valid_from`/`valid_to`, `weight`), `total_count`, and `next_cursor`.
+
+### `get_entity_dossier`
+
+The complete picture of one entity: the entity itself, its approved facts (with per-fact sources), its source documents, related entities (graph BFS), and cross-domain links with provenance.
+
+| Argument         | Type    | Required | Description                                                                                   |
+| ---------------- | ------- | -------- | --------------------------------------------------------------------------------------------- |
+| `entity_id`      | string  | either   | Entity id (integer as string). **XOR** with `entity_name` — exactly one of the two must be provided |
+| `entity_name`    | string  | either   | Entity name (case-insensitive exact match). **XOR** with `entity_id`                           |
+| `domain`         | string  | no       | Disambiguates the name lookup; without it, a name matching multiple entities lists the candidates as an error |
+| `depth`          | number  | no       | BFS depth for related entities. Range 1–5, default 2 (out of range clamps)                     |
+| `include_facts`  | boolean | no       | Include approved facts (with their sources). Default `true`                                    |
+| `include_sources`| boolean | no       | Include source documents. Default `true`                                                       |
+
+Returns `entity`, plus the optional sections `facts` (capped for response size), `sources`, `related_entities`, and `cross_domain_links` (target, relation types, link method, confidence, evidence) — empty sections are omitted.
+
+### `get_entity_relations`
+
+Traverses the knowledge graph from one entity (BFS, both directions).
+
+| Argument                | Type    | Required | Description                                                            |
+| ----------------------- | ------- | -------- | ---------------------------------------------------------------------- |
+| `entity_id`             | string  | either   | Entity id (integer as string). **XOR** with `entity_name`              |
+| `entity_name`           | string  | either   | Entity name (case-insensitive exact match). **XOR** with `entity_id`   |
+| `domain`                | string  | no       | Disambiguates the name lookup                                          |
+| `depth`                 | number  | no       | BFS depth. Range 1–10, default 2 (out of range clamps)                 |
+| `include_cross_domain`  | boolean | no       | Follow cross-domain entity links. Default `false`                      |
+
+Returns `center_entity`, `nodes` (the center excluded), `edges` (source/target ids and names, relation type, and — when `include_cross_domain` is set and the edge is an entity link — the link's method, confidence, and evidence), and traversal stats (`total_nodes`, `total_edges`, `traversal_depth`, `traversal_time_ms`). A disabled or unavailable graph is a tool error.
+
+### `get_entity_links`
+
+The entity's cross-domain links with provenance.
+
+| Argument      | Type   | Required | Description                                                     |
+| ------------- | ------ | -------- | --------------------------------------------------------------- |
+| `entity_id`   | string | either   | Entity id (integer as string). **XOR** with `entity_name`       |
+| `entity_name` | string | either   | Entity name (case-insensitive exact match). **XOR** with `entity_id` |
+| `domain`      | string | no       | Disambiguates the name lookup                                    |
+
+Returns `entity` and `links` (target id/name/domain, relation type, method, confidence, evidence; deduplicated by target + relation).
+
+### `get_document_context`
+
+The full context of one document: metadata, chunks, entities, and linked fact ids.
+
+| Argument           | Type    | Required | Description                                                        |
+| ------------------ | ------- | -------- | ------------------------------------------------------------------ |
+| `document_id`      | string  | yes      | Document id (integer as string)                                    |
+| `include_chunks`   | boolean | no       | Include chunk data. Default `true`                                 |
+| `include_entities` | boolean | no       | Include the entities mentioned by the document's chunks. Default `true` |
+| `include_facts`    | boolean | no       | Include approved fact ids linked to the document's entities. Default `false` |
+
+Returns `document` (id, source type, original path, optional raw `metadata`, timestamps, domains), optional `image_paths` (extracted from the metadata), `chunk_count`, and the optional sections `chunks`, `entities`, and `fact_ids`.
+
+### `get_chunk_by_id`
+
+A single chunk with its owning document and entities.
+
+| Argument   | Type   | Required | Description                    |
+| ---------- | ------ | -------- | ------------------------------ |
+| `chunk_id` | string | yes      | Chunk id (integer as string)   |
+
+### `get_fact_by_id`
+
+A single fact with its subject/object entities and sources (document + quote).
+
+| Argument  | Type   | Required | Description                     |
+| --------- | ------ | -------- | ------------------------------- |
+| `fact_id` | string | yes      | Fact id (integer as string)     |
+
+Unlike `search_facts`, there is **no status filter** here: a fact of any status is retrievable by direct id, and its actual `status` is exposed in the response.
+
+A worked flow: `search` → note the `entities` in the result → `get_entity_dossier` for the full picture with sources and cross-domain links → `get_fact_by_id` for the source quote of a specific fact.
 
 :::tip
-When facts are missing from a search result's graph context, the most common cause is that their status is not `approved` — only approved facts are expanded. See [Facts not appearing in search](./troubleshooting.mdx#facts-not-appearing-in-search).
+When facts are missing from a search result's graph context, the most common cause is that their status is not `approved` — only approved facts are expanded. See [Facts not appearing in search](./troubleshooting#facts-not-appearing-in-search).
 :::
 
 ## What's next
 
-- [Ingestion](./ingestion.mdx) — how the index `search` reads is built
-- [Configuration](./configuration.mdx#search) — search and reranking settings
-- [Troubleshooting](./troubleshooting.mdx) — when searches behave unexpectedly
+- [Ingestion](./ingestion) — how the index `search` reads is built
+- [Configuration](./configuration#search) — search and reranking settings
+- [MCP tools reference](../reference/mcp-tools) — all 12 tools with parameters and result shapes
+- [Troubleshooting](./troubleshooting) — when searches behave unexpectedly

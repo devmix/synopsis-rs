@@ -657,8 +657,11 @@ implementation.
 
 **Content requirements.**
 - **ingestion:** supported sources (Markdown, JSON, web pages); parsing and
-  chunking; embeddings (local ONNX bge models; vector dimension); NER (ONNX;
-  regex + LLM providers); entity/fact extraction; cross-domain entity linking
+  chunking; embeddings (local ONNX bge models; vector dimension); NER (regex
+  rule-based + LLM remote OpenAI-compatible providers; prose/statistical NER is
+  deferred by human decision 2026-08-23 — `ProseNerDeferred`, "a second ONNX
+  stack was rejected" — so ONNX serves EMBEDDINGS ONLY, not NER); entity/fact
+  extraction; cross-domain entity linking
   (CEL expressions + LLM); the re-ingest model — file watcher + startup
   reconcile enqueue diffs into `document_jobs`, the background worker processes
   them (link to the job-queue page — exists since 4.1); stuck jobs: `queue
@@ -893,3 +896,10 @@ docs change.
   by URL + size + SHA-256"; the code enforces **size** (design D8) and the
   `checksum` field is optional/unverified (no shipped entry sets one). Align the
   spec/wording with the enforced size check.
+- **AGENTS.md line 17** — the frozen-stack line says the ONNX runtime provides
+  "embeddings **+ NER**". Stale: the implementation's NER is `RegexNer`
+  (rule-based) + `LlmNer` (remote OpenAI-compatible HTTP client via
+  `crates/llm`); prose/statistical NER was rejected by human decision
+  2026-08-23 (`ProseNerDeferred` — "a second ONNX stack was rejected"). ONNX
+  serves **embeddings only**. (The task 6.2 body inherited this stale claim and
+  was corrected in place; the docs site now documents NER correctly.)
