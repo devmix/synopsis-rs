@@ -8,12 +8,12 @@
 //!
 //! Extraction (design D5/D7): domains are processed in config order. Per
 //! domain: render system (with the JSON example) + user (type lists + clean
-//! content + the Document context block), build the cache key, check the
-//! cache — on a miss call [`LlmClient::call`](llm::LlmClient::call) with the
-//! generated schema and schema name `ner_result`, parse/validate, tag every
-//! entity/fact with the normalized domain name, and store the tagged result
-//! in the cache BEFORE merging it into the result (the composite stage
-//! enriches the metadata with source data afterwards, design D7).
+//! content + the `CONTENT SECTION` fenced block), build the cache key, check
+//! the cache — on a miss call [`LlmClient::call`](llm::LlmClient::call) with
+//! the generated schema and schema name `ner_result`, parse/validate, tag
+//! every entity/fact with the normalized domain name, and store the tagged
+//! result in the cache BEFORE merging it into the result (the composite
+//! stage enriches the metadata with source data afterwards, design D7).
 //!
 //! # Design decisions
 //!

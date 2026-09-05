@@ -6,7 +6,7 @@ The configuration file formats of Synopsis: YAML presets (`config.{preset}.yaml`
 ## Requirements
 ### Requirement: Full YAML preset
 
-The Rust binary reads `config.{preset}.yaml`. The preset includes the sections: `database` (path, pragma), `embeddings` (mode local|api), `ingestion` (chunking.markdown/json, ner.llm, batch_size, resolver, max_retries), `linker` (disabled, llm), `search` (rrf_k, top-k, boosts, authority_boost), `graph`, `auto_update` (enabled, debounce_seconds, watch_sources, initial_sync, retry_failed), `scheduler.jobs` (named jobs with enabled/interval_seconds), `logging` (level/format/output), `paths` (data_dir, documents_dir, migrations_dir, global_config_path, prompts_path, onnx_config), `server` (name/version/host/port). Unknown keys do not break startup. Unknown values of string fields that are not validated at parse time (`logging.level/format/output`, `chunking.strategy`, `response_format`, `archive_format`, `source.type`, `attribute.type`) do not break startup.
+The Rust binary reads `config.{preset}.yaml`. The preset includes the sections: `database` (pragma), `embeddings` (mode local|api), `ingestion` (chunking.markdown/json, ner.llm, batch_size, resolver, max_retries), `linker` (disabled, llm), `search` (rrf_k, top-k, boosts, authority_boost), `graph`, `auto_update` (enabled, debounce_seconds, watch_sources, initial_sync, retry_failed), `scheduler.jobs` (named jobs with enabled/interval_seconds), `logging` (level/format/output), `paths` (workspace_dir, migrations_dir, prompts_path, onnx_config), `server` (name/version/host/port). The knowledge-DB path is NOT a config field — it is derived from `paths.workspace_dir` + `dataset.name` as `<workspace_dir>/datasets/<name>/state/knowledge.db`. Unknown keys do not break startup. Unknown values of string fields that are not validated at parse time (`logging.level/format/output`, `chunking.strategy`, `response_format`, `archive_format`, `source.type`, `attribute.type`) do not break startup.
 
 New fields (additive, with defaults — backward compatible with presets that lack them):
 - `ingestion.max_retries` (integer, default 3) — the maximum number of automatic re-indexing attempts for a problematic document by the background worker; after exhaustion the document gets `error` status in the `document_jobs` queue.
@@ -45,6 +45,10 @@ New fields (additive, with defaults — backward compatible with presets that la
 #### Scenario: Explicit retry configuration
 - **WHEN** the YAML sets `ingestion.max_retries: 5` and `auto_update.retry_failed.poll_interval_seconds: 120`
 - **THEN** the values are honored (the background worker retries up to 5 times, polling the queue every 120 s)
+
+#### Scenario: Knowledge-DB path derived, not a config field
+- **WHEN** a preset sets `paths.workspace_dir` and `dataset.name`
+- **THEN** the knowledge-DB path resolves to `<workspace_dir>/datasets/<name>/state/knowledge.db` (derived from `workspace_dir` + `dataset.name`), and the cache DB resolves to `<workspace_dir>/db/cache/cache.db`
 
 ### Requirement: Field vectors.engine
 
@@ -88,11 +92,15 @@ The `vectors:` section is extended with an optional `usearch` object holding the
 
 ### Requirement: onnx.yaml model registry
 
-The `onnx.yaml` format is preserved: the `runtime` section (version, platforms[] — key/os/arch/archive_url/archive_format/library_name/library_path) and `models` (default, entries[] — name/display_name/description/version/vector_dim/files[name,url,size_bytes]). Model-loading behavior (download by url, size check, storage in data/) is fixed by this contract.
+The `onnx.yaml` format is preserved: the `runtime` section (version, platforms[] — key/os/arch/archive_url/archive_format/library_name/library_path) and `models` (default, entries[] — name/display_name/description/version/vector_dim/files[name,url,size_bytes,checksum?]). Model-loading behavior is fixed by this contract: download by url, **size check enforced** (`size_bytes` is verified against the downloaded file, design D8), storage in data/. The `checksum` field (`"sha256:hex"`) is **optional and NOT verified** (no shipped entry sets one): downloads are verified by size only, not by "URL + size + SHA-256".
 
 #### Scenario: Model registry
 - **WHEN** the Rust binary reads `workspace/configs/onnx.yaml`
 - **THEN** the model list and runtime parameters are fully recognized; the model list prints all entries (machine-diff)
+
+#### Scenario: Size enforced, checksum optional
+- **WHEN** a downloaded file's size does not match its `size_bytes`
+- **THEN** the download is rejected (size is the enforced check); a `checksum` field, when present, is parsed but not used to verify the file
 
 ### Requirement: onnx.yaml load-error handling
 

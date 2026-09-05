@@ -84,7 +84,7 @@ The crate evaluates CEL linking expressions from ontology.xml through the `cel` 
 
 ### Requirement: Cross-domain linking pipeline
 
-The pipeline applies the methods in configuration order: `equals` (exact name match), `expression` (CEL rules), `llm` (LLM comparison of the pair through an OpenAI-compatible client). Each method is idempotent: re-linking does not create duplicates (ON CONFLICT DO NOTHING via EntityLinkDao). The `linker.disabled` flag disables the LLM method. The LLM method, for each pair: loads the chunk context of both entities (up to 3 texts per entity), renders the system/user templates (loaded from `prompts_path`, with embedded fallback), calls the LLM client with structured output, parses the decision `{same_entity, confidence, reasoning}`, and creates a link only when confidence ≥ `llm_confidence_threshold` (method='llm', evidence=reasoning, confidence clamped to [0,1]); the decision is cached in app_kv by hash (entity pair + template hashes) — a repeat call for the same pair does not hit the LLM. A call/parse failure of one pair does not abort the pipeline (it is recorded in the results).
+The pipeline applies the methods in configuration order: `equals` (exact name match), `expression` (CEL rules), `llm` (LLM comparison of the pair through an OpenAI-compatible client). Each method is idempotent: re-linking does not create duplicates (ON CONFLICT DO NOTHING via EntityLinkDao). The `linker.disabled` flag disables the LLM method. The LLM method, for each pair: loads the chunk context of both entities (up to 3 texts per entity), renders the system/user templates (loaded from `prompts_path`, with embedded fallback), calls the LLM client with structured output, parses the decision `{same_entity, confidence, reasoning}`, and creates a link only when confidence ≥ `llm_confidence_threshold` (method='llm', evidence=reasoning, confidence clamped to [0,1]); the decision is cached in the `llm_linker_cache` table (cache DB, `migrations/cache/1-init/up.sql`) by hash (entity pair + template hashes) — a repeat call for the same pair does not hit the LLM. A call/parse failure of one pair does not abort the pipeline (it is recorded in the results).
 
 #### Scenario: equals linking
 - **WHEN** two entities of different domains have identical normalized names
@@ -104,7 +104,7 @@ The pipeline applies the methods in configuration order: `equals` (exact name ma
 
 #### Scenario: Decision cache
 - **WHEN** a pair already has a cached decision (same template hashes)
-- **THEN** the LLM is not called; the cached decision is used
+- **THEN** the LLM is not called; the cached decision is used (read from the `llm_linker_cache` table in the cache DB)
 
 #### Scenario: Single-pair failure
 - **WHEN** the LLM call or answer parsing for a pair ends in an error

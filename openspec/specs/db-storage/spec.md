@@ -40,7 +40,7 @@ Transactions are executed through the native rusqlite API (`Connection::transact
 
 ### Requirement: DAO operations over the v5 schema
 
-The DAO layer covers the v5-schema tables: documents, chunks, entities, facts, links (chunk_entities, entity_links, entity_sources, fact_sources), app_kv. Operation behavior is fixed by semantics: CRUD, pagination with filters (domain via json_each, source_type, name), batch operations (IN-lists with placeholders, batches ≤ 500 rows), orphan cleanup (does not delete EntityType or fact references), GetOrCreate/CreateOrIgnore — atomic via UNIQUE constraints and `ON CONFLICT` (fixing the TOCTOU race). The SQLite parameter limit (32766) is not exceeded (batches ≤ 500×2 parameters).
+The DAO layer covers the v5-schema tables: documents, chunks, entities, facts, links (chunk_entities, entity_links, entity_sources, fact_sources). The `app_kv` table is **NOT** a knowledge-DB DAO target: it lives in the global cache DB (`migrations/cache/1-init/up.sql`). Operation behavior is fixed by semantics: CRUD, pagination with filters (domain via json_each, source_type, name), batch operations (IN-lists with placeholders, batches ≤ 500 rows), orphan cleanup (does not delete EntityType or fact references), GetOrCreate/CreateOrIgnore — atomic via UNIQUE constraints and `ON CONFLICT` (fixing the TOCTOU race). The SQLite parameter limit (32766) is not exceeded (batches ≤ 500×2 parameters).
 
 #### Scenario: Document CRUD
 - **WHEN** the DAO creates, reads, updates, and deletes a document

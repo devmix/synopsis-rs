@@ -13,8 +13,8 @@ context: |
   - rusqlite (bundled + fts5) — SQLite storage; FTS5 is always available, no cgo flags.
     Migrations: rusqlite_migration 2.x (from-directory), PRAGMA user_version — the sole
     source of truth for schema state; _schema_migrations is not created (decisions 2026-08-18)
-  - ort (ONNX Runtime, external .so/.dylib) — embeddings (bge-m3 int8, 1024-dim) and NER;
-    the runtime is downloaded to data/ per onnx.yaml (registry: URL + size_bytes + sha256-verify).
+  - ort (ONNX Runtime, external .so/.dylib) — embeddings (bge-m3 int8, 1024-dim) only;
+    the runtime is downloaded to data/ per onnx.yaml (registry: URL + size_bytes (size enforced; checksum optional)).
     The bindings crate is deferred: the final pin — in change `embedding` (ADR 0002)
   - usearch 2.x (C++11 HNSW core via cxx, disk-backed, scalar-quantized default bf16,
     WAL + segments per ADR 0004) — the sole ANN engine, replaces vec0 brute-force.

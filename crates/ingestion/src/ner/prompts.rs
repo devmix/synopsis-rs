@@ -21,7 +21,7 @@
 //!   the content is not sent as a separate attachment. Extracted-output
 //!   parity is what matters.
 //! - **Binding requirement (human decision 2026-08-23):** the rendered user
-//!   prompt includes an explicit *Document context* block (the chunk's
+//!   prompt includes an explicit `CONTENT SECTION` fenced block (the chunk's
 //!   section path) when the chunk metadata carries one, and omits it when it
 //!   does not. The chunks are clean slices (the offset-bug fix recorded in
 //!   ingestion-sources), so the context must be explicit.
@@ -168,7 +168,7 @@ struct UserData {
     /// Relation predicates of the domain.
     relation_types: Vec<String>,
     /// The chunk's section path (`A > B > C`) from its metadata; `None`
-    /// omits the Document context block.
+    /// omits the `CONTENT SECTION` fenced block.
     section_path: Option<String>,
     /// The clean chunk text.
     content: String,
@@ -261,8 +261,8 @@ impl NerPrompts {
     /// Render the user prompt for one chunk of one domain.
     ///
     /// `content` is the clean chunk text (no prefixes — design D4); `metadata`
-    /// is the chunk's metadata bag, from which the Document context block is
-    /// taken when a `breadcrumb` is present (the binding requirement).
+    /// is the chunk's metadata bag, from which the `CONTENT SECTION` fenced
+    /// block is taken when a `breadcrumb` is present (the binding requirement).
     pub fn render_user(
         &self,
         domain: &DomainConfig,
@@ -507,16 +507,17 @@ mod tests {
             .render_user(&sample_domain(), "Alice works at Acme.", &metadata)
             .unwrap();
 
-        // The binding block: explicit section path, rendered before the text.
+        // The binding block: explicit section path, rendered as a fenced
+        // CONTENT SECTION block before the text.
         assert!(
-            user.contains("---\nDocument context:\n  Section path: A > B > C\n"),
+            user.contains("CONTENT SECTION\n```\nA > B > C\n```\n"),
             "{user}"
         );
-        let context_pos = user.find("Document context:").unwrap();
+        let context_pos = user.find("CONTENT SECTION").unwrap();
         let content_pos = user.find("CONTENT:").unwrap();
         assert!(context_pos < content_pos, "context precedes content");
-        // The clean chunk text, unprefixed.
-        assert!(user.contains("Alice works at Acme."), "{user}");
+        // The clean chunk text, unprefixed, wrapped in a fenced CONTENT block.
+        assert!(user.contains("```\nAlice works at Acme.\n```"), "{user}");
     }
 
     #[test]
@@ -527,7 +528,7 @@ mod tests {
         let user = prompts
             .render_user(&sample_domain(), "Alice works at Acme.", &Map::new())
             .unwrap();
-        assert!(!user.contains("Document context"), "{user}");
+        assert!(!user.contains("CONTENT SECTION"), "{user}");
         assert!(user.contains("Alice works at Acme."), "{user}");
 
         // A present but empty breadcrumb is treated as absent.
@@ -536,7 +537,7 @@ mod tests {
         let user = prompts
             .render_user(&sample_domain(), "Alice works at Acme.", &metadata)
             .unwrap();
-        assert!(!user.contains("Document context"), "{user}");
+        assert!(!user.contains("CONTENT SECTION"), "{user}");
     }
 
     #[test]
