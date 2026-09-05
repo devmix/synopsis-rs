@@ -1,29 +1,28 @@
 ---
 title: The Pipeline
-description: How Synopsis fits into your information pipeline — input formats, processing stages, and MCP output
+description: How documents flow through Synopsis — sources, processing stages, the job queue, and MCP output
 sidebar_position: 1
 ---
 
 # The Pipeline
 
-Synopsis is designed as one stage in an information pipeline — not a standalone assistant and not a full search platform. It takes **clean, normalized data in**, processes it into a structured, queryable knowledge base, and hands it back out as **MCP tools** that AI agents call.
+Synopsis is one stage in an information pipeline — not a standalone assistant and not a full search platform. It takes **documents in** (Markdown, JSON, web pages), processes them into a structured, queryable knowledge base, and hands it back out as **MCP tools** that AI agents call.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  INPUT: cleaned data, normalized to a unified format                │
-│  (.md, .json, .html) — sources tagged with domains                  │
+│  INPUT: documents (Markdown, JSON, web pages)                       │
+│  configured as sources, each tagged with domains                    │
 └───────────────────────────────┬─────────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  PROCESSING (sync):                                                 │
-│  parse → chunk → embed → NER → entities → facts                     │
-│  → knowledge graph + hybrid search index                            │
-│  → cross-domain linking (post step)                                 │
+│  PROCESSING (background worker):                                    │
+│  parse → chunk → embed (local ONNX) → NER → entities/facts         │
+│  → cross-domain linking → knowledge graph + hybrid search index     │
 └───────────────────────────────┬─────────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  OUTPUT: MCP server (HTTP/SSE)                                      │
-│  12 tools exposing chunks, entities, facts, and graph neighbors     │
+│  OUTPUT: MCP server (Streamable HTTP /mcp + legacy HTTP+SSE)        │
+│  12 read-only tools — chunks, entities, facts, graph neighborhoods  │
 │  with full provenance — consumed by AI agents                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -32,73 +31,68 @@ Everything in this documentation follows this shape: **input → processing → 
 
 ## Input
 
-Synopsis ingests documents that are **already cleaned and normalized**. Supported formats:
+Synopsis ingests documents in three source formats:
 
-| Format | File extensions       | Notes                                   |
-| ------ | --------------------- | --------------------------------------- |
-| Markdown | `.md`              | Section structure and metadata preserved |
-| JSON     | `.json`            | Text fields extracted from objects/arrays |
-| MediaWiki | `.json`           | Markup converted to clean JSON           |
-| Web pages | `.html`           | HTML stripped, semantic structure kept   |
+| Format    | Notes                                                        |
+| --------- | ------------------------------------------------------------ |
+| Markdown  | Section structure and heading breadcrumbs preserved          |
+| JSON      | Text fields extracted from objects/arrays                    |
+| Web pages | HTML stripped, semantic structure kept                       |
 
-Where documents come from and which domains they belong to is configured as **sources** — each source is a path with a parser type and a list of domains (for example, an HR policy folder tagged `hr`, an internal wiki tagged `product` + `hr` + `it`).
-
-Synopsis does **not** clean, deduplicate, or transform raw data. If your data arrives messy, that is a stage you run before Synopsis.
+Where documents come from and which domains they belong to is configured as **sources** — each source is a directory with a parser type and a list of domains (for example, an HR policy folder tagged `hr`, an internal wiki tagged `product` + `hr` + `it`). When the parser type is not set explicitly, it is determined by a path heuristic (`wiki` → MediaWiki, `webpage` → web pages, otherwise unstructured). The source's domains are stamped into the documents' metadata.
 
 ## Processing
 
-The `sync` subcommand (`make sync`) runs the full ingestion pipeline inside a single SQLite database (`data/knowledge.db`). Stages, in order:
+Each document goes through the stages below, in order, inside the background worker (see [How ingestion is triggered](#how-ingestion-is-triggered)):
 
 | # | Stage | What happens |
 |---|-------|--------------|
-| 1 | **Parse** | A format-specific parser turns each file into a structured document (Markdown, JSON, MediaWiki, web page, or unstructured). |
-| 2 | **Chunk** | Documents are split into searchable fragments — header-based, fixed-size, or hybrid chunking, depending on the source. |
-| 3 | **Embed** | Every chunk gets a vector from the local embedding model (ONNX Runtime). Vectors go into the `chunks_vec` table (sqlite-vec). |
-| 4 | **NER** | Named entities are extracted per configured method (regex rules from the ontologies, offline statistical NER, or LLM-based extraction). |
-| 5 | **Entities** | Extracted entities are deduplicated and resolved into canonical entity records, each tagged with its domain and confidence. |
-| 6 | **Facts** | Structured subject → predicate → object facts are built from the extracted data, with confidence scores and links back to their source chunks and quotes. |
-| 7 | **Graph + index** | Entities and facts form the knowledge graph; chunks feed the full-text index (SQLite FTS5, kept in sync automatically). |
+| 1 | **Parse** | A format-specific parser turns the file into a structured document (Markdown, JSON, or web page). |
+| 2 | **Chunk** | The document is split into chunks. Each chunk stores `chunk_text` (the pure source slice, with byte offsets) and `search_text` (the body prefixed with the heading breadcrumb when present) — both search legs and the embedding model consume `search_text`. The chunk's own metadata bag (`section_title`, `heading_level`, `breadcrumb`, `image_paths`, …) is stored alongside it. |
+| 3 | **Embed** | Every chunk is embedded by the local ONNX bge model, in batches of `batch_size` (default 100). A mismatch between the number of vectors and texts ends the document with an error. Vectors are written to the ANN index **after** the SQLite transaction commits — the chunk rows in the database are the source of truth. |
+| 4 | **NER** | Named entities are extracted over the chunks by the configured providers — regex rules from the domain configs and LLM-based extraction with structured output — with the local models running on the ONNX runtime. |
+| 5 | **Entities + facts** | Extracted entities are resolved into canonical records (deduplicated by name similarity, tagged with domain and confidence); structured subject → predicate → object facts are created with confidence scores, linked to their source chunks, and stored with a quote window around the entity's occurrence in the chunk. |
+| 6 | **Write** | A single SQLite transaction writes the document, chunks, entity relations, and facts. A per-document error is counted in the run statistics and does not abort the run. |
+| 7 | **Cross-domain linking** | After ingestion, entities that appear in more than one domain are linked where applicable (CEL expressions, equality, or LLM decisions). See [Cross-Domain Linking](./cross-domain-linking). |
 
-After all sources are ingested, two post steps run in the same sync pass:
+**Deduplication by hash.** Each document is identified by its path; the SHA-256 of its content is compared with the stored hash. An unchanged document is skipped entirely; a changed one is refreshed — its old chunks, relations, and facts are deleted cascadingly, then the new data is written atomically in one transaction. Before indexing, a WAL snapshot of the database is written to the backups directory (a snapshot failure is a warning, not a failure).
 
-- **Orphan cleanup** — entities, facts, vectors, and documents that no longer point at live data are removed.
-- **Cross-domain linking** — entities that appear in more than one domain are linked where applicable. See [Cross-Domain Linking](./cross-domain-linking.mdx).
+**Pruning and cleanup.** When an indexed file vanishes from disk, its document and all its data are deleted cascadingly. Orphan cleanup removes entities without sources (infrastructure types excepted), facts without sources (approved ones excepted), and orphan documents; vectors without a live chunk are removed from the index.
 
-Ingestion is **incremental**: unchanged documents are skipped by content hash, changed documents are refreshed. `make rebuild` (or `sync --rebuild`) wipes and re-ingests from scratch.
+## How ingestion is triggered
+
+Synopsis keeps a single queue table — `document_jobs` — shared by the watcher, the startup scan, and the background worker:
+
+- **Startup reconcile** — when `serve` starts, the dataset is scanned and the diff (new or changed files) is enqueued. (`--no-initial-sync` skips this step.)
+- **File watcher** — while the server runs, file changes enqueue diffs into the same queue.
+- **Background worker** — processes the queue with retries: a job that fails its maximum number of attempts lands in `error` status with `last_error` populated. Inspect the queue with `synopsis queue status` (filters: `--source PATH`, `--status NAME`); recover stuck jobs with `synopsis queue reset-retries` (moves `error` jobs back to `pending` with the attempt counter reset).
+
+There is **no `sync` subcommand** — the queue *is* the ingestion model. A full re-ingest is `db clear` followed by a `serve` restart, after which the startup reconcile re-enqueues all files and the worker re-embeds them.
+
+## Vectors
+
+Embedding vectors live in a separate ANN index (usearch HNSW, disk-backed) that is **rebuilt from chunk text** — vector data is never carried over from a previous index, and the index dimensionality follows the embedding model from the configuration. The Vector Rebuild page covers the index mechanics in detail.
+
+## Facts lifecycle
+
+Facts carry a `status` — `draft`, `pending`, `approved`, or `rejected`. Only **`approved`** facts are exposed: they are the only facts that surface in search expansion, entity dossiers, and other read tools. A cross-domain fact (subject and object in different domains) is dropped with a warning at ingestion. Fact review is not a feature yet — the lifecycle is the data model, the review workflow is roadmap.
 
 ## Output
 
-The `serve` subcommand (`make run`) starts the MCP server. It loads the knowledge graph into memory and exposes **12 tools** over HTTP/SSE (`/sse`, `/message`, plus `/health` for monitoring):
-
-| Tool | Purpose |
-|------|---------|
-| `search` | Hybrid search (lexical + semantic, RRF-fused) over the whole knowledge base |
-| `catalog_overview` | Aggregate statistics: documents, chunks, entities, facts, graph size |
-| `catalog_documents` | List documents with pagination and filters (domain, type, name) |
-| `catalog_entities` | List entities with pagination and filters (type, domain, name) |
-| `search_entities_by_type` | All entities of a given type, paginated |
-| `search_facts` | Search facts by predicate, entity name, status, domain |
-| `get_document_context` | A full document: metadata, chunks with offsets, entities, fact IDs |
-| `get_chunk_by_id` | A single chunk with document metadata and associated entities |
-| `get_fact_by_id` | A single fact with subject/object details and source quotes |
-| `get_entity_dossier` | A complete entity dossier: facts, sources, related entities, cross-domain links |
-| `get_entity_relations` | BFS traversal of the knowledge graph from an entity |
-| `get_entity_links` | Cross-domain links for an entity, with method, confidence, evidence |
+`synopsis serve` starts the MCP server. It exposes **12 read-only tools** over two transports — Streamable HTTP on `/mcp` (primary) and the legacy HTTP+SSE pair (`GET /sse` + `POST /message`) — plus `GET /health` for monitoring. See [MCP tools](../reference/mcp-tools) for the full list.
 
 The connected agent (Claude, Cursor, any MCP client) does the reasoning — Synopsis answers with structured data and provenance.
 
 ## What Synopsis deliberately does not do
 
-- **It is not a full GraphRAG/KnowledgeRAG platform.** One job, done well: normalized documents in → queryable structured knowledge base out, with zero infrastructure.
-- **It is not an ETL or data-cleaning stage.** Input is assumed clean and unified; prepare documents upstream.
+- **It is not a full GraphRAG/KnowledgeRAG platform.** One job, done well: documents in → queryable structured knowledge base out, with zero infrastructure.
 - **It is not a chatbot or reasoning engine.** It exposes tools; the agent on the other side of MCP decides what to do with them.
-- **It does not run external services.** One Go binary, one SQLite file, embeddings computed locally.
-- **Fact review is not a feature yet.** Facts carry a status, and only `approved` facts surface in search expansion and dossiers, but a review workflow/UI is not implemented — it is tracked as roadmap.
+- **It does not run external services.** One Rust binary, one per-dataset SQLite database, embeddings computed locally — the only network calls are to the user-configured LLM endpoint (NER and entity linking).
+- **It does not migrate old data.** The database is built from scratch on first run.
 
 ## See also
 
-- [Hybrid Search](./hybrid-search.mdx) — how `search` combines BM25 and vectors
-- [Knowledge Graph](./knowledge-graph.mdx) — entities, facts, traversals, dossiers
-- [Domains](./domains.mdx) — per-domain ontologies and extraction
-- [Cross-Domain Linking](./cross-domain-linking.mdx) — connecting the same entity across domains
-- [Quickstart](../quickstart.mdx) — build, sync, serve, and run your first search
+- [Hybrid Search](./hybrid-search) — how `search` combines FTS5 and vectors
+- [Knowledge Graph](./knowledge-graph) — entities, facts, traversals, dossiers
+- [Cross-Domain Linking](./cross-domain-linking) — connecting the same entity across domains
+- [Quickstart](../quickstart) — get the binary and serve in three commands

@@ -254,7 +254,7 @@ file overlap).
 
 ## 3 — Docs root + concepts
 
-- [ ] 3.1 Rewrite `intro.mdx` + `quickstart.mdx`
+- [x] 3.1 Rewrite `intro.mdx` + `quickstart.mdx`
 
 **Goal.** Rewrite the two root docs for the Rust implementation.
 
