@@ -140,7 +140,7 @@ would fail. The README must document `npm install`.
 - `ls site/src/pages/markdown-page.mdx` → **No such file**.
 - `site/README.md` contains `npm install`, `npm run build`, and the manual-deploy note (NOT `npm ci` — see Revision).
 
-- [ ] 2.2 Landing widgets batch 1: hero, ticker, features, how, pipeline
+- [x] 2.2 Landing widgets batch 1: hero, ticker, features, how, pipeline
 
 **Goal.** Rewrite the CONTENT of 5 landing widgets for the Rust implementation
 (design D3). Keep component structure, props, and CSS-module usage —

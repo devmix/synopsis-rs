@@ -1,8 +1,35 @@
 import type {ReactNode} from 'react';
 
-import {USE_CASES} from '../../shared/lib/data';
+import type {UseCase} from '../../shared/lib/types';
 
 import styles from './UseCasesSection.module.css';
+
+const USE_CASES: readonly UseCase[] = [
+  {
+    tag: 'HR',
+    title: 'People operations',
+    desc: 'Vacation, hiring, benefits — ask “how does the policy apply to contractors?” and get the answer with the exact source quote.',
+    chips: ['policy', 'role', 'process'],
+  },
+  {
+    tag: 'IT',
+    title: 'Infrastructure ops',
+    desc: 'Runbooks, incidents, change records — find the last fix for a service outage across the wiki and ticket history.',
+    chips: ['service', 'incident', 'runbook'],
+  },
+  {
+    tag: 'Product',
+    title: 'Product teams',
+    desc: 'Specs, roadmaps, feedback — keep features, decisions, and owners consistent in one queryable place.',
+    chips: ['feature', 'decision', 'release'],
+  },
+  {
+    tag: 'Engineering',
+    title: 'Engineering',
+    desc: 'Design docs, ADRs, post-mortems — the same system or person linked across code, prose, and tickets.',
+    chips: ['adr', 'system', 'post-mortem'],
+  },
+];
 
 export function UseCasesSection(): ReactNode {
   return (

@@ -1,9 +1,9 @@
 import Link from '@docusaurus/Link';
 import type {ReactNode} from 'react';
 
-import {GITHUB_URL} from '../../shared/lib/data';
-
 import styles from './CtaSection.module.css';
+
+const GITHUB_URL = 'https://github.com/devmix/synopsis-rs';
 
 export function CtaSection(): ReactNode {
   return (
@@ -16,8 +16,9 @@ export function CtaSection(): ReactNode {
           Give your agents real context.
         </h2>
         <p className={styles.ctaCopy} data-reveal>
-          Point any MCP client at localhost:8080/sse. Clean documents in, a
-          queryable knowledge base out — about five minutes of your time.
+          Point any MCP client at localhost:8080/mcp (or /sse for legacy
+          clients). Documents in, a queryable knowledge base out — about five
+          minutes of your time.
         </p>
         <div className={styles.ctaActions} data-reveal>
           <Link className={`${styles.btn} ${styles.btnPrimary}`} to="/docs/quickstart">
@@ -32,7 +33,7 @@ export function CtaSection(): ReactNode {
           </a>
         </div>
         <p className={styles.ctaPrompt} data-reveal>
-          <b>$</b> synopsis serve — mcp http://localhost:8080/sse
+          <b>$</b> synopsis serve — mcp http://localhost:8080/mcp · legacy /sse
         </p>
       </div>
     </section>

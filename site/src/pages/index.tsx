@@ -23,8 +23,8 @@ export default function Home(): ReactNode {
 
   return (
     <Layout
-      title="Structured information for AI agents via MCP"
-      description="synopsis[memex] is a zero-infrastructure knowledge base: hybrid search and an in-memory knowledge graph in one Go binary, exposed as 12 MCP tools.">
+      title="Local RAG + knowledge-graph MCP server in Rust"
+      description="synopsis[memex] is a local RAG + knowledge-graph MCP server in Rust: one binary, hybrid search and a knowledge graph, exposed as 12 read-only MCP tools. No external services.">
       <div className={styles.page}>
         <div className={styles.noise} aria-hidden="true" />
         <noscript>

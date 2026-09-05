@@ -1,10 +1,39 @@
 import Link from '@docusaurus/Link';
 import type {ReactNode} from 'react';
 
-import {QUICKSTART_LINES, QUISTEPS} from '../../shared/lib/data';
+import type {QuiStep, TermLine} from '../../shared/lib/types';
 import {TONE_CLASS, TrafficDots} from '../../shared/ui/terminal';
 
 import styles from './QuickstartSection.module.css';
+
+const QUISTEPS: readonly QuiStep[] = [
+  {
+    cmd: 'synopsis onnx-runtime install',
+    title: 'Install the runtime',
+    desc: 'One-time setup: downloads the ONNX Runtime library per workspace/configs/onnx.yaml — URL, size, and SHA-256 verified — for fully local embeddings.',
+  },
+  {
+    cmd: 'synopsis model download',
+    title: 'Download the model',
+    desc: 'Fetches the default embedding model from the onnx.yaml registry and verifies it before first use.',
+  },
+  {
+    cmd: 'synopsis serve',
+    title: 'Serve',
+    desc: 'Starts the MCP server on port 8080 (preset "default") — startup reconcile plus a file watcher keep the knowledge base fresh.',
+  },
+];
+
+const QUICKSTART_LINES: readonly TermLine[] = [
+  {text: '$ synopsis onnx-runtime install', tone: 'cmd'},
+  {text: '✓ onnxruntime — cpu · linux/amd64 · sha-256 ok', tone: 'ok'},
+  {text: '$ synopsis model download', tone: 'cmd'},
+  {text: '✓ model bge-small-en-v1.5 · 384 dims · sha-256 ok', tone: 'ok'},
+  {text: '$ synopsis serve', tone: 'cmd'},
+  {text: '✓ mcp server → http://localhost:8080/mcp · legacy /sse', tone: 'ok'},
+  {text: '$ curl -s http://localhost:8080/health', tone: 'cmd'},
+  {text: '{"status":"ok"}', tone: 'hl'},
+];
 
 export function QuickstartSection(): ReactNode {
   return (
@@ -14,7 +43,7 @@ export function QuickstartSection(): ReactNode {
           <b>//</b> 04 · quick start
         </p>
         <h2 className={styles.display} data-reveal>
-          Clone to MCP tools in five minutes.
+          From binary to MCP tools in five minutes.
         </h2>
         <div className={styles.qsGrid}>
           <div>
@@ -45,7 +74,7 @@ export function QuickstartSection(): ReactNode {
             <div className={styles.qsCode}>
               <div className={styles.qsCodeHead}>
                 <TrafficDots />
-                <span className={styles.qsCodeTitle}>synopsis — make</span>
+                <span className={styles.qsCodeTitle}>synopsis — zsh</span>
               </div>
               <pre className={styles.qsCodePre}>
                 {QUICKSTART_LINES.map((line) => (
@@ -59,7 +88,7 @@ export function QuickstartSection(): ReactNode {
             </div>
             <div className={styles.qsJson}>
               <p className={styles.qsJsonLabel}>
-                <b>→</b> first mcp call — POST /message · tools/call
+                <b>→</b> first mcp call — POST /mcp · tools/call
               </p>
               <pre className={styles.qsCodePre}>
                 {'{\n  "jsonrpc": "2.0",\n  "id": 1,\n  "method": "tools/call",\n  "params": {\n    "name": '}
