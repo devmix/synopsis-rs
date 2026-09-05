@@ -80,10 +80,10 @@ Example:
 
 | Condition | Result |
 |---|---|
-| `chunk_id` omitted or empty | `isError` result: `Error: 'chunk_id' argument is required` |
-| `chunk_id` is not an integer string | `isError` result: `Error: 'chunk_id' must be an integer, got "…"` |
-| No chunk with that predicate | `isError` result: `Chunk with Predicate … not found` |
-| Database failure (chunk, document, or entity phase) | `isError` result: `Error retrieving chunk: …`, `Error retrieving document: …`, or `Error retrieving entities: …` |
+| `chunk_id` omitted or empty | `isError` result: `invalid arguments for tool 'get_chunk_by_id': 'chunk_id' argument is required` |
+| `chunk_id` is not an integer string | `isError` result: `invalid arguments for tool 'get_chunk_by_id': 'chunk_id' must be an integer, got "…"` |
+| No chunk with that id | `isError` result: `chunk with id … not found` |
+| Database failure (chunk, document, or entity phase) | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 
 ## See also
 

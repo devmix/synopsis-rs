@@ -16,7 +16,7 @@ Facts are the edges of the knowledge graph: `subject —predicate→ object`. Se
 |---|---|---|---|---|
 | `predicate` | string | no | all | Case-insensitive **substring** match on the fact predicate (SQL `LIKE`), e.g. `manages`. The characters `%`, `_`, and `\` are escaped, so they match literally. |
 | `entity_name` | string | no | all | Case-insensitive **substring** match on the **subject or object** entity name, e.g. `alice`. |
-| `status` | string | no | `approved` | Exact-match filter on fact status: `draft`, `pending`, `approved`, or `rejected`. Omitted = only `approved`. Pass an **explicit empty string** (`""`) to return facts of all statuses. |
+| `status` | string | no | `approved` | Exact-match filter on fact status: `draft`, `pending`, `approved`, or `rejected`. Omitted = only `approved`. An explicit empty string behaves like an omitted one — the `approved` default still applies. |
 | `domain` | string | no | all | Exact match on the fact's domain (e.g. `hr`, `product`). |
 | `page_size` | number | no | `20` | Items per page (1–200). Out-of-range values fall back to the default `20`. |
 | `cursor` | string | no | — | Base64-encoded pagination cursor; pass `next_cursor` from a previous response to continue. Omit or pass empty to start from the beginning. |
@@ -95,9 +95,9 @@ Example (facts where `alice` appears as subject or object, in domain `hr`):
 
 | Condition | Result |
 |---|---|
-| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `Error decoding cursor: …` |
+| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `invalid arguments for tool 'search_facts': invalid cursor: cursor is not valid base64` (or `…: invalid cursor: cursor payload is not valid JSON`) |
 | `page_size` outside 1–200 | **Not an error** — silently falls back to the default `20` |
-| Database failure | `isError` result: `Error searching facts: …` |
+| Database failure | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 
 An unknown `status` value or an empty match is a **success**: the `facts` array is empty and `total_count` is `0`.
 

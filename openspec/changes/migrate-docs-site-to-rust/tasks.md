@@ -752,7 +752,7 @@ usage examples. There is NO `sync` subcommand (full re-ingest = `db clear` +
   `queue reset-retries`, `db stats`, and `db clear` all present with their spec
   flags.
 
-- [ ] 7.2 Rewrite `reference/config-schema.mdx` + `reference/database-schema.mdx`
+- [x] 7.2 Rewrite `reference/config-schema.mdx` + `reference/database-schema.mdx`
 
 **Goal.** Rewrite the two schema references to match the Rust implementation.
 

@@ -87,10 +87,10 @@ Example:
 
 | Condition | Result |
 |---|---|
-| `fact_id` omitted or empty | `isError` result: `Error: 'fact_id' argument is required` |
-| `fact_id` is not an integer string | `isError` result: `Error: 'fact_id' must be an integer, got "…"` |
-| No fact with that predicate | `isError` result: `Fact with Predicate … not found` |
-| Database failure (fact or sources phase) | `isError` result: `Error retrieving fact: …` or `Error retrieving fact sources: …` |
+| `fact_id` omitted or empty | `isError` result: `invalid arguments for tool 'get_fact_by_id': 'fact_id' argument is required` |
+| `fact_id` is not an integer string | `isError` result: `invalid arguments for tool 'get_fact_by_id': 'fact_id' must be an integer, got "…"` |
+| No fact with that id | `isError` result: `fact with id … not found` |
+| Database failure (fact or sources phase) | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 
 A dangling subject/object ID (entity row missing, e.g. after deletion) is **not** an error — the corresponding `subject_entity` / `object_entity` object is simply omitted.
 

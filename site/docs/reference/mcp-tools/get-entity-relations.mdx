@@ -46,41 +46,37 @@ Traversal goes in both directions (outgoing and incoming facts). By default it s
 | Field | Type | Description |
 |---|---|---|
 | `center_entity` | object | The traversal start entity (`id`, `name`, `type`, `domain`). |
-| `Nodes` | array | Connected entity nodes, **excluding the center entity** (it is reported in `center_entity`). |
-| `Nodes[].id` | int | Entity predicate. |
-| `Nodes[].name` | string | Entity name. |
-| `Nodes[].type` | string | Entity type. |
-| `Nodes[].domain` | string | Entity domain. Omitted when empty. |
-| `Edges` | array | Traversed edges — facts, plus cross-domain links when they were followed. Each edge is the one that led to a newly visited node, so `total_edges` ≤ `total_nodes`. |
-| `Edges[].source_id` / `Edges[].target_id` | int | Node predicates. |
-| `Edges[].source_name` / `Edges[].target_name` | string | Resolved node names. |
-| `Edges[].relation_type` | string | Fact predicate (e.g. `manages`), or a link relation type (e.g. `same_entity`) for a cross-domain link. |
-| `Edges[].domain` | string | The edge's domain. Omitted when empty (cross-domain link edges carry no domain). |
-| `Edges[].metadata` | object | Present only when `include_cross_domain` is true and the edge is an entity link: `{ "method": "…", "confidence": 0.98, "evidence": "…" }`, with `evidence` omitted when not recorded. |
+| `nodes` | array | Connected entity nodes, **excluding the center entity** (it is reported in `center_entity`), in traversal order. |
+| `nodes[].id` | int | Entity id. |
+| `nodes[].name` | string | Entity name. |
+| `nodes[].type` | string | Entity type. |
+| `nodes[].domain` | string | Entity domain (an empty string marks a global entity — the field is always present). |
+| `edges` | array | Traversed edges — facts, plus cross-domain links when they were followed. Each edge is the one that led to a newly visited node, so `total_edges` ≤ `total_nodes`. |
+| `edges[].source_id` / `edges[].target_id` | int | Node ids. |
+| `edges[].source_name` / `edges[].target_name` | string | Resolved node names. |
+| `edges[].relation_type` | string | Fact predicate (e.g. `manages`), or a link relation type (e.g. `same_entity`) for a cross-domain link. |
+| `edges[].metadata` | object | Present only when `include_cross_domain` is true and the edge is an entity link: `{ "method": "…", "confidence": 0.98, "evidence": "…" }`, with `evidence` omitted when not recorded. |
 | `total_nodes` | int | Number of returned nodes (**excluding the center**). |
 | `total_edges` | int | Number of returned edges. |
 | `traversal_depth` | int | Depth actually used (after clamping). |
 | `traversal_time_ms` | int | Traversal duration in milliseconds. |
-
-> **Note:** the JSON keys `Nodes` and `Edges` are uppercase, unlike every other field in this response (the Go struct fields carry no JSON tag yet). Parsers must match them as-is.
 
 Example:
 
 ```json
 {
   "center_entity": { "id": 100, "name": "Alice", "type": "employee", "domain": "hr" },
-  "Nodes": [
+  "nodes": [
     { "id": 112, "name": "API Gateway", "type": "system", "domain": "product" },
     { "id": 95, "name": "Engineering", "type": "department", "domain": "hr" }
   ],
-  "Edges": [
+  "edges": [
     {
       "source_id": 100,
       "target_id": 112,
       "source_name": "Alice",
       "target_name": "API Gateway",
-      "relation_type": "manages",
-      "domain": "hr"
+      "relation_type": "manages"
     },
     {
       "source_id": 100,
@@ -95,8 +91,7 @@ Example:
       "target_id": 95,
       "source_name": "Alice",
       "target_name": "Engineering",
-      "relation_type": "works_in",
-      "domain": "hr"
+      "relation_type": "works_in"
     }
   ],
   "total_nodes": 2,
@@ -112,15 +107,17 @@ Entity resolution is shared with the other graph tools:
 
 | Condition | Result |
 |---|---|
-| In-memory graph unavailable (disabled or not loaded) | `isError` result: `Knowledge graph is not available (disabled or not loaded yet)` |
-| Neither `entity_id` nor `entity_name` provided | `isError` result: `Error: either 'entity_id' or 'entity_name' must be provided` |
-| Both provided | `isError` result: `Error: provide either 'entity_id' or 'entity_name', not both` |
-| `entity_id` is not an integer string | `isError` result: `Error: 'entity_id' must be an integer, got "…"` |
-| Entity not found (by predicate or name) | `isError` result: `Entity Predicate … not found`, `Entity "…" not found. Check spelling.`, or the ambiguity message (see [get_entity_dossier](./get-entity-dossier#error-conditions)) |
-| Entity exists in the database but has no graph node | `isError` result: `Entity Predicate … not found in graph` |
-| BFS failure or context timeout | `isError` result: `Error during BFS traversal: …` |
+| In-memory graph unavailable (disabled or not loaded) | `isError` result: `knowledge graph is not available (disabled or not loaded yet)` |
+| Neither `entity_id` nor `entity_name` provided | `isError` result: `invalid arguments for tool 'get_entity_relations': either 'entity_id' or 'entity_name' must be provided` |
+| Both provided | `isError` result: `invalid arguments for tool 'get_entity_relations': provide either 'entity_id' or 'entity_name', not both` |
+| `entity_id` is not an integer string | `isError` result: `invalid arguments for tool 'get_entity_relations': 'entity_id' must be an integer, got "…"` |
+| Entity not found (by id) | `isError` result: `entity with id … not found` |
+| Entity not found (by name) | `isError` result: `entity "…" not found`, or with a `domain` filter: `entity "…" not found in domain "…"` |
+| Several entities share the name | `isError` result: `invalid arguments for tool 'get_entity_relations': multiple entities match "…"; specify one (optionally with a domain):` followed by a candidate list |
+| Entity exists in the database but has no graph node | `isError` result: `entity with id … not found in graph` |
+| Traversal failure | `isError` result carrying the graph error text (the traverser is synchronous — there is no timeout) |
 
-An entity with no neighbors is a **success**: `Nodes` and `Edges` are empty arrays with `total_nodes: 0`, `total_edges: 0`.
+An entity with no neighbors is a **success**: `nodes` and `edges` are empty arrays with `total_nodes: 0`, `total_edges: 0`.
 
 ## See also
 

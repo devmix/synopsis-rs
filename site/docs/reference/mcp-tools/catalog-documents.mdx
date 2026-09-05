@@ -47,7 +47,7 @@ Filters combine with AND. Results are ordered by document ID (ascending).
 | `documents[].source_type` | string | The ingested source type (e.g. `json`, `markdown`). |
 | `documents[].original_path` | string | Path of the source file as ingested. |
 | `documents[].domain` | string[] | Domains from the document metadata (`$.domain`); empty array `[]` when the document declares none. A single-string domain in the metadata is normalized to a one-element array. |
-| `documents[].metadata` | object | Parsed `metadata_json` (or the raw string when it is not valid JSON). Omitted when the document has no metadata. |
+| `documents[].metadata` | object | Parsed `metadata_json` (or the raw string when it is not valid JSON). Omitted when the document has no metadata (a JSON `null` is also omitted). |
 | `documents[].created_at` | string | Insertion timestamp. |
 | `documents[].updated_at` | string | Last re-ingestion timestamp. |
 | `total_count` | int | Total number of documents matching the filters (across all pages). |
@@ -79,9 +79,9 @@ To page through results, resend the same arguments plus `"cursor": "<next_cursor
 
 | Condition | Result |
 |---|---|
-| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `Error decoding cursor: …` |
+| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `invalid arguments for tool 'catalog_documents': invalid cursor: cursor is not valid base64` (or `…: invalid cursor: cursor payload is not valid JSON`) |
 | `page_size` outside 1–200 | **Not an error** — silently falls back to the default `20` |
-| Database failure | `isError` result: `Error listing documents: …` |
+| Database failure | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 
 ## See also
 

@@ -76,10 +76,10 @@ Example:
 
 | Condition | Result |
 |---|---|
-| `entity_type` missing or empty | `isError` result: `Error: 'entity_type' argument is required and must not be empty` |
-| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `Error decoding cursor: …` |
+| `entity_type` missing or empty | `isError` result: `invalid arguments for tool 'search_entities_by_type': 'entity_type' argument is required and must not be empty` |
+| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `invalid arguments for tool 'search_entities_by_type': invalid cursor: cursor is not valid base64` (or `…: invalid cursor: cursor payload is not valid JSON`) |
 | `page_size` outside 1–200 | **Not an error** — silently falls back to the default `20` |
-| Database failure | `isError` result: `Error listing entities: …` |
+| Database failure | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 
 A type that does not exist in the knowledge base is a **success** with an empty `entities` array and `total_count: 0` — there is no unknown-type error.
 

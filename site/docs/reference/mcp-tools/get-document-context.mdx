@@ -106,10 +106,10 @@ Example:
 
 | Condition | Result |
 |---|---|
-| `document_id` omitted or empty | `isError` result: `Error: 'document_id' argument is required` |
-| `document_id` is not an integer string | `isError` result: `Error: 'document_id' must be an integer, got "…"` |
-| No document with that predicate | `isError` result: `Document with Predicate … not found` |
-| Database failure (document, chunk, entity, or fact phase) | `isError` result: `Error retrieving document: …`, `Error retrieving chunks: …`, `Error retrieving entities: …`, or `Error retrieving facts: …` |
+| `document_id` omitted or empty | `isError` result: `invalid arguments for tool 'get_document_context': 'document_id' argument is required` |
+| `document_id` is not an integer string | `isError` result: `invalid arguments for tool 'get_document_context': 'document_id' must be an integer, got "…"` |
+| No document with that id | `isError` result: `document with id … not found` |
+| Database failure (document, chunk, entity, or fact phase) | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 
 Passing `include_chunks: false` is not an error — the response is complete except for the `chunks` array.
 

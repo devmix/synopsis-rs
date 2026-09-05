@@ -47,9 +47,9 @@ Filters combine with AND. Results are ordered by entity ID (ascending).
 | `entities[].name` | string | Entity name. |
 | `entities[].type` | string | Entity type (e.g. `employee`, `department`, `policy`, `system`). |
 | `entities[].domain` | string | Domain the entity belongs to. |
-| `entities[].description` | string | Free-text description. Omitted when empty. |
-| `entities[].confidence` | float | Extraction confidence (0–1). Omitted when `0`. |
-| `entities[].metadata` | object | Parsed `metadata_json` (or the raw string when it is not valid JSON). Omitted when the entity has no metadata. |
+| `entities[].description` | string | Free-text description. Omitted when not set or empty. |
+| `entities[].confidence` | float | Extraction confidence (0–1). Omitted when not set. |
+| `entities[].metadata` | object | Parsed `metadata_json` (or the raw string when it is not valid JSON). Omitted when the entity has no metadata (a JSON `null` is also omitted). |
 | `total_count` | int | Total number of entities matching the filters (across all pages). |
 | `next_cursor` | string | Cursor for the next page; **omitted on the last page**. |
 
@@ -77,9 +77,9 @@ Example:
 
 | Condition | Result |
 |---|---|
-| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `Error decoding cursor: …` |
+| `cursor` is not valid base64 / not a paginated cursor | `isError` result: `invalid arguments for tool 'catalog_entities': invalid cursor: cursor is not valid base64` (or `…: invalid cursor: cursor payload is not valid JSON`) |
 | `page_size` outside 1–200 | **Not an error** — silently falls back to the default `20` |
-| Database failure | `isError` result: `Error listing entities: …` |
+| Database failure | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 
 A filter combination matching nothing is a **success** — return an empty `entities` array with `total_count: 0`.
 

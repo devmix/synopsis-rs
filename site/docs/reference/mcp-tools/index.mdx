@@ -6,38 +6,54 @@ sidebar_position: 4
 
 # MCP Tools
 
-Synopsis exposes its knowledge base to AI agents through **12 MCP (Model Context Protocol) tools** served over HTTP using the **SSE transport**. The server is started by `synopsis serve` (see [CLI Reference](../cli.mdx#serve)) and identified by `server.name` / `server.version` (defaults `synopsis` / `0.1.0-dev`).
+Synopsis exposes its knowledge base to AI agents through **12 MCP (Model Context Protocol) tools** served over HTTP on **two transports simultaneously** (both always enabled, no flags): **Streamable HTTP** (the recommended path for modern MCP clients) and **legacy HTTP+SSE** (for clients that still speak the SSE protocol). The server is started by `synopsis serve` (see [CLI Reference](../cli.mdx#serve)) and identified by `server.name` / `server.version` (default version `0.1.0-dev`). All 12 tools are **read-only** — the server exposes no write tools. Full protocol details (frame format, session lifecycle, timeouts) are on the [MCP Transport](../../concepts/mcp-transport.mdx) page.
 
 ## Transport and endpoints
 
-```
-MCP Client  ←── HTTP (SSE) ─── synopsis serve
-```
+The listen address is `server.host:server.port` (default `0.0.0.0:8080`), and the server serves four routes:
 
-| Endpoint | Description |
-|---|---|
-| `GET /sse` | SSE transport endpoint — the client opens an EventSource here and receives events, including the session endpoint URL with a `sessionId` |
-| `POST /message?sessionId=...` | JSON-RPC 2.0 messages (`tools/list`, `tools/call`, …); responses arrive on the SSE stream, not in the HTTP response |
-| `GET /health` | JSON health status: `status` (`healthy` / `degraded` / `unhealthy`), `uptime`, `metrics` (total/failed requests, success rate, last request time), and `components` (database, searcher, graph) |
+| Endpoint | Transport | Description |
+|---|---|---|
+| `POST /mcp` | Streamable HTTP | Single endpoint for JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, …); the response is plain JSON or an SSE stream |
+| `GET /sse` | legacy HTTP+SSE | Opens an SSE stream — the first frame is `event: endpoint` with data = absolute URL `<scheme>://<host>/message?sessionId=<uuid>` (scheme/host from `X-Forwarded-Proto`/`X-Forwarded-Host`, otherwise `http` + the `Host` header); subsequent `event: message` frames carry JSON-RPC 2.0 responses |
+| `POST /message?sessionId=...` | legacy HTTP+SSE | Sends a JSON-RPC request to the named session; returns `202 Accepted` (empty body) and the response arrives on the SSE stream. Missing or unknown `sessionId` → `400` |
+| `GET /health` | — | JSON health status, always `200`: `status` (`ok` / `degraded`), `version`, `sync_state` (`idle`), and `counters` (`documents`, `chunks`, `entities`, `facts`). A failed counter read degrades the status rather than erroring |
 
-The listen address is `server.host:server.port` (default `0.0.0.0:8080`). A typical session:
+A typical legacy SSE session:
 
 1. Client connects to `GET /sse` and receives a session event naming the `sessionId`.
 2. The client sends JSON-RPC requests to `POST /message?sessionId=...`.
-3. Each response (e.g. `tools/call` result) is delivered as an event on the open SSE stream.
+3. Each response (e.g. `tools/call` result) is delivered as an `event: message` frame on the open SSE stream.
 
-Example `tools/call` request:
+The session lives until the SSE stream is closed or 300 s of inactivity (idle reaper). Keep-alive is disabled by default, and no wildcard CORS headers are issued. The same `tools/call` over Streamable HTTP returns identical JSON.
+
+### Connecting a client
+
+**Streamable HTTP** (recommended) — point any MCP client at the endpoint:
 
 ```json
 {
-  "method": "tools/call",
-  "params": {
-    "name": "search",
-    "arguments": {"query": "vacation policy"}
-  },
-  "jsonrpc": "2.0",
-  "id": 1
+  "mcpServers": {
+    "synopsis": {
+      "url": "http://localhost:8080/mcp"
+    }
+  }
 }
+```
+
+**Legacy SSE** — open the stream, then send requests to the advertised URL:
+
+```bash
+# 1. Open the SSE stream; the first frame advertises the message URL.
+curl -N http://localhost:8080/sse
+#   event: endpoint
+#   data: http://localhost:8080/message?sessionId=<uuid>
+
+# 2. Send JSON-RPC to the advertised URL (202 Accepted; the response
+#    arrives as an `event: message` frame on the open stream).
+curl -X POST "http://localhost:8080/message?sessionId=<uuid>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"vacation policy"}}}'
 ```
 
 The full tool schemas are advertised by `tools/list`. Tool errors are returned in-band as `isError` results (JSON-RPC method errors only for protocol-level problems).
@@ -67,7 +83,7 @@ Each tool has its own page with the parameter table, a request example, the resp
 - **Entity lookups.** Graph tools accept `entity_id` **or** `entity_name` (exactly one; `domain` disambiguates by name).
 - **Cursor pagination.** Catalog/search tools paginate with a base64 `cursor` (omit or pass empty to start) and `page_size` (1–200, default 20).
 - **Domain filter.** A `domain` parameter (e.g. `hr`, `product`) filters results; empty or omitted means all domains. An unknown domain yields a `warning` field rather than an error (for `search`).
-- **Approved facts only.** Facts appear in search expansion, dossiers, and related-content only when their status is `approved` (see [Database Schema](../database-schema.mdx#facts)).
+- **Approved facts only.** Facts appear in search expansion, dossiers, and related-content only when their status is `approved` (see [Database Schema](../database-schema.mdx#facts)). The direct `get_fact_by_id` lookup is the exception: by ID it returns the fact with any status.
 - **Graph availability.** `get_entity_relations` returns an error if the in-memory knowledge graph is unavailable (graph disabled or not loaded); the other tools do not require the graph.
 
 ## See also

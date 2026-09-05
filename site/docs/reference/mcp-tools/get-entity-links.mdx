@@ -73,11 +73,13 @@ Entity resolution is shared with the other graph tools:
 
 | Condition | Result |
 |---|---|
-| Neither `entity_id` nor `entity_name` provided | `isError` result: `Error: either 'entity_id' or 'entity_name' must be provided` |
-| Both provided | `isError` result: `Error: provide either 'entity_id' or 'entity_name', not both` |
-| `entity_id` is not an integer string | `isError` result: `Error: 'entity_id' must be an integer, got "…"` |
-| Entity not found (by predicate or name) | `isError` result: `Entity Predicate … not found`, `Entity "…" not found. Check spelling.`, or the ambiguity message (see [get_entity_dossier](./get-entity-dossier#error-conditions)) |
-| Database failure (link or target lookup) | `isError` result: `Error retrieving entity links: …` or `Error retrieving target entity …: …` |
+| Neither `entity_id` nor `entity_name` provided | `isError` result: `invalid arguments for tool 'get_entity_links': either 'entity_id' or 'entity_name' must be provided` |
+| Both provided | `isError` result: `invalid arguments for tool 'get_entity_links': provide either 'entity_id' or 'entity_name', not both` |
+| `entity_id` is not an integer string | `isError` result: `invalid arguments for tool 'get_entity_links': 'entity_id' must be an integer, got "…"` |
+| Entity not found (by id) | `isError` result: `entity with id … not found` |
+| Entity not found (by name) | `isError` result: `entity "…" not found`, or with a `domain` filter: `entity "…" not found in domain "…"` |
+| Several entities share the name | `isError` result: `invalid arguments for tool 'get_entity_links': multiple entities match "…"; specify one (optionally with a domain):` followed by a candidate list |
+| Database failure (link or target lookup) | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 
 Links whose target entity was deleted are **silently skipped** — not an error. An entity with no links is a **success**: `links` is `[]`.
 

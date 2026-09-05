@@ -48,8 +48,8 @@ This is the primary "what do you know about X" tool for agents. For the raw node
 | `entity.name` | string | Entity name. |
 | `entity.type` | string | Entity type. |
 | `entity.domain` | string | Entity domain. |
-| `entity.description` | string | Free-text description. Omitted when empty. |
-| `entity.confidence` | float | Extraction confidence (0–1). Omitted when `0`. |
+| `entity.description` | string | Free-text description. Omitted when not set or empty. |
+| `entity.confidence` | float | Extraction confidence (0–1). Omitted when not set. |
 | `entity.metadata` | string | The entity's `metadata_json` as stored (a JSON string). Omitted when not set. |
 | `facts` | array | **Approved** facts where the entity is subject or object, newest first, **cap 100**. Only when `include_facts` is true and at least one exists. |
 | `facts[].id` | int | Fact predicate — pass it to `get_fact_by_id`. |
@@ -67,7 +67,7 @@ This is the primary "what do you know about X" tool for agents. For the raw node
 | `sources[].source_type` | string | Ingested source type. |
 | `sources[].original_path` | string | Path of the source file as ingested. |
 | `sources[].metadata` | string | The document's `metadata_json` (a JSON string). Omitted when not set. |
-| `related_entities` | array | Neighbors found by BFS from the entity — both directions, up to `depth` levels, up to 100 nodes, 5-second time limit; cross-domain neighbors are reachable only through entity links. The center entity itself is excluded. Omitted when the in-memory graph is unavailable or no neighbor is found. |
+| `related_entities` | array | Neighbors found by BFS from the entity — both directions, up to `depth` levels, up to 100 nodes; cross-domain neighbors are reachable only through entity links. The center entity itself is excluded. Omitted when the in-memory graph is unavailable, the entity is not in the index, or no neighbor is found. |
 | `related_entities[].id` | int | Entity predicate. |
 | `related_entities[].name` | string | Entity name. |
 | `related_entities[].type` | string | Entity type. |
@@ -78,7 +78,7 @@ This is the primary "what do you know about X" tool for agents. For the raw node
 | `cross_domain_links[].target_domain` | string | Domain of the linked entity (links are cross-domain by design). |
 | `cross_domain_links[].relation_types` | string[] | Relation types connecting the pair. Omitted when empty. |
 | `cross_domain_links[].method` | string | How the link was established: `rule`, `equals`, or `llm`. Omitted when not recorded. |
-| `cross_domain_links[].confidence` | float | Link confidence. Omitted when `0`. |
+| `cross_domain_links[].confidence` | float | Link confidence. Omitted when not recorded. |
 | `cross_domain_links[].evidence` | string | Supporting evidence text. Omitted when not recorded. |
 
 `cross_domain_links` merges two sources: edges from the BFS traversal and rows of the `entity_links` table. When both describe the same target, the entries are merged — `relation_types` is the union, and `method` / `confidence` / `evidence` are kept from the entry with the higher confidence (ties broken deterministically by method, then evidence).
@@ -138,13 +138,13 @@ Entity resolution is shared with the other graph tools:
 
 | Condition | Result |
 |---|---|
-| Neither `entity_id` nor `entity_name` provided | `isError` result: `Error: either 'entity_id' or 'entity_name' must be provided` |
-| Both provided | `isError` result: `Error: provide either 'entity_id' or 'entity_name', not both` |
-| `entity_id` is not an integer string | `isError` result: `Error: 'entity_id' must be an integer, got "…"` |
-| No entity with that predicate | `isError` result: `Entity Predicate … not found` |
-| Name matches nothing | `isError` result: `Entity "…" not found. Check spelling.` (with `domain`: `Entity "…" not found in domain "…". Check spelling.`) |
-| Name matches several entities | `isError` result: `Multiple entities match "…". Please specify one (optionally with a domain):` followed by a candidate list (`- Name (id=…, type=…) [domain]`) |
-| Database failure | `isError` result: `Error retrieving entity …: …`, `Error retrieving facts: …`, or `Error retrieving sources: …` |
+| Neither `entity_id` nor `entity_name` provided | `isError` result: `invalid arguments for tool 'get_entity_dossier': either 'entity_id' or 'entity_name' must be provided` |
+| Both provided | `isError` result: `invalid arguments for tool 'get_entity_dossier': provide either 'entity_id' or 'entity_name', not both` |
+| `entity_id` is not an integer string | `isError` result: `invalid arguments for tool 'get_entity_dossier': 'entity_id' must be an integer, got "…"` |
+| No entity with that id | `isError` result: `entity with id … not found` |
+| Name matches nothing | `isError` result: `entity "…" not found` (with `domain`: `entity "…" not found in domain "…"`) |
+| Name matches several entities | `isError` result: `invalid arguments for tool 'get_entity_dossier': multiple entities match "…"; specify one (optionally with a domain):` followed by a candidate list (`- Name (id=…, type=…) [domain]`) |
+| Database failure | `isError` result carrying the database error text (e.g. `sqlite error: …`) |
 | In-memory graph unavailable | **Not an error** — `related_entities` is omitted; `cross_domain_links` is still populated from the `entity_links` table |
 
 Notes:
