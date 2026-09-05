@@ -1,12 +1,28 @@
 import Link from '@docusaurus/Link';
 import type {ReactNode} from 'react';
 
-import {GITHUB_RELEASES_URL, GITHUB_URL, TERMINAL_LINES} from '../../shared/lib/data';
+import type {TermLine} from '../../shared/lib/types';
 import {useScrambleTitle} from '../../shared/lib/hooks/useScrambleTitle';
 import {useTerminalTypewriter} from '../../shared/lib/hooks/useTerminalTypewriter';
 import {TrafficDots} from '../../shared/ui/terminal/TrafficDots';
 
 import styles from './Hero.module.css';
+
+const GITHUB_URL = 'https://github.com/devmix/synopsis-rs';
+const GITHUB_RELEASES_URL = `${GITHUB_URL}/releases`;
+
+const TERMINAL_LINES: readonly TermLine[] = [
+  {text: '$ ./synopsis onnx-runtime install', tone: 'cmd'},
+  {text: '✓ onnxruntime — cpu · linux/amd64', tone: 'ok'},
+  {text: '$ ./synopsis model download', tone: 'cmd'},
+  {text: '✓ model bge-small-en-v1.5 · 384 dims · sha-256 ok', tone: 'ok'},
+  {text: '$ ./synopsis serve', tone: 'cmd'},
+  {text: '✓ mcp server → :8080/mcp · legacy /sse', tone: 'ok'},
+  {text: '✓ 1,284 docs · 12,902 chunks embedded (onnx)', tone: 'ok'},
+  {text: '✓ 3,411 entities · 9,027 facts · graph loaded', tone: 'ok'},
+  {text: '$ search {"query":"vacation policy"}', tone: 'cmd'},
+  {text: '✓ 10 chunks · fts5 + usearch · rrf', tone: 'hl'},
+];
 
 export function Hero(): ReactNode {
   const termBodyRef = useTerminalTypewriter(TERMINAL_LINES);
@@ -17,7 +33,7 @@ export function Hero(): ReactNode {
         <div className={styles.heroGrid}>
           <div>
             <p className={styles.eyebrow}>
-              <b>[ open source ]</b> single binary · onnx · llm · sqlite · mcp
+              <b>[ open source ]</b> single binary · rust · onnx · sqlite · mcp
             </p>
             <h1
               className={styles.heroTitle}
@@ -31,9 +47,8 @@ export function Hero(): ReactNode {
             </h1>
             <p className={styles.heroSub}>
               <strong>Structured information for AI agents via MCP.</strong>
-              One Go binary — hybrid search, an in-memory knowledge graph, and
-              ontology-driven linking in a single process, served to AI agents
-              over MCP. No Python, no Postgres, no Docker.
+              One Rust binary — hybrid search and a knowledge graph in a
+              single process, built for a 16 GB laptop. No external services.
             </p>
             <div className={styles.heroActions}>
               <Link className={`${styles.btn} ${styles.btnPrimary}`} to="/docs/intro">
@@ -56,22 +71,22 @@ export function Hero(): ReactNode {
             </div>
             <div className={styles.heroMeta}>
               <span>
-                Engine — <b>Go 1.25</b>
+                Engine — <b>Rust 1.96 (pinned)</b>
               </span>
               <span>
-                Protocol — <b>MCP / SSE</b>
+                Protocol — <b>MCP · HTTP + SSE</b>
               </span>
               <span>
-                Store — <b>SQLite</b>
+                Store — <b>SQLite · FTS5</b>
               </span>
               <span>
-                Embeddings — <b>ONNX / Prose / LLM</b>
+                Vectors — <b>usearch HNSW</b>
+              </span>
+              <span>
+                Embeddings — <b>ONNX · local</b>
               </span>
               <span>
                 Linking — <b>CEL / Equals / LLM</b>
-              </span>
-              <span>
-                Ontology — <b>Domains / Relations</b>
               </span>
               <span>
                 LLM — <b>OpenAI API [local/remote]</b>
@@ -84,10 +99,10 @@ export function Hero(): ReactNode {
               <i aria-hidden="true" />
               MCP ONLINE
             </div>
-            <div className={styles.terminal} role="img" aria-label="Terminal showing synopsis built, synced, and served as an MCP server">
+            <div className={styles.terminal} role="img" aria-label="Terminal showing synopsis installing the runtime, downloading the model, and serving as an MCP server">
               <div className={styles.termHead}>
                 <TrafficDots />
-                <span className={styles.termTitle}>synopsis — zsh · :8080/sse</span>
+                <span className={styles.termTitle}>synopsis — zsh · :8080/mcp</span>
               </div>
               <div className={styles.termBody} ref={termBodyRef} />
             </div>

@@ -1,8 +1,22 @@
 import type {ReactNode} from 'react';
 
-import {TICKER_ITEMS} from '../../shared/lib/data';
-
 import styles from './Ticker.module.css';
+
+const TICKER_ITEMS: readonly string[] = [
+  'Rust',
+  'tokio',
+  'axum',
+  'rusqlite · bundled SQLite + FTS5',
+  'ONNX Runtime (ort)',
+  'usearch',
+  'rmcp',
+  'CEL',
+  'petgraph',
+  'minijinja',
+  'jiff',
+  'clap',
+  'tracing',
+];
 
 export function Ticker(): ReactNode {
   return (

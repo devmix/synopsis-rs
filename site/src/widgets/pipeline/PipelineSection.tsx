@@ -1,9 +1,41 @@
 import {useEffect, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
 
-import {PIPELINE_STAGES} from '../../shared/lib/data';
+import type {PipelineStage} from '../../shared/lib/types';
 
 import styles from './PipelineSection.module.css';
+
+const PIPELINE_STAGES: readonly PipelineStage[] = [
+  {
+    num: '01',
+    title: 'Sources',
+    desc: 'Markdown, JSON, and web pages from the configured sources. A startup reconcile plus a file watcher enqueue document diffs into document_jobs; a background worker processes the queue.',
+    meta: '.md · .json · web',
+    chips: ['Markdown', 'JSON', 'Web pages'],
+  },
+  {
+    num: '02',
+    title: 'Parse & chunk',
+    desc: 'A format-specific parser turns every file into the same structured document; header-based or fixed-size chunking with overlap. Unchanged files (same SHA-256) are skipped entirely.',
+    meta: 'dedup by sha-256',
+    chips: ['Parser', 'Chunking', 'Dedup'],
+  },
+  {
+    num: '03',
+    title: 'Extract & link',
+    desc: 'Local ONNX embeddings per chunk, ONNX NER, then entity and fact extraction; the same entity is linked across domains with CEL or an LLM — into a knowledge graph and a usearch hybrid index.',
+    meta: 'onnx · background worker',
+    chips: ['Embeddings', 'NER', 'Facts', 'usearch index'],
+  },
+  {
+    num: '04',
+    title: 'Knowledge graph + MCP',
+    desc: 'Entities, relations, and approved facts are served as 12 read-only MCP tools over Streamable HTTP (/mcp), with the legacy HTTP+SSE pair also served.',
+    meta: 'POST /mcp · GET /sse · POST /message',
+    chips: ['12 tools', 'approved facts', 'Provenance'],
+    final: true,
+  },
+];
 
 export function PipelineSection(): ReactNode {
   const [openIdx, setOpenIdx] = useState(0);
@@ -32,12 +64,12 @@ export function PipelineSection(): ReactNode {
           <b>//</b> 01 · pipeline
         </p>
         <h2 className={styles.display} data-reveal>
-          Clean data in → MCP tools out.
+          Documents in → knowledge out.
         </h2>
         <p className={styles.sectionLead} data-reveal>
           Synopsis is one stage of a larger information pipeline — not a
           standalone assistant and not a search platform. Everything between
-          normalized documents and 12 MCP tools belongs here.
+          the source files and 12 MCP tools runs in one Rust binary.
         </p>
         <div className={styles.capList}>
           {PIPELINE_STAGES.map((stage, i) => {
