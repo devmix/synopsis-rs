@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Fixing the most common failures — embedding dimension mismatch, CGO build errors, missing domain configs, index problems, and invisible facts
+description: Fixing the most common failures — config not found, embedding dimension mismatch, stuck queue jobs, missing models, cache DB and workspace layout problems
 sidebar_position: 6
 ---
 
@@ -8,153 +8,201 @@ sidebar_position: 6
 
 A field guide to the failures you are most likely to meet, in order of how often they bite. Symptom first, then cause, then fix.
 
-## Embedding dimension mismatch
+## Config not found
 
-**Symptom** — startup (sync or serve) aborts with:
-
-```
-vector dimension mismatch detected; run with --auto-rebuild-vectors flag
-(or set embeddings.auto_rebuild_vectors in config) to automatically rebuild
-vectors, or delete data/knowledge.db
-```
-
-**Cause** — the vectors stored in the database were generated with a model of one dimension, but `embeddings.local.vector_dim` (or the active embedding model) now declares another. This happens after switching models or after editing `vector_dim` without touching the database.
-
-**Fix** — three options, from least destructive:
-
-1. **Auto-rebuild the vectors in place** (keeps documents and entities; re-embeds every chunk):
-
-   ```bash
-   ./bin/synopsis --config configs/config.default.yaml sync --auto-rebuild-vectors
-   # or start the server with the same flag
-   ./bin/synopsis --config configs/config.default.yaml serve --auto-rebuild-vectors
-   ```
-
-   Or make it permanent with `embeddings.auto_rebuild_vectors: true` in the config file.
-
-2. **Start from a clean database** (full re-ingest — slowest, cleanest):
-
-   ```bash
-   rm -rf data/knowledge.db*
-   make rebuild
-   ```
-
-3. **Full rebuild flag** — `sync --rebuild` clears everything and re-ingests; when a full rebuild is requested the vector re-embed step is skipped, because the reset already discards the stale vectors:
-
-   ```bash
-   make rebuild
-   ```
-
-Remember to update `embeddings.local.vector_dim` to match the model you actually use before re-running.
-
-## CGO build failures
-
-**Symptom** — `make build` fails, typically with one of:
+**Symptom** — any subcommand exits immediately with a load error naming a config path:
 
 ```
-cgo: C compiler "gcc" not found
-```
-or
-```
-# github.com/mattn/go-sqlite3
-cgo: unable to find "include" for ...
+Error: ... workspace/configs/config.default.yaml ...
 ```
 
-**Cause** — CGO is **mandatory** for Synopsis: go-sqlite3 compiles SQLite (FTS5 + sqlite-vec) into the binary, which requires a C compiler at build time. `CGO_ENABLED=0` or a missing toolchain will always fail — do not "fix" it by disabling CGO.
+**Cause** — the binary resolves the preset in a fixed order: `--config PATH` (used verbatim, auto-search skipped); otherwise `config.{preset}.yaml` (preset defaults to `default`) is searched in this order:
+
+1. `<exeDir>/workspace/configs/`
+2. `<exeDir>/`
+3. `<parent(exeDir)>/`
+4. `<parent(exeDir)>/workspace/configs/`
+5. `<CWD>/workspace/configs/`
+6. `<CWD>/`
+
+If none exist, it falls back to the relative `workspace/configs/config.{preset}.yaml` and fails with a load error naming that path. A moved binary, a renamed preset, or running from an unexpected directory all land here.
 
 **Fix**:
 
-- Install a C toolchain: `gcc` (Linux), `clang` (macOS; `xcode-select --install` if command-line tools are missing), and `make`.
-- On minimal Linux distributions, add the C library development package (e.g. `build-essential` on Debian/Ubuntu, or `musl-dev` when building for Alpine targets).
-- Re-run `make build` (it sets `CGO_ENABLED=1` and the FTS5/vec compilation flags for you).
+- Pass the file explicitly: `synopsis --config workspace/configs/config.default.yaml serve`.
+- Or place the preset where the search expects it — the release archives bundle `workspace/configs/` next to the binary, so `<exeDir>/workspace/configs/config.default.yaml` is the usual hit.
+- `--preset NAME` selects `config.{NAME}.yaml`; make sure that exact file exists.
 
-For cross-compilation failures, the issue is almost always a missing **Zig 0.14+** (the C toolchain for other platforms) — see [Installation: Cross-compilation](./installation.mdx#cross-compilation-with-zig).
+The full resolution order and every key it loads is in [Configuration](./configuration).
 
 ## Missing or invalid domain configs
 
-**Symptom** — startup (both `sync` and `serve`) exits before doing any work:
+**Symptom** — `serve` exits before doing any work, with an error about an ontology file.
 
-```
-domain discovery failed: load global pool: ...
-```
-```
-global config at "data/ontology" is missing or empty
-```
-```
-load domain file data/ontology/domains/domain_x.xml: ...
-```
-
-**Cause** — `paths.global_config_path` (default `data/ontology`) must point to an ontology directory containing a valid `global.xml` and, optionally, `domains/*.xml`. A missing directory, an empty `global.xml`, or a malformed domain XML is a hard startup error — the binary refuses to run rather than guess at your schema. (A missing `domains/` subdirectory is tolerated: you simply get no domains.)
+**Cause** — ingestion sources and the entity/relation vocabulary live in the dataset's XML ontology at `workspace/datasets/<name>/ontology/`: `global.xml` (the global pool) plus one file per domain under `domains/`. A **missing or malformed domain XML is a startup error**, as is an invalid regex in an extraction rule (patterns are compiled at load time, and the error names the file and the rule). A missing `global.xml` is *not* an error — the global pool is simply empty.
 
 **Fix**:
 
-- Check the path in your config and that it resolves relative to the working directory (or give it absolute).
-- Verify `global.xml` parses and is not empty, and validate each `domains/*.xml`.
-- Domain configs define the entity types, relations, and extraction rules for a domain — see [Domains](../concepts/domains.mdx).
+- Check that `ontology/` exists for the active dataset (the `--dataset` override wins over `dataset.name` in the config) and that `domains/` is not empty when you expect domains.
+- Validate the XML — the error message names the offending file.
+- The file formats and the two-layer resolution (domain first, then the global pool) are documented on the [Domains](../concepts/domains) page.
 
-## FTS5 / vec0 and database problems
+## Embedding dimension mismatch
 
-**Symptom** — search returns nothing, FTS5/`vec0` query errors, or ingestion behaves inconsistently after an experiment.
+**Symptom** — `serve` fails at startup with a dimension mismatch error: the stored vector index was created at one dimensionality, but the configured embedding model declares another.
 
-**Cause** — the database file is Synopsis's *only* state (search index and vector index both live inside it). Hand edits, interrupted runs, or a model switch can leave it in a state that no incremental sync will heal.
+**Cause** — you switched models or changed `embeddings.local.vector_dim` without touching the dataset. The [usearch index](../concepts/vector-rebuild) is created for a fixed dimension and is never silently converted.
 
-**Fix** — treat a full rebuild as the standard remedy:
+**Fix** — two options, same recovery shape:
+
+1. **Auto-rebuild in place** — re-run with the flag (or set `embeddings.auto_rebuild_vectors: true` in the config):
+
+   ```bash
+   synopsis serve --auto-rebuild-vectors
+   ```
+
+   **Clear-then-queue** runs: the dataset DB is cleared in place, the startup reconcile re-enqueues **all** files into `document_jobs`, and the background worker re-embeds them through the normal pipeline. There is no direct ingestion and no vector migration — the vectors are rebuilt from the chunk text.
+
+2. **Manual full re-ingest** — clear the dataset and restart:
+
+   ```bash
+   synopsis db clear      # confirm; removes state/ (knowledge.db + vectors/)
+   synopsis serve         # startup reconcile re-enqueues everything
+   ```
+
+Remember to update `embeddings.local.vector_dim` (and the model) to a matching pair before re-running. The full recovery model is on the [Vector Rebuild](../concepts/vector-rebuild) page.
+
+## Stuck queue jobs
+
+**Symptom** — documents never appear in search, or re-ingestion stalls; the worker keeps failing the same files.
+
+**Cause** — ingestion is driven by the `document_jobs` queue. A job that fails its maximum attempts (`ingestion.max_retries`, default 3) lands in `error` status with `last_error` populated and stops being retried until you intervene.
+
+**Fix** — inspect and repair:
 
 ```bash
-rm -rf data/knowledge.db*   # main DB + WAL/SHM side files
-make rebuild                # fresh schema (migrations apply in order) + full re-ingest
+# All jobs, or filtered by source path prefix / status
+synopsis queue status [--source PATH] [--status NAME]
+
+# Re-queue failed jobs: error -> pending, attempts -> 0
+synopsis queue reset-retries [--source PATH] [--path PATH]
 ```
 
-Migrations (`001_schema.sql` … `005_app_kv.sql`) run automatically at startup if you instead delete only stale side files. If the problem persists on a fresh database, it is upstream of the database — a source, a parser, or a config issue (check the logs at `logging.level: debug`).
+`queue status` prints a table with columns `PATH`, `SOURCE`, `STATUS`, `ATTEMPTS`, `LAST_ERROR`, `NEXT_ATTEMPT_AT` (statuses: `pending`, `processing`, `done`, `error`). `reset-retries` moves the selected `error` jobs back to `pending` with a zeroed attempt counter — the background worker re-indexes them on its next cycle (`auto_update.retry_failed.poll_interval_seconds`, default 60 s). If the same jobs fail again, the problem is upstream of the queue — a source, a parser, or the LLM endpoint (check `last_error` and the logs at `logging.level: debug`).
 
-## Facts not appearing in search
+The full state machine is on the [Job Queue](../concepts/job-queue) page.
 
-**Symptom** — `search` results carry no `related_entities` facts, or `get_entity_dossier` shows fewer facts than the documents actually contain.
+## Missing model / ONNX runtime
 
-**Cause** — only facts with status **`approved`** are ever exposed: search graph expansion, entity dossiers, and graph loading all query `facts` with `status = 'approved'`. Pending or rejected facts are invisible by design.
+**Symptom** — first `serve` (or any embedding run) exits with a download or ONNX error.
 
-**Fix** — check the status of the facts in question:
-
-```bash
-sqlite3 data/knowledge.db "SELECT id, predicate, status FROM facts WHERE status != 'approved' LIMIT 20;"
-```
-
-Approve the ones that should be public (set `status` to `approved`), or re-ingest — facts created by the pipeline are inserted as `approved` automatically, so invisible facts usually come from manual edits or a partially failed run (in which case `make rebuild`).
-
-> **Note:** the fact review workflow (a UI/tooling to review pending facts) is **not implemented** yet — it is on the roadmap. Today, fact status is managed directly in the database.
-
-## Search returns no results or a domain warning
-
-**Symptom** — an empty `results` list, or a `warning: unknown domain "..."` in the response.
-
-**Cause / fix**:
-
-- **Unknown domain** — the `domain` argument must match a domain defined in the ontology and stamped onto ingested documents (domains come from the `<domains>` list under each `<source>` in `global.xml`). List what your corpus actually carries: `sqlite3 data/knowledge.db "SELECT domain, count(*) FROM documents GROUP BY domain;"`. An unknown domain warns but does not fail.
-- **No matching content** — the documents may not be ingested yet (run `make sync`), or the query terminology is too specific for both retrievers; try broader terms, or scope out the `domain` filter first to confirm the corpus is searchable.
-- **One retriever is down** — results still come back (the other retriever's), but check `search.enable_lexical` / `search.enable_semantic` if one side is unexpectedly always empty.
-
-## Auto-download fails on first run
-
-**Symptom** — first `sync`/`serve` exits with a download/ONNX error.
-
-**Cause** — in `local` mode the embedding model (and the ONNX Runtime library) are downloaded on first use and need network access.
+**Cause** — in `embeddings.mode: local` the embedding model and the ONNX Runtime library are downloaded on first use and need network access. `load-test` is stricter: it never downloads mid-run and fails with a clear error naming the missing model.
 
 **Fix** — verify outgoing network, then pre-fetch explicitly so the failure is visible and retryable:
 
 ```bash
-./bin/synopsis --config configs/config.default.yaml onnx-runtime install
-./bin/synopsis --config configs/config.default.yaml model download bge-small-en-v1.5
+synopsis onnx-runtime install
+synopsis model download bge-small-en-v1.5   # or the model your preset uses
 ```
+
+A download that fails **size or SHA-256 verification** means a corrupted or truncated transfer — the file is not marked installed; re-run the same command (partial files do not remain as installed). Download failures retry automatically (default 3 attempts with a delay) before erroring. See [Model Management](./model-management) for the full `model` and `onnx-runtime` reference.
+
+## Cache DB issues
+
+**Symptom** — `serve` logs a warning about the cache database, or LLM NER / entity linking is slower than expected (repeated network calls).
+
+**Cause** — the global cache DB at `workspace/db/cache/cache.db` holds the persistent LLM NER responses and cross-domain linker decisions. It is an **optimization, not a dependency**: a corrupted entry degrades to a miss, and if the database cannot be opened at all, `serve` logs a warning and **continues without caching** — ingestion and search work normally, the only cost is that repeated LLM calls are paid for twice.
+
+**Fix**:
+
+- If the cache is unreadable or you simply want a clean slate, delete it: `rm workspace/db/cache/cache.db*` (main file + WAL/SHM side files). It is recreated on the next start; only the cached LLM decisions are lost — no knowledge data lives there.
+- If LLM calls fail *through* the cache, the problem is the endpoint itself: check `ingestion.ner.llm.api_base_url` / `linker.llm.api_base_url` and the model name.
+
+What the cache holds and why it is global is on the [Cache Database](../concepts/cache-db) page.
+
+## Facts not appearing in search
+
+**Symptom** — `search` results carry no related facts, or `get_entity_dossier` shows fewer facts than the documents actually contain.
+
+**Cause** — only facts with status **`approved`** are ever exposed: search expansion, dossiers, and graph loading all query `facts` with `status = 'approved'`. The status column accepts `draft`, `pending`, `approved`, `rejected` (a CHECK constraint rejects anything else). Facts created by the pipeline are inserted as `approved` automatically, so invisible facts usually come from manual edits or a partially failed run.
+
+**Fix** — check the queue first (a failed re-ingest leaves half-written facts):
+
+```bash
+synopsis queue status --status error
+synopsis queue reset-retries --status error
+```
+
+If the queue is clean, inspect the statuses directly:
+
+```bash
+sqlite3 workspace/datasets/<name>/state/knowledge.db \
+  "SELECT id, predicate, status FROM facts WHERE status != 'approved' LIMIT 20;"
+```
+
+Approve the ones that should be public (set `status` to `approved`), or re-ingest via `db clear` + `serve` restart.
+
+> **Note:** the fact review workflow (tooling to review `pending` facts) is **not implemented** yet. Today, fact status is managed directly in the database.
+
+## Search returns no results or a domain warning
+
+**Symptom** — an empty `results` list, or a `warning: unknown domain "…"; results may be incomplete` in the `search` response.
+
+**Cause / fix**:
+
+- **Unknown domain** — the `domain` argument must match a domain declared in the dataset's ontology and stamped onto ingested documents. An unknown domain **warns but does not fail** — results are still returned, scoped to nothing. Check the `<sources>`/`<domains>` declarations in `global.xml` and that the documents were actually ingested (`synopsis queue status`).
+- **No matching content** — the documents may not be ingested yet (check `synopsis queue status` for stuck `error` jobs), or the query terminology is too specific for both retrievers; try broader terms, or drop the `domain` filter first to confirm the corpus is searchable.
+- **One retriever is down** — results still come back from the other leg, but check `search.enable_lexical` / `search.enable_semantic` if one side is unexpectedly always empty (if **both** are disabled, both are force-enabled).
+
+## Knowledge DB and vector index problems
+
+**Symptom** — search behaves inconsistently after an experiment, a model switch, or an interrupted run; counts look wrong.
+
+**Cause** — each dataset has two stores that must always agree: the SQLite knowledge DB (`workspace/datasets/<name>/state/knowledge.db`) and the usearch vector index (`state/vectors/`). Hand edits, interrupted runs, or a dimension change can leave them out of sync in a way no incremental update will heal.
+
+**Fix** — inspect, then treat a full rebuild as the standard remedy:
+
+```bash
+synopsis db stats   # read-only counts: documents, chunks, entities, entity links, facts, queue jobs
+synopsis db clear   # prints the same stats, asks for confirmation, then removes state/ entirely
+synopsis serve      # startup reconcile re-enqueues all files; the worker re-embeds everything
+```
+
+`db clear` removes the whole dataset state directory (knowledge DB + vector index) in one call — the next `serve` rebuilds both from the sources. Note that the Rust binary **always builds its own DB from scratch** (one squashed init migration, `PRAGMA user_version` as the sole schema state); pre-existing `knowledge.db` files are never opened or upgraded — if you "see old data", you are looking at a different dataset or a leftover file outside `state/`.
+
+## `workspace/` layout issues
+
+**Symptom** — the binary reports a dataset with no data, or state files appear in unexpected places.
+
+**Cause / fix**:
+
+- **Empty `dataset.name`** — an empty dataset name means **no dataset**: the server runs with no ontology, no ingestion, no data. Set `dataset.name` in the preset (or pass `--dataset NAME`) to activate one.
+- **Wrong workspace root** — everything (models, ONNX runtime, cache DB, per-dataset state) resolves under `paths.workspace_dir` (default `workspace`, relative to the CWD). A different CWD or a moved tree puts state where you do not expect it.
+- **Per-dataset state** — each dataset's knowledge DB and vector index live under `workspace/datasets/<name>/state/`; the ontology and content under `workspace/datasets/<name>/{ontology,content}/`. The tree, and what is tracked vs. downloaded, is documented on the [Workspace Layout](../concepts/workspace-layout) page.
+
+## Logging
+
+The server logs via `tracing` in the `cli` crate only — the library crates stay logger-less. Three tolerant keys control it (unknown values are kept rather than rejected, so a typo cannot break startup):
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `logging.level` | `trace` / `debug` / `info` / `warn` / `error` | `info` |
+| `logging.format` | `console` / `json` | `console` |
+| `logging.output` | `stderr` / `stdout` | `stderr` |
+
+Run with `logging.level: debug` for the full pipeline trace (per-stage progress, parse errors, watcher events, queue activity). JSON formatting (`logging.format: json`) is the right choice when you want to pipe the server's stderr into a log collector.
 
 ## Still stuck?
 
 Gather these and you can diagnose most anything:
 
 ```bash
-./bin/synopsis --version
-sqlite3 data/knowledge.db "SELECT count(*) FROM documents; SELECT count(*) FROM chunks; SELECT count(*) FROM facts WHERE status='approved';"
-curl http://localhost:8080/health   # server up?
-cat configs/config.default.yaml     # effective config
+synopsis --version
+synopsis db stats
+synopsis queue status
+curl http://localhost:8080/health   # server up? (status, version, KB counters)
+synopsis onnx-runtime status
+synopsis model list
 ```
 
-Run with `logging.level: "debug"` for the full pipeline trace (per-stage progress, parse errors, watcher events).
+Then re-run with `logging.level: debug` and the effective config (`synopsis --config <path> ...`) to reproduce.

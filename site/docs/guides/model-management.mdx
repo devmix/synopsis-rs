@@ -1,74 +1,76 @@
 ---
 title: Model Management
-description: Managing embedding models (list, download, delete, info), the bundled ONNX Runtime, and the embedding cache
+description: Managing embedding models (list, download, delete, info, benchmark), the onnx.yaml registry, the downloaded ONNX Runtime, and the in-memory embedding cache
 sidebar_position: 5
 ---
 
 # Model Management
 
-Synopsis computes embeddings **locally**: ONNX models are downloaded on demand and loaded into the process via a bundled ONNX Runtime. Both are managed with dedicated subcommands — no external model management needed.
-
-All examples below use the full form:
-
-```bash
-./bin/synopsis --config configs/config.default.yaml <command>
-```
+Synopsis computes embeddings **locally**: an ONNX model is downloaded on demand from the `onnx.yaml` registry and loaded into the process through the ONNX Runtime shared library (an external `.so`/`.dylib`, also downloaded and cached by the binary). Both are managed with dedicated subcommands — no external model management needed.
 
 ## The `model` subcommand
 
-### List models
+### `model list`
 
 ```bash
-./bin/synopsis --config configs/config.default.yaml model list
+synopsis model list
 ```
 
-Prints every model in the registry with its version, vector dimension, and installation status:
+Prints every model in the `onnx.yaml` registry with its version, vector dimension, and installation status:
 
 ```
 Available Models:
 ------------------------------------------------------------------------------------------
 NAME                      VERSION    DIM      STATUS
 ------------------------------------------------------------------------------------------
-bge-m3-int8               1.0.0      1024     not installed
-bge-small-en-v1.5         1.0.0      384      installed ✓
-paraphrase-multilingual-MiniLM-L12-v2  1.0.0  384      not installed
+BGE-M3 INT8 Quantized     1.0.0      1024     not installed
+BGE Small English v1.5    1.5.0      384      installed ✓
+Paraphrase Multilingual MiniLM  2.0.0 384     not installed
 ```
 
-### Download a model
+### `model download [NAME]`
 
 ```bash
-./bin/synopsis --config configs/config.default.yaml model download bge-small-en-v1.5
+synopsis model download bge-small-en-v1.5
 ```
 
-Downloads all model files (with checksum verification where declared) into `<data_dir>/models/<name>/`. The model name is optional — if omitted, the registry default (`models.default` in `configs/onnx.yaml`, currently `bge-small-en-v1.5`) is used:
+Downloads all of the model's files (per the registry's `files` list) into `<workspace_dir>/models/<name>/` (default `workspace/models/<name>/`) and marks the model installed. The name is optional — if omitted, the registry default (`models.default` in `onnx.yaml`; the shipped registry: `bge-small-en-v1.5`) is used:
 
 ```bash
-./bin/synopsis --config configs/config.default.yaml model download
+synopsis model download
 ```
 
-### Inspect a model
+### `model info [NAME]`
 
 ```bash
-./bin/synopsis --config configs/config.default.yaml model info bge-small-en-v1.5
+synopsis model info bge-small-en-v1.5
 ```
 
-Shows name, description, version, vector dimension, source/repo, installation status, install date, and the expected files with sizes. Omitting the name shows the registry default.
+Shows name, display name, description, version, vector dimension, source/repo, installation status, install date, and the expected files with their sizes (a `(checksum verified)` marker where the registry entry declares a checksum). Omitting the name shows the registry default.
 
-### Delete a model
+### `model delete NAME`
 
 ```bash
-./bin/synopsis --config configs/config.default.yaml model delete bge-small-en-v1.5
+synopsis model delete bge-small-en-v1.5
 ```
 
-Removes the model directory from `<data_dir>/models/`. The model name is required; deleting a model that the config currently uses will break the next embedding run (delete, then download its replacement, and see the dimension-mismatch note below).
+Removes the model directory from `<workspace_dir>/models/`. The name is **required**; deleting a model the config currently uses breaks the next embedding run — download its replacement first, and see the dimension-mismatch note below if the replacement has a different `vector_dim`.
+
+### `model benchmark [NAME]`
+
+```bash
+synopsis model benchmark bge-small-en-v1.5
+```
+
+Measures embedding speed through the **production path** (the exact provider code used by ingestion and search). With no name, it benchmarks **every installed** registry model; with a name, just that model (which must be installed — an uninstalled target is an error telling you to run `synopsis model download <name>` first). The report starts with a hardware header (CPU model, logical CPUs, RAM, ONNX Runtime version) and then one `production:` line per model.
 
 ## Auto-download on first use
 
-You rarely need to pre-download: in `embeddings.local` mode, when `model_name` is set (and the legacy `model_path` is not), the model is **downloaded automatically on the first sync or serve**. That is why the [Quickstart](../quickstart.mdx) lists network access as a first-run prerequisite. In `api` mode no local model is involved at all.
+You rarely need to pre-download: with `embeddings.mode: local` and `embeddings.local.model_name` set, the model is **downloaded automatically on first use** (the first `serve` run that needs it). One exception: `load-test` never pulls a model mid-run — it fails with a clear error if the configured model is not installed, so download it first (see [Load Testing](./load-testing)).
 
-## The model registry
+## The `onnx.yaml` registry
 
-The catalog of available models lives in `configs/onnx.yaml` (path configurable via `paths.onnx_config`):
+The catalog of available models and the ONNX Runtime release lives in `onnx.yaml` (path configurable via `paths.onnx_config`, default `workspace/configs/onnx.yaml`):
 
 ```yaml
 models:
@@ -76,47 +78,57 @@ models:
   entries:
     - name: bge-small-en-v1.5
       display_name: "BGE Small English v1.5"
-      version: "1.0.0"
+      version: "1.5.0"
       vector_dim: 384
       files:
         - name: model.onnx
-          url: "https://huggingface.co/.../model.onnx"
+          url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx"
           size_bytes: 133093490
         - name: tokenizer.json
-          url: "https://huggingface.co/.../tokenizer.json"
+          url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json"
+          size_bytes: 711396
 ```
 
-- Each entry declares `name`, `display_name`, `vector_dim`, file URLs, sizes, and optional checksums.
-- **`vector_dim` is what ties a model to the database schema** — the vec0 table stores vectors of exactly that length.
-- To host your own model, add an entry with its ONNX + tokenizer URLs (or serve it from a mirror), then select it with `embeddings.local.model_name`.
+- Each entry declares `name`, `display_name`, `description`, `version`, `vector_dim`, and `files[]` — each file with `name`, `url`, `size_bytes`, and an optional `checksum` (`"sha256:hex"`).
+- **Every download is verified by URL + size + SHA-256**: the file is fetched from its URL (retries with a delay, SSRF protection against private/loopback addresses, progress display), then its size is checked against `size_bytes` — on a mismatch the file is not marked installed. A declared `sha256:` checksum is verified the same way.
+- **`vector_dim` is what ties a model to the vector index** — the index is created at exactly that dimensionality. To host your own model, add an entry with its ONNX + tokenizer URLs (or a mirror), then select it with `embeddings.local.model_name`.
+
+The full key-by-key reference for `onnx.yaml` (including the `runtime` section) is in [Configuration — the onnx.yaml model registry](./configuration#the-onnxyaml-model-registry).
 
 ## Switching models — dimension mismatch
 
-If the new model's `vector_dim` differs from the one stored in the database, the next startup detects the mismatch and refuses to continue. Fix it as described in [Troubleshooting: Embedding dimension mismatch](./troubleshooting.mdx#embedding-dimension-mismatch): update `embeddings.local.vector_dim`, then either rebuild the vectors (`--auto-rebuild-vectors`) or start from a clean database (`make rebuild`).
+If the new model's `vector_dim` differs from the dimension of the stored index, `serve` detects the mismatch at startup and refuses to continue with stale vectors. Fix it as described in [Troubleshooting — Embedding dimension mismatch](./troubleshooting#embedding-dimension-mismatch): re-run with `--auto-rebuild-vectors` (clear-then-queue: the dataset is cleared and the worker re-embeds everything) or start from a clean dataset (`db clear` + `serve` restart).
 
-## The bundled ONNX Runtime
+## The ONNX Runtime library
 
-The ONNX Runtime shared library itself is also managed: Synopsis downloads the platform-specific release (version and archive URLs from `configs/onnx.yaml`, currently 1.28.0) on first use. Manage it explicitly with the `onnx-runtime` subcommand:
+The ONNX Runtime shared library itself is an **external** artifact: the binary downloads the platform-specific release (version and archive URLs from the `runtime` section of `onnx.yaml`; the shipped registry: 1.28.0), unpacks it, and caches it under `<workspace_dir>/onnxruntime/` (default `workspace/onnxruntime/`). Subsequent runs use the cached library without downloading. Manage it explicitly:
 
 ```bash
 # Check what is installed
-./bin/synopsis --config configs/config.default.yaml onnx-runtime status
+synopsis onnx-runtime status
 
 # Install the library (no-op if already installed)
-./bin/synopsis --config configs/config.default.yaml onnx-runtime install
+synopsis onnx-runtime install
 
 # Remove it (it will be re-downloaded when needed)
-./bin/synopsis --config configs/config.default.yaml onnx-runtime uninstall
+synopsis onnx-runtime uninstall
 ```
 
-`status` reports version, installation state, library path, and cache directory, plus the list of supported platforms. Supported platforms cover Linux (amd64/arm64), macOS (amd64/arm64), and Windows (amd64).
+`status` reports the version, installation state, library path, and cache directory, plus the list of supported platforms. The shipped registry covers five platforms: `windows-amd64`, `linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`.
 
-## The embedding cache
+## The embedding cache (in-memory)
 
-Repeated embedding of identical text is avoided by a dedicated cache database: **`<data_dir>/cache.db`** (sibling of `knowledge.db`), a separate SQLite file opened at startup. It stores computed embedding results (and the LLM NER extraction cache) across runs, so incremental syncs do not re-embed unchanged text. The application degrades gracefully if the cache cannot be opened — ingestion simply continues without caching.
+Repeated embedding of identical text within a run is avoided by an **in-memory** cache: the key is the model name + dimensionality + text, the cache is size-limited (default 10,000 entries) and thread-safe, and a repeat request returns the cached vector without re-inference. It lives **per process, not in any database** — it vanishes when the process exits.
+
+That is what the [job queue](../concepts/job-queue)'s content-hash dedup complements: unchanged documents are never re-embedded at all across runs, while the in-memory cache only saves repeats *within* a run (the same text appearing in several chunks).
+
+The **persistent** caches are different: the LLM NER responses and the cross-domain linker decisions live in the **global cache DB** (`workspace/db/cache/cache.db`) and survive across runs and datasets — see [Cache Database](../concepts/cache-db). The cache DB never stores embeddings.
+
+One more consequence of the local design: the embedding model is loaded **only** when a provider is created (the ingestion worker, or a `model benchmark` run). The query path — `search` and the other MCP tools — never loads the model.
 
 ## What's next
 
-- [Configuration](./configuration.mdx#embeddings) — embedding provider settings
-- [Troubleshooting](./troubleshooting.mdx) — download and dimension-mismatch failures
-- [Installation](./installation.mdx) — first-time setup
+- [Configuration](./configuration#embeddings) — embedding provider settings
+- [Troubleshooting](./troubleshooting) — download and dimension-mismatch failures
+- [Workspace Layout](../concepts/workspace-layout) — where `models/` and `onnxruntime/` live
+- [Installation](./installation) — first-time setup

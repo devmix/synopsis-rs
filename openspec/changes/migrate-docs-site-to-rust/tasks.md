@@ -641,7 +641,7 @@ Data layout), `AGENTS.md` (Commands + Gotchas),
   a deviation).
 - The resolution order matches `cli-surface/spec.md` exactly.
 
-- [ ] 6.2 Rewrite guides: `ingestion.mdx` + `searching.mdx`
+- [x] 6.2 Rewrite guides: `ingestion.mdx` + `searching.mdx`
 
 **Goal.** Rewrite the ingestion and searching guides for the Rust
 implementation.
@@ -697,10 +697,12 @@ implementation.
 
 **Content requirements.**
 - **model-management:** the `onnx.yaml` registry (URL + size + SHA-256
-  verification); `model list|download|delete|info|benchmark` (arguments and
-  output per `cli-surface/spec.md`); auto-download on first use; the embedding
-  cache in the global cache DB (link to the cache-db page — exists since 4.2);
-  `onnx-runtime install|status|uninstall`.
+   verification); `model list|download|delete|info|benchmark` (arguments and
+   output per `cli-surface/spec.md`); auto-download on first use; the
+   IN-MEMORY embedding cache (per-run, size-limited, keyed by model+dim+text —
+   it is NOT in the cache DB; the persistent LLM/NER decision caches live in the
+   global cache DB — link to the cache-db page, exists since 4.2);
+   `onnx-runtime install|status|uninstall`.
 - **load-testing:** `synopsis load-test [--scale small|medium|large]
   [--seed N] [--iterations N] [--json PATH] [--no-fill]` — flags/defaults
   EXACTLY per `cli-surface/spec.md`; the scales; the report (per-case CALLS,
@@ -881,6 +883,10 @@ docs change.
 - **cli-surface/spec.md** — still lists a `--db PATH` global flag the Rust CLI
   no longer has. Actual globals: `--config`, `--preset`, `--dataset`,
   `--version`.
+- **cli-surface/spec.md (load-test requirement)** — the spec lists
+  `--scale`/`--iterations`/`--json`/`--no-fill` but OMITS `--seed N` (default
+  42), which the Rust CLI implements (`DEFAULT_SEED` in `crates/cli/src/cli.rs`)
+  and the README + task body document. Add `--seed` to the spec's flag list.
 - **data-schema/spec.md:9** and **db-storage/spec.md:43** — list `app_kv` among
   knowledge-DB tables; the actual init migrations place it in the **cache** DB
   (`migrations/cache/1-init/up.sql:13`).
