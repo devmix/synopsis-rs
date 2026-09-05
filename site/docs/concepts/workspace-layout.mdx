@@ -52,7 +52,7 @@ The knowledge DB is **always built from scratch** by the Rust binary: one squash
 
 ## `db/cache/cache.db` — the global cache DB
 
-One cache database shared by **all** datasets, independent of the per-dataset knowledge DBs. It holds the embedding cache and the LLM/NER caches, so repeated runs do not re-embed unchanged text or re-ask the LLM for the same decisions. The Cache Database page covers its internals in detail.
+One cache database shared by **all** datasets, independent of the per-dataset knowledge DBs. It holds the persistent LLM NER and linker decision caches (plus small app markers), so repeated runs do not re-ask the LLM for the same decisions. The embedding cache is a separate, in-memory mechanism, and the cross-run no-re-embedding comes from the [job queue](./job-queue)'s content-hash dedup. The Cache Database page covers its internals in detail.
 
 ## `models/` and `onnxruntime/` — downloaded, verified
 

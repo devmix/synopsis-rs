@@ -10,22 +10,7 @@ Synopsis has no `sync` subcommand and no separate ingestion daemon. Instead, **o
 
 ## The `document_jobs` table
 
-The table lives in the per-dataset knowledge DB and is created by the consolidated init migration `migrations/knowledge/1-init/up.sql` with `IF NOT EXISTS` — the migration is idempotent, so a subsequent startup is a no-op.
-
-| Column | Type | Meaning |
-|--------|------|---------|
-| `path` | `TEXT PRIMARY KEY` | The document path — the queue key |
-| `source_path` | `TEXT NOT NULL` | The source the document belongs to |
-| `op` | `TEXT NOT NULL DEFAULT 'index'` | `index` or `delete` |
-| `status` | `TEXT NOT NULL DEFAULT 'pending'` | `pending`, `processing`, `done`, or `error` |
-| `content_hash` | `TEXT` | SHA-256 of the content at enqueue time |
-| `attempts` | `INTEGER NOT NULL DEFAULT 0` | Attempts made so far |
-| `max_attempts` | `INTEGER NOT NULL DEFAULT 3` | Retry cap (from `ingestion.max_retries`) |
-| `last_error` | `TEXT` | The most recent failure reason |
-| `next_attempt_at` | `INTEGER NOT NULL DEFAULT 0` | Earliest time the next attempt is allowed |
-| `created_at` / `updated_at` | `INTEGER` | Row timestamps |
-
-The index `idx_document_jobs_due (status, next_attempt_at)` backs the worker's "which jobs are due" query.
+The table lives in the per-dataset knowledge DB. It tracks each document's path, its source, its current state, its retry progress (attempts against a cap), the last error, and when the next attempt is allowed. The full column reference lives in the [Database schema reference](../reference/database-schema).
 
 ## States
 
