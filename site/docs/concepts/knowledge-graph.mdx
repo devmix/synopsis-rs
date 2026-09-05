@@ -1,55 +1,86 @@
 ---
 title: Knowledge Graph
-description: Entities, facts, and relations — the in-memory graph, BFS traversal, provenance, and entity dossiers
+description: Entities, facts, and relations — the petgraph in-memory index over SQLite, BFS traversal with domain boundaries, CEL linkers, and entity dossiers
 sidebar_position: 3
 ---
 
 # Knowledge Graph
 
-Synopsis builds a knowledge graph out of what it extracts during ingestion: **entities** are the nodes, **facts** are the directed edges, and **cross-domain entity links** are special edges that cross domain boundaries. At serve time the whole graph is loaded into memory, so multi-hop questions answer in a single traversal instead of a chain of database joins.
+Synopsis builds a knowledge graph out of what it extracts during ingestion: **entities** are the nodes, **facts** are the directed edges, and **cross-domain entity links** are special edges that cross domain boundaries. The graph is a **derived in-memory index over SQLite** — the database is the source of truth, the index is rebuilt from it, and it is never persisted on its own.
 
 ## Building blocks
 
 | Concept | What it is | Where it lives |
 |---------|-----------|----------------|
-| **Entity** | A named thing — a person, department, system, policy, product — with a type, a domain, a description, metadata, and confidence | `entities` table; graph node |
-| **Fact** | A structured statement: `subject → predicate → object` (e.g. *Anna S. → works_in → Engineering*), with confidence, a review status, and links to its sources | `facts` table; directed graph edge |
-| **Fact source** | The provenance of a fact: the exact chunk and quote it was extracted from | `fact_sources` table |
+| **Entity** | A named thing — a person, department, system, policy, product — with a type, a domain, a description, and confidence | `entities` table; graph node |
+| **Fact** | A structured statement: `subject → predicate → object` (e.g. *Anna S. → works_in → Engineering*), with confidence and a status | `facts` table; directed graph edge |
 | **Entity link** | A connection between two entities in *different* domains that represent the same real-world thing, with method, confidence, and evidence | `entity_links` table; cross-domain graph edge |
 
-### Provenance
+### Facts: approved only
 
-Every fact can be traced back to where it came from. `get_fact_by_id` returns the fact with its subject and object entities **and the source document quotes**, so an agent can show its work. Because extraction is confidence-scored and facts carry a status, only **approved** facts are ever included in search result expansion or entity dossiers — unapproved facts stay in the database but stay out of the answers.
+Facts carry a `status` — `draft`, `pending`, `approved`, or `rejected`. Only **`approved`** facts are exposed: they are the only facts included in graph traversal results, entity dossiers, and search expansion. Unapproved facts stay in the database but stay out of the answers.
 
 ## The in-memory graph
 
-When the MCP server starts (`serve`), it loads all entities, facts, and entity links from the database into an in-memory graph:
+The `graph` crate builds the index from SQLite at startup, controlled by the `graph:` configuration section:
 
-- **Adjacency lists** for outgoing and incoming edges — O(1) neighbor access during traversal.
-- **Name index** — case-insensitive lookup, qualified by domain (`hr:anna s.` — that is why two same-named people in different domains do not collide).
-- **Type index** — all entities of a given type, optionally filtered by domain.
-- **Cross-domain edges** with an inverse index, so boundary crossings are checked in O(1).
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enable_graph` | `true` | Build the graph at all; when `false`, graph queries return an explicit "graph unavailable" state (not an error) |
+| `load_on_startup` | `true` | Build the index during `serve` startup |
+| `max_depth` | `5` | Default BFS depth (maximum 10) |
+| `max_nodes` | `1000` | Default node cap for a traversal |
 
-The graph is **static while the server runs** — it is simply a snapshot of the database. When re-ingestion happens (sync, or the file watcher during serve), the graph is reloaded and search expansion picks up the new structure automatically (with `--rebuild` you get a clean one from scratch).
+What the index contains:
+
+- **Nodes** — every entity from the `entities` table.
+- **Edges** — the cross-domain relations from `entity_links` plus the fact edges.
+- **Name→ID index** — keyed by `domain:lowercase_name`, so lookup by (domain, name) is O(1) and case-insensitive; two same-named entities in different domains do not collide.
+- **Type→nodes index** — all entities of a given type.
+
+Rebuilding the index is a **full rebuild** — incrementality is not required, because the database is the source of truth and the index is cheap to derive. An empty database yields an empty, valid index; queries on it return empty results.
+
+### Entity lookup
+
+- **Exact** — by (domain, name): constant time via the name→ID index, case-insensitive.
+- **Partial** — prefix or substring match within a domain; results are returned sorted.
+
+### Metrics and export
+
+The index reports statistics — **node count, edge count, average degree** — and can be exported in **DOT format** (valid for graphviz), with nodes attributed by domain and type.
 
 ## BFS traversal
 
 `get_entity_relations` traverses the graph with breadth-first search from a start entity:
 
-| Option | Values |
-|--------|--------|
-| `depth` | 1–10 (default 2) |
-| Direction | `outgoing`, `incoming`, or `both` (default `both`) |
-| Relation filter | restrict traversal to specific relation types |
-| Node limit | hard cap of 1000 nodes keeps a traversal bounded |
-| Cycle safety | visited-set protection; deterministic result ordering |
+| Option | Contract |
+|--------|----------|
+| `max_depth` | default **5**, maximum **10** (configurable via `graph.max_depth`) |
+| `max_nodes` | default **1000** (configurable via `graph.max_nodes`); when the cap is hit the walk stops, and edges are included **only between nodes that made it in** |
+| Direction | `outgoing`, `incoming`, or `both` |
+| Determinism | nodes are returned level by level of BFS; the result is deterministic |
 
 Two boundary rules are worth knowing:
 
-1. **Traversals do not cross domain boundaries by default.** A traversal from an `hr` entity stays in `hr`, no matter how the facts connect.
-2. With `include_cross_domain: true`, the traversal may step into another domain — **but only across an existing entity link** between the current node and its neighbor. Ordinary fact edges never carry a traversal across domains.
+1. **Fact edges never cross domain boundaries** — a traversal from an `hr` entity stays in `hr`, no matter how the facts connect, regardless of any flag.
+2. **Crossing is possible only via entity links** — and only when follow-entity-links is enabled for the traversal. With it disabled, entity-link edges are blocked at the boundary too.
 
-See [Cross-Domain Linking](./cross-domain-linking.mdx) for how those boundary-crossing links are created.
+See [Cross-Domain Linking](./cross-domain-linking) for how those boundary-crossing links are created.
+
+## CEL linkers
+
+The ontology's cross-domain rules are **CEL expressions**, evaluated through the `cel` crate. The evaluation context provides a fixed set of contract functions:
+
+| Function | What it sees |
+|----------|--------------|
+| `facts(entity)` | the entity's fact data, read from SQLite |
+| `has_fact(entity, key, value)` | whether the entity has a fact with the given key/value |
+| `chunks(entity)` | the entity's chunk texts |
+| `chunk_contains(entity, text)` | whether any of the entity's chunks contains the text |
+| `neighbors(entity)` | the entity's neighbors in the in-memory index |
+| `path_exists(from, to, max_depth)` | whether a path of at most `max_depth` hops connects the two entities (bounded by `max_depth`) |
+
+Heavy indexes (fact index, chunk index, graph index) are **loaded lazily** — a scope cache loads each one only when an expression actually uses it, so a rule that never calls `chunks()` never loads the chunk index. The evaluation result is a single decision: *whether to link the pair of entities*. The full linking pipeline — methods, order, thresholds, decision cache — is described in [Cross-Domain Linking](./cross-domain-linking).
 
 ## Entity dossiers
 
@@ -57,7 +88,7 @@ See [Cross-Domain Linking](./cross-domain-linking.mdx) for how those boundary-cr
 
 - all **approved facts** for the entity (subject, predicate, object, confidence),
 - the **source documents** it appears in,
-- **related entities** via BFS traversal (depth 1–5, default 2),
+- **related entities** via BFS traversal,
 - **cross-domain links** with full provenance (method, confidence, evidence).
 
 That combination — facts, sources, neighborhood, and links in a single response — is what lets an agent resolve a multi-hop question ("who owns the policy that system X depends on?") with a couple of tool calls instead of a crawl.
@@ -67,15 +98,16 @@ That combination — facts, sources, neighborhood, and links in a single respons
 | Tool | What it returns |
 |------|-----------------|
 | `get_entity_relations` | Nodes and edges found by BFS from an entity, up to the requested depth |
-| `get_entity_dossier` | Complete dossier: facts, sources, related entities, cross-domain links |
+| `get_entity_dossier` | Complete dossier: approved facts, sources, related entities, cross-domain links |
 | `get_entity_links` | Cross-domain links for an entity, each with method, confidence, and evidence |
 | `get_fact_by_id` | A fact with subject/object entity details and source quotes |
 
-Entity cataloging (`catalog_entities`, `search_entities_by_type`) and fact querying (`search_facts`) round out the surface — all 12 tools are listed in [The Pipeline](./pipeline.mdx#output).
+Entity cataloging (`catalog_entities`, `search_entities_by_type`) and fact querying (`search_facts`) round out the surface — exact parameters and result shapes are documented per tool in [MCP tools](../reference/mcp-tools).
 
 ## See also
 
-- [Hybrid Search](./hybrid-search.mdx) — how search results get graph-expanded
-- [Cross-Domain Linking](./cross-domain-linking.mdx) — the edges that cross domain boundaries
-- [Domains](./domains.mdx) — the boundary that traversals respect
-- [Introduction](../intro.mdx) — how the knowledge graph fits Synopsis' positioning
+- [The Pipeline](./pipeline) — where entities and facts are extracted
+- [Hybrid Search](./hybrid-search) — how search results get graph-expanded
+- [Cross-Domain Linking](./cross-domain-linking) — the edges that cross domain boundaries
+- [Domains](./domains) — the boundary that traversals respect
+- [Introduction](../intro) — how the knowledge graph fits Synopsis' positioning

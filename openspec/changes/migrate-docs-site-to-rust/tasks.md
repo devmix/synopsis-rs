@@ -288,7 +288,7 @@ file overlap).
 - `git grep -n 'synopsis sync' -- site/docs/intro.mdx site/docs/quickstart.mdx` → **0** (no `sync` subcommand exists).
 - The 3 quick-start commands and the 5 build targets are present.
 
-- [ ] 3.2 Rewrite concepts: `pipeline.mdx` + `hybrid-search.mdx`
+- [x] 3.2 Rewrite concepts: `pipeline.mdx` + `hybrid-search.mdx`
 
 **Goal.** Rewrite the two core concept docs for the Rust implementation.
 
