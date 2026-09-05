@@ -37,7 +37,7 @@ and named references all fit in the body.
 
 ## 1 — Scaffold
 
-- [ ] 1.1 Copy the site scaffold into `site/`
+- [x] 1.1 Copy the site scaffold into `site/`
 
 **Goal.** Copy the old site verbatim into `site/` (framework, widgets, UI kit,
 CSS, docs — content is still the old Go-era content at this point; later tasks
@@ -115,11 +115,16 @@ the Docusaurus template leftover.
   colorMode, mermaid theme, prism themes, footer columns/labels.
 
 **`site/README.md` (rewrite).** What the site is (Docusaurus 3.10.2 docs site
-for Synopsis); prerequisites (Node >= 20); commands: `npm ci`, `npm run start`
+for Synopsis); prerequisites (Node >= 20); commands: `npm install`, `npm run start`
 (dev server), `npm run build` (→ `build/`), `npm run serve` (preview the build);
 deployment is MANUAL (copy `build/` to the hosting at
 https://synopsis-memex.tekblueprint.org) — the site is NOT part of the Rust
 workspace build and NOT built in CI.
+
+**Revision (2026-09-05, consistency with task 1.1).** The install command is
+`npm install` (NOT `npm ci`): per the task 1.1 revision, `package-lock.json`
+is intentionally not committed, so a fresh clone has no lockfile and `npm ci`
+would fail. The README must document `npm install`.
 
 **Dependencies.** Task 1.1.
 
@@ -130,7 +135,7 @@ workspace build and NOT built in CI.
 - `git grep -c 'github.com/devmix/synopsis-rs' -- site/docusaurus.config.ts` → **3** (editUrl, navbar, footer).
 - `git grep -c '104146397' -- site/docusaurus.config.ts` → **≥ 1** (Metrika kept).
 - `ls site/src/pages/markdown-page.mdx` → **No such file**.
-- `site/README.md` contains `npm ci`, `npm run build`, and the manual-deploy note.
+- `site/README.md` contains `npm install`, `npm run build`, and the manual-deploy note (NOT `npm ci` — see Revision).
 
 - [ ] 2.2 Landing widgets batch 1: hero, ticker, features, how, pipeline
 

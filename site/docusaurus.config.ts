@@ -23,11 +23,8 @@ const config: Config = {
         './src/client/cookie-banner',   // GDPR / 152-FZ cookie notice (Accept-only)
     ],
 
-    url: 'https://devmix.github.io',
+    url: 'https://synopsis-memex.tekblueprint.org',
     baseUrl: '/',
-
-    organizationName: 'devmix',
-    projectName: 'synopsis',
 
     onBrokenLinks: 'throw',
 
@@ -66,7 +63,7 @@ const config: Config = {
             {
                 docs: {
                     sidebarPath: './sidebars.ts',
-                    editUrl: 'https://github.com/devmix/synopsis/tree/main/docs/website/',
+                    editUrl: 'https://github.com/devmix/synopsis-rs/edit/main/site/docs/',
                 },
                 blog: false,
                 theme: {
@@ -130,7 +127,7 @@ const config: Config = {
                     label: 'Roadmap',
                 },
                 {
-                    href: 'https://github.com/devmix/synopsis',
+                    href: 'https://github.com/devmix/synopsis-rs',
                     label: 'GitHub',
                     position: 'right',
                 },
@@ -195,7 +192,7 @@ const config: Config = {
                     items: [
                         {
                             label: 'GitHub',
-                            href: 'https://github.com/devmix/synopsis',
+                            href: 'https://github.com/devmix/synopsis-rs',
                         },
                     ],
                 },
