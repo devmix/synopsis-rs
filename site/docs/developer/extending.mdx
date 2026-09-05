@@ -1,140 +1,139 @@
 ---
 title: Extending Synopsis
-description: Step-by-step recipes for adding a new document parser, a new chunker, a new MCP tool, and a new configuration field
+description: Step-by-step recipes for adding a document parser or chunker, an MCP tool, a CEL linker rule, a prompt template override, and a config preset
 sidebar_position: 4
 ---
 
 # Extending Synopsis
 
-The extension points are small and deliberate: format-specific work lives behind interfaces in `internal/ingestion/`, and the MCP surface is a registry of declarative tools. This page walks through each one with the actual code patterns.
+The extension points are small and deliberate: format-specific work lives behind traits in `crates/ingestion`, the MCP surface is a frozen registry of tool handlers in `crates/mcp`, and the cross-domain linking rules and LLM prompts are data — XML and minijinja templates, not code. This page walks through each one with the actual code patterns.
 
 Conventions first: [Coding Standards](./coding-standards).
 
 ## Adding a new document parser
 
-Synopsis ingests files through **sources**. A source combines a parser (file → structured document) with a chunker (content → searchable fragments):
+Synopsis ingests files through **sources**. A source is a composite of one parser (files → structured documents) and one chunker (content → searchable fragments):
 
-```go
-// internal/ingestion/sources/source.go
-type Source interface {
-    ingestion.Parser   // Parse(sourcePath string) ingestion.ParseResult
-    chunkers.Chunker   // Chunk(content string, metadata map[string]interface{}) ([]DocumentChunk, error)
+```rust
+// crates/ingestion/src/types.rs
+pub trait Parser {
+    /// Walks `source_path` and returns the documents found (per-file failures
+    /// are collected in the result, never returned as a hard error).
+    fn parse(&self, source_path: &Path) -> ParseResult;
+    /// Reads and parses the single file at `path`.
+    fn parse_file(&self, path: &Path, root: &Path) -> Result<Document, IngestionError>;
+    /// File extensions this parser handles, including the leading dot (".md").
+    fn supported_extensions(&self) -> &[&str];
 }
+
+pub trait Chunker {
+    /// Splits `content` into ordered chunks.
+    fn chunk(&self, content: &str, metadata: &DocumentMetadata)
+        -> Result<Vec<DocumentChunk>, IngestionError>;
+}
+
+/// A self-sufficient ingestion unit for one source type: one parser plus its chunker.
+pub trait Source: Parser + Chunker {}
 ```
 
-Sources are registered under a type string in `internal/ingestion/runner/runner.go`:
-
-```go
-reg.Register("markdown", mdSrc)
-reg.Register("json", jsonSrc)
-reg.Register("mediawiki", mwSrc)
-reg.Register("unstructured", unstructSrc)
-reg.Register("webpages", wpSrc)
-```
+The existing composites in `crates/ingestion/src/sources.rs` are `MarkdownSource`, `JsonSource`, `MediawikiSource`, `WebpageSource`, and `UnstructuredSource` (the only composite with *two* chunkers, routed on the document's `source_type`).
 
 To add a new format:
 
-1. **Create the parser** — `internal/ingestion/parsers/<format>_parser.go`:
-
-   ```go
-   type Parser interface {
-       // Parse walks the given source path and returns parsed documents.
-       Parse(sourcePath string) ParseResult
-       // SupportedExtensions returns the file extensions this parser can
-       // handle, including the leading dot (e.g. ".md", ".json").
-       SupportedExtensions() []string
-   }
-   ```
-
-2. **Create a chunker if the format needs custom chunking** — `internal/ingestion/chunkers/<format>_chunker.go`, implementing:
-
-   ```go
-   type Chunker interface {
-       Chunk(content string, metadata map[string]interface{}) ([]DocumentChunk, error)
-   }
-   ```
-
-   Reuse `MarkdownChunker` (header/fixed/hybrid with overlap) or `JSONChunker` if the extracted content fits their model — the `unstructured` source already routes to both based on `metadata["source_type"]`.
-
-3. **Create the source** — `internal/ingestion/sources/<format>_source.go`, composing your parser and chunker into a `Source`.
-
-4. **Register it** — add a `reg.Register("<type>", <src>)` call in `internal/ingestion/runner/runner.go` next to the existing sources. The type string is what appears in source configuration and in `documents.source_type`.
-
-5. **Add chunking config if needed** — most chunkers read settings from `ingestion.chunking.*` in the config. Add the struct fields in `internal/config/config.go`, wire them into your chunker, and document them in `configs/config.default.yaml` (see [Adding a configuration field](#adding-a-configuration-field)).
-
-6. **Write tests** — table-driven parser tests with sample documents next to the parser, and an end-to-end ingestion check. Ingestion tests: `internal/ingestion/ingester_test.go` and `e2e_test.go`.
+1. **Create the parser** — `crates/ingestion/src/parsers/<format>.rs`, implementing the three `Parser` methods. The walk is best-effort: individual file failures go into `ParseResult::errors` and the walk continues.
+2. **Create a chunker if the format needs custom chunking** — `crates/ingestion/src/chunkers/<format>.rs` implementing `Chunker`. Reuse `MarkdownChunker` (structure-aware, heading sections with max size + overlap from the config) or `JsonChunker` if the extracted content fits their model — the `unstructured` source already routes to both.
+3. **Create the source** — a `<Format>Source` composite in `sources.rs` wiring your parser to an injected chunker (`Box<dyn Chunker>`), with a `SOURCE_TYPE` constant — the `type` attribute word of a `<source>` element in the dataset's `global.xml`.
+4. **Register it** — the pipeline builds a `Registry` (`BTreeMap<String, Box<dyn Source>>`) at startup with one entry per known format; add yours next to the existing composites. An unknown type is an explicit `IngestionError::UnknownSourceType` — never a silent skip.
+5. **Add chunking config if needed** — chunkers take their settings (strategy, `max_chunk_size`, `overlap_size`) from the config preset (`chunking.<format>.*`); add the fields in `crates/config` and document them in the preset (see [Adding a config preset](#adding-a-config-preset)).
+6. **Write tests** — table-driven parser/chunker tests with sample documents next to the code, plus an end-to-end source check. Parsing and chunking are verified against **recorded fixtures**: identical input must give the same number of chunks, identical chunk text, and consistent offsets (the chunk invariant: slicing the source text by `start_offset..end_offset` yields the chunk's text).
 
 ## Adding a new chunker
 
 For an existing format whose content needs a different splitting strategy:
 
-1. **Create** `internal/ingestion/chunkers/<format>_chunker.go` implementing the `Chunker` interface. Each `DocumentChunk` carries `Text`, `SequenceNum`, byte offsets (`StartOffset`/`EndOffset` into the original content), and `Metadata` (e.g. section title, image paths).
-2. **Wire it into the source** — either replace the chunker the source uses, or (like `unstructured`) select it at runtime from `metadata`.
-3. **Add configuration** under `ingestion.chunking.<format>` if the behavior is tunable — struct fields in `internal/config/config.go` + entries in `configs/config.default.yaml`.
-4. **Test with sample documents** — table-driven, one case per splitting boundary (short content, overlap region, oversized section, empty input).
+1. **Create** `crates/ingestion/src/chunkers/<name>.rs` implementing `Chunker`. Each `DocumentChunk` carries its text, a sequential `sequence_num`, byte offsets into the source text, and a metadata bag (e.g. `section_title`, `image_paths`).
+2. **Wire it into the source** — either replace the chunker the composite injects, or (like `UnstructuredSource`) select it at runtime from the document's `source_type`.
+3. **Add configuration** under `chunking.<format>` in the preset if the behavior is tunable.
+4. **Test with sample documents** — one case per splitting boundary (short content, overlap region, oversized section, empty input).
 
-## Adding a new MCP tool
+## Adding an MCP tool
 
-The MCP server wraps [mcp-go](https://github.com/mark3labs/mcp-go) in `internal/mcp/`. Tools are declared in `tools.go` (constant + schema + registration) and implemented in `internal/mcp/handlers/`.
+The MCP server in `crates/mcp` serves the **frozen 12-tool registry** defined by the `mcp-contract` spec. The tool schemas (names, descriptions, parameter JSON Schemas) are built once in `crates/mcp/src/server.rs`; each tool is backed by a thin handler in `crates/mcp/src/tools/` (parse args → crate API → JSON), registered in `Server::dispatch`:
 
-1. **Add the tool name constant** in `internal/mcp/tools.go`:
+```rust
+// crates/mcp/src/server.rs — the dispatch seam
+match name {
+    "search" => tools::search::handle_search(&self.db, &**searcher, args),
+    "catalog_overview" => tools::catalog::handle_catalog_overview(&self.db, args),
+    // … 12 arms …
+}
+```
 
-   ```go
-   const ToolMyNewTool = "my_new_tool"
-   ```
+Handler conventions (see `tools/search.rs`, `tools/catalog.rs`, …):
 
-2. **Define the schema** in `tools.go` with `mcp.NewTool()`:
+- The handler is **synchronous** — it may block (SQLite through the pool, the vector index); one `spawn_blocking` hop at the dispatch boundary covers every tool and keeps panics from crossing the handler boundary.
+- Return the response as a JSON value; report tool-level failures **in-band** (an error payload with `is_error: true`), not as a protocol error. Unknown tool names are a protocol error (`METHOD_NOT_FOUND`) — they are rejected upstream and never reach `dispatch`.
+- Reuse the shared helpers: `pagination.rs` for cursor pagination, `tools/entity.rs` for the shared entity wire shape.
 
-   ```go
-   // toolMyNewTool defines the my_new_tool MCP tool schema.
-   func toolMyNewTool() mcp.Tool {
-       return mcp.NewTool(
-           ToolMyNewTool,
-           mcp.WithDescription("One-sentence description an LLM will read when choosing the tool."),
-           mcp.WithString("query",
-               mcp.Required(),
-               mcp.Description("Search query string"),
-           ),
-           mcp.WithNumber("page_size",
-               mcp.Description("Number of items per page (1-200, default 20)"),
-               mcp.DefaultNumber(20),
-           ),
-       )
-   }
-   ```
-
-3. **Register the tool and handler** in `registerTools()`:
-
-   ```go
-   s.server.AddTool(toolMyNewTool(), s.handleMyNewTool)
-   ```
-
-4. **Add a thin server method** in `internal/mcp/server.go` that parses arguments and delegates to the handler package.
-
-5. **Implement the handler** in `internal/mcp/handlers/my_new_tool.go`. Handler conventions (see `search.go`, `catalog_documents.go`, …):
-   - Build the response as a typed struct and return it as JSON text content.
-   - Return tool-level failures **in-band**: `&mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("Error: …")}, IsError: true}` — not a Go error.
-   - Reuse shared helpers: `pagination.go` for cursor pagination, `entity_resolve.go` for resolving `entity_id`/`entity_name` lookups.
-
-6. **Write tests** — success path, parameter validation errors (missing/invalid arguments), edge cases (empty knowledge base, unknown ID), mirroring the existing `*_test.go` files in `handlers/`.
-
-7. **Update the reference docs** — add a page under `site/docs/reference/mcp-tools/` following the existing tool pages, and add the tool to the inventory table in `site/docs/reference/mcp-tools/index.mdx`.
+**The tool set is a frozen contract.** Adding (or changing) a tool is a change to the `mcp-contract` spec — a separate explicit decision with justification, never part of an implementation task. When one is approved: add the schema to the registry in `server.rs`, the handler module in `tools/`, the `dispatch` arm, tests (success path, parameter validation, empty knowledge base, unknown ID), and a reference page under `site/docs/reference/mcp-tools/` plus the tool's row in the `index.mdx` inventory.
 
 Existing tools and their parameter tables: [MCP Tools](../reference/mcp-tools).
 
-## Adding a configuration field
+## Adding a CEL linker rule
 
-1. Add the field to the appropriate struct in `internal/config/config.go` with its YAML tag.
-2. Add validation in `Validate()` if the field has constraints.
-3. Set a default in `ApplyDefaults()` if applicable.
-4. Add table-driven cases to `internal/config/config_test.go` covering valid, invalid, and missing values.
-5. Add the field to `configs/config.default.yaml` with an explanatory comment.
+Cross-domain entity linking rules are **data, not code**: the `<cross-domain-links>` section of a dataset's `global.xml` declares the methods (applied in configuration order: `equals`, `expression`, `llm`) and the CEL expressions. `crates/graph` evaluates them through the `cel` crate — adding a rule needs no Rust change.
 
-The full annotated schema: [Configuration Schema](../reference/config-schema).
+Each expression is evaluated against a fixed set of contract functions:
+
+| Function | Meaning |
+|---|---|
+| `facts(entity)` | the entity's fact values |
+| `has_fact(entity, key, value)` | whether the entity has a given fact |
+| `chunks(entity)` | the entity's chunk texts |
+| `chunk_contains(entity, text)` | whether any chunk contains `text` |
+| `neighbors(entity)` | direct graph neighbors |
+| `path_exists(from, to, max_depth)` | bounded graph reachability |
+
+The heavy indexes behind these (`FactIndex`, `ChunkIndex`, reachability) are loaded lazily through a scope cache. A true expression links the entity pair; a false one does not.
+
+## Overriding a prompt template
+
+The LLM-based stages (NER in `crates/ingestion`, cross-domain entity linking in `crates/graph`) render **minijinja** templates. The defaults are compiled into the binary via `include_str!`; at runtime, a file under `prompts_path` (default `workspace/configs/prompts`) wins:
+
+| Stage | Override path |
+|---|---|
+| NER | `workspace/configs/prompts/ner/{system,user}.tmpl` |
+| Entity linking | `workspace/configs/prompts/entity-linker/{system,user}.tmpl` |
+
+- A present `{system,user}.tmpl` file wins over the embedded default; **a missing file silently falls back to the embedded default** — absence is the normal case, not an error.
+- The shipped `workspace/configs/prompts/**` files are byte-identical to the embedded defaults; edit the file in place to change the prompt.
+- Linker decisions are cached by (entity pair + template hashes) — editing a template changes the hashes, so a repeat call re-asks the LLM instead of serving the stale decision.
+
+## Adding a config preset
+
+Presets live in `workspace/configs/` as `config.<name>.yaml` (shipped: `config.default.yaml`, `config.demo.yaml`):
+
+1. Copy an existing preset and edit it (the keys are documented in the [Configuration Schema](../reference/config-schema)).
+2. Select it at runtime: `synopsis --preset <name> serve` — or `--config PATH` to skip the auto-search entirely.
+
+A note on validation: values that are validated at parse time (for example `vectors.engine` and the `vectors.usearch` parameters) are rejected with an explicit error, but **unknown keys do not break startup** — a typo'd key is silently ignored, so keep preset edits small and diffed.
+
+Adding a **new** config key is a change to the `config-format` contract: add the field, validation, and default in `crates/config`, a table-driven test case in `crates/config`, and the key in the shipped presets.
+
+## Tests
+
+Every extension lives in its own crate and is tested there:
+
+```bash
+cargo test -p <crate>                      # a single crate
+cargo test -p <crate> -- <TestNameFilter>  # a single test
+```
+
+The workspace lints apply (`missing_docs = "deny"`, `unsafe_code = "forbid"`, clippy with `-D warnings` in the CI gate) — see [Coding Standards](./coding-standards) and [Testing](./testing).
 
 ## See also
 
-- [Architecture](./architecture) — where each package fits
+- [Architecture](./architecture) — where each crate fits
 - [Testing](./testing) — writing the tests these recipes ask for
 - [MCP Tools](../reference/mcp-tools) — the current tool inventory
 - [Configuration Schema](../reference/config-schema) — every config key

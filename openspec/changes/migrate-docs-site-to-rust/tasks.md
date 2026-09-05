@@ -474,7 +474,7 @@ Commands, Gotchas), `README.md` (Development + Workspace crates),
 - ADR numbers 0001–0004 all present in architecture.mdx.
 - The 5 zigbuild target triples present in setup.mdx.
 
-- [ ] 5.2 Rewrite developer: `coding-standards.mdx` + `testing.mdx` + `migrations.mdx`
+- [x] 5.2 Rewrite developer: `coding-standards.mdx` + `testing.mdx` + `migrations.mdx`
 
 **Goal.** Rewrite the 3 developer docs about code quality, testing, and schema
 migrations for the Rust workspace.
