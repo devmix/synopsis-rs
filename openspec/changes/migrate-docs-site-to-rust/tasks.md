@@ -398,7 +398,7 @@ frontmatter `title: Workspace Layout`, `sidebar_position: 6`),
 - `queue status` and `queue reset-retries` with their flags present, matching `cli-surface/spec.md`.
 - Go-era sweep → **0** over both files.
 
-- [ ] 4.2 New concepts: `vector-rebuild.mdx` + `cache-db.mdx` + `mcp-transport.mdx`
+- [x] 4.2 New concepts: `vector-rebuild.mdx` + `cache-db.mdx` + `mcp-transport.mdx`
 
 **Goal.** Create the remaining 3 new concept pages (design D6).
 
@@ -460,9 +460,11 @@ Commands, Gotchas), `README.md` (Development + Workspace crates),
   `target/release/synopsis`; `cargo test` (~20 s warm, no services/network);
   the gates (`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`);
   cross-compilation: `cargo zigbuild --release --target <t>` with Zig 0.16.0,
-  the 5 targets; the site build (Node >= 20, `npm ci`, `npm run build` in
-  `site/`); runtime bootstrap (`synopsis onnx-runtime install`, `synopsis model
-  download`).
+   the 5 targets; the site build (Node >= 20, `npm install` — NOT `npm ci`,
+   because `package-lock.json` is intentionally not committed (tasks 1.1/2.1)
+   so a fresh clone has no lockfile for `npm ci` — then `npm run build` in
+   `site/`); runtime bootstrap (`synopsis onnx-runtime install`, `synopsis model
+   download`).
 
 **Dependencies.** Task 1.1.
 

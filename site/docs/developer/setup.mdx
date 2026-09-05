@@ -1,173 +1,101 @@
 ---
 title: Development Setup
-description: Dev environment (Go, CGO, Zig), project structure, and Makefile targets for building, testing, and cross-compiling Synopsis
+description: Toolchain, build, test, and lint gates for the Synopsis Rust workspace, cross-compilation with Zig, and the docs site build
 sidebar_position: 2
 ---
 
 # Development Setup
 
-## Dev environment
+## Toolchain
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Go | 1.25.5 | `go.mod` declares `go 1.25.5`; CI pins the same version |
-| C toolchain | gcc or clang | **CGO is mandatory** — `go-sqlite3` compiles SQLite (FTS5 + sqlite-vec) into the binary; `CGO_ENABLED=0` will fail |
-| Make | any recent | All day-to-day commands are Makefile targets |
-| Zig | 0.14+ | Optional — C toolchain for cross-compilation (see [Cross-compilation](#cross-compilation)) |
-| golangci-lint | v2.12 | No separate install — `make lint` runs the pinned version via `go run ...@v2.12`, matching CI |
+| rustup | any recent | Installs the pinned toolchain automatically |
+| Rust | 1.96.0 | Pinned in `rust-toolchain.toml` — rustup installs it on the first cargo command in the repo |
+| Zig | 0.16.0 | Optional — cross-compilation only (see [Cross-compilation](#cross-compilation)) |
+| Node.js | >= 20 | Only for building the docs site in `site/` |
 
-If you only build and run for your own platform, Zig is not needed.
-
-### Installing Zig (optional)
-
-```bash
-# Linux (any 0.14+ works locally; releases build with Zig 0.16)
-curl -L "https://ziglang.org/builds/zig-linux-x86_64-0.14.0.tar.xz" \
-  | tar xfJ - -C /tmp/
-sudo mv /tmp/zig-linux-x86_64-0.14.0/zig /usr/local/bin/zig
-zig version
-
-# macOS (Homebrew)
-brew install zig
-```
+There is no C toolchain requirement for a native build: SQLite (with FTS5) is compiled in-tree via rusqlite (bundled), so a build cannot silently lack FTS5 support.
 
 ## Quick start
 
 ```bash
-make build      # CGO build of bin/synopsis
-make sync       # build + run the ingestion pipeline
-make run        # build + start the MCP server on :8080
+cargo build --release   # → target/release/synopsis
+cargo test              # full workspace suite, ~20 s warm; no services or network needed
 ```
 
-See the [Quickstart](../quickstart) for what each stage does and how to make a first `search` call.
+Run the server with `cargo run -p cli -- serve` — config is auto-searched (`<exeDir>/workspace/configs/` → parent directory → CWD), the default preset is `default`, and the MCP server listens on port 8080. The full first-run walkthrough (runtime install, model download, serving, connecting an MCP client) is in the [Quickstart](../quickstart).
 
-## Project structure
+## Quality gates
 
-```
-.
-├── cmd/app/                    # CLI entry point (subcommand dispatch)
-│   ├── main.go                 # global flags + dispatch (sync/serve/model/onnx-runtime)
-│   ├── cmd.go                  # bootstrap: config, domain discovery, DB open, model ensure
-│   ├── serve.go                # serve mode setup and startup
-│   ├── sync.go                 # sync mode orchestration
-│   ├── model_cmd.go            # model list/download/delete/info/benchmark
-│   └── onnx_runtime.go         # onnx-runtime install/status/uninstall
-│
-├── configs/
-│   ├── config.default.yaml     # active default configuration
-│   ├── onnx.yaml               # ONNX Runtime + embedding model registry
-│   └── prompts/                # prompt templates (ner/, entity-linker/)
-│
-├── data/                       # runtime data (gitignored)
-│   ├── knowledge.db            # main SQLite DB (FTS5 + vec0)
-│   ├── cache.db                # embedding result cache
-│   ├── models/                 # downloaded ONNX models
-│   └── ontology/               # domain ontologies (global.xml, domains/*.xml)
-│
-├── migrations/                 # SQL migrations, applied in order at startup (001–005)
-├── internal/                   # private application packages
-│   ├── cache/  config/  database/dao/  domain/  embedding/  expression/
-│   ├── gc/  graph/  ingestion/  llm/  logger/  mcp/handlers/  onnx/
-│   ├── prompts/  relations/  scheduler/  search/  utils/  watcher/
-│   └── ingestion/ sub-packages: chunkers/  entities/  ner/  parsers/  runner/  sources/
-├── scripts/
-│   ├── build.sh                # local cross-compilation via Zig (releases use GoReleaser)
-│   └── darwin-stubs/           # parseable macOS stubs for Zig-based CGO linking
-├── site/                       # this documentation site (Docusaurus)
-├── .github/workflows/          # ci.yml, release.yml
-├── Makefile                    # build, test, and cross-compilation targets
-├── Dockerfile                  # multi-stage container build
-└── go.mod                      # module github.com/devmix/synopsis (Go 1.25.5)
-```
+CI runs all three; a change is not green without all of them:
 
-The full package-by-package module map, with data flow, is in [Architecture](./architecture).
-
-## Makefile targets
-
-| Target | What it does | Command equivalent |
+| Gate | Command | What it enforces |
 |---|---|---|
-| `make build` | Build for the current platform | `CGO_ENABLED=1 CGO_CFLAGS="-DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_VEC -O2" go build -o bin/synopsis ./cmd/app/` |
-| `make run` | Build + start the MCP server | `./bin/synopsis --config configs/config.default.yaml serve` |
-| `make sync` | Build + run the sync pipeline | `./bin/synopsis --config configs/config.default.yaml sync` |
-| `make rebuild` | Build + clear the DB and re-ingest everything | `./bin/synopsis --config configs/config.default.yaml sync --rebuild` |
-| `make test` | All tests with the race detector | `go test -race ./...` |
-| `make test-coverage` | Tests + HTML coverage report | `go test -coverprofile=coverage.out -race ./...` → `coverage.html` |
-| `make lint` | golangci-lint static analysis (pinned to v2.12, matching CI) | `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12 run ./...` |
-| `make vet` | `go vet` checks | `go vet ./...` |
-| `make clean` | Remove build artifacts | `rm -rf bin/ coverage.out coverage.html` |
-| `make build-all` | Cross-compile all five platforms | all platform targets below |
+| Formatting | `cargo fmt --check` | must be clean |
+| Lints | `cargo clippy --all-targets -- -D warnings` | any warning fails the build (workspace lints: `missing_docs = "deny"`, `unsafe_code = "forbid"`) |
+| Tests | `cargo test` | full workspace suite, ~20 s warm, no services or network |
 
-Model management (`model list/download/delete/info/benchmark`) and ONNX Runtime management are not Makefile targets — run them directly against the binary:
+Narrowing the scope:
 
 ```bash
-./bin/synopsis model list
-./bin/synopsis model download bge-small-en-v1.5
-./bin/synopsis model benchmark            # all installed models
-./bin/synopsis onnx-runtime status
+cargo test -p <crate>                      # a single crate
+cargo test -p <crate> -- <TestNameFilter>  # a single test
 ```
 
-See [CLI Reference](../reference/cli#model) and [Model Management](../guides/model-management).
+Coverage is `cargo llvm-cov --workspace --html` — measure-first, no gates. Details: [Coding Standards](./coding-standards) and [Testing](./testing).
 
-### Testing commands
-
-```bash
-# All tests with the race detector (MANDATORY before any PR)
-go test -race ./...
-
-# A single package
-go test -race ./internal/search/...
-
-# A single test function
-go test -race -run TestHybridSearch ./internal/search/...
-
-# Benchmarks (example: graph expansion)
-go test -bench=BenchmarkGraphExpansion -benchmem ./internal/search/...
-```
-
-Details and conventions: [Testing](./testing).
+There is no Makefile — the plain cargo commands above are the whole build system.
 
 ## Cross-compilation
 
-All cross-compilation targets use **Zig as the C toolchain**: `zig cc` acts as a drop-in replacement for `gcc`/`clang` and can target any platform without separate sysroots.
-
-| Target | Zig target triple | GOOS / GOARCH | Output binary |
-|---|---|---|---|
-| `make build-linux-amd64` | `x86_64-linux-gnu` | `linux` / `amd64` | `bin/synopsis-linux-amd64` |
-| `make build-linux-arm64` | `aarch64-linux-gnu` | `linux` / `arm64` | `bin/synopsis-linux-arm64` |
-| `make build-windows-amd64` | `x86_64-windows` | `windows` / `amd64` | `bin/synopsis-windows-amd64.exe` |
-| `make build-macos-amd64` | `x86_64-macos` | `darwin` / `amd64` | `bin/synopsis-macos-amd64` |
-| `make build-macos-arm64` | `aarch64-macos` | `darwin` / `arm64` | `bin/synopsis-macos-arm64` |
-
-Example (what the Makefile does under the hood):
+All cross-builds use `cargo zigbuild` with Zig 0.16.0 as the C toolchain (install the helper once: `cargo install --locked cargo-zigbuild`):
 
 ```bash
-CGO_ENABLED=1 \
-CC="zig cc -target aarch64-linux-gnu" \
-CXX="zig c++ -target aarch64-linux-gnu" \
-GOOS=linux GOARCH=arm64 \
-go build -o bin/synopsis-linux-arm64 ./cmd/app/
+cargo zigbuild --release --target <t>
 ```
 
-Details worth knowing:
+The five supported targets (the CI cross-build matrix):
 
-- **SQLite header symlink.** The vec0 bindings include `#include "sqlite3.h"`. Locally the Makefile (and `scripts/build.sh`) create a temporary `sqlite3.h` → `sqlite3-binding.h` symlink from the `go-sqlite3` module and pass it through `CGO_CFLAGS=-I...`; in releases the GoReleaser before hook does the same ([CI/CD](./ci-cd#release-workflow-releaseyml)).
-- **macOS specifics.** macOS has no separate `libresolv`/`libdl`/`libpthread` (they live in `libSystem`), so the Darwin targets point Zig at the parseable stubs in `scripts/darwin-stubs/` first, then at Zig's bundled SDK, and link with `-Wl,-undefined,dynamic_lookup`. Builds pass `-ldflags=-w` (no DWARF) so Go skips its `dsymutil`/`strip` step, which would otherwise invoke a host GNU `strip` that cannot process Mach-O.
-- **Release parity.** The release workflow cross-builds all five targets from a single `ubuntu-latest` runner using the same Zig approach (via GoReleaser, not this script) — see [CI/CD](./ci-cd#cross-compilation). Keep the CGO_CFLAGS defines in sync between the Makefile and `.goreleaser.yaml`.
+| Target triple | Platform | Notes |
+|---|---|---|
+| `x86_64-unknown-linux-musl` | Linux amd64 | fully static artifact |
+| `aarch64-unknown-linux-gnu` | Linux arm64 | |
+| `aarch64-unknown-linux-musl` | Linux arm64 | musl |
+| `x86_64-pc-windows-gnu` | Windows amd64 | gnu, not msvc — Zig cannot link MSVC ABI from a Linux host |
+| `aarch64-apple-darwin` | macOS arm64 | |
 
-## Troubleshooting
+The release workflow cross-builds all five from a single runner — see [CI/CD](./ci-cd).
 
-- **`CGO_ENABLED=0` build failure** — CGO is required; the Makefile always sets `CGO_ENABLED=1`
-- **`vec0` extension not found** — sqlite-vec must be compiled into go-sqlite3 (build tags in `go.mod`)
-- **Embedding dimension mismatch at startup** — delete `data/knowledge.db` and re-ingest, or pass `--auto-rebuild-vectors`
-- **Domain XML not found** — `paths.global_config_path` must point at the ontology directory containing `domains/*.xml`
-- **Cross-compilation fails** — check `zig version` (0.14+) and that the target triple in the Makefile matches the platform
+## Building the docs site
 
-The full failure catalog: [Troubleshooting](../guides/troubleshooting).
+The docs site is a Docusaurus 3.10.2 project in `site/` — it is NOT part of the Rust workspace build and NOT built in CI (deployment is manual):
+
+```bash
+cd site
+npm install     # the lockfile is intentionally not committed — a fresh clone has no lockfile, so npm ci would fail
+npm run start   # dev server with live reload
+npm run build   # → site/build/
+```
+
+See `site/README.md` for the full list of commands and the manual-deployment note.
+
+## Runtime bootstrap
+
+The binary downloads its own runtime dependencies per `workspace/configs/onnx.yaml` (URL + size + SHA-256 verified) — on a fresh machine, the first two commands after a build set it up:
+
+```bash
+synopsis onnx-runtime install   # download the ONNX runtime library
+synopsis model download         # download the default embedding model
+```
+
+Then `synopsis serve`. Full details: [Installation](../guides/installation) and [Model Management](../guides/model-management).
 
 ## See also
 
-- [Architecture](./architecture) — module map, data flow, technology decisions
-- [Coding Standards](./coding-standards) — conventions to follow when contributing
-- [Testing](./testing) — test patterns, race detector, coverage
-- [Migrations](./migrations) — schema changes and how they are applied
+- [Architecture](./architecture) — crate map, data flow, design decisions
+- [Coding Standards](./coding-standards) — workspace lints and conventions
+- [Testing](./testing) — test patterns and coverage
+- [Migrations](./migrations) — schema state and how it is applied
+- [CI/CD](./ci-cd) — what CI runs and how releases are built
 - [Extending Synopsis](./extending) — adding parsers, chunkers, MCP tools
