@@ -322,7 +322,7 @@ file overlap).
 - Go-era sweep → **0** over both files.
 - 'usearch', 'RRF', and 'document_jobs' each present in at least one of the two files.
 
-- [ ] 3.3 Rewrite concepts: `knowledge-graph.mdx` + `domains.mdx` + `cross-domain-linking.mdx`
+- [x] 3.3 Rewrite concepts: `knowledge-graph.mdx` + `domains.mdx` + `cross-domain-linking.mdx`
 
 **Goal.** Rewrite the remaining 3 concept docs for the Rust implementation.
 

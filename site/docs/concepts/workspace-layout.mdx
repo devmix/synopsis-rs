@@ -1,0 +1,86 @@
+---
+title: Workspace Layout
+description: The workspace/ runtime-state tree — configs, per-dataset state, the global cache DB, downloaded models and ONNX runtime; what is tracked and what is gitignored
+sidebar_position: 6
+---
+
+# Workspace Layout
+
+All runtime state of the `synopsis` binary lives under a single `workspace/` directory. The binary creates and manages it — there are no external services to configure. Most of the tree is **gitignored**: only the configuration files and the `edtech` demo dataset are tracked in the repository; everything else is created and downloaded at runtime.
+
+## The tree
+
+```
+workspace/
+├── configs/                  # tracked: presets, onnx.yaml, prompt templates
+├── datasets/<name>/
+│   ├── ontology/             # XML ontology: global.xml + per-domain files
+│   ├── content/              # the documents to ingest
+│   └── state/                # knowledge.db + vector index (per dataset)
+├── db/cache/cache.db         # global cache DB (shared across datasets)
+├── models/                   # downloaded model weights (~2.3 GB)
+└── onnxruntime/              # downloaded ONNX runtime library (~24 MB)
+```
+
+## `configs/` — tracked
+
+The only part of `workspace/` that ships in the repository and in the release archives:
+
+| Path | Purpose |
+|------|---------|
+| `config.default.yaml` | The default preset (used when no `--config`/`--preset` is given) |
+| `config.demo.yaml` | A preset wired to the `edtech` demo dataset |
+| `onnx.yaml` | The ONNX registry: the runtime library and every model entry with URL, `size_bytes`, and SHA-256 |
+| `prompts/entity-linker/{system,user}.tmpl` | Minijinja prompt overrides for cross-domain entity linking |
+| `prompts/ner/{system,user}.tmpl` | Minijinja prompt overrides for LLM-based NER |
+
+The prompt overrides are **byte-identical** to the defaults embedded in `crates/graph` and `crates/ingestion`; a missing override file silently falls back to the embedded default, so the shipped files exist for visibility and editing, not for correctness.
+
+Without `--config`, the binary auto-searches for `config.{preset}.yaml`: `<exeDir>/workspace/configs/` → parent directory → CWD. `--preset NAME` selects `config.{NAME}.yaml` (default: `default`). See the [Configuration guide](../guides/configuration) for the full key-by-key reference.
+
+## `datasets/<name>/` — one directory per dataset
+
+Each dataset has three parts:
+
+| Part | What it holds |
+|------|---------------|
+| `ontology/` | The XML ontology — `global.xml` plus one file per domain (entity types, relations, extraction rules). See [Domains](./domains). |
+| `content/` | The documents the sources point at (Markdown, JSON, web pages). See [The Pipeline](./pipeline). |
+| `state/` | The dataset's **knowledge DB** (`knowledge.db`) and the **vector index** (`vectors/` directory), plus a `backups/` directory for WAL snapshots taken before indexing. |
+
+The knowledge DB is **always built from scratch** by the Rust binary: one squashed init migration, `PRAGMA user_version` as the sole schema state. Existing `knowledge.db` files are never opened or upgraded, and data is never migrated. The table-by-table layout is in the [Database schema reference](../reference/database-schema).
+
+## `db/cache/cache.db` — the global cache DB
+
+One cache database shared by **all** datasets, independent of the per-dataset knowledge DBs. It holds the embedding cache and the LLM/NER caches, so repeated runs do not re-embed unchanged text or re-ask the LLM for the same decisions. The Cache Database page covers its internals in detail.
+
+## `models/` and `onnxruntime/` — downloaded, verified
+
+These directories are empty in the repository and in the release archives. The binary downloads their contents on demand, per `onnx.yaml`:
+
+| Command | Downloads to | Size |
+|---------|--------------|------|
+| `synopsis onnx-runtime install` | `workspace/onnxruntime/` | ~24 MB runtime library |
+| `synopsis model download` | `workspace/models/` | ~2.3 GB of weights for the configured model |
+
+Every download is verified by **URL + size + SHA-256** before it is used. See [Model management](../guides/model-management) for the full `model` and `onnx-runtime` command reference.
+
+## Tracked vs gitignored
+
+| Path | Git |
+|------|-----|
+| `workspace/configs/` | **tracked** |
+| `workspace/datasets/edtech/ontology/` | **tracked** (demo dataset) |
+| `workspace/datasets/edtech/content/` | **tracked** (demo corpus) |
+| `workspace/onnxruntime/`, `workspace/models/` | gitignored (downloaded at runtime) |
+| `workspace/db/cache/cache.db` | gitignored |
+| `workspace/datasets/<name>/state/` | gitignored (per-dataset DB + vectors) |
+
+Everything else under `workspace/` is gitignored. The `edtech` demo dataset is the only dataset that ships with the repository — and the release archives bundle the binary, the README, `workspace/configs/`, and the `edtech` ontology, so a fresh install is `onnx-runtime install` → `model download` → `serve` (see the [Quickstart](../quickstart)).
+
+## See also
+
+- [The Pipeline](./pipeline) — what happens to the documents in `content/`
+- [Domains](./domains) — the XML ontology files in `ontology/`
+- [Configuration guide](../guides/configuration) — presets, `onnx.yaml`, prompt templates
+- [Database schema reference](../reference/database-schema) — both databases, table by table

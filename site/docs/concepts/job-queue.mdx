@@ -1,0 +1,90 @@
+---
+title: Job Queue
+description: The document_jobs table — the single state machine shared by the startup reconcile, the file watcher, and the background worker; states, retries, and the queue CLI
+sidebar_position: 7
+---
+
+# Job Queue
+
+Synopsis has no `sync` subcommand and no separate ingestion daemon. Instead, **one table — `document_jobs` in the knowledge DB — is the single state machine** shared by the three parties that touch document state: the startup reconcile, the file watcher, and the background worker. The queue *is* the ingestion model: everything that ever gets (re-)indexed passes through it.
+
+## The `document_jobs` table
+
+The table lives in the per-dataset knowledge DB and is created by the consolidated init migration `migrations/knowledge/1-init/up.sql` with `IF NOT EXISTS` — the migration is idempotent, so a subsequent startup is a no-op.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `path` | `TEXT PRIMARY KEY` | The document path — the queue key |
+| `source_path` | `TEXT NOT NULL` | The source the document belongs to |
+| `op` | `TEXT NOT NULL DEFAULT 'index'` | `index` or `delete` |
+| `status` | `TEXT NOT NULL DEFAULT 'pending'` | `pending`, `processing`, `done`, or `error` |
+| `content_hash` | `TEXT` | SHA-256 of the content at enqueue time |
+| `attempts` | `INTEGER NOT NULL DEFAULT 0` | Attempts made so far |
+| `max_attempts` | `INTEGER NOT NULL DEFAULT 3` | Retry cap (from `ingestion.max_retries`) |
+| `last_error` | `TEXT` | The most recent failure reason |
+| `next_attempt_at` | `INTEGER NOT NULL DEFAULT 0` | Earliest time the next attempt is allowed |
+| `created_at` / `updated_at` | `INTEGER` | Row timestamps |
+
+The index `idx_document_jobs_due (status, next_attempt_at)` backs the worker's "which jobs are due" query.
+
+## States
+
+```
+         enqueue            worker picks up         success
+  ┌───────────┐  ─────────────────▶  ┌────────────┐  ───────────▶  ┌──────┐
+  │  pending  │                      │ processing │                │ done │
+  └───────────┘  ◀─────────────────  └────────────┘                └──────┘
+        ▲        reset-retries              │ failure
+        └───────────────────────────────────┤  (attempts < max)
+                                            ▼
+                                         ┌───────┐
+                                         │ error │  (attempts = max_attempts,
+                                         └───────┘   last_error populated)
+```
+
+- **`pending`** — queued, waiting for the worker.
+- **`processing`** — the worker has picked the job up.
+- **`done`** — the document was indexed (or deleted) successfully.
+- **`error`** — the retry budget is exhausted; `last_error` carries the reason. `queue reset-retries` moves the job back to `pending`.
+
+## How jobs get enqueued
+
+| Trigger | What happens |
+|---------|--------------|
+| **Startup reconcile** | When `serve` starts, the dataset is scanned and the diff — new or changed files — is enqueued. `--no-initial-sync` skips this step at boot. |
+| **File watcher** | While the server runs, file changes enqueue diffs into the same queue; a vanished file enqueues a `delete` operation, and the worker deletes the document and all its data cascadingly. |
+
+Deduplication by hash keeps the queue honest: the SHA-256 of the content is compared with the stored one, so an unchanged document is skipped entirely and a changed one is refreshed (old data deleted cascadingly, new data written in one transaction). See [The Pipeline](./pipeline) for the per-document stages the worker runs.
+
+## The worker and retries
+
+A background worker polls the queue for due jobs (`pending` with `next_attempt_at` reached) and processes each one. A single document's failure is counted and does not abort the rest of the queue.
+
+On failure the worker applies **exponential backoff**: `attempts` is incremented, `next_attempt_at` is pushed out by `30 × 2^(attempts−1)` seconds (30, 60, 120, …), and the job stays `pending`. Once `attempts` reaches `max_attempts` (default **3**, set by `ingestion.max_retries`), the row lands in `error` with `last_error` populated — the worker leaves it alone until someone resets it.
+
+## The CLI
+
+Two subcommands inspect and repair the queue (full reference in the [CLI reference](../reference/cli)):
+
+```
+synopsis queue status [--source PATH] [--status NAME]
+```
+
+Tabular output of the job state with the columns **path, source, status, attempts, last_error, next_attempt_at**. `--source PATH` narrows the output to a single source; `--status NAME` to a single status.
+
+```
+synopsis queue reset-retries [--source PATH] [--path PATH]
+```
+
+Resets the retry counter for jobs in `error` status: status → `pending`, `attempts` → 0, `next_attempt_at` → now. The background worker re-indexes them on its next cycle. `--path PATH` targets a single job; `--source PATH` narrows to one source.
+
+## Full re-ingest
+
+There is **no `sync` subcommand** — and no need for one. A full re-ingest is `synopsis db clear` (deletes the dataset's `state/` directory — knowledge DB and vector index in one call) followed by a `serve` restart: the startup reconcile re-enqueues all files and the worker re-embeds them. See [Workspace Layout](./workspace-layout) for what `state/` contains.
+
+## See also
+
+- [The Pipeline](./pipeline) — the stages each queued document goes through
+- [Workspace Layout](./workspace-layout) — where the queue's database lives
+- [Ingestion guide](../guides/ingestion) — sources, parsing, and stuck jobs in practice
+- [CLI reference](../reference/cli) — every flag of `queue status` and `queue reset-retries`
