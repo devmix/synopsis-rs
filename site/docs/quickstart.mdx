@@ -1,96 +1,81 @@
 ---
 title: Quickstart
-description: Get Synopsis running in 5 minutes — build, sync, serve, first search
+description: Get Synopsis running — prebuilt archive or build from source, then serve in three commands
 sidebar_position: 2
 ---
 
 # Quickstart
 
-From source to a searchable MCP server in five minutes.
+From a prebuilt archive (or source) to a searchable MCP server in minutes.
 
-## Prerequisites
+## 1. Get the binary
 
-- **Go 1.25+** and a **C toolchain** (gcc or clang) — CGO is mandatory: go-sqlite3 compiles SQLite (with FTS5 and sqlite-vec) into the binary at build time
-- **Make**
-- Network access on first run — the local embedding model (`bge-small-en-v1.5`) is downloaded automatically on the first sync
+### Option A — prebuilt archive
 
-## 1. Build
+Prebuilt archives are published as Gitea Releases on `v*` tags for the 5 supported targets:
 
-Clone the repository, then:
+| Target | Triple |
+| --- | --- |
+| Linux amd64 (fully static) | `x86_64-unknown-linux-musl` |
+| Linux arm64 | `aarch64-unknown-linux-gnu` |
+| Linux arm64 (musl) | `aarch64-unknown-linux-musl` |
+| Windows amd64 | `x86_64-pc-windows-gnu` |
+| macOS arm64 | `aarch64-apple-darwin` |
 
-```bash
-make build
-```
+Each archive bundles the stripped binary, the README, `workspace/configs/`, and the `edtech` demo dataset (ontology + content). Download the archive for your platform, extract it, and run the `synopsis` binary.
 
-Produces `bin/synopsis` — a single self-contained binary.
+### Option B — build from source
 
-## 2. Ingest documents
-
-Place your cleaned, normalized documents (`.md`, `.json`, `.html`) into the `documents/` directory (configured by `paths.documents_dir` in `configs/config.default.yaml`), then:
-
-```bash
-make sync
-```
-
-The sync pipeline ingests the documents into `data/knowledge.db`: parsing, chunking, local embeddings (the model downloads automatically on first use), NER, entity and fact extraction, graph and index construction.
-
-To wipe everything and re-ingest from scratch, use `make rebuild` instead.
-
-## 3. Start the MCP server
+The toolchain is pinned to Rust **1.96.0** in `rust-toolchain.toml`; rustup installs it automatically on the first cargo command. SQLite (with FTS5) is compiled in-tree (bundled), so there are no system dependencies:
 
 ```bash
-make run
+cargo build --release     # → target/release/synopsis
 ```
 
-This builds and then runs the `serve` subcommand with `configs/config.default.yaml`. The server listens on `0.0.0.0:8080` with three endpoints:
+## 2. Bootstrap the runtime state
 
-| Endpoint       | Method | Purpose                                          |
-| -------------- | ------ | ------------------------------------------------ |
-| `/sse`         | GET    | MCP SSE transport (client connection)            |
-| `/message`     | POST   | MCP message endpoint (sessionId query parameter) |
-| `/health`      | GET    | JSON health status                               |
+Network access is needed on first run: the ONNX runtime library and the default embedding model are downloaded by the binary per `workspace/configs/onnx.yaml` (verified by URL + size + SHA-256).
 
-Check that it is up:
+```bash
+synopsis onnx-runtime install   # download the ONNX runtime per workspace/configs/onnx.yaml
+synopsis model download         # download the default embedding model
+```
+
+## 3. Start the server
+
+```bash
+synopsis serve
+```
+
+The server listens on port **8080** with the `default` preset. Without `--config`, the config is auto-searched: `<exeDir>/workspace/configs/` → parent directory → CWD. `--preset NAME` selects `config.{NAME}.yaml`; `--dataset NAME` overrides the configured dataset.
+
+On startup, `serve` performs a startup reconcile (enqueueing a diff into the document job queue) and starts a file watcher; a background worker processes the queue and builds the index. Pass `--no-initial-sync` to skip the startup reconcile.
+
+Endpoints:
+
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/mcp` | POST | MCP over Streamable HTTP (primary transport) |
+| `/sse` | GET | legacy HTTP+SSE transport (client connection) |
+| `/message` | POST | legacy message endpoint (`sessionId` query parameter) |
+| `/health` | GET | JSON health status |
+
+Verify that it is up:
 
 ```bash
 curl http://localhost:8080/health
 ```
 
-Note: with the default configuration, `serve` also performs an initial source scan on startup (`auto_update.initial_sync: true`). Pass `--no-initial-sync` if you want to skip it.
+## 4. Connect an MCP client
 
-## 4. First search
+Point any MCP client at `http://localhost:8080/mcp` (Streamable HTTP) or `http://localhost:8080/sse` (legacy HTTP+SSE). The server exposes exactly 12 tools, all read-only (facts are restricted to `approved` status):
 
-Point any MCP client at the SSE endpoint — `http://localhost:8080/sse` — and call the `search` tool:
+`search`, `catalog_overview`, `catalog_documents`, `catalog_entities`, `search_entities_by_type`, `search_facts`, `get_document_context`, `get_chunk_by_id`, `get_fact_by_id`, `get_entity_dossier`, `get_entity_relations`, `get_entity_links`
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "search",
-    "arguments": {
-      "query": "vacation policy",
-      "domain": "hr"
-    }
-  }
-}
-```
-
-`search` performs a hybrid query: lexical (FTS5/BM25) and semantic (vector/cosine) results are fused with Reciprocal Rank Fusion, then annotated with domains, scores, offsets, and associated entities.
-
-Arguments:
-
-| Argument | Type   | Required | Description                                              |
-| -------- | ------ | -------- | -------------------------------------------------------- |
-| `query`  | string | yes      | Search query                                             |
-| `domain` | string | no       | Filter by domain (e.g., `hr`, `product`); empty = all    |
-| `top_k`  | number | no       | Max results (default 10, range 1–100)                    |
-
-Beyond `search`, the server exposes 11 more tools for cataloging documents and entities, searching facts, and traversing the knowledge graph.
+The `search` tool performs a hybrid query: lexical (FTS5) and semantic (vector) results are fused with Reciprocal Rank Fusion and reranked by recency/authority. Full parameters and result shapes are documented in the [MCP tools reference](./reference/mcp-tools).
 
 ## What's next
 
-- [Introduction](./intro.mdx) — what Synopsis is, and what it is not
-- The **Installation** guide covers cross-compilation with Zig and running Synopsis in Docker
-- The **CLI reference** documents every subcommand (`sync`, `serve`, `model`, `onnx-runtime`) and global flag
+- [Introduction](./intro) — what Synopsis is, and what it is not
+- The [Installation](./guides/installation) guide covers cross-compilation and the runtime-state layout
+- The [CLI reference](./reference/cli) documents every subcommand and global flag
