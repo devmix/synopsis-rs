@@ -39,6 +39,11 @@ and named references all fit in the body.
   no reformatting of unrelated files. **No new npm dependencies.**
 - **Language:** English only. Keep the existing doc voice (concise,
   scannable, tables for flags/keys).
+- **Concept depth (design D10, user directive 2026-09-05):** concept pages
+  (`site/docs/concepts/`) stay at the WHAT/WHY model level — no schema dumps
+  (table names with column lists/types, index names, migration file paths).
+  Those live in `reference/database-schema.mdx` (task 7.2) and the developer
+  docs. Passing prose mentions of a table/column for context are fine.
 
 ## 1 — Scaffold
 
@@ -353,7 +358,7 @@ file overlap).
 
 ## 4 — New concept pages
 
-- [ ] 4.1 New concepts: `workspace-layout.mdx` + `job-queue.mdx`
+- [x] 4.1 New concepts: `workspace-layout.mdx` + `job-queue.mdx`
 
 **Goal.** Create 2 new concept pages for functionality that has no counterpart
 in the old site (design D6).
@@ -757,12 +762,15 @@ usage examples. There is NO `sync` subcommand (full re-ingest = `db clear` +
   any key you cannot resolve as a question).
 - **database-schema:** the TWO databases. Knowledge DB (per dataset): every
   table with columns, constraints, and indexes per `data-schema/spec.md`
-  (documents, chunks, chunks_fts — FTS5 over `search_text`, entities, facts
-  with the status CHECK constraint, entity_links, `document_jobs`, and any
-  others the spec names). Cache DB (global): the embedding cache + manifests.
-  `PRAGMA user_version` as the sole schema state; `_schema_migrations`
-  deliberately NOT created. Vectors live OUTSIDE SQLite — the usearch index
-  files under the dataset's `state/`.
+   (documents, chunks, chunks_fts — FTS5 over `search_text`, entities, facts
+   with the status CHECK constraint, entity_links, `document_jobs`, and any
+   others the spec names). Cache DB (global): `llm_ner_cache`,
+   `llm_linker_cache`, `app_kv` (per `db-storage/spec.md` +
+   `migrations/cache/1-init/up.sql`) — the embedding cache is IN-MEMORY (per
+   `embedding/spec.md`), document it as such, not as a cache-DB table.
+   `PRAGMA user_version` as the sole schema state; `_schema_migrations`
+   deliberately NOT created. Vectors live OUTSIDE SQLite — the usearch index
+   files under the dataset's `state/`.
 
 **Dependencies.** Task 1.1.
 

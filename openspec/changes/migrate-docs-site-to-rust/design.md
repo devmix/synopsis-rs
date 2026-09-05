@@ -146,6 +146,31 @@ against `mcp-contract/spec.md`; roadmap rewrite; architecture SVG updates.
 **Why.** The per-task checks are local; the audit is the global guarantee that
 the finished site matches the implementation.
 
+### D10: Concept pages stay conceptual; schema details live in reference/developer docs
+
+**Decision.** (User directive, 2026-09-05, during task 4.2.) Concept pages
+(`site/docs/concepts/`) describe the WHAT and WHY at the model level: how the
+pieces fit together, the behavior a user/operator observes, the invariants.
+They do NOT dump purely technical schema details — table names with column
+lists and types, index names, migration file paths, `CREATE TABLE` mechanics.
+Those belong to `reference/database-schema.mdx` (task 7.2: every table with
+columns, constraints, indexes per the data-schema + db-storage specs) and the
+developer docs (task 5.2 migrations). A passing prose mention of a table or
+column name for context is fine; a schema table is not.
+
+**Why.** The user reviews the site as documentation: concepts should read for
+understanding, not as a schema reference. The full schema is already covered
+by task 7.2, so nothing is lost by keeping it out of concepts.
+
+**Consequence.** Task 4.2's `cache-db.mdx` is revised to the conceptual level
+(the persistent LLM/NER decision caches vs the in-memory embedding cache,
+graceful degradation — no column tables). Task 4.1's `job-queue.mdx` (the
+11-column `document_jobs` table) is the same pattern and is a candidate for
+the same slimming (fix-forward) — pending user decision. Task 7.2's Cache DB
+line is corrected: the cache DB holds `llm_ner_cache`, `llm_linker_cache`,
+`app_kv` (per `db-storage/spec.md` + `migrations/cache/1-init/up.sql`); the
+embedding cache is in-memory (per `embedding/spec.md`).
+
 ## Reference
 
 - Sources of truth for content: the 14 spec files listed in D2, `README.md`,

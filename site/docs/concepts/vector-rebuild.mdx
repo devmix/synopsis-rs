@@ -1,0 +1,66 @@
+---
+title: Vector Rebuild
+description: Why vectors are derived data — rebuilt from chunk text, never migrated; the disk-backed quantized usearch index, and the dimension-mismatch clear-then-queue recovery
+sidebar_position: 8
+---
+
+# Vector Rebuild
+
+Embedding vectors are **derived data**, and Synopsis treats them that way: they are always **rebuilt from the chunk text** by the local embedding model. Vector data is never carried over from a previous index, and the legacy in-database vector tables of the old implementation are never read. A fresh install, a `db clear`, and an embedding-model switch all converge on the same recovery path — recompute from the text.
+
+## The index
+
+The semantic leg of [hybrid search](./hybrid-search) is a **usearch** HNSW index — the sole ANN engine of the `vectors` crate — stored under the dataset's `state/vectors/usearch/` directory (see [Workspace Layout](./workspace-layout)). It is sized for a 16 GB laptop:
+
+| Property | Value |
+|----------|-------|
+| Layout | Disk-backed HNSW, mmap — the index does not need to fit in RAM |
+| Quantization | Scalar, **bf16** by default |
+| Parameters | M=16, efConstruction=100, efSearch=200 (a runtime setting — tunable without a rebuild) |
+| Metric | L2sq |
+| Dimension | Follows the embedding model: 1024 for `bge-m3`; the shipped presets use `bge-small-en-v1.5` (384-dim) — a documented deviation |
+
+Insertion is streaming, in batches of `(chunk_id, vector)` pairs. **Neither the query path nor the insert path loads the embedding model** — the model runs only in the ingestion worker, so serving stays light.
+
+## Two-layer persistence: RAM + DISK segments
+
+The engine keeps a small **RAM layer** for recent writes and read-only **DISK segments** (mmap views) for everything else:
+
+- **Flush on overflow** — when the RAM layer reaches `vectors.usearch.max_segment_vectors` (default 1,000,000), it is saved as a new DISK segment, the WAL of the RAM segment is cleared, and the RAM is reset to empty.
+- **Per-segment WAL** — inserts and deletions are journaled to the `usearch_vectors_log` table in the knowledge DB, so a crash loses at most the RAM inserts since the last flush or shutdown-save (a documented window, repaired by reconciliation or a rebuild).
+- **Stale filtering** — every search filters each layer's results by the WAL's stale set (removed and superseded keys); duplicates between layers resolve in favor of the fresher layer.
+- **Compaction** — when the share of stale vectors in the DISK layers exceeds `vectors.usearch.compaction_stale_threshold` (default 30), a background compaction packs the live vectors into new segments, swaps the segment catalog atomically, and clears the WAL.
+- **Self-healing restart** — on open, WAL rows of non-existent segments are dropped and garbage files cleaned up. Re-opening an existing index does **not** rebuild it; recreation (on a dimension change) atomically replaces the contents, with no garbage accumulation.
+
+## Consistency with the chunk store
+
+Vectors correspond to SQLite chunks **one-to-one by `chunk_id`**, and the two stores must always agree. The cascade order on deletion is fixed: **vectors first, then the chunk rows** — a failure between the steps leaves a recoverable state (orphan vectors are cleaned up by reconciliation; missing vectors are restored by re-embedding).
+
+## Dimension mismatch: clear-then-queue
+
+The index is created for a fixed dimensionality. If the stored index's dimension does not match the configured model (a model switch, a preset change), the mismatch surfaces when `serve` opens the engine:
+
+- **Without the flag** — `serve` fails with an explicit error: a dimension mismatch was detected, and the run must be retried with `--auto-rebuild-vectors` (or the stored vector index must be deleted).
+- **With `synopsis serve --auto-rebuild-vectors`** (or the `embeddings.auto_rebuild_vectors` config flag, OR-ed with the CLI flag) — the engine is recreated at the new dimensionality, and **clear-then-queue** runs: the dataset DB is cleared in place (`clear_dataset`), the startup reconcile re-enqueues **all** files into `document_jobs`, and the background worker re-embeds them through the normal pipeline. There is no direct ingestion and no vector migration: the content-hash dedup of the [job queue](./job-queue) cannot force re-embedding of unchanged documents — which is exactly why the clear precedes the queue.
+
+This is the same recovery shape as a manual full re-ingest (`synopsis db clear` + `serve` restart), covered by the [Job Queue](./job-queue) page.
+
+## Configuration
+
+The optional `vectors:` section of the preset overrides the index parameters; a preset without the section gets the defaults.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `vectors.engine` | `usearch` | The only engine; any other value is an explicit configuration error |
+| `vectors.usearch.max_segment_vectors` | `1000000` | RAM-layer size that triggers a flush to a new DISK segment |
+| `vectors.usearch.compaction_stale_threshold` | `30` | Stale share in the DISK layers that triggers background compaction |
+| `vectors.usearch.search_threads` | `4` | Threads per search |
+| `efSearch` (in the `vectors` section) | `200` | The HNSW beam — the accuracy/latency balance, changeable at runtime without a rebuild |
+
+## See also
+
+- [Hybrid Search](./hybrid-search) — how the index feeds the semantic leg of `search`
+- [The Pipeline](./pipeline) — where embedding happens in ingestion
+- [Job Queue](./job-queue) — the `document_jobs` state machine behind clear-then-queue
+- [Workspace Layout](./workspace-layout) — where `state/vectors/` lives
+- [Model Management](../guides/model-management) — switching embedding models

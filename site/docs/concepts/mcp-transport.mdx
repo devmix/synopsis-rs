@@ -1,0 +1,95 @@
+---
+title: MCP Transport
+description: The double transport — Streamable HTTP on /mcp plus the legacy HTTP+SSE pair (/sse + /message), session handling, and the /health endpoint
+sidebar_position: 10
+---
+
+# MCP Transport
+
+`synopsis serve` exposes the MCP API over HTTP on **two transports simultaneously** — both always enabled, no flags or settings. The 12 read-only tools (facts restricted to `approved` status) and their responses are identical on both; only the wire protocol differs.
+
+| Endpoint | Method | Transport |
+|----------|--------|-----------|
+| `/mcp` | POST | Streamable HTTP (primary) |
+| `/sse` | GET | legacy HTTP+SSE — opens the session stream |
+| `/message` | POST | legacy HTTP+SSE — delivers JSON-RPC to a session |
+| `/health` | GET | plain HTTP — no MCP involved |
+
+## Streamable HTTP — `/mcp` (primary)
+
+The primary transport speaks **Streamable HTTP** (MCP spec ≥ 2025-11-25) via the official rmcp 3.x SDK: a single endpoint for POST JSON-RPC, with the response returned as plain JSON or an SSE stream. Modern MCP clients (Claude, Cursor, any client with Streamable HTTP support) point at `http://localhost:8080/mcp` and nothing else.
+
+## Legacy HTTP+SSE — `/sse` + `/message`
+
+The legacy transport follows the classic two-endpoint SSE wire contract (pinned at v0.57.0). The session flow:
+
+1. **`GET /sse`** → `200 text/event-stream`. The first frame is `event: endpoint`, whose data is the absolute URL `http://<host>/message?sessionId=<uuid>` — a server-generated UUIDv4; the scheme and host are taken from `X-Forwarded-Proto`/`X-Forwarded-Host` when present, otherwise `http` + the `Host` header.
+2. **`POST /message?sessionId=<id>`** with a JSON-RPC 2.0 body → **`202 Accepted`, empty body**. The response does not travel in the POST reply — it arrives as an `event: message` frame on the SSE stream of the same session.
+3. **SSE stream closed** → the session is removed from the registry; any further POSTs for that `sessionId` get `400`.
+
+Session rules:
+
+- A missing or unknown `sessionId` on `POST /message` → **`400`** (existing sessions are unaffected).
+- An idle session — no JSON-RPC request for **300 seconds** — is closed by the idle reaper; subsequent POSTs for it get `400`.
+- Keep-alive is disabled, and the wildcard `Access-Control-Allow-Origin` header is **not** issued (a deliberate deviation from the wire contract, for the security of a shared service).
+
+JSON-RPC methods on the legacy transport (tools-only semantics):
+
+| Method | Response |
+|--------|----------|
+| `initialize` | `protocolVersion` / `capabilities` / `serverInfo` — `serverInfo` matches the name/version of the Streamable HTTP path |
+| `notifications/initialized` | none (notification) |
+| `ping` | `{}` |
+| `tools/list` | the same 12 tools |
+| `tools/call` | the same dispatch as Streamable HTTP; a tool error → result with `isError: true`, a protocol error → JSON-RPC error |
+| *(unknown method)* | JSON-RPC error `-32601` |
+
+## `GET /health`
+
+A plain HTTP endpoint — no MCP handshake — that always returns **200**:
+
+```json
+{
+  "status": "ok",
+  "version": "0.1.0-dev",
+  "sync_state": "idle",
+  "counters": { "documents": 12, "chunks": 340, "entities": 210, "facts": 180 }
+}
+```
+
+`status` is `"ok"` when every counter was read and `"degraded"` otherwise — a failed counter read never makes the endpoint 500, it degrades the status and zeroes the counters. `counters` are the knowledge-base row counts: `documents`, `chunks`, `entities`, `facts`. `version` is the configured `server.version`.
+
+## Connecting a client
+
+**Streamable HTTP** — set the server URL to `http://localhost:8080/mcp`:
+
+```json
+{
+  "mcpServers": {
+    "synopsis": { "url": "http://localhost:8080/mcp" }
+  }
+}
+```
+
+**Legacy HTTP+SSE** — set the server URL to `http://localhost:8080/sse`, or walk through the wire by hand:
+
+```bash
+# 1. Open the stream; the first frame carries the session endpoint
+curl -N http://localhost:8080/sse
+# event: endpoint
+# data: http://localhost:8080/message?sessionId=<uuid>
+
+# 2. POST JSON-RPC to that endpoint (202 Accepted, empty body)
+curl -X POST "http://localhost:8080/message?sessionId=<uuid>" \
+     -H 'Content-Type: application/json' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# the response arrives as an `event: message` frame on the stream
+```
+
+The same call over both transports returns identical JSON — except fields explicitly marked approximate (ANN scores), where a deviation within the recall gate is allowed.
+
+## See also
+
+- [MCP tools reference](../reference/mcp-tools) — the 12 tools, parameters, and result shapes
+- [Quickstart](../quickstart) — get the server running
+- [Hybrid Search](./hybrid-search) — what the `search` tool does with your query

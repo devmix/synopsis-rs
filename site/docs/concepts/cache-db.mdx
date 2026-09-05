@@ -1,0 +1,44 @@
+---
+title: Cache Database
+description: The global workspace/db/cache/cache.db — persistent LLM NER and linker decision caches plus generic run markers; independent of the per-dataset knowledge DB, with graceful degradation when unavailable
+sidebar_position: 9
+---
+
+# Cache Database
+
+Besides the per-dataset knowledge DB, Synopsis keeps **one global cache database** at `workspace/db/cache/cache.db` (see [Workspace Layout](./workspace-layout)). It is shared by **all** datasets and holds only cache data — LLM responses and run markers. It is fully independent of the knowledge DBs: a fresh dataset (or a `db clear` on an existing one) starts with empty knowledge, while the cached LLM decisions carry over.
+
+## What it holds
+
+Three kinds of data, all keyed so a repeat request is a local hit instead of a network call:
+
+- **LLM NER responses** — the [NER](./pipeline) step runs the model on each document's text; the response is stored under a key derived from the full call parameters (model, prompts, content). Re-ingesting the same text never asks the LLM again.
+- **Cross-domain linker decisions** — [entity linking](./cross-domain-linking) decides, pair by pair, whether two entities are the same thing. Each decision is cached under a key derived from the pair and the linking templates, so re-linking a fresh knowledge DB reuses every prior decision.
+- **Generic run markers** — small key-value state the app maintains across runs, such as the timestamp of the last linking run, which bounds the window of entities considered by the next incremental run.
+
+## Why global, why separate
+
+The LLM calls above are the only network calls the server makes, and they are the expensive part of re-ingestion. Their results depend on the *call parameters* (model, prompts, content), not on which dataset a document came from. One global cache means:
+
+- a document re-ingested into a new dataset is not asked of the LLM again;
+- re-linking a fresh knowledge DB reuses every cached pair decision;
+- you can wipe a dataset without losing cached LLM decisions.
+
+The separation is deliberate: dataset data never mixes with cross-dataset caches. The cache DB contains no knowledge tables, and the knowledge DB contains no cache tables — so clearing or rebuilding one dataset has zero effect on the cache, and the cache outlives every dataset it has served.
+
+## The embedding cache (in-memory)
+
+The embedding cache is a different animal: it lives **in memory, per process**, not in this database. It is keyed by model name + dimensionality + text and is size-limited (default 10,000 entries) — a repeat request for the same text with the same model returns the cached vector without re-inference. It vanishes when the process exits.
+
+Persistence across runs comes from the [job queue](./job-queue) instead: its content-hash dedup skips unchanged documents entirely, so they are never re-embedded in the first place. The in-memory cache only saves repeats *within* a run (e.g. the same text appearing in several chunks); the cache DB never stores embeddings.
+
+## Graceful degradation
+
+The cache is an optimization, not a dependency. A missing or corrupted cache degrades to a miss, never a failure: a corrupted entry is treated as a miss, and if the cache database cannot be opened at all, `serve` logs a warning and **continues without caching** — the linker runs uncached (decisions are not persisted) and the NER cache is a no-op. Ingestion and search work normally; the only cost is that repeated LLM calls are paid for twice.
+
+## See also
+
+- [Workspace Layout](./workspace-layout) — where the cache DB sits in the tree
+- [Cross-Domain Linking](./cross-domain-linking) — the consumer of the linker decision cache
+- [The Pipeline](./pipeline) — where the LLM NER runs
+- [Job Queue](./job-queue) — the content-hash dedup that avoids re-embedding
