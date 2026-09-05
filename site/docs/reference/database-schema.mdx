@@ -1,38 +1,39 @@
 ---
 title: Database Schema
-description: Complete SQLite schema of the Synopsis knowledge base — tables, indexes, FTS5 triggers, vec0, and migrations 001–005
+description: Complete SQLite schema of the Synopsis storage — the per-dataset knowledge DB and the global cache DB, table by table, plus the usearch index files that live outside SQLite
 sidebar_position: 3
 ---
 
 # Database Schema
 
-All state lives in a **single SQLite file** (default `./data/knowledge.db`), with FTS5 full-text index and sqlite-vec vector index compiled into the binary via CGO. A separate small `cache.db` file holds embedding/result caches (path: `database.cache_path` or beside the main file).
+Synopsis keeps **two SQLite databases** plus **vector index files outside SQLite**:
 
-At startup, SQL migrations from `paths.migrations_dir` (default `migrations/`) are applied **in filename order**, each in its own transaction. Applied versions are tracked in `_schema_migrations`. After the core migrations, the vec0 vector table is initialized with the configured embedding dimension.
+| Artifact | Location | Scope |
+|---|---|---|
+| **Knowledge DB** | `<workspace>/datasets/<name>/state/db/knowledge.db` | One per dataset: documents, chunks, entities, facts, links, the job queue |
+| **Cache DB** | `<workspace>/db/cache/cache.db` | One global, shared by all datasets: LLM response caches and run markers |
+| **Vector index** | `<workspace>/datasets/<name>/state/vectors/usearch/` | One per dataset: the usearch HNSW index files (see [Vectors live outside SQLite](#vectors-live-outside-sqlite)) |
 
-## Migrations
+The layout is part of the [Workspace Layout](../concepts/workspace-layout.mdx).
 
-| File | Purpose |
-|---|---|
-| `001_schema.sql` | Complete core schema: all base tables, indexes, the FTS5 virtual table, and its synchronization triggers. (Consolidates the original schema history; later columns such as `documents.content_hash` and `facts.weight` are defined inline.) |
-| `002_dedup.sql` | Data migration: deletes duplicate `documents` rows (keeps the highest `id` per `original_path`) and creates the unique index `idx_documents_original_path`. |
-| `003_drop_documents_domain.sql` | Drops `idx_documents_domain` and the `documents.domain` column. The column was never reliably populated; the `metadata_json` field `$.domain` is the single source of truth for document domains. |
-| `004_extracted_at_backfill.sql` | Backfills `fact_sources.extracted_at` for zero/empty timestamps using the last ingest time (`MAX(updated_at)` from `documents`, falling back to `facts`, then `NOW()`). |
-| `005_app_kv.sql` | Creates the `app_kv` key-value store for application-level state (e.g. the `last_linking_run` timestamp). |
+## Migrations and schema state
 
-The vec0 table (`chunks_vec`) is **not** a migration: it is created (or dimension-validated) by the database layer after the migrations, because its column type depends on the configured `vector_dim` — see [Vector index (vec0)](#vector-index-vec0).
+- Each database is created by a **single squashed init migration** — `migrations/knowledge/1-init/up.sql` for the knowledge DB, `migrations/cache/1-init/up.sql` for the cache DB — embedded into the binary at compile time (`include_dir!` in `crates/db`).
+- `PRAGMA user_version` is the **sole source of truth** about the schema state (`= 1` after init). The `_schema_migrations` tracking table is **deliberately NOT created**.
+- Migrations are applied at startup, are idempotent (`IF NOT EXISTS`), and a subsequent startup is a no-op. Future migrations are numbered directories `<id>-<slug>/up.sql`, forward-only (no down.sql); shipped migrations are never edited.
+- A pre-existing `knowledge.db` is **NOT opened and NOT migrated**: the Rust binary always builds its database from scratch, and data is never migrated.
 
-## Tables
+See [Migrations](../developer/migrations.mdx) for the full migration discipline.
+
+## Knowledge DB tables
 
 ### `documents`
 
-Source documents after all migrations (note: the `domain` column was removed in migration 003).
-
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Document predicate. |
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Document ID. |
 | `source_type` | TEXT | NOT NULL | `'json'`, `'markdown'`, `'steam'`, `'unstructured'`, … |
-| `original_path` | TEXT | NOT NULL, UNIQUE | Path of the source file (unique since migration 002). |
+| `original_path` | TEXT | NOT NULL, UNIQUE (`idx_documents_original_path`) | Path of the source file. |
 | `metadata_json` | TEXT | | JSON metadata; `$.domain` is the canonical domain array (e.g. `["hr","policy"]`). |
 | `content_hash` | TEXT | | Content hash for change detection on re-ingestion. |
 | `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Insertion time. |
@@ -42,19 +43,21 @@ Source documents after all migrations (note: the `domain` column was removed in 
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Chunk predicate. |
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Chunk ID. |
 | `doc_id` | INTEGER | NOT NULL, FK → `documents.id` ON DELETE CASCADE | Owning document. |
-| `chunk_text` | TEXT | NOT NULL | Chunk content (indexed by FTS5). |
+| `chunk_text` | TEXT | NOT NULL | The pure source slice; the byte-offset invariant `content[start_offset..end_offset] == chunk_text` holds. |
 | `sequence_num` | INTEGER | NOT NULL | Chunk order within the document. |
-| `start_offset` | INTEGER | | Character offset of the chunk start in the original text (nullable). |
-| `end_offset` | INTEGER | | Character offset of the chunk end (nullable). |
+| `start_offset` | INTEGER | | Byte offset of the chunk start in the original text (nullable). |
+| `end_offset` | INTEGER | | Byte offset of the chunk end (nullable). |
 | `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Insertion time. |
+| `search_text` | TEXT | NOT NULL DEFAULT `''` | The search-oriented text: for Markdown chunks the heading breadcrumb (multi-line heading path) followed by the chunk body, or the body alone when there is no breadcrumb. **Both search legs (FTS5 lexical + vector semantic) operate on `search_text`, not `chunk_text`.** |
+| `metadata_json` | TEXT | nullable, no default | Per-chunk metadata bag as raw JSON (`section_title`, `heading_level`, `breadcrumb`, `image_paths`, …); `NULL` means "no chunk metadata". Parsed on demand. |
 
 ### `entities`
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Entity predicate. |
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Entity ID. |
 | `type` | TEXT | NOT NULL | Entity type (e.g. `employee`, `department`, `policy`, `system`). |
 | `name` | TEXT | NOT NULL | Entity name. |
 | `domain` | TEXT | NOT NULL DEFAULT `''` | Domain this entity belongs to. |
@@ -71,8 +74,8 @@ Maps chunks to the entities extracted from them.
 
 | Column | Type | Constraints |
 |---|---|---|
-| `chunk_id` | INTEGER | FK → `chunks.id` ON DELETE CASCADE |
-| `entity_id` | INTEGER | FK → `entities.id` ON DELETE CASCADE |
+| `chunk_id` | INTEGER | NOT NULL, FK → `chunks.id` ON DELETE CASCADE |
+| `entity_id` | INTEGER | NOT NULL, FK → `entities.id` ON DELETE CASCADE |
 
 Primary key: `(chunk_id, entity_id)`.
 
@@ -80,17 +83,18 @@ Primary key: `(chunk_id, entity_id)`.
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Fact predicate. |
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Fact ID. |
 | `subject_entity_id` | INTEGER | FK → `entities.id` (nullable) | Subject entity. |
 | `predicate` | TEXT | NOT NULL | Relation predicate. |
 | `object_entity_id` | INTEGER | FK → `entities.id` (nullable) | Object entity. |
 | `domain` | TEXT | NOT NULL DEFAULT `''` | Domain this fact belongs to. |
 | `metadata` | TEXT | | JSON metadata (e.g. `threshold_amount`, `condition`). |
-| `status` | TEXT | NOT NULL DEFAULT `'draft'`, CHECK `('draft','pending','approved','rejected')` | Review status. **Only `approved` facts appear in search expansion and entity dossiers.** |
+| `status` | TEXT | NOT NULL DEFAULT `'draft'`, CHECK `('draft','pending','approved','rejected')` | Lifecycle status. **Only `approved` facts appear in search expansion and entity dossiers.** |
 | `valid_from` | DATE | | Temporal validity start. |
 | `valid_to` | DATE | | Temporal validity end. |
 | `weight` | INTEGER | NOT NULL DEFAULT 1 | Weight used in relation traversal. |
-| `created_at` / `updated_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | |
+| `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Insertion time. |
+| `updated_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Last status/metadata change. |
 
 Unique constraint: `(subject_entity_id, object_entity_id, predicate)`.
 
@@ -101,10 +105,10 @@ Provenance: the source quotes for each fact.
 | Column | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | |
-| `fact_id` | INTEGER | FK → `facts.id` ON DELETE CASCADE | |
-| `document_id` | TEXT | NOT NULL | Source document reference. |
+| `fact_id` | INTEGER | NOT NULL, FK → `facts.id` ON DELETE CASCADE | |
+| `document_id` | INTEGER | NOT NULL, FK → `documents.id` ON DELETE CASCADE | Source document. (Deliberate deviation from the v5 schema, where this column was `TEXT`.) |
 | `quote` | TEXT | | Exact quote from the source. |
-| `extracted_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Backfilled for legacy rows by migration 004. |
+| `extracted_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Extraction time. |
 
 ### `entity_sources`
 
@@ -113,8 +117,8 @@ Documents that mention each entity.
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
-| `entity_id` | INTEGER | FK → `entities.id` ON DELETE CASCADE |
-| `document_id` | INTEGER | FK → `documents.id` ON DELETE CASCADE |
+| `entity_id` | INTEGER | NOT NULL, FK → `entities.id` ON DELETE CASCADE |
+| `document_id` | INTEGER | NOT NULL, FK → `documents.id` ON DELETE CASCADE |
 
 Unique constraint: `(entity_id, document_id)`.
 
@@ -124,39 +128,51 @@ Cross-domain entity links created during ingestion (see [Cross-Domain Linking](.
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `subject_entity_id` | INTEGER | FK → `entities.id` ON DELETE CASCADE | |
-| `target_entity_id` | INTEGER | FK → `entities.id` ON DELETE CASCADE | |
+| `subject_entity_id` | INTEGER | NOT NULL, FK → `entities.id` ON DELETE CASCADE | |
+| `target_entity_id` | INTEGER | NOT NULL, FK → `entities.id` ON DELETE CASCADE | |
 | `relation_type` | TEXT | NOT NULL DEFAULT `'same_entity'` | |
-| `method` | TEXT | NOT NULL | How the link was established: `rule`, `equals`, or `llm`. |
+| `method` | TEXT | NOT NULL | How the link was established: `rule` (CEL expression), `equals`, or `llm`. |
 | `confidence` | FLOAT | NOT NULL DEFAULT 1.0 | Link confidence. |
 | `evidence` | TEXT | | Supporting evidence text. |
 
 Primary key: `(subject_entity_id, target_entity_id, relation_type)`. Check constraint: `subject_entity_id != target_entity_id`.
 
-### `app_kv`
+### `document_jobs`
 
-General-purpose application state (created by migration 005).
+The persistent state machine for document operations — the single queue the file watcher, the startup reconcile, and the background worker all enqueue into (see [Job Queue](../concepts/job-queue.mdx)).
 
-| Column | Type | Constraints |
-|---|---|---|
-| `key` | TEXT | PRIMARY KEY (e.g. `last_linking_run`) |
-| `value` | TEXT | |
-| `updated_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `path` | TEXT | PRIMARY KEY | The document path (one row per path). |
+| `source_path` | TEXT | NOT NULL | The source that owns the path. |
+| `op` | TEXT | NOT NULL DEFAULT `'index'` | `'index'` or `'delete'`. |
+| `status` | TEXT | NOT NULL DEFAULT `'pending'` | `'pending'` → `'processing'` → `'done'` or `'error'`. |
+| `content_hash` | TEXT | | Content hash for change detection. |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0 | Attempts so far. |
+| `max_attempts` | INTEGER | NOT NULL DEFAULT 3 | Retry limit (driven by `ingestion.max_retries`). |
+| `last_error` | TEXT | | Last failure message. |
+| `next_attempt_at` | INTEGER | NOT NULL DEFAULT 0 | Unix-seconds due time for the next attempt. |
+| `created_at` | INTEGER | NOT NULL DEFAULT `(strftime('%s','now'))` | Unix seconds. |
+| `updated_at` | INTEGER | NOT NULL DEFAULT `(strftime('%s','now'))` | Unix seconds. |
 
-### `_schema_migrations`
+### `usearch_vectors_log`
 
-| Column | Type | Constraints |
-|---|---|---|
-| `version` | INTEGER | PRIMARY KEY |
-| `applied_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+Write-ahead log for the usearch ANN engine (ADR 0004). It records **operations**, never vector payloads — the rebuild re-encodes chunk text, so the payloads live in `chunks`.
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `segment_id` | INTEGER | NOT NULL (composite PK) | The segment the operation applies to; `0` means "current/RAM operations". |
+| `chunk_id` | INTEGER | NOT NULL (composite PK) | The affected chunk. |
+| `flags` | INTEGER | NOT NULL | Operation bitmask: `1` = ADD, `2` = DEL, `4` = UPD. |
+| `created_at` | TEXT | NOT NULL | Timestamp. |
+
+Primary key: `(segment_id, chunk_id)`.
 
 ## Indexes
 
-Indexes in the current schema (effective after migration 003; `idx_documents_domain` was created in 001 and dropped in 003).
-
 | Index | Table | Columns | Kind |
 |---|---|---|---|
-| `idx_documents_original_path` | `documents` | `original_path` | UNIQUE (migration 002) |
+| `idx_documents_original_path` | `documents` | `original_path` | UNIQUE |
 | `idx_chunks_doc_id` | `chunks` | `doc_id` | |
 | `idx_chunks_seq` | `chunks` | `doc_id, sequence_num` | |
 | `idx_entities_name` | `entities` | `name` | |
@@ -173,16 +189,19 @@ Indexes in the current schema (effective after migration 003; `idx_documents_dom
 | `idx_entity_links_target` | `entity_links` | `target_entity_id` | |
 | `idx_entity_sources_entity_id` | `entity_sources` | `entity_id` | |
 | `idx_entity_sources_document_id` | `entity_sources` | `document_id` | |
+| `idx_document_jobs_due` | `document_jobs` | `status, next_attempt_at` | Serves the worker's due query |
+| `idx_usearch_vectors_log_flags` | `usearch_vectors_log` | `flags` | |
+| `idx_usearch_vectors_log_segment` | `usearch_vectors_log` | `segment_id` | |
 
-In addition, every table's primary key and the composite UNIQUE constraints are backed by SQLite's implicit indexes.
+In addition, every table's primary key and the composite UNIQUE constraints (`entities`, `facts`, `entity_sources`, `chunk_entities`, `entity_links`) are backed by SQLite's implicit indexes.
 
 ## Full-text index (FTS5)
 
-`chunks_fts` is an FTS5 **external-content** virtual table over `chunks`:
+`chunks_fts` is an FTS5 **external-content** virtual table over `chunks`, indexed on **`search_text`** (not `chunk_text`):
 
 ```sql
 CREATE VIRTUAL TABLE chunks_fts USING fts5(
-    chunk_text,
+    search_text,
     content='chunks',
     content_rowid='id'
 );
@@ -192,36 +211,68 @@ Three triggers keep it in sync with `chunks`:
 
 | Trigger | Fires | Action |
 |---|---|---|
-| `chunks_fts_ai` | AFTER INSERT ON `chunks` | Inserts the new row's text into the FTS index |
+| `chunks_fts_ai` | AFTER INSERT ON `chunks` | Inserts the new row's `search_text` into the FTS index |
 | `chunks_fts_ad` | AFTER DELETE ON `chunks` | Removes the old row from the FTS index |
 | `chunks_fts_au` | AFTER UPDATE ON `chunks` | Remove + re-insert, so updated text is re-indexed |
 
-Lexical search is an FTS5 `MATCH` query scored with BM25 (see [Hybrid Search](../concepts/hybrid-search.mdx)).
+The FTS5 engine is compiled into the bundled SQLite — no external extension. Lexical search is an FTS5 `MATCH` query scored with BM25, optionally filtered by domain via `json_each` (see [Hybrid Search](../concepts/hybrid-search.mdx)).
 
-## Vector index (vec0)
+## Cache DB
 
-`chunks_vec` is a sqlite-vec virtual table, created at startup by the database layer (after the SQL migrations) with the **configured** embedding dimension:
+One global database at `<workspace>/db/cache/cache.db`, shared by **all** datasets and holding only cache data (see [Cache Database](../concepts/cache-db.mdx)). It is fully independent of the knowledge DBs: clearing or rebuilding a dataset has zero effect on the cache, and the cache outlives every dataset it has served.
 
-```sql
-CREATE VIRTUAL TABLE chunks_vec USING vec0(
-    chunk_id INTEGER PRIMARY KEY,
-    vector FLOAT[N]   -- N = configured embeddings vector_dim
-);
-```
+### `llm_ner_cache`
 
-- Semantic search is a KNN query over `vector`, returning `distance` (cosine) per row.
-- On startup the layer parses the existing table's `FLOAT[N]` declaration. If `N` differs from the configured dimension, a **dimension mismatch error** is raised; recovery is `--auto-rebuild-vectors`, `embeddings.auto_rebuild_vectors`, or deleting the database / dropping `chunks_vec` and re-ingesting. See [Troubleshooting](../guides/troubleshooting.mdx#embedding-dimension-mismatch).
-- Orphan rows in `chunks_vec` (vectors whose chunk no longer exists) are removed by the `orphan_cleanup` job and during rebuild.
+Cached LLM NER responses — a repeat request for the same text with the same call parameters is a local hit instead of a network call.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `cache_key` | TEXT | PRIMARY KEY |
+| `result` | TEXT | NOT NULL |
+
+### `llm_linker_cache`
+
+Cached cross-domain linker decisions — re-linking a fresh knowledge DB reuses every prior decision.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `cache_key` | TEXT | PRIMARY KEY |
+| `decision` | TEXT | NOT NULL |
+
+### `app_kv`
+
+Generic key-value run markers (e.g. the `last_linking_run` timestamp that bounds the window of entities considered by the next incremental run).
+
+| Column | Type | Constraints |
+|---|---|---|
+| `key` | TEXT | PRIMARY KEY |
+| `value` | TEXT | |
+| `updated_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+
+### The embedding cache (in-memory)
+
+The embedding cache is **NOT a table** — it lives in memory, per process. It is keyed by model name + dimensionality + text and is size-limited (default 10,000 entries, thread-safe): a repeat request for the same text with the same model returns the cached vector without re-inference. It vanishes when the process exits; cross-run no-re-embedding comes from the job queue's content-hash dedup instead (see [Model Management](../guides/model-management.mdx#the-embedding-cache-in-memory)).
+
+## Vectors live outside SQLite
+
+Embedding vectors are **not stored in either database**. The semantic leg of search queries the **usearch HNSW index** — disk-backed (mmap), scalar-quantized (bf16 default), two-layer persistence (RAM layer + WAL segments + compaction) — stored as index files under the dataset's `state/vectors/usearch/` directory (see [Vector Rebuild](../concepts/vector-rebuild.mdx)).
+
+- The index is **rebuilt from the chunk text** in `chunks`; the old vector data in pre-existing files is never read or migrated.
+- The index dimensionality must match the embedding model from the configuration; a mismatch triggers the clear-then-queue behavior (`serve --auto-rebuild-vectors` or `embeddings.auto_rebuild_vectors` to rebuild automatically).
+- `usearch_vectors_log` in the knowledge DB is the engine's **operations** log (segment/chunk/flags), not the vector payloads.
+- Orphan entries (vectors whose chunk no longer exists) are removed by the `orphan_cleanup` job and during rebuild.
 
 ## PRAGMAs
 
-Connection-level settings applied on every open (see also [Configuration Schema — PRAGMAs](./config-schema.mdx#pragmas-applied-on-connection)):
+Connection-level settings applied on every pooled connection (see also [Configuration Schema — PRAGMAs](./config-schema.mdx#pragmas-applied-on-connection)):
 
-`journal_mode=WAL`, `synchronous=NORMAL`, `cache_size=-64000` (64 MB), `mmap_size=268435456` (256 MB), `foreign_keys=ON`, plus a DSN `busy_timeout=5000`.
+`journal_mode=WAL`, `synchronous=NORMAL`, `cache_size=-64000` (64 MB), `mmap_size=268435456` (256 MB), `foreign_keys=ON`, `busy_timeout=5000`.
 
 ## See also
 
-- [Configuration Schema](./config-schema.mdx) — `database`, `paths.migrations_dir`, and embedding dimension settings
+- [Configuration Schema](./config-schema.mdx) — `dataset`, `paths`, and embedding dimension settings
+- [Migrations](../developer/migrations.mdx) — `PRAGMA user_version`, forward-only discipline
+- [Workspace Layout](../concepts/workspace-layout.mdx) — where both databases sit in the tree
 - [MCP Tools](./mcp-tools/index.mdx) — the tools that read this schema
 - [Knowledge Graph](../concepts/knowledge-graph.mdx) — how `entities`, `facts`, and `entity_links` are traversed in memory
-- [Troubleshooting](../guides/troubleshooting.mdx) — FTS5/vec0 and dimension mismatch problems
+- [Troubleshooting](../guides/troubleshooting.mdx) — knowledge DB and vector index problems

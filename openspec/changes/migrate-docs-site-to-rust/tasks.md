@@ -724,7 +724,7 @@ implementation.
 
 ## 7 — Reference
 
-- [ ] 7.1 Rewrite `reference/cli.mdx`
+- [x] 7.1 Rewrite `reference/cli.mdx`
 
 **Goal.** Rewrite the CLI reference to match the Rust CLI exactly.
 
