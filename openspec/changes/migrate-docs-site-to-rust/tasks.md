@@ -516,7 +516,7 @@ migrations for the Rust workspace.
 - 'PRAGMA user_version' present in migrations.mdx;
   `git grep -Pn 'golangci|\bgo test\b' -- site/docs/developer/migrations.mdx site/docs/developer/testing.mdx site/docs/developer/coding-standards.mdx` → **0** (PCRE word-boundary form — the literal BRE `'golangci\|go test'` false-positives on the substring "go test" inside the required `cargo test` commands; see the task 2.2/3.1 sweep revisions).
 
-- [ ] 5.3 Rewrite developer: `ci-cd.mdx` + `extending.mdx`; DELETE `docker.mdx`
+- [x] 5.3 Rewrite developer: `ci-cd.mdx` + `extending.mdx`; DELETE `docker.mdx`
 
 **Goal.** Rewrite the CI/CD and extending docs for the Rust workspace; delete
 the Docker page (design D7).

@@ -1,0 +1,62 @@
+---
+title: OpenSpec Workflow
+description: The spec-driven development loop — proposal → design → specs → tasks → apply → archive — the frozen contracts, the task rules for fresh agents, and the opsx-* commands
+sidebar_position: 10
+---
+
+# OpenSpec Workflow
+
+Synopsis develops through a spec-driven loop: every change goes through **proposal → design → specs → tasks → apply → archive**, and the machine — not a human reviewer — checks that the implementation matches the contracts. The human reviews process and contracts, not lines of code. The workflow state lives under `openspec/`:
+
+| Location | Holds |
+|---|---|
+| `openspec/config.yaml` | the project context, the frozen stack, the hard constraints, and the artifact rules |
+| `openspec/specs/` | the 14 contract specs — the sources of truth |
+| `openspec/changes/` | in-flight changes (proposal, design, delta specs, tasks) |
+| `openspec/changes/archive/` | completed changes, archived as `YYYY-MM-DD-<name>/` |
+| `docs/adr/` | the architecture decision records (see [ADRs](./adrs)) |
+
+## The flow
+
+| Stage | Artifact | What it pins down |
+|---|---|---|
+| **proposal** | the change's proposal | scope limited to a single module or stage; which frozen contracts (MCP tools / CLI / data schema / config) are touched and how parity is confirmed; the mandatory "Non-goals" section |
+| **design** | the design decisions | every decision with a reason (why not the alternative); changing a frozen contract is a separate decision with explicit justification; the reference fixtures and contract specs named |
+| **specs** | delta specs | requirements as Given/When/Then scenarios, testable against the contract specs and the recorded fixtures |
+| **tasks** | `tasks.md` | the self-contained task bodies (below) |
+| **apply** | the implementation | the code; before finishing a task, `cargo clippy --all-targets` (no warnings), `cargo fmt --check` (clean), and `cargo test` (green) must all pass |
+| **archive** | the archive summary | the change's parity-check results and the remaining risks |
+
+## Frozen contracts
+
+Four contract specs pin behavior as-is: **MCP tools** (`mcp-contract`), **CLI surface** (`cli-surface`), **data schema** (`data-schema`), and **config formats** (`config-format`). Their sources of truth are the specs themselves and the recorded fixtures.
+
+A change to a frozen contract is a **separate explicit decision with justification** — it never happens inside an implementation task. The same rule applies to the dependency palette: the stack is frozen in `openspec/config.yaml`, and adding a crate is a contract-level decision, not an implementation detail.
+
+## Task rules
+
+The orchestrator runs a **different agent per task**, and each agent starts with no memory of previous sessions and a ~100k-token context budget. Every task body in `tasks.md` must therefore fit entirely within that budget:
+
+- **self-contained** — goal, exact file scope, dependencies (which tasks/modules must already exist), acceptance criteria, and reference paths all in the body;
+- **≤ ~500 lines** of new code + tests in the final diff — a larger module is split into subtasks with an explicit order, never expanded silently;
+- **machine-checkable acceptance** — tests, clippy/fmt clean, and a parity check against recorded fixtures where applicable; the human reviews only the diff and its match to the plan;
+- **dependencies first** — a task does not start until its dependencies are complete; the order of tasks in `tasks.md` reflects the dependency graph.
+
+## Commands and skills
+
+The loop is driven by the `opsx-*` commands (in `.opencode/commands/`), each backed by an `openspec-*` agent skill (in `.opencode/skills/`):
+
+| Command | Skill | What it does |
+|---|---|---|
+| `opsx-propose` | `openspec-propose` | propose a new change with all artifacts generated in one step |
+| `opsx-apply` | `openspec-apply-change` | implement the tasks of a change, one self-contained task per fresh agent |
+| `opsx-sync` | `openspec-sync-specs` | sync a change's delta specs into the main specs, without archiving the change |
+| `opsx-archive` | `openspec-archive-change` | finalize and archive a completed change |
+| `opsx-update` | `openspec-update-change` | revise a change's planning artifacts and keep them coherent with one another — never edits code |
+| `opsx-explore` | `openspec-explore` | think through an idea or problem before or during a change |
+
+## See also
+
+- [CI/CD](./ci-cd) — the machine gates (fmt, clippy, test) that every task must pass
+- [Coding Standards](./coding-standards) — the lint baseline the apply stage enforces
+- [Architecture](./architecture) — the design decisions (ADRs) the workflow produced

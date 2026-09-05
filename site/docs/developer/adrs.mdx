@@ -1,0 +1,51 @@
+---
+title: Architecture Decision Records
+description: The four ADRs behind the Rust implementation — the bundled SQLite/FTS5 seam, the ONNX runtime seam, the ANN engine decision, and the usearch two-tier RAM/DISK layout
+sidebar_position: 9
+---
+
+# Architecture Decision Records
+
+The design decisions behind the Rust implementation are recorded as ADRs under `docs/adr/` in the repository. This page summarizes each one — status, decision, rationale. The full text, with the spike measurements and rejected alternatives, lives in the repository file named in each section (the ADR files are not part of this site).
+
+## ADR 0001 — SQLite/FTS5 seam (bundled, source-compiled)
+
+- **Status:** GO (2026-08-18, change `native-seam-spikes`, spike S1)
+- **Full text:** `docs/adr/0001-sqlite-fts5.md`
+
+**Decision.** The `db` crate owns the full SQLite/FTS5 path in Rust: SQLite is compiled from source into the binary (rusqlite + `libsqlite3-sys` with the `bundled` feature), so FTS5 ships with every build with no C-compiler flags anywhere. The same ADR froze the migration mechanism: `rusqlite_migration` with the SQL embedded at compile time, a single squashed init migration, `PRAGMA user_version` as the sole source of schema state, and forward-only numbered migrations — the `_schema_migrations` table is never created, and pre-existing `knowledge.db` files are never opened or upgraded.
+
+**Rationale.** A source-compiled bundled SQLite makes the build reproducible across all five cross-build targets and keeps the "one local binary, no external dependencies" contract intact; because FTS5 is part of every bundled build, the silent "no fts5 module → degrade" failure class is excluded by construction. Spike measurements confirmed bm25 parity with the recorded fixture expectations, and the fresh schema matched the fixture to the table, index, and trigger level.
+
+## ADR 0002 — ONNX Runtime seam (ort, load-dynamic)
+
+- **Status:** GO (2026-08-18, spike S2 — all three registry models)
+- **Full text:** `docs/adr/0002-onnx-runtime.md`
+
+**Decision.** The `embedding` crate is built on `ort` 2.0.0-rc.13 with `load-dynamic` + `api-28` and default features off: the ONNX Runtime `.so`/`.dylib` is neither downloaded nor linked at build time but opened via dlopen at runtime from a path resolved per the `onnx.yaml` registry (URL + `size_bytes` + sha256 verify). The frozen entry "onnxruntime-rs" in `openspec/config.yaml` does not exist on crates.io; the pin is `ort`, the successor, with the intent (ORT 1.28, dynamic loading, no build-time downloads) fully preserved.
+
+**Rationale.** Dynamic loading keeps the build free of downloads and external services while the registry pins the exact artifact bytes; the spike produced deterministic, bit-identical vectors across independent processes for all three registry models — which is what makes storing reference vectors in fixtures safe for machine-checked parity.
+
+## ADR 0003 — ANN engine (LanceDB, IVF-HNSW, u8-SQ)
+
+- **Status:** superseded by ADR 0004 (2026-08-31)
+- **Full text:** `docs/adr/0003-ann-engine.md`
+
+**Decision.** The first ANN-engine decision froze LanceDB 0.37 with IVF-HNSW and u8 scalar quantization (`IvfHnswSq`, M=16, efConstruction=100, 256 partitions, nprobes=32, **efSearch=200**, L2) for the `vectors` crate.
+
+**Rationale.** At 250K×1024 scale the i8/efSearch=200 configuration passed all three laptop gates (p95 < 10 ms, recall@10 ≥ 0.95, RSS delta ≤ ~2 GB) in two independent runs, with efSearch=200 as the key parameter — at efSearch=50 recall caps near 0.88. The full N=1M run then failed both the p95 and recall gates, and a runtime sweep (nprobes 32→256, efSearch 200→400) found no setting that met both at once — the p95 budget is exhausted at 4× scale, which is why the ADR was superseded.
+
+## ADR 0004 — usearch: two-tier RAM/DISK with per-segment WAL
+
+- **Status:** accepted (2026-08-31, human decision; change `usearch-wal-persistence`)
+- **Full text:** `docs/adr/0004-usearch-lsm-segments.md`
+
+**Decision.** usearch 2.x is the sole ANN engine, arranged as a two-tier RAM/DISK architecture: a RAM segment (an in-memory copy via `restore_from_buffer`, persisted by explicit saves) plus read-only DISK segments (mmap views, never mutated), searched in parallel over a dedicated thread pool and merged with the freshest tier winning on duplicates. A per-segment WAL in SQLite records only invalidations (`DEL` rows), sidecar `.keys` manifests make key enumeration scan-free, RAM overflow flushes a new monotonically-numbered segment (no renumbering), and background compaction runs when the stale-vector threshold is exceeded.
+
+**Rationale.** An audit of the partial implementation found 12 defects — a dead DISK tier, an unwired WAL, non-persisting mmap writes, no crash recovery — so the engine was rewritten wholesale against this architecture: disk-backed and scalar-quantized (bf16 default) to fit the 16 GB laptop, WAL-first atomic supersession for crash safety, and zero SQL on the steady-state search path.
+
+## See also
+
+- [Architecture](./architecture) — the workspace, the data flow, and the ADR summaries in context
+- [Database Migrations](./migrations) — the migration mechanism frozen by ADR 0001
+- [Vector Rebuild](../concepts/vector-rebuild) — how the usearch index is rebuilt from chunk text
