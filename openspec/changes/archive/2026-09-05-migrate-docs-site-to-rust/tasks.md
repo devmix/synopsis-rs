@@ -825,7 +825,7 @@ read the ENTIRE spec).
 
 ## 8 — Final audit
 
-- [ ] 8.1 Roadmap + architecture SVGs + content-parity audit
+- [x] 8.1 Roadmap + architecture SVGs + content-parity audit
 
 **Goal.** Finish the site: rewrite the roadmap, update the two architecture
 SVGs, and run the global parity audit (design D9).
