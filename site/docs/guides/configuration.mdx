@@ -1,58 +1,63 @@
 ---
 title: Configuration
-description: How Synopsis resolves its config file, the global CLI flags, and a full walkthrough of config.default.yaml
+description: How the synopsis binary resolves its config file, the global CLI flags, and a full key-by-key walkthrough of config.default.yaml, onnx.yaml, and the prompt templates
 sidebar_position: 2
 ---
 
 # Configuration
 
-Synopsis is configured by a single YAML file. The repository ships `configs/config.default.yaml`, which is the active default; copy it (or use `--preset`) to create environment-specific variants.
+Synopsis is configured by a single YAML **preset** file (`config.{preset}.yaml`), an external **model registry** (`onnx.yaml`), and per-dataset **XML ontologies** (not YAML). The repository ships `workspace/configs/` with the default preset, the registry, and the prompt templates.
 
 ## Config file resolution
 
-The binary resolves the config path in this order:
+The binary resolves the preset path in this order:
 
-1. **`--config PATH`** — used verbatim if given.
-2. **Preset auto-search** — otherwise the binary looks for `config.{preset}.yaml` (default preset: `default`) using, in order:
-   1. `<executable dir>/configs/config.{preset}.yaml`
-   2. `<executable dir>/config.{preset}.yaml`
-   3. `<parent of executable dir>/config.{preset}.yaml`
-   4. `<parent of executable dir>/configs/config.{preset}.yaml`
-   5. `<CWD>/configs/config.{preset}.yaml`
+1. **`--config PATH`** — used verbatim if given; the auto-search is skipped.
+2. **Preset auto-search** — otherwise the binary looks for `config.{preset}.yaml` (default preset: `default`), first relative to the executable's directory, then the CWD:
+   1. `<exeDir>/workspace/configs/config.{preset}.yaml`
+   2. `<exeDir>/config.{preset}.yaml`
+   3. `<parent(exeDir)>/config.{preset}.yaml`
+   4. `<parent(exeDir)>/workspace/configs/config.{preset}.yaml`
+   5. `<CWD>/workspace/configs/config.{preset}.yaml`
    6. `<CWD>/config.{preset}.yaml`
 
-   If none exist, it falls back to `configs/config.{preset}.yaml` and fails with a load error.
+   If nothing exists, the binary falls back to the relative `workspace/configs/config.{preset}.yaml` and fails with a load error naming that path.
 
-Example with a custom preset:
+In short: `<exeDir>/workspace/configs/` → parent directory → CWD. The executable path is not symlink-resolved.
+
+`--preset NAME` selects `config.{NAME}.yaml` (default: `default`). Example with a custom preset:
 
 ```bash
-cp configs/config.default.yaml configs/config.prod.yaml
-./bin/synopsis --preset prod serve
+cp workspace/configs/config.default.yaml workspace/configs/config.prod.yaml
+synopsis --preset prod serve
 ```
+
+`--dataset NAME` overrides the configured dataset (`dataset.name` in the preset) for a single run — the per-dataset artifacts (ontology, content, knowledge DB, vectors) resolve under `<workspace_dir>/datasets/<NAME>/`.
 
 ## Global flags
 
-Global flags are parsed **before the subcommand** and apply to every subcommand (`sync`, `serve`, `model`, `onnx-runtime`):
+Global flags are parsed **before the subcommand** and apply to every subcommand (`serve`, `queue`, `db`, `model`, `onnx-runtime`, `load-test`):
 
-| Flag            | Description                                                            |
-| --------------- | ---------------------------------------------------------------------- |
-| `--config PATH` | Path to the configuration file (skips auto-search)                     |
+| Flag | Description |
+| --- | --- |
+| `--config PATH` | Path to the configuration file (skips auto-search) |
 | `--preset NAME` | Preset name; the binary searches for `config.{NAME}.yaml` (default: `default`) |
-| `--db PATH`     | Path to the SQLite database file; overrides `database.path`            |
-| `--version`     | Print the version and exit                                             |
+| `--dataset NAME` | Dataset name; overrides `dataset.name` from the config |
+| `--version` | Print the version and exit |
 
 ```bash
-# Use an explicit config and point at a scratch database
-./bin/synopsis --config configs/config.default.yaml --db /tmp/scratch.db sync
+# Use an explicit config and point at a specific dataset
+synopsis --config workspace/configs/config.default.yaml --dataset edtech serve
 ```
 
 ## Walkthrough of `config.default.yaml`
+
+Unknown keys do not break startup. Unknown values of string fields that are not validated at parse time (`logging.level`/`format`/`output`, `chunking.strategy`, `response_format`, `archive_format`, `source.type`, `attribute.type`) are kept as-is rather than rejected.
 
 ### `database`
 
 ```yaml
 database:
-  path: "./data/knowledge.db"
   pragma:
     mmap_size: "268435456"   # 256MB
     journal_mode: WAL
@@ -60,7 +65,11 @@ database:
     cache_size: "-64000"     # 64MB
 ```
 
-Location of the single SQLite file (FTS5 index and vec0 vector index live inside it). The pragmas are applied on connection: WAL journal with normal synchronous is a good balance for a single-writer workload; the mmap and cache sizes speed up reads on large corpora.
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `database.pragma` | map of string → string | `{}` | PRAGMA overrides applied on connection. WAL journal with normal synchronous is a good balance for a single-writer workload; the mmap and cache sizes speed up reads on large corpora. |
+
+The knowledge-DB **path is not configurable**: it is derived from `workspace_dir` + `dataset.name` as `<workspace>/datasets/<name>/state/db/knowledge.db`. The legacy `database.path` key from the pre-restructure layout is accepted but ignored.
 
 ### `embeddings`
 
@@ -69,7 +78,7 @@ embeddings:
   mode: "local"
   local:
     model_name: "bge-small-en-v1.5"  # auto-download
-    # model_path: ""                 # legacy: explicit path to an ONNX file
+    # model_path: ""                 # explicit path override
     vector_dim: 384
   api:
     base_url: "http://localhost:1234/v1"
@@ -80,10 +89,24 @@ embeddings:
     timeout_ms: 30000
 ```
 
-- `mode: "local"` — embedding runs inside the process with ONNX Runtime. `model_name` selects a model from the registry in `configs/onnx.yaml` and is **downloaded automatically on first use** (stored in `<data_dir>/models/`). The legacy `model_path` field points at an explicit ONNX file instead; setting it skips auto-download.
-- `mode: "api"` — embeddings come from an OpenAI-compatible HTTP endpoint (`base_url`/`api_key`/`model_name`).
-- **`vector_dim` must match the model you actually use.** Switching to a model with a different dimension requires rebuilding the vectors — see [Troubleshooting](./troubleshooting.mdx#embedding-dimension-mismatch).
-- `auto_rebuild_vectors: true` is the config-file equivalent of the `--auto-rebuild-vectors` CLI flag: on a detected dimension mismatch the vectors are rebuilt automatically instead of failing.
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `embeddings.mode` | string | — | `"local"` (in-process ONNX Runtime) or `"api"` (OpenAI-compatible HTTP endpoint). Any other value is rejected at validation. |
+| `embeddings.local.model_name` | string | `"bge-m3-int8"` | Model name from the `onnx.yaml` registry; **downloaded automatically on first use** into `workspace/models/`. If both `model_name` and `model_path` are empty, `"bge-m3-int8"` is the fallback. |
+| `embeddings.local.model_path` | string | `""` | Explicit path to an ONNX file; setting it skips registry resolution. |
+| `embeddings.local.tokenizer_path` | string | `""` | Optional tokenizer path override. |
+| `embeddings.local.vector_dim` | integer | must be > 0 | Embedding dimension; must match the model actually in use. |
+| `embeddings.api.base_url` | string | required in api mode | Base URL of the embeddings endpoint. |
+| `embeddings.api.api_key` | string | `""` | Bearer token; empty if not required. |
+| `embeddings.api.model_name` | string | required in api mode | Model to request from the API. |
+| `embeddings.api.vector_dim` | integer | must be > 0 | Embedding dimension. |
+| `embeddings.api.max_retries` | integer | 3 | Retries after an initial failure. |
+| `embeddings.api.timeout_ms` | integer | 30000 | HTTP request timeout in milliseconds. |
+| `embeddings.auto_rebuild_vectors` | boolean | `false` | Config-file equivalent of the `--auto-rebuild-vectors` CLI flag: on a detected dimension mismatch the vectors are rebuilt automatically instead of failing. |
+
+**Shipped-preset deviation (not a bug):** `config.default.yaml` deliberately pairs `bge-small-en-v1.5` (384-dim) instead of the frozen `bge-m3-int8` (1024-dim) — faster local testing on the small model. The frozen default is `bge-m3-int8` with `vector_dim: 1024`; the preset file and `workspace/configs/README.md` document the pairing.
+
+Switching to a model with a different `vector_dim` requires rebuilding the vectors — see [Troubleshooting](./troubleshooting).
 
 ### `ingestion`
 
@@ -96,10 +119,7 @@ ingestion:
       overlap_size: 100
       min_section_size: 500
     json:
-      text_fields:
-        - "description"
-        - "title"
-        - "details"
+      text_fields: [ "description", "title", "details" ]
       combine_fields: true
   ner:
     llm:
@@ -112,23 +132,36 @@ ingestion:
       response_format: "json_schema"   # or "json_object"
       timeout_ms: 120000
       max_retries: 3
-    prose:
-      enable_pos: true
-      enable_ner: true
-      custom_patterns: [ ]
-      entity_types: [ ]
-      min_confidence: 0.5
-      location_min_confidence: 0.75
   batch_size: 100
+  max_retries: 3
   resolver:
     similarity_threshold: 0.85
 ```
 
-- `chunking.markdown` — strategy is one of `headers`, `fixed`, or `hybrid`; `max_chunk_size`/`overlap_size` bound fixed-split chunk size and overlap; `min_section_size` (when set above 0, hybrid mode) enables fixed-size re-splitting of oversized sections. See [Ingestion](./ingestion.mdx#chunking) for behavior.
-- `chunking.json` — which JSON object fields carry text (`text_fields`) and whether they are combined into one document (`combine_fields`).
-- `ner` — two providers run as a composite: an **LLM provider** (OpenAI-compatible endpoint; `response_format` is `json_schema` when the API supports it, otherwise `json_object`) and a **prose provider** (offline POS/NER with regex patterns and per-type confidence thresholds).
-- `batch_size` — how many documents are processed per ingest batch.
-- `resolver.similarity_threshold` — Jaro-Winkler threshold (default 0.85) for merging duplicate entity names.
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `ingestion.chunking.markdown.strategy` | string | `"headers"` | One of `headers`, `fixed`, `hybrid`; tolerant — an unrecognized value does not break startup. |
+| `ingestion.chunking.markdown.max_chunk_size` | integer | 1000 | Maximum characters per chunk. |
+| `ingestion.chunking.markdown.overlap_size` | integer | 100 | Overlap between consecutive chunks in characters. |
+| `ingestion.chunking.markdown.min_section_size` | integer | 500 | Minimum section size before it is split. |
+| `ingestion.chunking.json.text_fields` | list of string | `["description", "title", "wikitext", "html"]` | Which JSON object fields carry text. |
+| `ingestion.chunking.json.combine_fields` | boolean | `false` | Merge all indexed fields into a single chunk per object. |
+| `ingestion.chunking.json.max_objects` | integer | 0 (unlimited) | Limit on the number of objects processed. |
+| `ingestion.ner.disabled` | boolean | `false` | When `true`, no NER runs at all. |
+| `ingestion.ner.llm.api_base_url` | string | `""` | OpenAI-compatible API endpoint for the LLM NER provider. |
+| `ingestion.ner.llm.api_key` | string | `""` | Bearer token; empty if not required. |
+| `ingestion.ner.llm.model_name` | string | `""` | Model identifier to call. |
+| `ingestion.ner.llm.temperature` | float | 0.0 | Sampling temperature (0.0 for determinism). |
+| `ingestion.ner.llm.max_tokens` | integer | 0 | Maximum tokens per response. |
+| `ingestion.ner.llm.seed` | integer | 0 | Random seed for deterministic sampling. |
+| `ingestion.ner.llm.response_format` | string | `"json_object"` | `"json_object"` or `"json_schema"` (full JSON Schema in the request body; requires API support); tolerant. |
+| `ingestion.ner.llm.timeout_ms` | integer | 60000 | HTTP request timeout in milliseconds. |
+| `ingestion.ner.llm.max_retries` | integer | 3 | Retry attempts for transient errors (429, 5xx). |
+| `ingestion.batch_size` | integer | 100 | How many documents are processed per ingest batch. |
+| `ingestion.max_retries` | integer | 3 | Maximum automatic re-indexing attempts for a problematic document by the background worker; after exhaustion the document gets `error` status in the `document_jobs` queue. |
+| `ingestion.resolver.similarity_threshold` | float | 0.8 | Jaro-Winkler similarity threshold for merging duplicate entity names. |
+
+See [Ingestion](./ingestion) for how the chunking and NER settings drive the pipeline.
 
 ### `linker`
 
@@ -147,7 +180,12 @@ linker:
     response_format: "json_schema"
 ```
 
-Cross-domain entity linking configuration. The LLM-based linker activates when the ontology's `global.xml` declares `<method>llm</method>` and `disabled` is `false`. See [Cross-Domain Linking](../concepts/cross-domain-linking.mdx).
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `linker.disabled` | boolean | `false` | When `false` (and the ontology's `global.xml` declares `<method>llm</method>`), the LLM cross-domain entity linker is active. |
+| `linker.llm.*` | (same shape as `ingestion.ner.llm`) | | `api_base_url`, `api_key`, `model_name`, `temperature`, `max_tokens`, `seed`, `response_format`, `timeout_ms`, `max_retries` for the linking LLM. |
+
+See [Cross-Domain Linking](../concepts/cross-domain-linking) for the linking methods and the decision cache.
 
 ### `search`
 
@@ -170,7 +208,51 @@ search:
     default: 1.0
 ```
 
-Controls the hybrid search pipeline: the RRF constant, per-retriever candidate pool sizes, overall timeout, and the reranking boost factors (deprecated/official/expired penalties, recency, and per-document-type authority weights). See [Searching](./searching.mdx#reranking).
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `search.rrf_k` | integer | 20 | The Reciprocal Rank Fusion constant; a lower value increases rank sensitivity. |
+| `search.lexical_top_k` | integer | 20 | Candidate pool size for the lexical (FTS5) leg. |
+| `search.semantic_top_k` | integer | 20 | Candidate pool size for the semantic (vector) leg. |
+| `search.final_top_k` | integer | 10 | Merged top-K returned to callers. |
+| `search.enable_lexical` | boolean | `true` | Enable the lexical leg. If **both** legs are disabled, both are force-enabled. |
+| `search.enable_semantic` | boolean | `true` | Enable the semantic leg (same force-enable rule). |
+| `search.timeout_ms` | integer | 10000 | Per-search timeout in milliseconds. |
+| `search.deprecated_boost` | float | 0.2 | Boost penalty for deprecated content. |
+| `search.official_boost` | float | 1.5 | Boost for official sources. |
+| `search.recent_boost` | float | 1.2 | Boost for recent content (within `recent_days`). |
+| `search.recent_days` | integer | 90 | Recency window in days for `recent_boost`. |
+| `search.authority_boost` | map of string → float | `{"default": 1.0}` | Authority-based boost factors keyed by authority name (document type). |
+
+See [Searching](./searching) for the fusion and reranking behavior.
+
+### `vectors`
+
+```yaml
+vectors:
+  engine: "usearch"
+  usearch:
+    max_segment_vectors: 1000000
+    compaction_stale_threshold: 30
+    search_threads: 4
+```
+
+The whole section is optional — an absent section resolves to the engine defaults.
+
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `vectors.engine` | string | `"usearch"` (absent) | The ANN engine. Only `"usearch"` is accepted; `"lance"` is rejected with an explicit error naming the removal, and any other value fails the parse. |
+| `vectors.dim` | integer | 1024 | Vector dimensionality of the index. |
+| `vectors.m` | integer | 16 | HNSW graph degree M. |
+| `vectors.ef_construction` | integer | 100 | HNSW candidate list size during index build. |
+| `vectors.num_partitions` | integer | 256 | Number of IVF partitions (coarse-quantizer centroids). |
+| `vectors.nprobes` | integer | 32 | IVF partitions probed per query. |
+| `vectors.ef_search` | integer | 200 | HNSW candidate list size during query. |
+| `vectors.quantization` | string | `"bf16"` | Scalar quantization: one of `"u8"`, `"i8"`, `"f16"`, `"bf16"`, `"f32"`; an unrecognized value fails the parse. |
+| `vectors.usearch.max_segment_vectors` | integer | 1000000 | Maximum vectors per segment after compaction; must be > 0. |
+| `vectors.usearch.compaction_stale_threshold` | integer | 30 | Stale-vector percentage (1–100) that triggers compaction. |
+| `vectors.usearch.search_threads` | integer | 4 | Number of parallel search threads; must be > 0. |
+
+The usearch index is disk-backed (mmap) and scalar-quantized; the two-layer persistence (RAM layer + WAL segments + compaction) is described in [Vector Rebuild](../concepts/vector-rebuild).
 
 ### `graph`
 
@@ -182,7 +264,14 @@ graph:
   load_on_startup: true
 ```
 
-The in-memory knowledge graph used by search graph expansion and the graph traversal tools. `load_on_startup` loads the full entity/fact graph when the server starts. See [Knowledge Graph](../concepts/knowledge-graph.mdx).
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `graph.enable_graph` | boolean | `true` | Enable graph traversal in queries. **Presence semantics**: absent → `true`; an explicit `false` is honored. |
+| `graph.max_depth` | integer | 5 | Maximum BFS depth. |
+| `graph.max_nodes` | integer | 1000 | Maximum nodes returned per query. |
+| `graph.load_on_startup` | boolean | `true` | Load the full entity/fact graph into memory when the server starts. **Presence semantics** like `enable_graph`. |
+
+See [Knowledge Graph](../concepts/knowledge-graph) for what the graph serves.
 
 ### `auto_update`
 
@@ -192,9 +281,22 @@ auto_update:
   debounce_seconds: 1
   watch_sources: true
   initial_sync: true    # full source scan on startup; false to skip
+  retry_failed:
+    enabled: true
+    poll_interval_seconds: 60
 ```
 
-Behavior of `serve` mode: a file watcher re-indexes changed documents automatically (debounced), and an initial full source scan runs at startup unless `initial_sync` is `false` or `--no-initial-sync` is passed.
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `auto_update.enabled` | boolean | `true` (absent section) | Enable filesystem monitoring. A **missing section** is materialized with `enabled = true`; a present section is honored as parsed (`enabled: false` is not overwritten). |
+| `auto_update.debounce_seconds` | integer | 30 | Minimum interval between re-indexings in seconds. |
+| `auto_update.watch_sources` | boolean | `true` | Watch all sources. **Presence semantics**: absent → `true`; an explicit `false` is honored. |
+| `auto_update.initial_sync` | boolean | `true` (absent section) | Run a full source scan (startup reconcile) on startup. `serve --no-initial-sync` also skips it. |
+| `auto_update.retry_failed` | object | `{ enabled: true, poll_interval_seconds: 60 }` | Background re-processing of problematic documents. |
+| `auto_update.retry_failed.enabled` | boolean | `true` | Enable the worker's retry sweep of the `document_jobs` queue. |
+| `auto_update.retry_failed.poll_interval_seconds` | integer | 60 | Poll interval for the `document_jobs` queue in seconds. |
+
+See [Job Queue](../concepts/job-queue) for the queue states and the `queue status` / `queue reset-retries` commands.
 
 ### `scheduler`
 
@@ -203,10 +305,12 @@ scheduler:
   jobs:
     orphan_cleanup:
       enabled: true
-      interval_seconds: 300   # every 5 minutes
+      interval_seconds: 300   # run every 5 minutes
 ```
 
-Periodic background jobs during `serve`. The scheduler runs in singleton mode — overlapping executions of the same job are dropped, which protects SQLite from concurrent writers. Currently registered: `orphan_cleanup` (removes data for documents that disappeared from the sources).
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `scheduler.jobs` | map of name → job | `orphan_cleanup` registered | Named jobs, each with `enabled` (boolean) and `interval_seconds` (integer). The scheduler runs in singleton mode: overlapping executions of the same job are dropped, which protects SQLite from concurrent writers. `orphan_cleanup` (removes data for documents that disappeared from the sources) is registered by default — **disabled** with a 3600 s interval unless explicitly configured. |
 
 ### `logging`
 
@@ -217,26 +321,43 @@ logging:
   output: "stderr"
 ```
 
-Structured logging (zap): log level, output format, and destination.
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `logging.level` | string | `"info"` | `trace` / `debug` / `info` / `warn` / `error`; tolerant — an unfamiliar value (e.g. `"verbose"`) does not break startup and is kept as-is. |
+| `logging.format` | string | `"console"` | `console` or `json`; tolerant. |
+| `logging.output` | string | `"stderr"` | `stderr` or `stdout`; tolerant. |
+
+Logging is emitted via `tracing` in the `cli` crate only — the library crates stay logger-less.
+
+### `dataset`
+
+```yaml
+dataset:
+  name: ""
+```
+
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `dataset.name` | string | `""` | The active dataset: per-dataset artifacts (ontology, content, knowledge DB, vector index) live under `<workspace_dir>/datasets/<name>/`. An **empty name means NO dataset** — the server runs with no data (no ontology load, no ingestion/indexing). `edtech` is not a default; only presets that ingest the demo corpus set it. `--dataset NAME` overrides this key for a single run. |
 
 ### `paths`
 
 ```yaml
 paths:
-  data_dir: "data"
-  documents_dir: "documents"
+  workspace_dir: "workspace"
   migrations_dir: "migrations"
-  global_config_path: "data/ontology"   # global.xml + domains/*.xml
-  prompts_path: "configs/prompts"
+  prompts_path: "workspace/configs/prompts"
+  onnx_config: "workspace/configs/onnx.yaml"
 ```
 
-- `data_dir` — where `knowledge.db`, `cache.db`, and `models/` live.
-- `documents_dir` — default documents storage directory.
-- `migrations_dir` — SQL migration files, applied in order at startup.
-- **`global_config_path`** — the ontology directory containing `global.xml` (global entities, relations, source list, linking methods) and `domains/*.xml` (per-domain configs). Missing or invalid domain configs are a **startup error** — see [Troubleshooting](./troubleshooting.mdx#missing-or-invalid-domain-configs). If the path is empty, cross-domain linking is disabled.
-- `prompts_path` — prompt template files (`.tmpl`); embedded defaults are used as fallback.
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `paths.workspace_dir` | string | `"workspace"` | Workspace root for the global artifacts (models, onnxruntime, cache DB, and the `datasets/` tree). The global cache DB is `<workspace_dir>/db/cache/cache.db`. |
+| `paths.migrations_dir` | string | `"migrations"` | SQL migration files, applied in order at startup. |
+| `paths.prompts_path` | string | `"workspace/configs/prompts"` | Prompt template files (`.tmpl`); embedded defaults are used as fallback. |
+| `paths.onnx_config` | string | `"workspace/configs/onnx.yaml"` | Path to the external `onnx.yaml` model/runtime registry. |
 
-Also available here: `onnx_config` (path to the ONNX/model registry file; defaults to `configs/onnx.yaml`).
+The legacy keys `paths.data_dir`, `paths.documents_dir`, and `paths.global_config_path` from the pre-restructure layout are accepted but ignored — the storage layout is now `paths.workspace_dir` + `dataset.name` (see [Workspace Layout](../concepts/workspace-layout)).
 
 ### `server`
 
@@ -248,10 +369,85 @@ server:
   port: 8080
 ```
 
-MCP HTTP server identity and listen address. `serve --port N` overrides `port` for a single run; the endpoints are `/sse`, `/message`, and `/health` (see the [Quickstart](../quickstart.mdx)).
+| Key | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `server.name` | string | `"synopsis"` | Human-readable service name. |
+| `server.version` | string | `"0.1.0-dev"` | Service version string. |
+| `server.host` | string | `"0.0.0.0"` | HTTP listen host. |
+| `server.port` | integer | 8080 | HTTP listen port; `serve --port N` overrides it for a single run. The endpoints are `/mcp`, `/sse`, `/message`, and `/health` (see [MCP Transport](../concepts/mcp-transport)). |
+
+## The `onnx.yaml` model registry
+
+The registry is an **external file** referenced from the preset via `paths.onnx_config` (default `workspace/configs/onnx.yaml`). It is the single source for the ONNX runtime library and every downloadable model; a missing or unparseable file fails loading with the file path. Unknown keys are ignored.
+
+```yaml
+runtime:
+  version: "1.28.0"
+  platforms:
+    - key: "linux-amd64"
+      os: "linux"
+      arch: "amd64"
+      archive_url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz"
+      archive_format: "tgz"
+      library_name: "libonnxruntime.so.1.28.0"
+      library_path: "onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0"
+
+models:
+  default: "bge-small-en-v1.5"
+  entries:
+    - name: bge-small-en-v1.5
+      display_name: "BGE Small English v1.5"
+      description: "Lightweight BGE model for English text embeddings"
+      version: "1.5.0"
+      vector_dim: 384
+      files:
+        - name: model.onnx
+          url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx"
+          size_bytes: 133093490
+        - name: tokenizer.json
+          url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json"
+          size_bytes: 711396
+```
+
+| Key | Type | Behavior |
+| --- | --- | --- |
+| `runtime.version` | string | ONNX Runtime version (the shipped registry: `1.28.0`). |
+| `runtime.platforms[]` | list | One entry per platform: `key` (lookup key, e.g. `"linux-amd64"`), `os`, `arch`, `archive_url` (release archive to download), `archive_format` (`"zip"` or `"tgz"`; tolerant), `library_name` (library file inside the archive), `library_path` (path relative to the archive root). The shipped registry has 5 platforms: `windows-amd64`, `linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`. |
+| `models.default` | string | Name of the default model — what `synopsis model download` fetches. The shipped registry: `bge-small-en-v1.5`. |
+| `models.entries[]` | list | One entry per model: `name` (registry name used by `embeddings.local.model_name`), `display_name`, `description`, `version`, `vector_dim` (embedding dimension), and `files[]` — each with `name`, `url` (download URL), `size_bytes` (exact size, verified after download), and an optional `checksum` (`"sha256:hex"`). The shipped registry: `bge-m3-int8` (1024-dim), `bge-small-en-v1.5` (384-dim), `paraphrase-multilingual-MiniLM-L12-v2` (384-dim). |
+
+Every download is verified by **URL + size + SHA-256** (the size check is enforced after download; the `sha256:` checksum applies where a registry entry provides one). The full `model` and `onnx-runtime` command reference is in [Model Management](./model-management).
+
+## The shipped presets
+
+| Preset | Dataset | Notes |
+| --- | --- | --- |
+| `config.default.yaml` | none (`dataset.name: ""`) | The default preset. Deliberate deviation from the frozen default: `bge-small-en-v1.5` (384-dim) instead of `bge-m3-int8` (1024-dim) for faster local testing — a documented deviation, not a bug. |
+| `config.demo.yaml` | `edtech` | A copy of the default preset wired to the `edtech` demo corpus shipped in the repository: `synopsis serve --config workspace/configs/config.demo.yaml`. |
+
+## Prompt templates
+
+The LLM prompts for NER and cross-domain entity linking are **minijinja** templates. Overrides live under `paths.prompts_path` (default `workspace/configs/prompts`):
+
+```
+workspace/configs/prompts/
+├── entity-linker/
+│   ├── system.tmpl
+│   └── user.tmpl
+└── ner/
+    ├── system.tmpl
+    └── user.tmpl
+```
+
+A present `{system,user}.tmpl` file overrides the embedded default (and is noted in the run's notes); a **missing file silently falls back** to the embedded default in `crates/graph` / `crates/ingestion`. The shipped files are byte-identical to the embedded defaults, so they exist for visibility and editing — not for correctness.
+
+## The XML ontologies
+
+Ingestion sources and the entity/relation vocabulary are **not** in the YAML preset — they live in the dataset's XML ontology: `global.xml` (the global pool: entities, relations, extraction rules, sources, cross-domain linking methods) plus one file per domain under `domains/`. A missing or malformed domain XML is a **startup error**; a missing `global.xml` is not (the global pool is simply empty). The [Domains](../concepts/domains) page covers the file formats and the two-layer resolution.
 
 ## What's next
 
-- [Ingestion](./ingestion.mdx) — what `paths.global_config_path` drives at ingest time
-- [Model Management](./model-management.mdx) — the `onnx.yaml` registry and model lifecycle
-- [Troubleshooting](./troubleshooting.mdx) — common configuration-related failures
+- [Ingestion](./ingestion) — what the `ingestion` and `dataset` settings drive at ingest time
+- [Model Management](./model-management) — the `onnx.yaml` registry and the model lifecycle
+- [Troubleshooting](./troubleshooting) — common configuration-related failures
+- [CLI reference](../reference/cli) — every subcommand and global flag

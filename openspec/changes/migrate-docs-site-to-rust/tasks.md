@@ -557,7 +557,7 @@ toolchain pin), `openspec/specs/parsing-and-chunking/spec.md`,
 - `git grep -ic 'docker' -- site/docs/developer/` → **0**.
 - Go-era sweep → **0** over ci-cd.mdx + extending.mdx.
 
-- [ ] 5.4 New developer pages: `gitea-releases.mdx` + `adrs.mdx` + `openspec-workflow.mdx`
+- [x] 5.4 New developer pages: `gitea-releases.mdx` + `adrs.mdx` + `openspec-workflow.mdx`
 
 **Goal.** Create the 3 new developer pages (design D6).
 

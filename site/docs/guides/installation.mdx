@@ -1,113 +1,114 @@
 ---
 title: Installation
-description: Prerequisites, building Synopsis from source, cross-compilation with Zig, and running it in Docker
+description: Getting the synopsis binary — prebuilt Gitea release archives or a native build from source, cross-compilation with Zig, and the runtime-state bootstrap
 sidebar_position: 1
 ---
 
 # Installation
 
-Synopsis compiles to a **single self-contained binary** — SQLite (with FTS5 and sqlite-vec), the embedding model loader, and the MCP server are all inside it. At runtime it needs just the binary and a writable data directory.
+Synopsis compiles to a **single self-contained binary** — SQLite (with FTS5) is compiled in-tree (bundled), so there is no C toolchain requirement and no system dependency. At runtime the binary needs only a writable directory for its state; the ONNX runtime library and the embedding model weights are downloaded by the binary on demand, verified against the registry.
 
-## Prerequisites
+There are two ways to get the binary:
 
-| Requirement       | Version | Notes                                                                                     |
-| ----------------- | ------- | ----------------------------------------------------------------------------------------- |
-| Go                | 1.25+   | Build                                                                                     |
-| C toolchain       | gcc or clang | **CGO is mandatory** — go-sqlite3 compiles SQLite into the binary at build time       |
-| Make              | any     | Convenience targets                                                                        |
-| Zig (optional)    | 0.14+   | Only for cross-compilation to other platforms                                             |
-| Network access    | —       | First run: the local embedding model is downloaded automatically                          |
+| Path | When to use it |
+| --- | --- |
+| [Prebuilt archive](#prebuilt-archives) | Default — one download, no toolchain |
+| [Build from source](#build-from-source) | You want the bleeding edge or a custom target |
 
-Without a C toolchain (or with `CGO_ENABLED=0`) the build fails — this is expected, not a bug.
+## Prebuilt archives
+
+Prebuilt archives are published as **Gitea Releases on `v*` tags** for the 5 supported targets:
+
+| Target | Triple | Notes |
+| --- | --- | --- |
+| Linux amd64 | `x86_64-unknown-linux-musl` | fully static artifact |
+| Linux arm64 | `aarch64-unknown-linux-gnu` | |
+| Linux arm64 | `aarch64-unknown-linux-musl` | musl |
+| Windows amd64 | `x86_64-pc-windows-gnu` | gnu, not msvc — Zig cannot link MSVC ABI from a Linux host |
+| macOS arm64 | `aarch64-apple-darwin` | |
+
+Each archive is named `synopsis_<version>_<name>.<ext>` and bundles the stripped binary, the README, `workspace/configs/` (presets, `onnx.yaml`, prompt templates), and the `edtech` demo ontology. A `SHA256SUMS.txt` is published alongside the archives.
+
+Download the archive for your platform, extract it, and run the `synopsis` binary:
+
+```bash
+tar xzf synopsis_0.1.0_linux-amd64.tar.gz   # or unzip on Windows
+./synopsis --version
+```
 
 ## Build from source
 
-```bash
-git clone https://github.com/devmix/synopsis.git && cd synopsis
+The toolchain is pinned to Rust **1.96.0** in `rust-toolchain.toml`; rustup installs it automatically on the first cargo command in the repository.
 
-# Build for the current platform → bin/synopsis
-make build
+```bash
+git clone https://github.com/devmix/synopsis-rs.git && cd synopsis-rs
+cargo build --release     # → target/release/synopsis
 ```
 
 Verify the binary:
 
 ```bash
-./bin/synopsis --version
+./target/release/synopsis --version
 ```
 
-### Run the key targets
-
-The development targets build first, then run the binary with `configs/config.default.yaml`:
-
-| Target          | What it does                                                    |
-| --------------- | --------------------------------------------------------------- |
-| `make build`    | Compile for the current platform (CGO enabled)                  |
-| `make sync`     | Build, then ingest all configured sources into the database     |
-| `make run`      | Build, then start the MCP server (`serve`)                      |
-| `make rebuild`  | Build, then clear the database and re-ingest everything         |
-| `make clean`    | Remove build artifacts (`bin/`, coverage files)                 |
-
-You can also invoke the binary directly — global flags (see [Configuration](./configuration.mdx)) always precede the subcommand:
-
-```bash
-./bin/synopsis --config configs/config.default.yaml sync
-./bin/synopsis --config configs/config.default.yaml serve
-```
-
-`make run` starts the server on `0.0.0.0:8080`; check it with `curl http://localhost:8080/health`. A working install is the five-minute path in the [Quickstart](../quickstart.mdx).
+There is no Makefile — the plain cargo commands are the whole build system. `cargo test` runs the full workspace suite (~20 s warm, no services or network needed).
 
 ## Cross-compilation with Zig
 
-Building for another platform requires a C toolchain that can target it. Synopsis uses **Zig as a portable drop-in C compiler** — no per-platform sysroots or SDKs needed. Install Zig 0.14+ first (`brew install zig` on macOS, or the archives from ziglang.org).
-
-| Target                 | Output binary                       |
-| ---------------------- | ----------------------------------- |
-| `make build-linux-amd64`  | `bin/synopsis-linux-amd64`          |
-| `make build-linux-arm64`  | `bin/synopsis-linux-arm64`          |
-| `make build-windows-amd64`| `bin/synopsis-windows-amd64.exe`    |
-| `make build-macos-amd64`  | `bin/synopsis-macos-amd64`          |
-| `make build-macos-arm64`  | `bin/synopsis-macos-arm64`          |
-
-Build everything at once:
+Building for another platform uses **Zig as a portable C toolchain** via `cargo-zigbuild` — no per-platform sysroots or SDKs needed. Install the pieces once (Zig **0.16.0**, plus the cargo helper):
 
 ```bash
-make build-all
+cargo install --locked cargo-zigbuild
 ```
 
-Each target sets `CC`/`CXX` to a `zig cc -target <triplet>` invocation and `GOOS`/`GOARCH` accordingly, so SQLite is compiled for the target and linked statically — for example, `make build-linux-arm64` works from a macOS host without any ARM toolchain. The macOS targets additionally link against stub libraries in `scripts/darwin-stubs` to resolve libc symbols portably.
-
-## Docker
-
-The repository ships a multi-stage `Dockerfile` (Go 1.25 Alpine builder, Alpine 3.21 runtime, CGO-enabled build). Build and run:
+Then build any of the five targets (the same matrix the release workflow uses):
 
 ```bash
-docker build -t synopsis .
-
-docker run -d --name synopsis \
-  -p 8080:8080 \
-  -v $(pwd)/configs:/app/configs \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/my-documents:/app/documents \
-  synopsis
+cargo zigbuild --release --target <t>
 ```
 
-The container starts the `serve` subcommand with `--config /app/configs/config.default.yaml`. The image documents these mount points as the expected volume layout:
+| Target triple | Platform | Notes |
+| --- | --- | --- |
+| `x86_64-unknown-linux-musl` | Linux amd64 | fully static artifact |
+| `aarch64-unknown-linux-gnu` | Linux arm64 | |
+| `aarch64-unknown-linux-musl` | Linux arm64 | musl |
+| `x86_64-pc-windows-gnu` | Windows amd64 | gnu, not msvc |
+| `aarch64-apple-darwin` | macOS arm64 | |
 
-| Path            | Purpose                        |
-| --------------- | ------------------------------ |
-| `/app/configs`  | Configuration files            |
-| `/app/data`     | SQLite database + embedding cache |
-| `/app/workspace`| Source documents (see note)    |
-| `/app/models`   | ONNX model files (see note)    |
+For example, `cargo zigbuild --release --target aarch64-unknown-linux-musl` works from a Linux amd64 host without any ARM toolchain. The release workflow cross-builds all five targets on a single runner and publishes the archives — see [Gitea Releases](../developer/gitea-releases).
 
-Notes:
+## Bootstrap the runtime state
 
-- All paths inside the config file are **relative to the container working directory** (`/app`), so with the default configuration the documents directory is `/app/documents`, the database is `/app/data/knowledge.db`, and models land in `/app/data/models/`. Mount the directories accordingly (or override `paths.*` in your own config).
-- Keep the config directory on a volume if you use a custom preset — the container expects `configs/config.default.yaml` by default.
-- Port `8080` is exposed; the MCP SSE endpoint is `http://localhost:8080/sse`.
+Network access is needed on first run: the binary downloads its own runtime dependencies per `workspace/configs/onnx.yaml`, verifying each download (URL + size + SHA-256 where the registry provides a checksum).
+
+```bash
+synopsis onnx-runtime install   # download the ONNX runtime library (~24 MB) → workspace/onnxruntime/
+synopsis model download         # download the default embedding model → workspace/models/
+```
+
+Then start the server:
+
+```bash
+synopsis serve                  # port 8080, preset "default"
+```
+
+## Where things live
+
+All runtime state lives under a single `workspace/` directory that the binary creates and manages:
+
+```
+workspace/
+├── configs/                  # tracked: presets, onnx.yaml, prompt templates
+├── datasets/<name>/          # per-dataset: ontology/, content/, state/ (knowledge.db + vectors)
+├── db/cache/cache.db         # global cache DB (shared across datasets)
+├── models/                   # downloaded model weights
+└── onnxruntime/              # downloaded ONNX runtime library
+```
+
+Only `configs/` and the `edtech` demo dataset are tracked in the repository; everything else is created and downloaded at runtime. The [Workspace Layout](../concepts/workspace-layout) page covers the tree in detail, including what is gitignored.
 
 ## What's next
 
-- [Quickstart](../quickstart.mdx) — build, ingest, serve, and run your first search
-- [Configuration](./configuration.mdx) — every section of `config.default.yaml`
-- [Ingestion](./ingestion.mdx) — how documents flow into the knowledge base
+- [Quickstart](../quickstart) — the full three-command path from binary to running server
+- [Configuration](./configuration) — how the config is resolved and every key of `config.default.yaml`
+- [Model Management](./model-management) — the `onnx.yaml` registry and the `model` / `onnx-runtime` commands
