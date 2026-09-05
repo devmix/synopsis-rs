@@ -682,7 +682,7 @@ implementation.
 - Tool names/parameters match `mcp-contract/spec.md` (cross-check; report drift
   as a deviation).
 
-- [ ] 6.3 Rewrite guides: `model-management.mdx` + `load-testing.mdx` + `troubleshooting.mdx`
+- [x] 6.3 Rewrite guides: `model-management.mdx` + `load-testing.mdx` + `troubleshooting.mdx`
 
 **Goal.** Rewrite the 3 remaining guides for the Rust implementation.
 

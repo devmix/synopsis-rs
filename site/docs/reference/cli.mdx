@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: All subcommands and flags of the synopsis binary — sync, serve, model, onnx-runtime, load-test — verified against the implementation
+description: All subcommands and flags of the synopsis binary — serve, queue, db, model, onnx-runtime, load-test — verified against the Rust implementation
 sidebar_position: 1
 ---
 
@@ -9,203 +9,204 @@ sidebar_position: 1
 The `synopsis` binary uses **subcommand dispatch**. Global flags must appear **before** the subcommand; each subcommand then has its own flags.
 
 ```
-synopsis [--config PATH] [--preset NAME] [--db PATH] [--version] <command> [command flags]
+synopsis [--config PATH] [--preset NAME] [--dataset NAME] [--version] <subcommand> [flags...]
 ```
 
-| Command | Purpose |
-|---|---|
-| `sync` | Force a full re-index of all sources and exit |
-| `serve` | Start the MCP server (initial sync + file watching + optional scheduler) |
-| `model` | Manage embedding models (`list`, `download`, `delete`, `info`, `benchmark`) |
-| `onnx-runtime` | Manage the bundled ONNX Runtime library (`install`, `status`, `uninstall`) |
-| `load-test` | Fill the database with deterministic synthetic data and benchmark all MCP tool handlers (14 cases) |
+| Subcommand | Purpose |
+| --- | --- |
+| `serve` | Start the MCP server (startup reconcile + file watching + background job worker) |
+| `queue status \| reset-retries` | Inspect and repair the document job queue |
+| `db stats \| clear` | Dataset statistics / delete the entire dataset state |
+| `model list \| download \| delete \| info \| benchmark [NAME]` | Manage embedding models |
+| `onnx-runtime install \| status \| uninstall` | Manage the ONNX Runtime library |
+| `load-test` | Fill the database with synthetic data and benchmark all MCP tool handlers |
 
-Running the binary with no subcommand (or with an unknown subcommand) prints usage on stderr and exits with code `1`.
+Running the binary with no subcommand (or with an unknown subcommand) prints usage on stderr and exits with code `1` (the binary overrides the usual argument-parser exit code `2` for usage errors).
 
 ## Global flags
 
 | Flag | Description |
-|---|---|
+| --- | --- |
 | `--config PATH` | Path to the configuration file, used verbatim (skips auto-search) |
 | `--preset NAME` | Configuration preset name; the binary searches for `config.{NAME}.yaml` (default: `default`) |
-| `--db PATH` | Path to the SQLite database file; overrides `database.path` from the config |
+| `--dataset NAME` | Dataset name; overrides `dataset.name` from the config |
 | `--version` | Print `synopsis <version>` and exit `0` |
 
 ```bash
-# Use an explicit config and point at a scratch database
-./bin/synopsis --config configs/config.default.yaml --db /tmp/scratch.db sync
+# Use an explicit config and point at a specific dataset
+synopsis --config workspace/configs/config.default.yaml --dataset edtech serve
 
 # A custom preset
-cp configs/config.default.yaml configs/config.prod.yaml
-./bin/synopsis --preset prod serve
+cp workspace/configs/config.default.yaml workspace/configs/config.prod.yaml
+synopsis --preset prod serve
 ```
-
-> **Note:** global flags use Go's standard `flag` parsing, which stops at the first non-flag argument. `synopsis serve --port 9090` works (subcommand flag), but `synopsis --port 9090 serve` fails (`--port` is not a global flag).
 
 ## Config path resolution
 
 When `--config` is not given, the effective path is `config.{preset}.yaml` (default preset: `default`), searched in this exact order:
 
-1. `<executable dir>/configs/config.{preset}.yaml`
-2. `<executable dir>/config.{preset}.yaml`
-3. `<parent of executable dir>/config.{preset}.yaml`
-4. `<parent of executable dir>/configs/config.{preset}.yaml`
-5. `<CWD>/configs/config.{preset}.yaml`
+1. `<exeDir>/workspace/configs/config.{preset}.yaml`
+2. `<exeDir>/config.{preset}.yaml`
+3. `<parent(exeDir)>/config.{preset}.yaml`
+4. `<parent(exeDir)>/workspace/configs/config.{preset}.yaml`
+5. `<CWD>/workspace/configs/config.{preset}.yaml`
 6. `<CWD>/config.{preset}.yaml`
 
-If none of these exist, the binary falls back to `configs/config.{preset}.yaml` and fails with a config load error. The executable path is resolved through symlinks before the search.
-
-## `sync`
-
-Forces a full re-index of all configured sources and exits. This is the batch mode — no server, no watcher.
-
-```
-synopsis sync [--rebuild] [--auto-rebuild-vectors]
-```
-
-| Flag | Default | Description |
-|---|---|---|
-| `--rebuild` | `false` | Clear all existing data before re-indexing |
-| `--auto-rebuild-vectors` | `false` | Automatically rebuild vectors on an embedding dimension mismatch |
-
-Behavior:
-
-- Loads and validates the configuration, discovers domains from `paths.global_config_path`, opens the database, and applies pending migrations.
-- In `mode: local` embedding, the configured model is **downloaded automatically on first use** (stored under `<paths.data_dir>/models/`).
-- A full source scan runs, then a summary is printed to **stderr**:
-
-  ```
-  === Sync Summary ===
-  Sources processed: 4
-  Documents created:  12
-  Documents updated:  3
-  Documents skipped:  9
-  Errors:            1
-  Duration:          12s
-  ==========================
-  ```
-
-**Vector dimension mismatch.** If the configured `vector_dim` does not match the existing database, the command fails unless `--auto-rebuild-vectors` is passed (or `embeddings.auto_rebuild_vectors` is set in the config). In `--rebuild` mode the mismatch is skipped — the full reset discards the stale vectors anyway. See [Troubleshooting — Embedding dimension mismatch](../guides/troubleshooting.mdx#embedding-dimension-mismatch).
-
-```bash
-# Full re-index from scratch
-./bin/synopsis sync --rebuild
-
-# Incremental-style full scan (re-ingests only what changed; nothing is deleted)
-./bin/synopsis sync
-```
+In short: `<exeDir>/workspace/configs/` → parent directory → CWD. The executable path is not symlink-resolved. If none of the candidates exists, the binary falls back to the relative `workspace/configs/config.{preset}.yaml` and fails with a load error naming that path.
 
 ## `serve`
 
-Starts the production mode: an optional initial full sync, the MCP server over HTTP/SSE, a file watcher for incremental re-indexing, and the background job scheduler.
+The only long-running mode: a startup reconcile (the diff of changed sources is enqueued into the document job queue), the MCP server over HTTP, and a file watcher (changed sources are enqueued again). A background worker processes the queue.
 
 ```
 synopsis serve [--no-initial-sync] [--port N] [--auto-rebuild-vectors]
 ```
 
 | Flag | Default | Description |
-|---|---|---|
-| `--no-initial-sync` | `false` | Skip the full source scan on startup |
-| `--port N` | `0` (use `server.port`) | HTTP listen port; overrides `server.port` from the config |
+| --- | --- | --- |
+| `--no-initial-sync` | `false` | Skip the startup reconcile (the initial full source scan) |
+| `--port N` | `8080` (the `server.port` config value) | HTTP listen port; overrides `server.port` from the config |
 | `--auto-rebuild-vectors` | `false` | Automatically rebuild vectors on an embedding dimension mismatch |
 
-Startup sequence:
+Endpoints on the configured `server.host:server.port` (default `0.0.0.0:8080`):
 
-1. Load configuration, discover domains, migrate the database, ensure the embedding model, open the cache database.
-2. Resolve any vector dimension mismatch (see `sync` above).
-3. Run a startup health check (database ping, document count, embedding provider).
-4. Run the initial sync if `auto_update.initial_sync` is `true` and `--no-initial-sync` was not passed.
-5. Start the job scheduler if `scheduler.jobs.orphan_cleanup.enabled` is `true`.
-6. Load the in-memory knowledge graph (when `graph.enable_graph` and `graph.load_on_startup`), create the searcher, and start the MCP server on `server.host:server.port` (default `0.0.0.0:8080`) with endpoints `GET /sse`, `POST /message`, `GET /health` — see [MCP Tools](./mcp-tools/index.mdx).
-7. Start the file watcher if `auto_update.enabled` and `auto_update.watch_sources` are both `true`; changed source files are re-indexed (debounced by `auto_update.debounce_seconds`).
+- `/mcp` — MCP over Streamable HTTP (the primary transport)
+- `GET /sse` + `POST /message?sessionId=` — legacy HTTP+SSE transport
+- `GET /health` — status, version, and knowledge-base counters
 
-Shutdown is graceful: the process stops cleanly on `SIGINT`/`SIGTERM` (sessions closed, HTTP server drained, scheduler stopped, 10-second timeout).
+**Vector dimension mismatch.** If the configured embedding model's dimension does not match the existing vector index, `serve` clears the dataset DB and the startup reconcile re-enqueues all source files — the worker re-embeds them (clear-then-queue; there is no direct ingestion). `--auto-rebuild-vectors` performs this recovery automatically. See [Vector Rebuild](../concepts/vector-rebuild.mdx).
+
+```bash
+synopsis serve
+synopsis --preset default serve --port 9090   # global preset, per-command flag after the subcommand
+```
+
+## `queue`
+
+Inspect and repair the document indexing queue. Both actions operate on the dataset-bound knowledge database and do not load the embedding model or the ONNX runtime; a non-empty dataset name is required (from the config or `--dataset`).
+
+```
+synopsis queue status [--source PATH] [--status NAME]
+synopsis queue reset-retries [--source PATH] [--path PATH]
+```
+
+### `queue status`
+
+Prints the queue as a table with the columns `path`, `source`, `status`, `attempts`, `last_error`, `next_attempt_at`, followed by the job count.
+
+| Flag | Description |
+| --- | --- |
+| `--source PATH` | Filter by source path prefix |
+| `--status NAME` | Filter by exact status (`pending`, `processing`, `done`, `error`) |
+
+### `queue reset-retries`
+
+Re-queues failed jobs: status → `pending`, attempts → `0`, `next_attempt_at` → now. The background worker re-indexes them on its next cycle.
+
+| Flag | Description |
+| --- | --- |
+| `--source PATH` | Limit the reset to jobs of one source (path prefix) |
+| `--path PATH` | Re-queue a single job (wins over `--source`); an error if no `error` job has that path |
+
+Without `--path`, every `error` job (optionally narrowed by `--source`) is re-queued and the count is reported.
+
+```bash
+synopsis queue status
+synopsis queue status --status error
+synopsis queue reset-retries --path workspace/datasets/edtech/content/documents/product/adaptive_learning_prd.md
+```
+
+## `db`
+
+Dataset database maintenance. Both actions operate on the dataset-bound knowledge database and do not load the embedding model or the ONNX runtime; a non-empty dataset name is required.
+
+```
+synopsis db stats
+synopsis db clear
+```
+
+### `db stats`
+
+Prints dataset statistics — documents, chunks, entities, entity links, facts, and queue-job counts. Read-only: no modification and no confirmation.
+
+### `db clear`
+
+Prints the same statistics, then asks for confirmation (`Confirm deletion? [y/N]` on stdin). Only `y` or `Y` deletes the entire dataset state directory `<workspace_dir>/datasets/<name>/state` — the knowledge DB **and** the vector index — from disk in one shot; any other answer aborts without modifying anything. The command closes the database connection before deleting the directory.
+
+There is no standalone re-ingest subcommand: a full re-ingest is `db clear` followed by a `serve` restart, whose startup reconcile re-enqueues the source files and the worker re-embeds them, recreating the DB and the vector index.
+
+```bash
+synopsis db stats
+synopsis db clear
+```
 
 ## `model`
 
-Manages embedding models against the registry in the ONNX configuration file (`paths.onnx_config`, default `configs/onnx.yaml`).
+Manages embedding models against the model registry (`workspace/configs/onnx.yaml`); installed weights live under `workspace/models/`. Every action accepts an optional `NAME` positional argument.
 
 ```
-synopsis model <list|download|delete|info|benchmark> [name]
+synopsis model <list|download|delete|info|benchmark> [NAME]
 ```
 
 | Subcommand | Argument | Description |
-|---|---|---|
+| --- | --- | --- |
 | `model list` | — | List all registry models with version, vector dimension, and installation status |
-| `model download [name]` | optional | Download a model into `<data_dir>/models/<name>/`; omitted name uses the registry default (`models.default` in the ONNX config, e.g. `bge-small-en-v1.5`) |
-| `model delete <name>` | **required** | Delete an installed model |
-| `model info [name]` | optional | Show model details (description, version, dimension, source, files, install status/date); omitted name uses the registry default |
-| `model benchmark [name]` | optional | Benchmark embedding inference speed for an installed model; omitted name targets **all** installed models |
+| `model download [NAME]` | optional | Download and install a model; an omitted name uses the registry default |
+| `model delete NAME` | **required** | Delete an installed model |
+| `model info [NAME]` | optional | Show model details (description, version, dimension, source, install status); an omitted name uses the registry default |
+| `model benchmark [NAME]` | optional | Benchmark embedding inference speed; an omitted name targets all installed models |
+
+`model benchmark` prints a hardware header (CPU model, logical CPUs, total RAM, ONNX Runtime version) followed by the median/min/max embedding latency per model (warmup, then measured runs). The model must be installed first; with no name given and nothing installed the command exits `1` suggesting `model download`.
 
 ```bash
-./bin/synopsis model list
-./bin/synopsis model download bge-small-en-v1.5
-./bin/synopsis model info bge-small-en-v1.5
-./bin/synopsis model delete bge-small-en-v1.5
-./bin/synopsis model benchmark               # all installed models
-./bin/synopsis model benchmark bge-small-en-v1.5
+synopsis model list
+synopsis model download bge-small-en-v1.5
+synopsis model info bge-small-en-v1.5
+synopsis model delete bge-small-en-v1.5
+synopsis model benchmark               # all installed models
+synopsis model benchmark bge-small-en-v1.5
 ```
-
-`model benchmark` prints a hardware header (CPU model, logical CPUs, total RAM, ONNX Runtime version) followed by per-model latency:
-
-- **production** — the full provider path used during ingestion and search: tokenization plus padding to `seq=512`, then ONNX inference.
-- **natural seq=N** for N = 32 / 128 / 512 — direct ONNX session on a sequence of that real length, without padding (isolates pure inference cost).
-
-Each figure is the median of 9 runs after 3 warmup iterations (`batch=1`). The model must be installed first; with no name given and nothing installed the command exits `1` suggesting `model download`. Sample output:
-
-```
-Embedding Benchmark
-----------------------------------------------------------------------
-Hardware: 11th Gen Intel(R) Core(TM) i7-11800H @ 2.30GHz, 16 logical CPUs, ~31.07 GiB RAM
-ONNX Runtime: 1.28.0
-
-BGE Small English v1.5 (dim=384)
-  production (padded to seq=512): median 87.9 ms/text [min 67.0, max 94.8], 9 runs
-  natural seq=32  : median 6.2 ms/text [min 5.3, max 6.4], 9 runs (5186 tok/s)
-```
-
-Failing to load the config, the ONNX config, or a registry lookup exits with code `1`.
 
 ## `onnx-runtime`
 
-Manages the ONNX Runtime library that `mode: local` embeddings run on. The library is downloaded on demand into `<data_dir>/` and cached there; version and per-platform download URLs come from the ONNX config file.
+Manages the ONNX Runtime shared library that local embeddings run on. The library is downloaded on demand into `workspace/onnxruntime/` (version and per-platform URLs from `workspace/configs/onnx.yaml`).
 
 ```
 synopsis onnx-runtime <install|status|uninstall>
 ```
 
 | Subcommand | Description |
-|---|---|
-| `onnx-runtime install` | Install the ONNX Runtime library (no-op with a status line if already installed) |
-| `onnx-runtime status` | Show version, installation status, library path, cache directory, and the supported platforms from the ONNX config |
+| --- | --- |
+| `onnx-runtime install` | Install the ONNX Runtime library (a status line if already installed) |
+| `onnx-runtime status` | Show version, installation status, library path, cache directory, and the supported platforms |
 | `onnx-runtime uninstall` | Remove the installed library (it will be re-downloaded when needed) |
 
 ```bash
-./bin/synopsis onnx-runtime install
-./bin/synopsis onnx-runtime status
-./bin/synopsis onnx-runtime uninstall
+synopsis onnx-runtime install
+synopsis onnx-runtime status
+synopsis onnx-runtime uninstall
 ```
-
-An unknown subcommand prints the subcommand usage and exits with code `1`.
 
 ## `load-test`
 
-Populates the target database with deterministic synthetic data — written straight into the tables with real embeddings, bypassing the ingestion pipeline — then benchmarks all MCP tool handlers directly, without HTTP.
+Benchmarks all MCP tool handlers on generated data. Unless `--no-fill` is given, the command **clears and rewrites the target dataset** (all knowledge-base tables plus the vector index) with deterministic synthetic data, then runs the 12 tool cases directly (without HTTP).
 
 ```
 synopsis load-test [--scale small|medium|large] [--seed N] [--iterations N] [--json PATH] [--no-fill]
 ```
 
 | Flag | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--scale` | `small` | Dataset scale: `small` (500 docs / 10k chunks / 2k entities / 5k facts), `medium` (5k / 100k / 20k / 10k), `large` (10k / 200k / 40k / 20k) |
 | `--seed N` | `42` | PRNG seed for deterministic data generation |
 | `--iterations N` | `100` | Measured iterations per tool case |
-| `--json PATH` | — | Also write the report as indented JSON to `PATH` |
+| `--json PATH` | — | Also write the report as JSON to `PATH` |
 | `--no-fill` | `false` | Benchmark an existing database without generating data |
 
+The report lists, per tool case: CALLS, AVG/P50/P95/P99/MAX ms, and QPS — human-readable on stdout, and the same report as JSON with `--json`. The local embedding model must already be downloaded (`synopsis model download [NAME]`).
+
 :::warning
-By default `load-test` **clears and rewrites the knowledge base** (all knowledge-base tables plus `chunks_vec`). Point `--db` at a throwaway path — e.g. `--db /tmp/loadtest.db` — never at a production database. The local embedding model must already be downloaded (`synopsis model download <name>`); the command fails with a clear error instead of downloading it mid-run.
+By default `load-test` **clears and rewrites the dataset**. Point `--config`/`--dataset` at a scratch dataset — never at a real one.
 :::
 
 Full guide: [Load Testing](../guides/load-testing.mdx) — phases, scales, report format, sample output, and interpretation.
@@ -213,19 +214,21 @@ Full guide: [Load Testing](../guides/load-testing.mdx) — phases, scales, repor
 ## Exit codes
 
 | Outcome | Exit code |
-|---|---|
-| Success (including `--version`) | `0` |
-| Config load/validation failure | `1` |
-| Domain discovery failure (missing or invalid ontology) | `1` |
+| --- | --- |
+| Success (including `--version` and an aborted `db clear`) | `0` |
+| Usage error: no subcommand, unknown subcommand, or invalid flags | `1` |
+| Config load / validation failure | `1` |
 | Database open / migration failure (incl. unrecovered dimension mismatch) | `1` |
-| No subcommand, unknown subcommand, or invalid flags | `1` |
 | Model / ONNX runtime command error | `1` |
 
-Operational logs always go to the log output configured under `logging` (default: stderr).
+Every fatal error exits with code `1`.
 
 ## See also
 
 - [Configuration](../guides/configuration.mdx) — config file resolution in context and a full walk-through of `config.default.yaml`
 - [Configuration Schema](./config-schema.mdx) — every config key with its type, default, and behavior
 - [Model Management](../guides/model-management.mdx) — model registry, auto-download, ONNX Runtime, embedding cache
-- [Troubleshooting](../guides/troubleshooting.mdx) — dimension mismatch, CGO failures, missing domain configs
+- [Load Testing](../guides/load-testing.mdx) — load-test scales, report format, and interpretation
+- [Troubleshooting](../guides/troubleshooting.mdx) — dimension mismatch, stuck queue jobs, missing model / ONNX runtime
+- [MCP Tools](./mcp-tools/index.mdx) — the 12 tools served by `serve`
+- [Job Queue](../concepts/job-queue.mdx) — the `document_jobs` queue behind `queue status` / `queue reset-retries`
