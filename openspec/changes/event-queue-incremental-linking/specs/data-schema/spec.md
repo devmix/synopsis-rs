@@ -15,7 +15,7 @@ Columns: `id INTEGER PRIMARY KEY AUTOINCREMENT`, `type TEXT NOT NULL` (`doc:inde
 
 Enqueue is an upsert on `(type, identity)`: an existing row is reset to `pending` with `attempts=0` and `next_attempt_at` set to the current time — a re-enqueued event moves to the END of the claim order — and its payload is updated. Payload update semantics depend on the type: `doc:index` and `doc:delete` REPLACE the payload (the file on disk is the source of truth); `entity:link` MERGES the `entity_ids` arrays (union) when the existing row is `pending`, `processing`, or `error`, and stores only the new ids when the existing row is `done` (the old ids were already linked).
 
-Claim order is `(next_attempt_at, id)`; the backoff schedule is `30 * 2^(attempts-1)` seconds and a task that fails `max_attempts` times lands in `error` status.
+Claim order is `(next_attempt_at, id)`; the backoff schedule is `30 * 2^(attempts-1)` seconds and a task that fails `max_attempts` times lands in `error` status. The worker claims tasks ONE AT A TIME: a claim flips a single due `pending` row to `processing`, the worker processes it, then claims the next — so `processing` means "currently executing" (at most one row at a time), and a per-cycle cap (100 tasks) bounds one worker cycle so the owner thread does not starve the HTTP server. On serve startup, before the startup reconcile, rows left in `processing` by an unclean shutdown (crash, SIGKILL, power loss) are reset to `pending` with `attempts` and `last_error` preserved — an interrupted attempt is not a failed one.
 
 #### Scenario: Migration application
 - **WHEN** the binary starts on a fresh knowledge.db
@@ -36,3 +36,11 @@ Claim order is `(next_attempt_at, id)`; the backoff schedule is `30 * 2^(attempt
 #### Scenario: Doc-event replace
 - **WHEN** a `doc:index` event is enqueued for a path whose row already exists
 - **THEN** the payload is replaced with the new `source_path`/`content_hash` and the row is reset to `pending`
+
+#### Scenario: One-at-a-time claim
+- **WHEN** several due `pending` tasks exist and the worker starts a cycle
+- **THEN** exactly one row is `processing` at any instant; the remaining due rows stay `pending` until claimed one by one, and one cycle processes at most 100 tasks
+
+#### Scenario: Restart recovery
+- **WHEN** the server starts and rows are in `processing` status (left by an unclean shutdown)
+- **THEN** they are reset to `pending` with `attempts` and `last_error` preserved, before the startup reconcile runs, and the worker processes them in a later cycle

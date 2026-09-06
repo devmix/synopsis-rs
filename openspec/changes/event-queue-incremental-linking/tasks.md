@@ -84,7 +84,7 @@ tables present.
 
 **Estimated size.** ~480 lines (code + tests).
 
-- [ ] **1.2** — Switch producer/worker/CLI to `queue_tasks`; drop `document_jobs`
+- [x] **1.2** — Switch producer/worker/CLI to `queue_tasks`; drop `document_jobs`
 
 **Goal.** Make `queue_tasks` the only queue: the watcher/startup producer
 enqueues `doc:index` / `doc:delete` events, the worker dispatches by event
@@ -218,7 +218,7 @@ the link task.
 
 **Estimated size.** ~480 lines (code + tests).
 
-- [ ] **1.4** — Documentation update (after the code lands)
+- [x] **1.4** — Documentation update (after the code lands)
 
 **Goal.** Sync the documentation site and the root README with the new
 event-queue model and incremental linking. This task runs AFTER 1.3 is
@@ -269,8 +269,72 @@ the delta specs under this change's `specs/`, the final code state.
 - `queue_tasks`, `doc:index`, `doc:delete`, `entity:link`, `--identity`
   appear in the concept + reference pages; the state diagram and backoff
   schedule are still correct (they did not change).
-- No factual drift: every statement in the updated pages matches the delta
-  specs (e.g. merge-union on pending, replace on doc events, re-enqueue to
-  the end, one row per (type, identity)).
+ - No factual drift: every statement in the updated pages matches the delta
+   specs (e.g. merge-union on pending, replace on doc events, re-enqueue to
+   the end, one row per (type, identity)).
 
 **Estimated size.** ~200–300 lines of MDX/Markdown edits.
+
+- [ ] **1.5** — Accurate `processing` state: one-at-a-time claiming + startup recovery
+
+**Goal.** Fix two lifecycle defects of `queue_tasks` found in review after
+1.3: (1) `claim_due` pre-claims up to 100 rows into `processing` in one
+UPDATE, so the queue shows a whole batch as `processing` while only one
+task actually executes — `processing` must mean "currently executing";
+(2) rows left in `processing` by an unclean shutdown (crash, SIGKILL,
+power loss) are never claimed again (`claim_due` picks only `pending`)
+and `reconcile_source` skips them — on serve startup they must be reset
+to `pending`.
+
+**File scope.**
+- `crates/db/src/queue_task.rs` — replace `claim_due(now, batch) ->
+  Vec<QueueTask>` with `claim_one(now) -> Result<Option<QueueTask>>`
+  (same WHERE clause — due `pending` rows, order `(next_attempt_at, id)`,
+  `LIMIT 1`). Add `recover_stuck_processing(now) -> Result<i64>`:
+  `UPDATE queue_tasks SET status='pending', updated_at=? WHERE
+  status='processing'`; `attempts` and `last_error` are NOT touched
+  (an interrupted attempt is not a failed one); returns the changed-row
+  count. Adapt the existing claim tests (batch-claim → repeated
+  `claim_one`).
+- `crates/ingestion/src/worker.rs` — `run_once` claims in a loop:
+  `for _ in 0..WORKER_BATCH_SIZE { match claim_one { Some(t) =>
+  process_task(t), None => break } }` — the per-cycle cap (100) stays as
+  the owner-thread starvation guard.
+- `crates/cli/src/serve/server.rs` — at serve startup, BEFORE the
+  startup reconcile (`reconcile_enabled_sources(..., "startup")`), call
+  `recover_stuck_processing(now)` once and log the recovered count when
+  > 0.
+- Tests:
+  - DAO: `claim_one` returns at most one row per call, in
+    `(next_attempt_at, id)` order, due `pending` only; a second call
+    returns the next row; `recover_stuck_processing` resets
+    `processing`→`pending` preserving `attempts`/`last_error`, leaves
+    `pending`/`done`/`error` rows untouched, returns the count.
+  - Worker: with several due rows, while one task is being processed the
+    remaining rows stay `pending` (at most one `processing` at any
+    instant).
+  - Crash simulation: a claimed row (`processing`) survives a "restart"
+    — `recover_stuck_processing` (the startup path) + a fresh worker's
+    `run_once` → the row reaches `done`.
+  - Serve level (if the `serve_server.rs` harness allows): serve starts
+    with a stuck `processing` row → after startup the row is
+    `pending`/processed, and startup reconcile saw it.
+
+**Dependencies.** 1.2, 1.3 committed. Reference: delta spec
+`specs/data-schema/spec.md` (scenarios "One-at-a-time claim", "Restart
+recovery"); ADR 0005 (single sequential consumer).
+
+**Acceptance criteria (machine-checked).**
+- Gates green (whole workspace).
+- A test proves: with N due rows, at most one row is `processing` at any
+  instant during a worker cycle; the rest stay `pending`.
+- `claim_one` order and due-filter behavior pinned by DAO tests; the
+  per-cycle cap still bounds one `run_once` to 100 tasks.
+- `recover_stuck_processing`: `processing`→`pending` with
+  `attempts`/`last_error` preserved; other statuses untouched; count
+  returned.
+- Crash-simulation test: a `processing` row is recovered on the startup
+  path and processed to `done`.
+- Serve startup performs the recovery before the startup reconcile.
+
+**Estimated size.** ~250–350 lines (code + tests).

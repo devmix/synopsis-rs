@@ -1001,14 +1001,14 @@ fn entity_link_task_carries_exactly_the_new_entity_ids() {
     let md = h.doc_by_suffix("team.md");
     let js = h.doc_by_suffix("widgets.json");
 
-    // Exactly one entity:link task: the md document's, still pending (the
-    // worker cycle that indexed the documents claimed only the doc:index
-    // rows).
+    // Exactly one entity:link task: the md document's, claimed and linked
+    // within the same cycle (task 1.5: the one-at-a-time claim loop drains
+    // rows enqueued mid-cycle).
     let tasks = h.entity_link_tasks();
     assert_eq!(tasks.len(), 1, "{tasks:?}");
     let task = &tasks[0];
     assert_eq!(task.identity, md.id.to_string(), "{task:?}");
-    assert_eq!(task.status, "pending", "{task:?}");
+    assert_eq!(task.status, "done", "{task:?}");
 
     // Exactly the two NEW ids; the five pre-existing ones are absent.
     let mut got = h.link_payload_ids(task);
@@ -1123,13 +1123,15 @@ fn worker_processes_entity_link_tasks_and_creates_links() {
     let runner = h.runner();
     h.reconcile_and_process(&runner, i64::MAX / 2);
 
-    // Both documents indexed (all four entities new) → two pending
-    // entity:link tasks, one per document.
+    // Both documents indexed (all four entities new) → two entity:link
+    // tasks, one per document, claimed and linked within the same cycle
+    // (task 1.5: the one-at-a-time claim loop drains rows enqueued
+    // mid-cycle).
     let tasks = h.entity_link_tasks();
     assert_eq!(tasks.len(), 2, "{tasks:?}");
-    assert!(tasks.iter().all(|t| t.status == "pending"), "{tasks:?}");
+    assert!(tasks.iter().all(|t| t.status == "done"), "{tasks:?}");
 
-    // Second worker cycle: the entity:link tasks are claimed and linked.
+    // A further worker cycle is a no-op for the drained queue (idempotent).
     let worker = DocumentWorker::new(&h.db, &runner);
     worker.run_once(i64::MAX / 2).unwrap();
     assert!(

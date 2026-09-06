@@ -79,7 +79,7 @@ use std::time::Duration;
 
 use config::GlobalConfig;
 use config::preset::{GraphConfig, SearchConfig};
-use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao};
+use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao, QueueTaskDao};
 use embedding::EmbeddingProvider;
 use graph::GraphIndex;
 use ingestion::worker::DocumentWorker;
@@ -399,6 +399,25 @@ pub fn serve_with_stop(
     // nothing to reconcile — the server simply starts with an empty index.
     let initial_sync_due =
         bootstrap::has_active_dataset(&config) && auto_update.initial_sync && !req.no_initial_sync;
+    // Restart recovery (event-queue-incremental-linking task 1.5): rows
+    // left in `processing` by an unclean shutdown (crash, SIGKILL, power
+    // loss) are never claimed again (the worker claims only `pending`) and
+    // the startup reconcile skips them — reset them to `pending` BEFORE the
+    // reconcile so the recovered rows are visible to both (the worker's
+    // startup drain below then processes them).
+    let recovered = db
+        .with_conn(|conn| {
+            QueueTaskDao::new(ConnectionOrTx::Connection(conn))
+                .recover_stuck_processing(now_unix_seconds())
+        })
+        .map_err(CliError::Db)?
+        .map_err(|e| CliError::Unsupported(format!("queue task: {e}")))?;
+    if recovered > 0 {
+        tracing::info!(
+            recovered,
+            "recovered stuck queue tasks (processing -> pending)"
+        );
+    }
     if force_rebuild {
         // The vector engine was recreated: the stored vectors are gone, and
         // the producer's content-hash diff cannot force re-embedding of

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use config::preset::GraphConfig;
 use config::{Config, GlobalConfig, OnnxConfig};
-use db::{ChunkDao, ConnectionOrTx, DocumentDao, QueueTaskDao};
+use db::{ChunkDao, ConnectionOrTx, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::GraphIndex;
 use search::Searcher;
@@ -536,6 +536,124 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
         !docs_by_path.contains_key("/ghost/ghost.md"),
         "the ghost must be swept by the worker GC: {docs:?}"
     );
+}
+
+// --- serve_with_stop: restart recovery of a stuck processing row (task 1.5) --
+
+/// Task 1.5: serve starts with a `doc:index` row stuck in `processing` (an
+/// unclean shutdown mid-pipeline) for a file that is gone from disk: the
+/// startup recovery resets it to `pending` BEFORE the startup reconcile
+/// (which then sees it and enqueues the delete), and the worker's startup
+/// drain processes everything — the recovered index row converges to
+/// `done`, the delete row is removed, the live file is indexed. Without the
+/// recovery the row would sit in `processing` forever (the worker claims
+/// only `pending`; the reconcile skips `processing` rows).
+#[test]
+fn serve_startup_recovers_a_stuck_processing_row() {
+    let dir = TempDir::new("recover-stuck");
+    let port = free_port();
+    let src = dir.as_ref().join("src");
+    std::fs::create_dir_all(&src).expect("create source dir");
+    std::fs::write(src.join("live.md"), "# Live\n\nStill on disk.\n").expect("write live.md");
+    let mut boot = test_bootstrap(&dir);
+    boot.global = Some(one_markdown_source(&src));
+    // The stuck row: a `doc:index` for a file gone from disk, left in
+    // `processing` by a simulated unclean shutdown (no document row).
+    let stuck_path = src.join("gone.md").to_string_lossy().into_owned();
+    boot.db
+        .with_conn(|conn| -> Result<(), db::QueueTaskError> {
+            let tasks = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
+            tasks.enqueue(
+                QueueTaskType::DocIndex,
+                &stuck_path,
+                &DocIndexPayload {
+                    source_path: src.to_string_lossy().into_owned(),
+                    content_hash: None,
+                },
+                1,
+            )?;
+            conn.execute(
+                "UPDATE queue_tasks SET status = 'processing', attempts = 1, \
+                 last_error = 'simulated crash' WHERE identity = ?1",
+                [stuck_path.as_str()],
+            )
+            .map_err(|e| db::QueueTaskError::Db(e.into()))?;
+            Ok(())
+        })
+        .expect("with_conn seed")
+        .expect("seed stuck row");
+    let req = ServeRequest {
+        cfg_path: dir.as_ref().join("unused.yaml").to_path_buf(),
+        dataset: None,
+        no_initial_sync: false,
+        port,
+        auto_rebuild_vectors: false,
+    };
+
+    let (stop_tx, mut stop_rx) = broadcast::channel::<()>(1);
+    let runtime = Runtime::new().expect("test runtime");
+    let killer = runtime.spawn(async move {
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/health");
+        let mut healthy = false;
+        for _ in 0..200 {
+            if client
+                .get(&url)
+                .send()
+                .await
+                .is_ok_and(|res| res.status().as_u16() == 200)
+            {
+                healthy = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = stop_tx.send(());
+        healthy
+    });
+
+    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx);
+    let healthy = runtime.block_on(killer).expect("killer task");
+
+    assert!(
+        result.is_ok(),
+        "serve_with_stop must succeed: {:?}",
+        result.err()
+    );
+    assert!(healthy, "/health must answer 200 before the stop signal");
+
+    // The stuck row was recovered (processing -> pending) and processed to
+    // `done` by the worker's startup drain: without the recovery it would
+    // sit in `processing` forever (the worker claims only `pending`, the
+    // reconcile skips `processing` rows).
+    let tasks = boot
+        .db
+        .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+        .expect("with_conn tasks")
+        .map_err(|e| panic!("list tasks: {e}"))
+        .expect("list tasks");
+    let stuck = tasks
+        .iter()
+        .find(|t| t.identity == stuck_path && t.task_type == "doc:index")
+        .expect("the recovered row must still exist");
+    assert_eq!(
+        stuck.status, "done",
+        "the recovered row is processed: {stuck:?}"
+    );
+    // The reconcile saw the recovered (pending) row: the file is gone from
+    // disk, so a doc:delete was enqueued and processed (row removed).
+    assert!(
+        !tasks
+            .iter()
+            .any(|t| t.identity == stuck_path && t.task_type == "doc:delete"),
+        "the delete row must be processed (removed): {tasks:?}"
+    );
+    // The live file was indexed by the same startup drain.
+    let live = tasks
+        .iter()
+        .find(|t| t.identity == src.join("live.md").to_string_lossy().as_ref())
+        .expect("live.md must be indexed");
+    assert_eq!(live.status, "done", "{live:?}");
 }
 
 // --- serve_with_stop: dimension-mismatch auto-rebuild ----------------------

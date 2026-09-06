@@ -9,8 +9,11 @@
 //! with the `30 * 2^(attempts-1)` backoff, manual re-queue via
 //! [`QueueTaskDao::reset_retries`]). Producers (file watcher, startup
 //! reconcile, the pipeline itself) enqueue via [`QueueTaskDao::enqueue`];
-//! the single background worker claims due rows atomically via
-//! [`QueueTaskDao::claim_due`] and dispatches by [`QueueTaskType`].
+//! the single background worker claims due rows one at a time via
+//! [`QueueTaskDao::claim_one`] (at most one row in `processing` at any
+//! instant — task 1.5) and dispatches by [`QueueTaskType`]. Rows left in
+//! `processing` by an unclean shutdown are reset to `pending` at serve
+//! startup via [`QueueTaskDao::recover_stuck_processing`].
 //!
 //! `type` and `identity` are columns — queue mechanics (dedup, ordering,
 //! filters, CLI display) never parse JSON. The `event` column holds only
@@ -238,32 +241,53 @@ impl<'conn> QueueTaskDao<'conn> {
         Ok(())
     }
 
-    /// Atomically claim up to `batch` due `pending` tasks
-    /// (`next_attempt_at <= now`), ordered by `(next_attempt_at, id)`, flip
-    /// them to `processing` and return exactly the rows claimed in this
-    /// call (a task is claimed at most once per claim; stale `processing`
-    /// rows are not re-returned — a startup timeout reset re-queues them).
-    pub fn claim_due(&self, now: i64, batch: i64) -> Result<Vec<QueueTask>, QueueTaskError> {
-        let mut claimed = self.exec.query(
+    /// Atomically claim ONE due `pending` task (`next_attempt_at <= now`),
+    /// ordered by `(next_attempt_at, id)` (the smallest due time first, the
+    /// row id as the tie-breaker — design D5), flip it to `processing` and
+    /// return it; `None` when no due pending row exists (a task is claimed
+    /// at most once per claim; stale `processing` rows are not re-returned
+    /// — [`Self::recover_stuck_processing`] re-queues them at startup).
+    ///
+    /// One-at-a-time claiming (task 1.5): the worker claims in a loop, so
+    /// `processing` means "currently executing" — at most one row is in
+    /// `processing` at any instant instead of a whole pre-claimed batch.
+    pub fn claim_one(&self, now: i64) -> Result<Option<QueueTask>, QueueTaskError> {
+        match self.exec.query_row(
             "UPDATE queue_tasks \
-             SET status = 'processing', updated_at = ?3 \
+             SET status = 'processing', updated_at = ?1 \
              WHERE id IN ( \
                  SELECT id FROM queue_tasks \
                  WHERE status = 'pending' AND next_attempt_at <= ?1 \
-                 ORDER BY next_attempt_at, id LIMIT ?2) \
+                 ORDER BY next_attempt_at, id LIMIT 1) \
              RETURNING id, type, identity, event, status, attempts, max_attempts, \
               last_error, next_attempt_at, created_at, updated_at",
-            params![now, batch, now],
+            params![now],
             row_to_task,
-        )?;
-        // `RETURNING` has no ordering guarantee: sort for a deterministic
-        // claim order (due time, then id as the tie-breaker — design D5).
-        claimed.sort_by(|a, b| {
-            a.next_attempt_at
-                .cmp(&b.next_attempt_at)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        Ok(claimed)
+        ) {
+            Ok(task) => Ok(Some(task)),
+            Err(DbError::Sqlite {
+                source: rusqlite::Error::QueryReturnedNoRows,
+            }) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Restart recovery (task 1.5): rows left in `processing` by an unclean
+    /// shutdown (crash, SIGKILL, power loss) are never claimed again (the
+    /// worker claims only `pending`) and the startup reconcile skips them —
+    /// reset every `processing` row to `pending`, stamping `updated_at` to
+    /// `now`. `attempts` and `last_error` are NOT touched (an interrupted
+    /// attempt is not a failed one), and `next_attempt_at` keeps its value,
+    /// which is already due (the claim required `next_attempt_at <= now`).
+    /// Returns the changed-row count.
+    pub fn recover_stuck_processing(&self, now: i64) -> Result<i64, QueueTaskError> {
+        // The changed-row count cannot reach the usize boundary on a laptop
+        // queue; the widening cast is lossless.
+        Ok(self.exec.execute(
+            "UPDATE queue_tasks SET status = 'pending', updated_at = ?1 \
+             WHERE status = 'processing'",
+            params![now],
+        )? as i64)
     }
 
     /// Mark task `id` as `done`, stamping `updated_at` to `now` (Unix
@@ -565,8 +589,8 @@ mod tests {
                     100,
                 )
                 .unwrap();
-            let claimed = tasks.claim_due(1_000, 10).unwrap();
-            assert_eq!(claimed[0].status, "processing");
+            let claimed = tasks.claim_one(1_000).unwrap().unwrap();
+            assert_eq!(claimed.status, "processing");
 
             tasks
                 .enqueue(
@@ -670,8 +694,8 @@ mod tests {
                     100,
                 )
                 .unwrap();
-            let claimed = tasks.claim_due(1_000, 10).unwrap();
-            assert!(tasks.mark_done(claimed[0].id, 1_000).unwrap());
+            let claimed = tasks.claim_one(1_000).unwrap().unwrap();
+            assert!(tasks.mark_done(claimed.id, 1_000).unwrap());
 
             tasks
                 .enqueue(
@@ -710,23 +734,26 @@ mod tests {
                 .enqueue(QueueTaskType::DocIndex, "/a.md", &doc_payload("/s"), 300)
                 .unwrap();
 
-            let claimed = tasks.claim_due(10_000, 10).unwrap();
-            assert_eq!(claimed.len(), 2);
+            let first = tasks.claim_one(10_000).unwrap().unwrap();
+            let second = tasks.claim_one(10_000).unwrap().unwrap();
+            assert_eq!(first.identity, "/b.md", "the older row is claimed first");
             assert_eq!(
-                claimed[0].identity, "/b.md",
-                "the older row is claimed first"
-            );
-            assert_eq!(
-                claimed[1].identity, "/a.md",
+                second.identity, "/a.md",
                 "the re-enqueued row moves to the end"
+            );
+            assert!(
+                tasks.claim_one(10_000).unwrap().is_none(),
+                "the queue is drained"
             );
         });
     }
 
     // Claim order is (next_attempt_at, id): the smallest due time first,
-    // insertion order (id) as the tie-breaker.
+    // insertion order (id) as the tie-breaker. At most one row per call:
+    // each call returns the next row, and the call after the last returns
+    // None.
     #[test]
-    fn claim_due_orders_by_due_time_then_id() {
+    fn claim_one_orders_by_due_time_then_id() {
         let db = in_memory_db();
         with_tasks(&db, |tasks| {
             tasks
@@ -739,21 +766,28 @@ mod tests {
                 .enqueue(QueueTaskType::DocIndex, "/c.md", &doc_payload("/s"), 50)
                 .unwrap();
 
-            let claimed = tasks.claim_due(10_000, 10).unwrap();
+            let first = tasks.claim_one(10_000).unwrap().unwrap();
+            let second = tasks.claim_one(10_000).unwrap().unwrap();
+            let third = tasks.claim_one(10_000).unwrap().unwrap();
             assert_eq!(
-                claimed
-                    .iter()
-                    .map(|t| t.identity.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["/c.md", "/a.md", "/b.md"]
+                [
+                    first.identity.as_str(),
+                    second.identity.as_str(),
+                    third.identity.as_str(),
+                ],
+                ["/c.md", "/a.md", "/b.md"]
+            );
+            assert!(
+                tasks.claim_one(10_000).unwrap().is_none(),
+                "at most one row per call; the queue is drained"
             );
         });
     }
 
-    // claim_due returns only DUE pending rows, flips them to processing,
-    // does not re-claim them, and honors the batch limit.
+    // claim_one returns only DUE pending rows, flips the row to processing,
+    // does not re-claim it, and returns the next row on the next call.
     #[test]
-    fn claim_due_only_due_pending_rows() {
+    fn claim_one_only_due_pending_rows() {
         let db = in_memory_db();
         with_tasks(&db, |tasks| {
             tasks
@@ -764,28 +798,133 @@ mod tests {
                 .unwrap();
             set_next_attempt_at(&db, get_task(tasks, "/b.md").id, 999_999_999);
 
-            let claimed = tasks.claim_due(1_000, 10).unwrap();
-            assert_eq!(claimed.len(), 1, "only the due pending row is claimed");
-            assert_eq!(claimed[0].identity, "/a.md");
-            assert_eq!(claimed[0].status, "processing");
+            let claimed = tasks.claim_one(1_000).unwrap().unwrap();
+            assert_eq!(
+                claimed.identity, "/a.md",
+                "only the due pending row is claimed"
+            );
+            assert_eq!(claimed.status, "processing");
 
             assert!(
-                tasks.claim_due(1_000, 10).unwrap().is_empty(),
+                tasks.claim_one(1_000).unwrap().is_none(),
                 "already-claimed rows must not be re-claimed"
             );
-            let later = tasks.claim_due(999_999_999, 10).unwrap();
-            assert_eq!(later.len(), 1);
-            assert_eq!(later[0].identity, "/b.md");
+            let later = tasks.claim_one(999_999_999).unwrap().unwrap();
+            assert_eq!(
+                later.identity, "/b.md",
+                "the not-yet-due row is claimed once it is due"
+            );
 
-            // Batch limit: at most `batch` rows per claim.
+            // The remaining due rows are claimed one at a time, in order.
             for path in ["/c.md", "/d.md", "/e.md"] {
                 tasks
                     .enqueue(QueueTaskType::DocIndex, path, &doc_payload("/s"), 100)
                     .unwrap();
             }
-            let batched = tasks.claim_due(1_000, 2).unwrap();
-            assert_eq!(batched.len(), 2, "at most `batch` rows per claim");
-            assert_eq!(tasks.list(None, Some("pending")).unwrap().len(), 1);
+            for expected in ["/c.md", "/d.md", "/e.md"] {
+                let next = tasks.claim_one(1_000).unwrap().unwrap();
+                assert_eq!(next.identity, expected, "one row per call, in due order");
+            }
+            assert!(
+                tasks.claim_one(1_000).unwrap().is_none(),
+                "the queue is drained"
+            );
+            assert!(tasks.list(None, Some("pending")).unwrap().is_empty());
+        });
+    }
+
+    // recover_stuck_processing: processing -> pending with attempts /
+    // last_error / next_attempt_at preserved, the other statuses untouched,
+    // the changed-row count returned, and the recovered rows claimable
+    // again.
+    #[test]
+    fn recover_stuck_processing_resets_only_processing_rows() {
+        let db = in_memory_db();
+        with_tasks(&db, |tasks| {
+            tasks
+                .enqueue(QueueTaskType::DocIndex, "/a.md", &doc_payload("/s"), 100)
+                .unwrap();
+            tasks
+                .enqueue(QueueTaskType::DocIndex, "/b.md", &doc_payload("/s"), 200)
+                .unwrap();
+            tasks
+                .enqueue(QueueTaskType::DocIndex, "/c.md", &doc_payload("/s"), 300)
+                .unwrap();
+            tasks
+                .enqueue(QueueTaskType::DocIndex, "/d.md", &doc_payload("/s"), 400)
+                .unwrap();
+            tasks
+                .enqueue(QueueTaskType::DocIndex, "/e.md", &doc_payload("/s"), 500)
+                .unwrap();
+
+            // Nothing is stuck yet.
+            assert_eq!(
+                tasks.recover_stuck_processing(1_000).unwrap(),
+                0,
+                "no processing rows: zero"
+            );
+
+            // Two rows claimed (processing) — the interrupted attempts.
+            let a = tasks.claim_one(1_000).unwrap().unwrap();
+            let b = tasks.claim_one(1_000).unwrap().unwrap();
+            assert_eq!(a.identity, "/a.md");
+            assert_eq!(b.identity, "/b.md");
+            // The interrupted attempt on /a.md left its failure state
+            // behind (the worker's mark_failed shape).
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE queue_tasks SET attempts = 1, last_error = 'crashed mid-flight' \
+                     WHERE id = ?1",
+                    params![a.id],
+                )
+            })
+            .unwrap()
+            .unwrap();
+            // The other statuses: one done, one error.
+            let d_id = get_task(tasks, "/d.md").id;
+            tasks.mark_done(d_id, 1_000).unwrap();
+            fail_to_error(tasks, get_task(tasks, "/e.md").id, 3, 1_000);
+
+            let recovered = tasks.recover_stuck_processing(2_000).unwrap();
+            assert_eq!(recovered, 2, "only the two processing rows are reset");
+
+            let a = get_task(tasks, "/a.md");
+            assert_eq!(a.status, "pending", "processing -> pending");
+            assert_eq!(a.attempts, 1, "attempts are preserved");
+            assert_eq!(
+                a.last_error.as_deref(),
+                Some("crashed mid-flight"),
+                "last_error is preserved"
+            );
+            assert_eq!(a.next_attempt_at, 100, "next_attempt_at is untouched");
+            assert_eq!(a.updated_at, 2_000);
+
+            let b = get_task(tasks, "/b.md");
+            assert_eq!(b.status, "pending");
+            assert_eq!(b.attempts, 0);
+            assert_eq!(b.last_error, None);
+            assert_eq!(b.next_attempt_at, 200);
+            assert_eq!(b.updated_at, 2_000);
+
+            let c = get_task(tasks, "/c.md");
+            assert_eq!(c.status, "pending", "the pending row is untouched");
+            assert_eq!(
+                c.updated_at, 300,
+                "the pending row's updated_at is untouched"
+            );
+
+            let d = get_task(tasks, "/d.md");
+            assert_eq!(d.status, "done", "the done row is untouched");
+
+            let e = get_task(tasks, "/e.md");
+            assert_eq!(e.status, "error", "the error row is untouched");
+
+            // The recovered rows re-enter the claim order.
+            let claimed = tasks.claim_one(2_000).unwrap().unwrap();
+            assert_eq!(
+                claimed.identity, "/a.md",
+                "recovered rows are claimable again"
+            );
         });
     }
 
@@ -804,8 +943,11 @@ mod tests {
             for (failure, now, backoff, expected_attempts) in
                 [(1, 1_000, 30, 1i32), (2, 2_000, 60, 2), (3, 3_000, 120, 3)]
             {
-                let claimed = tasks.claim_due(now, 10).unwrap();
-                assert_eq!(claimed.len(), 1, "cycle {failure} must claim the task");
+                let claimed = tasks.claim_one(now).unwrap().unwrap();
+                assert_eq!(
+                    claimed.identity, "/a.md",
+                    "cycle {failure} must claim the task"
+                );
                 assert!(tasks.mark_failed(id, &format!("e{failure}"), now).unwrap());
                 let t = get_task(tasks, "/a.md");
                 assert_eq!(t.attempts, expected_attempts);
@@ -822,8 +964,8 @@ mod tests {
             }
 
             // The 4th failure hits the cap: error, no new backoff.
-            let claimed = tasks.claim_due(4_000, 10).unwrap();
-            assert_eq!(claimed.len(), 1);
+            let claimed = tasks.claim_one(4_000).unwrap().unwrap();
+            assert_eq!(claimed.identity, "/a.md");
             assert!(tasks.mark_failed(id, "e4", 4_000).unwrap());
             let t = get_task(tasks, "/a.md");
             assert_eq!(t.attempts, 4);
@@ -835,7 +977,7 @@ mod tests {
             assert_eq!(t.last_error.as_deref(), Some("e4"));
 
             // An error row is not due anymore.
-            assert!(tasks.claim_due(10_000_000, 10).unwrap().is_empty());
+            assert!(tasks.claim_one(10_000_000).unwrap().is_none());
         });
     }
 

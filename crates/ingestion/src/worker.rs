@@ -1,9 +1,11 @@
 //! Background event-queue worker (event-queue-incremental-linking task 1.2).
 //!
 //! [`DocumentWorker`] is the sole consumer of the `queue_tasks` queue: it
-//! claims due rows, dispatches by [`QueueTaskType`] (index / delete /
+//! claims due rows ONE AT A TIME (task 1.5 — at most one row in
+//! `processing` at any instant, so `processing` means "currently
+//! executing"), dispatches by [`QueueTaskType`] (index / delete /
 //! entity-link), records failures with exponential backoff, and sweeps
-//! orphaned data after each batch.
+//! orphaned data after each cycle.
 //!
 //! The worker runs on the serve owner thread (the [`Runner`] is `!Send +
 //! !Sync` — it holds `&dyn` references and a `Mutex<()>` that cannot cross
@@ -21,7 +23,9 @@ use db::{ConnectionOrTx, Db, QueueTask, QueueTaskDao, QueueTaskType};
 use crate::error::IngestionError;
 use crate::runner::Runner;
 
-/// Maximum tasks claimed per poll cycle (no config knob in task 1.4).
+/// Maximum tasks processed per poll cycle (one-at-a-time claim, task 1.5):
+/// the per-cycle starvation guard — a long queue must not starve the owner
+/// thread (no config knob in task 1.4).
 const WORKER_BATCH_SIZE: i64 = 100;
 
 /// The background consumer of the `queue_tasks` queue (task 1.2).
@@ -42,8 +46,9 @@ impl<'a> DocumentWorker<'a> {
         Self { db, runner }
     }
 
-    /// One poll cycle: claim due tasks, process each one, then sweep
-    /// orphaned data.
+    /// One poll cycle: claim due tasks ONE AT A TIME (task 1.5 — at most
+    /// one row in `processing` at any instant), process each one, then
+    /// sweep orphaned data.
     ///
     /// `now` is the current Unix time in seconds (injected for testability).
     ///
@@ -54,31 +59,39 @@ impl<'a> DocumentWorker<'a> {
     /// abort the cycle. A failed orphan cleanup is logged and does not
     /// propagate.
     pub fn run_once(&self, now: i64) -> Result<(), IngestionError> {
-        let tasks = self
-            .db
-            .with_conn(|conn| {
-                QueueTaskDao::new(ConnectionOrTx::Connection(conn))
-                    .claim_due(now, WORKER_BATCH_SIZE)
-            })
-            .map_err(IngestionError::Db)?
-            .map_err(IngestionError::QueueTask)?;
-
-        for task in &tasks {
-            self.process_task(task, now);
+        // One-at-a-time claim (task 1.5): the per-cycle cap stays as the
+        // owner-thread starvation guard.
+        let mut processed = 0;
+        for _ in 0..WORKER_BATCH_SIZE {
+            let Some(task) = self.claim_one(now)? else {
+                break;
+            };
+            self.process_task(&task, now);
+            processed += 1;
         }
 
-        // GC phase: sweep orphaned data after draining the batch.
+        // GC phase: sweep orphaned data after draining the cycle.
         if let Err(err) = self.runner.cleanup_orphaned_data() {
             tracing::warn!(error = %err, "orphan cleanup failed");
         }
 
         // Per-cycle progress: log only when work happened (idle cycles stay
         // quiet).
-        if !tasks.is_empty() {
-            self.log_cycle_summary(tasks.len());
+        if processed > 0 {
+            self.log_cycle_summary(processed);
         }
 
         Ok(())
+    }
+
+    /// Atomically claim one due task over a pooled connection
+    /// ([`QueueTaskDao::claim_one`]); `None` when the queue has no due
+    /// pending row.
+    fn claim_one(&self, now: i64) -> Result<Option<QueueTask>, IngestionError> {
+        self.db
+            .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).claim_one(now))
+            .map_err(IngestionError::Db)
+            .and_then(|result| result.map_err(IngestionError::QueueTask))
     }
 
     /// Logs the per-cycle queue summary: the processed count plus the queue
@@ -320,10 +333,14 @@ mod tests {
 
     /// A deterministic embedding provider: vector `i` is all `(i + 1)`.
     /// `fail_marker` makes it error on any batch containing a text with that
-    /// substring (per-document failure path).
+    /// substring (per-document failure path). `probe` (task 1.5) is an
+    /// optional observer invoked before every embedding batch — mid-pipeline
+    /// queue-state checks run there (the embedding step holds no DB
+    /// connection).
     struct MockEmbedding {
         dim: usize,
         fail_marker: Mutex<Option<String>>,
+        probe: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     }
 
     impl MockEmbedding {
@@ -331,12 +348,16 @@ mod tests {
             Self {
                 dim,
                 fail_marker: Mutex::new(None),
+                probe: Mutex::new(None),
             }
         }
     }
 
     impl EmbeddingProvider for MockEmbedding {
         fn generate_embeddings(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            if let Some(probe) = self.probe.lock().unwrap().as_ref() {
+                probe();
+            }
             if let Some(marker) = self.fail_marker.lock().unwrap().as_ref()
                 && texts.iter().any(|text| text.contains(marker))
             {
@@ -841,6 +862,112 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(entities, 0, "the unreferenced entity must be swept");
+    }
+
+    // Task 1.5 invariant: with N due rows, at most one row is `processing`
+    // at any instant during a worker cycle; the rest stay `pending`. The
+    // probe observes the queue state from inside the pipeline (the embedding
+    // step of each task, which holds no DB connection).
+    #[test]
+    fn run_once_keeps_at_most_one_row_processing() {
+        let tree = TempTree::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            tree.write(name, "hello\n");
+        }
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.with_source(&root);
+        let runner = harness.runner();
+        let worker = DocumentWorker::new(&harness.db, &runner);
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            harness.enqueue_index(&format!("{root}/{name}"), &root);
+        }
+
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let obs = observations.clone();
+        let db = harness.db.clone();
+        *harness.embed.probe.lock().unwrap() = Some(Box::new(move || {
+            let (processing, pending): (i64, i64) = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END), \
+                         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) \
+                         FROM queue_tasks",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                })
+                .unwrap()
+                .unwrap();
+            obs.lock().unwrap().push((processing, pending));
+        }));
+
+        worker.run_once(2_000).unwrap();
+
+        let observations = observations.lock().unwrap();
+        assert_eq!(observations.len(), 3, "one embedding batch per task");
+        for (i, (processing, pending)) in observations.iter().enumerate() {
+            assert_eq!(*processing, 1, "task {i}: exactly one row in processing");
+            assert_eq!(
+                *pending,
+                3 - i as i64 - 1,
+                "task {i}: the rest stay pending"
+            );
+        }
+        let tasks = harness.list_doc_tasks();
+        assert!(
+            tasks.iter().all(|t| t.status == "done"),
+            "all three tasks are done: {tasks:?}"
+        );
+    }
+
+    // Crash simulation (task 1.5): a claimed row (`processing`) survives a
+    // "restart" — the startup recovery path resets it to `pending`
+    // (attempts/last_error preserved), and a fresh worker's `run_once`
+    // processes it to `done`.
+    #[test]
+    fn processing_row_survives_a_restart_via_recover_stuck_processing() {
+        let tree = TempTree::new();
+        tree.write("a.txt", "hello\n");
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.with_source(&root);
+        harness.enqueue_index(&format!("{root}/a.txt"), &root);
+
+        // Simulate an unclean shutdown mid-processing: the row is claimed
+        // (processing) and never finished.
+        let claimed = harness
+            .db
+            .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).claim_one(2_000))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.status, "processing");
+
+        // "Restart": the serve startup recovery path (task 1.5).
+        let recovered = harness
+            .db
+            .with_conn(|conn| {
+                QueueTaskDao::new(ConnectionOrTx::Connection(conn)).recover_stuck_processing(3_000)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered, 1, "the stuck row is recovered");
+        let task = harness.list_doc_tasks()[0].clone();
+        assert_eq!(task.status, "pending", "recovered to pending, got {task:?}");
+        assert_eq!(task.attempts, 0, "attempts are preserved, got {task:?}");
+
+        // A fresh worker's run_once processes the recovered row to done.
+        let runner = harness.runner();
+        let worker = DocumentWorker::new(&harness.db, &runner);
+        worker.run_once(4_000).unwrap();
+
+        let tasks = harness.list_doc_tasks();
+        assert_eq!(tasks.len(), 1, "{tasks:?}");
+        assert_eq!(tasks[0].status, "done", "{tasks:?}");
+        assert_eq!(harness.list_documents().len(), 1, "the document is indexed");
     }
 
     // Unit test for the backoff formula.
