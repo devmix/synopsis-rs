@@ -16,6 +16,10 @@
 //!   post-batch maintenance (orphan sweep + cross-domain entity linking,
 //!   `runner/cleanup.rs`); the worker's GC phase drives the sweep and the
 //!   `entity:link` dispatch calls the linking entry point directly.
+//! - [`Runner::persist_vectors`] — the per-cycle vector RAM save
+//!   (vector-loss-self-heal D1): the worker calls it after a cycle that
+//!   processed at least one `doc:*` task, bounding the unclean-shutdown
+//!   (`SIGKILL`) loss window to the in-progress batch.
 //! - [`Runner::find_source_for_path`] / [`Runner::belongs_to_source`] —
 //!   source containment used by the queue producer, the worker and the
 //!   cleanup stage.
@@ -300,6 +304,24 @@ impl<'a> Runner<'a> {
     pub fn delete_document_at(&self, path: &str) -> Result<bool, IngestionError> {
         let _guard = self.lock();
         self.delete_document_at_locked(path)
+    }
+
+    /// Persists the vector engine's RAM layer to disk (vector-loss-self-heal
+    /// D1): the per-cycle save point that bounds the unclean-shutdown
+    /// (`SIGKILL`) loss window to the in-progress batch.
+    ///
+    /// Wraps the engine's `build_index` save point (a no-op when the RAM
+    /// layer is empty). The worker calls it after a cycle that processed at
+    /// least one `doc:*` task; a failure is the caller's to log (it must not
+    /// abort the cycle).
+    ///
+    /// # Errors
+    ///
+    /// [`IngestionError::Vectors`] when the engine's save fails.
+    pub fn persist_vectors(&self) -> Result<(), IngestionError> {
+        let _guard = self.lock();
+        self.vectors.build_index()?;
+        Ok(())
     }
 
     /// The unlocked core of [`Self::process_document_by_path`] (callers

@@ -56,8 +56,8 @@ impl<'a> DocumentWorker<'a> {
     ///
     /// Propagates the first unhandled error from the claim stage. Per-task
     /// failures are recorded in the queue (backoff / error status) and never
-    /// abort the cycle. A failed orphan cleanup is logged and does not
-    /// propagate.
+    /// abort the cycle. A failed orphan cleanup and a failed post-cycle
+    /// vector persistence are both logged and do not propagate.
     pub fn run_once(&self, now: i64) -> Result<(), IngestionError> {
         // One-at-a-time claim (task 1.5): the per-cycle cap stays as the
         // owner-thread starvation guard.
@@ -75,9 +75,19 @@ impl<'a> DocumentWorker<'a> {
             tracing::warn!(error = %err, "orphan cleanup failed");
         }
 
-        // Per-cycle progress: log only when work happened (idle cycles stay
-        // quiet).
         if processed > 0 {
+            // Per-cycle vector save (vector-loss-self-heal D1): persist the
+            // RAM layer after a work cycle so an unclean shutdown (SIGKILL)
+            // loses at most the in-progress batch, not everything since the
+            // last flush. A failure is logged, never fatal — the next work
+            // cycle retries the save and the startup self-heal repairs any
+            // residual loss.
+            if let Err(err) = self.runner.persist_vectors() {
+                tracing::warn!(error = %err, "post-cycle vector persistence failed");
+            }
+
+            // Per-cycle progress: log only when work happened (idle cycles
+            // stay quiet).
             self.log_cycle_summary(processed);
         }
 
@@ -377,16 +387,33 @@ mod tests {
         }
     }
 
-    /// In-memory [`VectorIndex`] stub: records every row.
+    /// In-memory [`VectorIndex`] stub: records every row; `build_index`
+    /// counts its calls (the per-cycle persistence tests) and can be made
+    /// to fail (the persistence-failure path).
     struct MemoryIndex {
         rows: Mutex<Vec<(u32, Vec<f32>)>>,
+        build_index_calls: Mutex<usize>,
+        fail_build_index: Mutex<bool>,
     }
 
     impl MemoryIndex {
         fn new() -> Self {
             Self {
                 rows: Mutex::new(Vec::new()),
+                build_index_calls: Mutex::new(0),
+                fail_build_index: Mutex::new(false),
             }
+        }
+
+        /// How many times `build_index` has been called (test helper).
+        fn build_index_calls(&self) -> usize {
+            *self.build_index_calls.lock().unwrap()
+        }
+
+        /// Makes `build_index` fail (the persistence-failure path, test
+        /// helper).
+        fn set_fail_build_index(&self, fail: bool) {
+            *self.fail_build_index.lock().unwrap() = fail;
         }
     }
 
@@ -427,6 +454,10 @@ mod tests {
         }
 
         fn build_index(&self) -> Result<(), VectorsError> {
+            *self.build_index_calls.lock().unwrap() += 1;
+            if *self.fail_build_index.lock().unwrap() {
+                return Err(VectorsError::Engine("simulated persist failure".to_owned()));
+            }
             Ok(())
         }
 
@@ -862,6 +893,85 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(entities, 0, "the unreferenced entity must be swept");
+    }
+
+    // A work cycle persists the vector RAM layer (vector-loss-self-heal
+    // D1): exactly one `build_index` call after processing a `doc:index`
+    // task.
+    #[test]
+    fn run_once_persists_vectors_after_a_work_cycle() {
+        let tree = TempTree::new();
+        tree.write("a.txt", "hello world\n");
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.with_source(&root);
+        let runner = harness.runner();
+        let worker = DocumentWorker::new(&harness.db, &runner);
+
+        harness.enqueue_index(&format!("{root}/a.txt"), &root);
+        worker.run_once(2_000).unwrap();
+
+        assert_eq!(
+            harness.sink.build_index_calls(),
+            1,
+            "a work cycle must persist the RAM layer exactly once"
+        );
+        let docs = harness.list_documents();
+        assert_eq!(docs.len(), 1, "the document must be created: {docs:?}");
+    }
+
+    // An idle cycle performs no persistence (vector-loss-self-heal D1):
+    // the RAM layer changed nothing, so the disk write is skipped.
+    #[test]
+    fn run_once_does_not_persist_on_an_idle_cycle() {
+        let harness = Harness::new();
+        let runner = harness.runner();
+        let worker = DocumentWorker::new(&harness.db, &runner);
+
+        worker.run_once(2_000).unwrap();
+
+        assert_eq!(
+            harness.sink.build_index_calls(),
+            0,
+            "an idle cycle must not persist the RAM layer"
+        );
+    }
+
+    // A post-cycle persistence failure is non-fatal (vector-loss-self-heal
+    // D1): the cycle completes `Ok`, the document is created, and the task
+    // is marked done.
+    #[test]
+    fn run_once_persistence_failure_is_non_fatal() {
+        let tree = TempTree::new();
+        tree.write("a.txt", "hello world\n");
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.with_source(&root);
+        harness.sink.set_fail_build_index(true);
+        let runner = harness.runner();
+        let worker = DocumentWorker::new(&harness.db, &runner);
+
+        harness.enqueue_index(&format!("{root}/a.txt"), &root);
+        let result = worker.run_once(2_000);
+        assert!(
+            result.is_ok(),
+            "a persistence failure must not abort the cycle: {result:?}"
+        );
+
+        let docs = harness.list_documents();
+        assert_eq!(
+            docs.len(),
+            1,
+            "the document must still be created: {docs:?}"
+        );
+        let tasks = harness.list_doc_tasks();
+        assert_eq!(tasks.len(), 1, "{tasks:?}");
+        assert_eq!(
+            tasks[0].status, "done",
+            "the task must still be done: {tasks:?}"
+        );
     }
 
     // Task 1.5 invariant: with N due rows, at most one row is `processing`
