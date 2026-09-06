@@ -453,7 +453,7 @@ impl<'a> Ingester<'a> {
             .map(|chunk| {
                 tracing::info!(
                     "extract entities from chunk {:?}/{:?}",
-                    chunk.sequence_num,
+                    chunk.sequence_num + 1,
                     chunks.len()
                 );
                 ner.extract_entities(&chunk.text, &chunk.metadata)

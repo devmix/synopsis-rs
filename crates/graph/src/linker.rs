@@ -694,6 +694,13 @@ fn process_llm_pair(
     threshold: f64,
     result: &mut LinkResult,
 ) -> Result<PairOutcome, String> {
+    tracing::info!(
+        "try link entities A: {:?}[{:?}] B: {:?}[{:?}]",
+        pair.a.name,
+        pair.a.domain,
+        pair.b.name,
+        pair.b.domain
+    );
     // Render the pair's user prompt FIRST: the cache key is the LLM request
     // signature (task 1.10), so the rendered prompt must exist before the
     // cache check.

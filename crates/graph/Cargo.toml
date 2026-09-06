@@ -35,3 +35,4 @@ llm = { workspace = true }
 # JSON wire format for the LLM decision: strict parse of the response and the
 # `app_kv` cache value (design D4/D6).
 serde_json = { workspace = true }
+tracing = { workspace = true }
