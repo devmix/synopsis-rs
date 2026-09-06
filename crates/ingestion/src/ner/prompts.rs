@@ -417,8 +417,10 @@ mod tests {
 
     use std::path::PathBuf;
 
+    use config::domain::effective_domain;
     use config::ontology::{
-        AttributeDef, AttributeType, EntityDef, ExtractionDef, RelAttrDef, RelationDef,
+        AttributeDef, AttributeType, EntityDef, ExtractionDef, GlobalConfig, GlobalNerConfig,
+        RelAttrDef, RelationDef,
     };
     use config::{ConfidencePolicy, DomainConfig};
 
@@ -728,6 +730,69 @@ mod tests {
         assert!(
             matches!(err, IngestionError::PromptTemplateParse { ref name, .. } if name == "user"),
             "{err}"
+        );
+    }
+
+    /// The effective domain schema (domain + global pool merge) renders the
+    /// pool's types into the LLM NER system prompt, its JSON output example
+    /// and the user prompt's type lists.
+    #[test]
+    fn merged_config_renders_pool_types_into_the_prompts() {
+        // A pool with one entity and one relation the domain does not define.
+        let pool = GlobalConfig {
+            sources: vec![],
+            cross_domain_links: None,
+            ner: GlobalNerConfig::default(),
+            entities: vec![EntityDef {
+                id: "email_address".to_owned(),
+                name: "Email".to_owned(),
+                description: "An email address".to_owned(),
+                attributes: vec![],
+                synonyms: vec![],
+            }],
+            relations: vec![RelationDef {
+                source: "employee".to_owned(),
+                predicate: "owns_email".to_owned(),
+                target: "email_address".to_owned(),
+                description: "An employee owns an email".to_owned(),
+                attributes: vec![],
+            }],
+            extraction: ExtractionDef::default(),
+        };
+        let merged = effective_domain(&sample_domain(), &pool);
+
+        let prompts = embedded_prompts();
+        let system = prompts.render_system(&merged, true).unwrap();
+        // The pool-only entity and relation are rendered into the system
+        // prompt's schema.
+        assert!(
+            system.contains("- email_address: An email address"),
+            "{system}"
+        );
+        assert!(
+            system.contains("- owns_email: An employee owns an email"),
+            "{system}"
+        );
+        assert!(
+            system.contains("Source: employee -> Target: email_address"),
+            "{system}"
+        );
+        // The JSON output example is present for the merged schema.
+        assert!(system.contains("OUTPUT FORMAT:"), "{system}");
+        assert!(
+            system.contains("\"subject_type\": \"<entity type>\""),
+            "{system}"
+        );
+
+        // The user prompt's type lists carry the pool types too.
+        let user = prompts.render_user(&merged, "text", &Map::new()).unwrap();
+        assert!(
+            user.contains("Entity types to extract: employee, company, email_address"),
+            "{user}"
+        );
+        assert!(
+            user.contains("Relation types to extract: works_for, owns_email"),
+            "{user}"
         );
     }
 

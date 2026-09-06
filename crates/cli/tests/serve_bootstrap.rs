@@ -348,6 +348,124 @@ fn discover_domains_duplicate_name_is_an_error() {
     }
 }
 
+#[test]
+fn discover_domains_merges_the_global_pool_into_every_domain() {
+    let dir = TempDir::new("domains-pool-merge");
+    let ontology = dir.as_ref();
+    // The pool shadows the keys `person` / `owns` and adds `email_address`
+    // + the `email_rule` extraction rule.
+    std::fs::write(
+        ontology.join("global.xml"),
+        r#"<global version="1.0">
+           <entities>
+             <entity id="person" name="Person" description="POOL person"/>
+             <entity id="email_address" name="Email" description="An email address"/>
+           </entities>
+           <relations>
+             <relation source="person" predicate="owns" target="email_address" description="POOL owns"/>
+           </relations>
+           <extraction>
+             <regex-rules>
+               <regex id="email_rule" entity="email_address" pattern="[a-z]+@[a-z]+\.com" confidence="0.9"/>
+             </regex-rules>
+           </extraction>
+         </global>"#,
+    )
+    .expect("write global.xml");
+    std::fs::create_dir_all(ontology.join("domains")).expect("create domains dir");
+    // `alpha` shadows the pool's `person` entity and `owns` relation.
+    std::fs::write(
+        ontology.join("domains").join("alpha.xml"),
+        r#"<domain name="alpha" version="1.0">
+           <entities>
+             <entity id="person" name="Person" description="DOMAIN person"/>
+             <entity id="company" name="Company" description="A company"/>
+           </entities>
+           <relations>
+             <relation source="person" predicate="works_for" target="company" description="works for"/>
+             <relation source="person" predicate="owns" target="company" description="DOMAIN owns"/>
+           </relations>
+           <extraction>
+             <regex-rules>
+               <regex id="phone_rule" entity="person" pattern="\d{10}" confidence="0.8"/>
+             </regex-rules>
+           </extraction>
+         </domain>"#,
+    )
+    .expect("write alpha.xml");
+    // `beta` defines nothing: its effective schema is pool-only.
+    std::fs::write(
+        ontology.join("domains").join("beta.xml"),
+        r#"<domain name="beta" version="1.0"></domain>"#,
+    )
+    .expect("write beta.xml");
+
+    let (global, domains) =
+        discover_domains(ontology.to_str().unwrap()).expect("discovery succeeds");
+    assert!(global.is_some(), "global.xml must load");
+    assert_eq!(domains.len(), 2);
+
+    let alpha = &domains["alpha"];
+    // Shadowed entity: the domain's version, exactly once.
+    let persons: Vec<_> = alpha.entities.iter().filter(|e| e.id == "person").collect();
+    assert_eq!(
+        persons.len(),
+        1,
+        "shadowed pool entity must be dropped: {alpha:?}"
+    );
+    assert_eq!(persons[0].description, "DOMAIN person");
+    // Order: the domain's entities first, the pool-only addition after.
+    let ids: Vec<&str> = alpha.entities.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, vec!["person", "company", "email_address"]);
+    // Shadowed relation: the domain's version, exactly once.
+    let owns: Vec<_> = alpha
+        .relations
+        .iter()
+        .filter(|r| r.predicate == "owns")
+        .collect();
+    assert_eq!(
+        owns.len(),
+        1,
+        "shadowed pool relation must be dropped: {alpha:?}"
+    );
+    assert_eq!(owns[0].description, "DOMAIN owns");
+    assert_eq!(owns[0].target, "company");
+    let predicates: Vec<&str> = alpha
+        .relations
+        .iter()
+        .map(|r| r.predicate.as_str())
+        .collect();
+    assert_eq!(predicates, vec!["works_for", "owns"]);
+    // Rules: the domain's own first, the pool's addition after.
+    let rule_ids: Vec<&str> = alpha
+        .extraction
+        .regex_rules
+        .iter()
+        .map(|r| r.id.as_str())
+        .collect();
+    assert_eq!(rule_ids, vec!["phone_rule", "email_rule"]);
+
+    // Every domain gets the pool, not just one: `beta` is pool-only.
+    let beta = &domains["beta"];
+    let beta_ids: Vec<&str> = beta.entities.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(beta_ids, vec!["person", "email_address"]);
+    assert_eq!(
+        beta.relations
+            .iter()
+            .map(|r| r.predicate.as_str())
+            .collect::<Vec<_>>(),
+        vec!["owns"]
+    );
+    assert_eq!(
+        beta.extraction
+            .regex_rules
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["email_rule"]
+    );
+}
+
 // --- DimensionMismatch ---------------------------------------------------
 
 #[test]

@@ -74,10 +74,33 @@ impl<'a> DocumentWorker<'a> {
 
         // GC phase: sweep orphaned data after draining the batch.
         if let Err(err) = self.runner.cleanup_orphaned_data() {
-            eprintln!("worker: orphan cleanup failed: {err}");
+            tracing::warn!(error = %err, "orphan cleanup failed");
+        }
+
+        // Per-cycle progress: log only when work happened (idle cycles stay
+        // quiet).
+        if !jobs.is_empty() {
+            self.log_cycle_summary(jobs.len());
         }
 
         Ok(())
+    }
+
+    /// Logs the per-cycle queue summary: the processed count plus the queue
+    /// size grouped by status (via [`DocumentJobDao::status_counts`]).
+    fn log_cycle_summary(&self, processed: usize) {
+        let Ok(Ok(counts)) = self.db.with_conn(|conn| {
+            DocumentJobDao::new(ConnectionOrTx::Connection(conn)).status_counts()
+        }) else {
+            tracing::warn!("failed to read the queue status counts");
+            return;
+        };
+        let summary = counts
+            .iter()
+            .map(|(status, count)| format!("{status}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        tracing::info!(processed, queue = %summary, "document-job cycle finished");
     }
 
     /// Processes one claimed job: runs the pipeline (index) or removal
@@ -87,7 +110,7 @@ impl<'a> DocumentWorker<'a> {
             "index" => self.runner.process_document_by_path(&job.path),
             "delete" => self.runner.delete_document_at(&job.path).map(|_| ()),
             other => {
-                eprintln!("worker: unknown op {other:?} for {}", job.path);
+                tracing::error!(path = %job.path, op = %other, "unknown job op");
                 return;
             }
         };
@@ -109,8 +132,13 @@ impl<'a> DocumentWorker<'a> {
                 dao.mark_done(&job.path)
             }
         });
-        if let Err(err) = result.and_then(|inner| inner.map(|_| ())) {
-            eprintln!("worker: failed to record success for {}: {err}", job.path);
+        match result.and_then(|inner| inner.map(|_| ())) {
+            Ok(()) => {
+                tracing::info!(path = %job.path, op = %job.op, "document job completed");
+            }
+            Err(err) => {
+                tracing::error!(path = %job.path, error = %err, "failed to record success");
+            }
         }
     }
 
@@ -131,33 +159,30 @@ impl<'a> DocumentWorker<'a> {
         match result {
             Ok(Ok(true)) => {
                 if job.attempts + 1 >= self.max_attempts {
-                    eprintln!(
-                        "worker: {} failed {} times, marking as error: {err}",
-                        job.path,
-                        job.attempts + 1
+                    tracing::error!(
+                        path = %job.path,
+                        attempts = job.attempts + 1,
+                        error = %err,
+                        "document job failed at the retry cap, marking as error"
                     );
                 } else {
-                    eprintln!(
-                        "worker: {} attempt {} failed (next in {backoff}s): {err}",
-                        job.path,
-                        job.attempts + 1
+                    tracing::warn!(
+                        path = %job.path,
+                        attempt = job.attempts + 1,
+                        backoff_secs = backoff,
+                        error = %err,
+                        "document job attempt failed, retrying with backoff"
                     );
                 }
             }
             Ok(Ok(false)) => {
-                eprintln!("worker: no job row for {} (already removed?)", job.path);
+                tracing::warn!(path = %job.path, "no job row (already removed?)");
             }
             Ok(Err(db_err)) => {
-                eprintln!(
-                    "worker: failed to record failure for {}: {db_err}",
-                    job.path
-                );
+                tracing::error!(path = %job.path, error = %db_err, "failed to record failure");
             }
             Err(db_err) => {
-                eprintln!(
-                    "worker: failed to record failure for {}: {db_err}",
-                    job.path
-                );
+                tracing::error!(path = %job.path, error = %db_err, "failed to record failure");
             }
         }
     }

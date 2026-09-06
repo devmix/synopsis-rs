@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use config::domain::effective_domain;
 use config::preset::{ChunkingConfig, EmbeddingsMode};
 use config::{
     Config, ConfigError, DomainConfig, GlobalConfig, OnnxConfig, load, load_domain_config,
@@ -291,6 +292,12 @@ pub fn open_cache(path: &Path) -> Option<Db> {
 /// error. A domain name that appears in more than one file is a
 /// validation error.
 ///
+/// Two-layer effective schema (config-format spec "XML ontologies"): when
+/// `global.xml` is present, every discovered domain is replaced by its
+/// effective config ([`effective_domain`]) — the domain's definitions plus
+/// the unshadowed pool additions (shadowing by entity id / relation
+/// predicate / rule id, domain wins silently).
+///
 /// # Errors
 ///
 /// [`CliError::Config`] for I/O, XML, validation or regex failures of the
@@ -342,6 +349,16 @@ pub fn discover_domains(
             .into());
         }
         domains.insert(cfg.name.clone(), cfg);
+    }
+    // Two-layer effective schema (config-format spec "XML ontologies"): the
+    // single place `global` and `domains` meet — every domain config is
+    // replaced by the domain + global pool merge (the domain shadows the
+    // pool by entity id / relation predicate / rule id, domain wins
+    // silently).
+    if let Some(pool) = &global {
+        for cfg in domains.values_mut() {
+            *cfg = effective_domain(cfg, pool);
+        }
     }
     Ok((global, domains))
 }

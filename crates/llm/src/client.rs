@@ -256,6 +256,9 @@ impl LlmClient {
     ///   [`LlmError::Transport`] (connection / DNS / timeout) error;
     /// - [`LlmError::EmptyContent`] for a `200` whose content is empty or
     ///   whitespace-only — non-retryable by design;
+    /// - [`LlmError::Truncated`] for a `200` whose non-empty content stopped
+    ///   at the token budget (`finish_reason == "length"`) — non-retryable by
+    ///   design;
     /// - [`LlmError::Parse`] for a `200` whose body is not a chat completion
     ///   (or a malformed JSON schema in `json_schema` mode).
     pub fn call(
@@ -338,7 +341,7 @@ impl LlmClient {
             .read_to_string()
             .map_err(|err| LlmError::from_transport(err, &self.endpoint))?;
 
-        Self::classify_and_parse(status.as_u16(), text)
+        self.classify_and_parse(status.as_u16(), text)
     }
 
     /// The backoff delay before retry `retry` (1-based: 1 = the first retry).
@@ -453,13 +456,13 @@ impl LlmClient {
     }
 
     /// Maps an HTTP status plus body to a result or a classified error.
-    fn classify_and_parse(status: u16, body: String) -> Result<String, LlmError> {
+    fn classify_and_parse(&self, status: u16, body: String) -> Result<String, LlmError> {
         match status {
             // 429 (rate limited) and all 5xx are retryable:
             // `call_with_retries` retries them; everything else is returned
             // to the caller immediately.
             429 | 500..=599 => Err(LlmError::RetryableHttp { status, body }),
-            200 => parse_chat_completion(&body),
+            200 => parse_chat_completion(&body, self.config.max_tokens),
             // Every other status (other 4xx, 3xx, 1xx) is non-retryable.
             _ => Err(LlmError::HttpStatus { status, body }),
         }
@@ -475,7 +478,13 @@ fn splitmix64_mix(x: u64) -> u64 {
 }
 
 /// Parses a `200` response body into the model's text content.
-fn parse_chat_completion(body: &str) -> Result<String, LlmError> {
+///
+/// A non-empty content that stopped at the token budget
+/// (`finish_reason == "length"`) is a truncated prefix, not a complete
+/// answer: it becomes [`LlmError::Truncated`] (non-retryable) instead of an
+/// opaque downstream parse failure. An empty content stays
+/// [`LlmError::EmptyContent`] (that arm already reports `finish_reason`).
+fn parse_chat_completion(body: &str, max_tokens: i32) -> Result<String, LlmError> {
     let response: ChatResponse = serde_json::from_str(body)
         .map_err(|err| LlmError::Parse(format!("invalid chat completion JSON: {err}")))?;
     let Some(choice) = response.choices.first() else {
@@ -498,6 +507,11 @@ fn parse_chat_completion(body: &str) -> Result<String, LlmError> {
             finish_reason,
             reasoning_content_len,
         });
+    }
+    if choice.finish_reason.as_deref() == Some("length") {
+        // Intentionally non-retryable: the same prompt with the same budget
+        // truncates again.
+        return Err(LlmError::Truncated { max_tokens });
     }
     Ok(content.to_string())
 }
@@ -632,5 +646,66 @@ mod tests {
         let config = config_with("http://127.0.0.1:1", |c| c.max_retries = 0);
         let client = LlmClient::new(&config).unwrap();
         assert_eq!(client.config.max_retries, 0);
+    }
+
+    // ── Truncation detection (fix-demo-ingestion-pipeline 1.1) ─────────────
+
+    /// A `200` body with non-empty `content` and `finish_reason: "length"`
+    /// (a truncated JSON prefix — the demo NER failure mode). The content is
+    /// JSON-escaped so it may contain quotes of its own.
+    fn truncated_body(content: &str) -> String {
+        format!(
+            "{{\"choices\":[{{\"message\":{{\"content\":{}}},\"finish_reason\":\"length\"}}]}}",
+            serde_json::to_string(content).unwrap()
+        )
+    }
+
+    #[test]
+    fn parse_chat_completion_truncated_body_is_truncated_error() {
+        let body = truncated_body("{\"entities\":[");
+        let err = parse_chat_completion(&body, 4096).unwrap_err();
+        match &err {
+            LlmError::Truncated { max_tokens } => {
+                assert_eq!(*max_tokens, 4096, "got: {err}");
+            }
+            other => panic!("expected Truncated, got: {other:?}"),
+        }
+        assert!(!err.is_retryable(), "truncation must not be retryable");
+        assert!(
+            err.to_string().contains("max_tokens=4096"),
+            "Display must name max_tokens: {err}"
+        );
+        assert!(
+            err.to_string().contains("finish_reason=length"),
+            "Display must name the finish reason: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_chat_completion_stop_finish_reason_returns_content() {
+        let body = r#"{"choices":[{"message":{"content":"  ok "},"finish_reason":"stop"}]}"#;
+        assert_eq!(parse_chat_completion(body, 1024).unwrap(), "ok");
+    }
+
+    #[test]
+    fn parse_chat_completion_absent_finish_reason_returns_content() {
+        let body = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        assert_eq!(parse_chat_completion(body, 1024).unwrap(), "ok");
+    }
+
+    #[test]
+    fn classify_and_parse_passes_configured_max_tokens() {
+        // `valid_config` pins max_tokens = 1024: the error must carry the
+        // configured budget, not a default.
+        let client = LlmClient::new(&valid_config("http://127.0.0.1:9999")).unwrap();
+        assert_eq!(client.config.max_tokens, 1024);
+        let body = truncated_body("{\"entities\":[]");
+        let err = client.classify_and_parse(200, body).unwrap_err();
+        match &err {
+            LlmError::Truncated { max_tokens } => {
+                assert_eq!(*max_tokens, 1024, "got: {err}");
+            }
+            other => panic!("expected Truncated, got: {other:?}"),
+        }
     }
 }

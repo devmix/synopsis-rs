@@ -17,6 +17,8 @@
 //! document; the job row itself is removed by
 //! [`DocumentJobDao::mark_deleted_row`] once the delete succeeds).
 
+use std::collections::BTreeMap;
+
 use rusqlite::{Row, params};
 
 use crate::error::DbError;
@@ -241,6 +243,21 @@ impl<'conn> DocumentJobDao<'conn> {
             params![filter_status, source_prefix],
             row_to_job,
         )
+    }
+
+    /// Queue size grouped by status: one entry per status present in
+    /// `document_jobs` (an empty map when the queue is empty).
+    pub fn status_counts(&self) -> Result<BTreeMap<String, i64>, DbError> {
+        let rows = self.exec.query(
+            "SELECT status, COUNT(*) FROM document_jobs GROUP BY status",
+            [],
+            |row| {
+                let status: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((status, count))
+            },
+        )?;
+        Ok(rows.into_iter().collect())
     }
 }
 
@@ -626,6 +643,31 @@ mod tests {
             let job = jobs.get_by_path("/a.md").unwrap().expect("must exist");
             assert_eq!(job.content_hash.as_deref(), Some("h"));
             assert_eq!(jobs.get_by_path("/other.md").unwrap(), None);
+        });
+    }
+
+    // status_counts: one entry per status present, with the right counts
+    // (2 index + 1 delete enqueued; one marked done, one failed to the cap).
+    #[test]
+    fn status_counts_groups_by_status() {
+        let db = in_memory_db();
+        with_jobs(&db, |jobs| {
+            jobs.enqueue_index("/a.md", "/src", None).unwrap();
+            jobs.enqueue_index("/b.md", "/src", None).unwrap();
+            jobs.enqueue_delete("/c.md").unwrap();
+            // Keep the delete job out of the claim window below.
+            set_due_at(&db, "/c.md", 999_999_999);
+
+            jobs.mark_done("/a.md").unwrap();
+            fail_to_error(jobs, "/b.md", 3);
+
+            let counts = jobs.status_counts().unwrap();
+            let expected = BTreeMap::from([
+                ("done".to_owned(), 1),
+                ("error".to_owned(), 1),
+                ("pending".to_owned(), 1),
+            ]);
+            assert_eq!(counts, expected);
         });
     }
 

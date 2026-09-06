@@ -43,8 +43,9 @@
 //! - [`detect_source_type`] uses `contains("wiki")`, which also matches
 //!   every mediawiki name (a separate `contains("mediawiki")` check would be
 //!   dead code).
-//! - Warnings use `eprintln!` (crate convention; no logger in the frozen
-//!   stack).
+//! - Warnings go through `tracing` (the crate's established logging path,
+//!   following the `ingester` precedent; the serve layer's subscriber
+//!   owns them).
 
 pub mod cleanup;
 
@@ -399,7 +400,9 @@ impl<'a> Runner<'a> {
         for name in &src.domains {
             match self.domains.get(name) {
                 Some(config) => domain_configs.push(config.clone()),
-                None => eprintln!("warning: no domain config for {name:?}, skipping it for NER"),
+                None => {
+                    tracing::warn!(domain = ?name, "no domain config, skipping it for NER")
+                }
             }
         }
         let methods = self
@@ -415,8 +418,9 @@ impl<'a> Runner<'a> {
         ) {
             Ok(composite) => Some(Box::new(composite)),
             Err(err) => {
-                eprintln!(
-                    "warning: NER provider construction failed, continuing without NER: {err}"
+                tracing::warn!(
+                    error = %err,
+                    "NER provider construction failed, continuing without NER"
                 );
                 None
             }

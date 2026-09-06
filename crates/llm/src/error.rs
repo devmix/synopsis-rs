@@ -3,8 +3,8 @@
 //! [`LlmError`] covers the failure classes of the llm crate: configuration
 //! validation (constructor), HTTP status responses (retryable 429/5xx vs
 //! non-retryable other statuses), transport failures (connection, DNS,
-//! timeout, protocol), empty model content, response parsing, and retry
-//! exhaustion.
+//! timeout, protocol), empty or truncated model content, response parsing,
+//! and retry exhaustion.
 //!
 //! Library error per workspace convention: `thiserror` with one variant per
 //! failure class. [`LlmError::is_retryable`] is the single retry decision
@@ -52,6 +52,18 @@ pub enum LlmError {
         /// token budget on reasoning and return no visible content.
         reasoning_content_len: usize,
     },
+    /// The model stopped at the token budget (`finish_reason == "length"`)
+    /// with non-empty content: the content is a truncated prefix and any
+    /// downstream parsing of it is meaningless. Intentionally non-retryable:
+    /// the same prompt with the same budget truncates again.
+    #[error(
+        "LLM response truncated at max_tokens={max_tokens} \
+             (finish_reason=length); raise max_tokens in the config"
+    )]
+    Truncated {
+        /// The configured `max_tokens` the response was truncated at.
+        max_tokens: i32,
+    },
     /// A 2xx response could not be parsed as a chat completion (malformed
     /// JSON, missing `choices`).
     #[error("response parse error: {0}")]
@@ -72,8 +84,9 @@ impl LlmError {
     ///
     /// Retryable: 429/5xx (server-side, may clear) and transport failures
     /// (transient by nature). Non-retryable: configuration, other HTTP
-    /// statuses, empty content (deterministic), parse failures (the same body
-    /// will fail again), and exhaustion (already terminal).
+    /// statuses, empty content (deterministic), truncated content (the same
+    /// budget truncates again), parse failures (the same body will fail
+    /// again), and exhaustion (already terminal).
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(self, Self::RetryableHttp { .. } | Self::Transport { .. })
@@ -230,6 +243,7 @@ mod tests {
             }
             .is_retryable()
         );
+        assert!(!LlmError::Truncated { max_tokens: 4096 }.is_retryable());
         assert!(!LlmError::Parse("bad json".to_string()).is_retryable());
         assert!(!LlmError::Configuration("empty url".to_string()).is_retryable());
         let exhausted = LlmError::RetriesExhausted {
@@ -286,6 +300,11 @@ mod tests {
             .to_string(),
             "empty response from model (finish_reason=\"length\", \
              reasoning_content_length=512)"
+        );
+        assert_eq!(
+            LlmError::Truncated { max_tokens: 16384 }.to_string(),
+            "LLM response truncated at max_tokens=16384 \
+             (finish_reason=length); raise max_tokens in the config"
         );
         assert_eq!(
             LlmError::Configuration("api_base_url must not be empty".to_string()).to_string(),

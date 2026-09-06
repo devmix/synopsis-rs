@@ -57,7 +57,7 @@ ingestion:
       api_key: "sk-none"
       temperature: 0.01
       seed: 12
-      max_tokens: 4096
+      max_tokens: 16384
       # Response format mode for LLM output:
       #   "json_object" — default; sends {"type": "json_object"} and includes JSON example in system prompt
       #   "json_schema" — sends full JSON Schema in request body, omits example from prompt (requires API support)
@@ -135,7 +135,7 @@ scheduler:
       interval_seconds: 300   # run every 5 minutes; default 300
 
 logging:
-  level: "debug"
+  level: "info"
   format: "console"
   output: "stderr"
 
