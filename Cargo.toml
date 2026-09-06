@@ -7,7 +7,7 @@ strip = true         # Automatically strips all debug symbols and local path inf
 
 [profile.dev]
 debug = "full"
-split-debuginfo = "unpacked" # Keeps debug symbols in separate files instead of bundling them into the binary
+#split-debuginfo = "unpacked"
 
 [profile.dev.package."*"]
 opt-level = 2 # Forces all dependencies (crates.io) to compile with optimizations. Since you rarely debug external libraries, this prevents them from generating huge debug files.

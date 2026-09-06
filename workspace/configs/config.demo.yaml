@@ -54,16 +54,17 @@ ingestion:
       #      model_name: "qwen3-4b-instruct-2507"
       #      model_name: "meta-llama-3.1-8b-instruct"
       model_name: "gpt-oss-20b"
+#      model_name: "qwen3.8-27b"
       api_key: "sk-none"
-      temperature: 0.01
+      temperature: 0.6
       seed: 12
-      max_tokens: 16384
+      max_tokens: 8192
       # Response format mode for LLM output:
       #   "json_object" — default; sends {"type": "json_object"} and includes JSON example in system prompt
       #   "json_schema" — sends full JSON Schema in request body, omits example from prompt (requires API support)
       response_format: "json_schema"
       # HTTP request timeout in milliseconds (default 60000 = 60s)
-      timeout_ms: 120000
+      timeout_ms: 240000
       # Max retry attempts after initial failure for transient errors (429, 5xx); default 3
       max_retries: 3
   batch_size: 100

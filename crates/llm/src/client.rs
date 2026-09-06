@@ -305,7 +305,8 @@ impl LlmClient {
                 // `attempt - 1` is the 1-based retry index (first retry = 1).
                 (self.sleeper)(self.backoff_delay(attempt - 1));
             }
-            match self.send_once(payload) {
+            let result = self.send_once(payload);
+            match result {
                 Ok(content) => return Ok(content),
                 // Non-retryable: retrying produces the same result (or the
                 // configuration is broken).

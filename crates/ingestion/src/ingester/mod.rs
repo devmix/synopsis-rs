@@ -215,6 +215,8 @@ impl<'a> Ingester<'a> {
         doc: &Document,
         tracker: &mut ProgressTracker,
     ) -> Result<(), IngestionError> {
+        tracing::info!("process document {:?}", doc.source_path.display());
+
         let path = doc.source_path.to_string_lossy().into_owned();
         let content_hash = compute_content_hash(&doc.content);
 
@@ -411,7 +413,14 @@ impl<'a> Ingester<'a> {
         }
         chunks
             .iter()
-            .map(|chunk| ner.extract_entities(&chunk.text, &chunk.metadata))
+            .map(|chunk| {
+                tracing::info!(
+                    "extract entities from chunk {:?}/{:?}",
+                    chunk.sequence_num,
+                    chunks.len()
+                );
+                ner.extract_entities(&chunk.text, &chunk.metadata)
+            })
             .collect()
     }
 
