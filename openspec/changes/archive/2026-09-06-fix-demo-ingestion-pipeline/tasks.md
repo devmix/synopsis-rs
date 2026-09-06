@@ -20,7 +20,7 @@ Change: `fix-demo-ingestion-pipeline`
   `cargo test --workspace`.
 - **Order:** 1.1 → 1.2 → 1.3 (no shared files; 1.3 is the largest).
 
-- [ ] **1.1** — LLM truncation detection + demo config bump.
+- [x] **1.1** — LLM truncation detection + demo config bump.
 
   **Goal:** a budget-exhausted LLM response (`finish_reason == "length"`,
   non-empty content) becomes an explicit non-retryable
@@ -60,7 +60,7 @@ Change: `fix-demo-ingestion-pipeline`
     `level: "info"` in `logging`; the linker section unchanged (2048).
   - Workspace fmt/clippy/test green.
 
-- [ ] **1.2** — Worker/runner logging via tracing + progress visibility.
+- [x] **1.2** — Worker/runner logging via tracing + progress visibility.
 
   **Goal:** every document-job outcome and every worker cycle with work is
   visible in the configured tracing log; no `eprintln!` remains in the
@@ -96,7 +96,7 @@ Change: `fix-demo-ingestion-pipeline`
     logging).
   - Workspace fmt/clippy/test green.
 
-- [ ] **1.3** — Global pool merge into the effective domain schema.
+- [x] **1.3** — Global pool merge into the effective domain schema.
 
   **Goal:** implement the pinned two-layer effective domain schema
   (`config-format` spec "XML ontologies"): every domain config handed to the

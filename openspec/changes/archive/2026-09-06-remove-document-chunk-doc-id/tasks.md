@@ -22,7 +22,7 @@ Change: `remove-document-chunk-doc-id`
   `ingester/mod.rs`, `runner/mod.rs` (`clear_and_delete_doc`),
   `tests/pipeline_e2e.rs`.
 
-- [ ] **1.1** — Delete the field and update all references.
+- [x] **1.1** — Delete the field and update all references.
 
   **Goal:** `DocumentChunk` no longer has a `doc_id` field; the workspace
   compiles and every gate is green.
