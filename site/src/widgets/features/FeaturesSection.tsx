@@ -31,7 +31,7 @@ const FEATURES: readonly Feature[] = [
     num: '/04',
     icon: <BinaryIcon />,
     name: 'Disk-Backed ANN',
-    desc: 'usearch HNSW on mmap, scalar-quantized, with WAL + segments and background compaction — the query path never loads the embedding model, so a 16 GB laptop stays fast.',
+    desc: 'usearch HNSW on mmap, scalar-quantized, with WAL + segments and background compaction — the query path never loads the embedding model.',
     tags: ['usearch HNSW', 'mmap', 'WAL + segments'],
   },
   {

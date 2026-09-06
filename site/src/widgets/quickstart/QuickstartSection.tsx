@@ -43,7 +43,7 @@ export function QuickstartSection(): ReactNode {
           <b>//</b> 04 · quick start
         </p>
         <h2 className={styles.display} data-reveal>
-          From binary to MCP tools in five minutes.
+          From binary to MCP tools.
         </h2>
         <div className={styles.qsGrid}>
           <div>
