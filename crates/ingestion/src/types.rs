@@ -4,9 +4,8 @@
 //! (replacing an untyped free-form map); the chunk keeps its own free-form
 //! [`Map<String, Value>`] bag, and carries no NER result (design D2).
 
-use std::path::{Path, PathBuf};
-
 use serde_json::{Map, Value};
+use std::path::{Path, PathBuf};
 
 use crate::error::IngestionError;
 
@@ -90,9 +89,6 @@ pub struct DocumentMetadata {
 /// context set it equal to `text`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DocumentChunk {
-    /// Database id of the parent document; `None` until the write stage
-    /// (series change 3) assigns it.
-    pub doc_id: Option<i64>,
     /// Chunk content — a pure slice of the source (see the invariant above).
     pub text: String,
     /// The text the FTS5 index and the embedding leg operate on:
@@ -219,7 +215,6 @@ mod tests {
                 // The stub adds no chunk-specific keys: the bag is the
                 // document's `extra` as-is.
                 metadata: metadata.extra.clone(),
-                ..Default::default()
             }])
         }
     }
@@ -245,7 +240,6 @@ mod tests {
             .expect("stub always succeeds");
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, "hello");
-        assert_eq!(chunks[0].doc_id, None);
     }
 
     #[test]
@@ -312,7 +306,6 @@ mod tests {
         );
 
         let chunk = DocumentChunk {
-            doc_id: None, // assigned by the write stage (series change 3)
             text: "Title".to_owned(),
             // No section context in this fixture: search_text equals text.
             search_text: "Title".to_owned(),

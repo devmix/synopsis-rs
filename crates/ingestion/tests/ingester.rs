@@ -109,7 +109,6 @@ impl Chunker for TestSource {
             if !line.trim().is_empty() {
                 let text = line.to_owned();
                 chunks.push(DocumentChunk {
-                    doc_id: None,
                     text: text.clone(),
                     // No section context in this test source: search_text is
                     // the text itself.
@@ -200,7 +199,6 @@ impl Chunker for BreadCrumbSource {
         }
         let text = content.to_owned();
         Ok(vec![DocumentChunk {
-            doc_id: None,
             text: text.clone(),
             // The synthetic search text: a breadcrumb context the pure
             // `text` does not carry.

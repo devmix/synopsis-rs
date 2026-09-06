@@ -91,7 +91,6 @@ impl Chunker for TestSource {
             let end = start + line.len();
             if !line.trim().is_empty() {
                 chunks.push(DocumentChunk {
-                    doc_id: None,
                     text: line.to_owned(),
                     // No section context in this test source.
                     search_text: line.to_owned(),

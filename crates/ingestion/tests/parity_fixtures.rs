@@ -168,7 +168,7 @@ fn breadcrumbs(chunks: &[DocumentChunk]) -> Vec<Option<&str>> {
 }
 
 /// Crate invariant: every chunk is a pure byte-offset slice of `content`,
-/// numbered consecutively, with no document id yet.
+/// numbered consecutively.
 fn assert_invariant(content: &str, chunks: &[DocumentChunk]) {
     for (index, chunk) in chunks.iter().enumerate() {
         assert_eq!(
@@ -177,7 +177,6 @@ fn assert_invariant(content: &str, chunks: &[DocumentChunk]) {
             "chunk {index} must be a pure slice of the content"
         );
         assert_eq!(chunk.sequence_num, index, "chunk {index} sequence");
-        assert_eq!(chunk.doc_id, None, "chunk {index} doc_id");
     }
 }
 
@@ -659,8 +658,8 @@ fn unstructured_pipeline_matches_expected() {
 fn byte_offset_invariant_holds_for_every_format() {
     // Crate contract (design D2), swept across all five formats: every
     // chunk of every document is a pure byte-offset slice of its content,
-    // numbered consecutively, with no document id yet. `pipeline` asserts
-    // the invariant per chunk; the counts guard against a vacuous sweep.
+    // numbered consecutively. `pipeline` asserts the invariant per chunk;
+    // the counts guard against a vacuous sweep.
     let markdown = pipeline(&markdown_source(), &markdown_tree(), false);
     let json = pipeline(
         &json_source(JsonChunkerConfig::default()),

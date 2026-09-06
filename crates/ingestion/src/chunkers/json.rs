@@ -386,7 +386,6 @@ fn push_chunk(
 ) {
     let text = content[start..end].to_owned();
     chunks.push(DocumentChunk {
-        doc_id: None,
         text: text.clone(),
         search_text: text,
         sequence_num: chunks.len(),
@@ -422,7 +421,7 @@ mod tests {
     }
 
     /// Crate invariant: every chunk is a pure byte-offset slice of
-    /// `content`, numbered consecutively, with no document id yet.
+    /// `content`, numbered consecutively.
     fn assert_invariant(content: &str, chunks: &[DocumentChunk]) {
         for (i, c) in chunks.iter().enumerate() {
             assert_eq!(
@@ -431,7 +430,6 @@ mod tests {
                 "chunk {i} must be a pure slice"
             );
             assert_eq!(c.sequence_num, i, "chunk {i} sequence");
-            assert_eq!(c.doc_id, None, "chunk {i} doc_id");
         }
     }
 
