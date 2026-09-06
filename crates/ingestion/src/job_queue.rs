@@ -1,32 +1,32 @@
-//! Producer surface for the `document_jobs` queue (document-jobs-queue
-//! task 1.3, corrected 2026-08-29).
+//! Producer surface for the `queue_tasks` queue (event-queue-incremental-
+//! linking task 1.2).
 //!
 //! [`DocumentJobQueue`] is the single producer surface for the persistent
-//! document-job state machine (task 1.1, [`db::DocumentJobDao`]): the file
-//! watcher (task 1.5), the startup reconcile and the CLI enqueue through it
-//! instead of calling the ingestion pipeline directly. The queue is a new
-//! Rust construct: ingestion runs as per-file jobs rather than a synchronous
-//! whole-source re-ingest, so the durable job state has a single producer
-//! surface instead of an ad-hoc re-run.
+//! event queue (task 1.1, [`db::QueueTaskDao`]): the file watcher (task 1.5),
+//! the startup reconcile and the CLI enqueue through it instead of calling
+//! the ingestion pipeline directly. The queue is a new Rust construct:
+//! ingestion runs as per-file jobs rather than a synchronous whole-source
+//! re-ingest, so the durable job state has a single producer surface instead
+//! of an ad-hoc re-run.
 //!
 //! - [`DocumentJobQueue::enqueue_index`] / [`DocumentJobQueue::enqueue_delete`]
-//!   are thin idempotent upserts over the DAO (one `pending` job per path;
-//!   a re-enqueue resets `attempts` to 0).
+//!   are thin idempotent upserts over the DAO (one task per
+//!   `(type, identity)`; a re-enqueue resets `attempts` to 0).
 //! - [`DocumentJobQueue::reconcile_source`] walks one configured source with
 //!   the shared [`walk_matched_files`] (the same `.synignore`-aware walk the
 //!   parsers use), computes each matched file's content hash
 //!   ([`compute_content_hash`], the pipeline's dedup key) and diffs the
 //!   `(path, hash)` set against the `documents` table and the existing
-//!   `document_jobs`: new/changed files are enqueued as `index`, files known
-//!   to the DB or the queue but absent on disk are enqueued as `delete`,
-//!   unchanged files produce no job.
+//!   `queue_tasks`: new/changed files are enqueued as `doc:index`, files
+//!   known to the DB or the queue but absent on disk are enqueued as
+//!   `doc:delete`, unchanged files produce no task.
 //!
 //! The producer is a directory reader ONLY: it enumerates file paths and
-//! hashes and writes `document_jobs` rows. It never invokes the parser's
+//! hashes and writes `queue_tasks` rows. It never invokes the parser's
 //! whole-tree `parse` (which builds `Document`s with full content), never
 //! constructs a document and never runs the pipeline — the background
 //! worker (task 1.4) is the only consumer, and it re-reads each file itself
-//! (design `document-jobs-queue`, Architecture + Correction).
+//! (design `event-queue-incremental-linking`, Architecture + Correction).
 //!
 //! Design decisions for the reconcile (prune) behavior:
 //!
@@ -36,10 +36,10 @@
 //! - "Absent on disk" is decided per candidate path with
 //!   [`std::fs::symlink_metadata`], not solely by walk membership: a file in
 //!   a subdirectory the walk could not read stays put.
-//! - A stale `pending` delete job is cancelled when its file is back on
+//! - A stale `pending` delete task is cancelled when its file is back on
 //!   disk with an unchanged hash (otherwise the worker would delete a live
 //!   document).
-//! - Jobs in `processing` are never touched: the worker owns them until it
+//! - Tasks in `processing` are never touched: the worker owns them until it
 //!   finishes (a crashed cycle is re-queued by the startup timeout reset,
 //!   not by the producer).
 
@@ -47,19 +47,22 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 
-use db::{ConnectionOrTx, Db, DbError, DocumentDao, DocumentJobDao};
+use db::{
+    ConnectionOrTx, Db, DocDeletePayload, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType,
+};
 
 use crate::error::IngestionError;
 use crate::ingester::compute_content_hash;
 use crate::parsers::walk_matched_files;
 use crate::runner::{Runner, is_within};
 
-/// The single producer surface for the `document_jobs` queue (task 1.3).
+/// The single producer surface for the `queue_tasks` queue (task 1.2).
 ///
 /// Holds a reference to the knowledge database; every enqueue is an
-/// idempotent upsert by path through [`DocumentJobDao`] (one job per path,
-/// `INSERT OR REPLACE`). The producer never runs the ingestion pipeline —
-/// the background worker (task 1.4) is the only consumer.
+/// idempotent upsert by `(type, identity)` through [`QueueTaskDao`] (one
+/// task per type+identity, `INSERT OR REPLACE` semantics). The producer
+/// never runs the ingestion pipeline — the background worker (task 1.4) is
+/// the only consumer.
 pub struct DocumentJobQueue<'db> {
     /// The knowledge database handle (shared with the runner and the worker).
     db: &'db Db,
@@ -73,9 +76,9 @@ pub struct ReconcileStats {
     /// Files enqueued for deletion (known to the DB or the queue, absent on
     /// disk).
     pub deleted: usize,
-    /// Files present on disk with an unchanged content hash (no job).
+    /// Files present on disk with an unchanged content hash (no task).
     pub unchanged: usize,
-    /// Stale `pending` delete jobs cancelled (the file came back on disk
+    /// Stale `pending` delete tasks cancelled (the file came back on disk
     /// with an unchanged hash before the worker ran).
     pub stale_deletes_cancelled: usize,
 }
@@ -86,36 +89,55 @@ impl<'db> DocumentJobQueue<'db> {
         Self { db }
     }
 
-    /// Queue `path` for (re)indexing as a `pending` job due immediately.
+    /// Queue `path` for (re)indexing as a `pending` `doc:index` task due
+    /// immediately.
     ///
-    /// Idempotent: the row is upserted by path, so a re-enqueue resets
-    /// `attempts` to 0 (one job per path). `content_hash` is the pipeline's
-    /// SHA-256 content hash at enqueue time (the worker re-verifies it).
+    /// Idempotent: the row is upserted by `(doc:index, path)`, so a
+    /// re-enqueue resets `attempts` to 0 (one task per identity).
+    /// `content_hash` is the pipeline's SHA-256 content hash at enqueue time
+    /// (the worker re-verifies it).
     pub fn enqueue_index(
         &self,
         path: &str,
         source_path: &str,
         content_hash: Option<&str>,
     ) -> Result<(), IngestionError> {
-        let queued = self.db.with_conn(|conn| {
-            DocumentJobDao::new(ConnectionOrTx::Connection(conn)).enqueue_index(
+        let now = now_unix_seconds();
+        let payload = DocIndexPayload {
+            source_path: source_path.to_owned(),
+            content_hash: content_hash.map(str::to_owned),
+        };
+        self.db.with_conn(|conn| {
+            QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(
+                QueueTaskType::DocIndex,
                 path,
-                source_path,
-                content_hash,
+                &payload,
+                now,
             )
-        })?;
-        Ok(queued?)
+        })??;
+        Ok(())
     }
 
-    /// Queue `path` for deletion as a `pending` job (`op = 'delete'`).
+    /// Queue `path` for deletion as a `pending` `doc:delete` task.
     ///
-    /// Idempotent upsert by path: a pending `index` job for the same path is
-    /// replaced (the file is gone — indexing it would fail anyway).
+    /// Idempotent upsert by `(doc:delete, path)`: a pending `doc:delete` for
+    /// the same path is refreshed (the file is gone — indexing it would fail
+    /// anyway). A `doc:index` for the same path is a SEPARATE row and is not
+    /// touched here.
     pub fn enqueue_delete(&self, path: &str) -> Result<(), IngestionError> {
-        let queued = self.db.with_conn(|conn| {
-            DocumentJobDao::new(ConnectionOrTx::Connection(conn)).enqueue_delete(path)
-        })?;
-        Ok(queued?)
+        let now = now_unix_seconds();
+        let payload = DocDeletePayload {
+            source_path: String::new(),
+        };
+        self.db.with_conn(|conn| {
+            QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(
+                QueueTaskType::DocDelete,
+                path,
+                &payload,
+                now,
+            )
+        })??;
+        Ok(())
     }
 
     /// Walks the configured source containing `source_path` and reconciles
@@ -124,10 +146,10 @@ impl<'db> DocumentJobQueue<'db> {
     /// - new/changed files (no `documents` row, or a different content
     ///   hash) → [`Self::enqueue_index`] with the fresh hash;
     /// - files known to the `documents` table (under this source root) or
-    ///   the queue (this source's jobs) but absent on disk →
+    ///   the queue (this source's doc tasks) but absent on disk →
     ///   [`Self::enqueue_delete`];
     /// - unchanged files (same content hash as the `documents` row) → no
-    ///   job, and a stale `pending` delete job for them is cancelled.
+    ///   task, and a stale `pending` delete task for them is cancelled.
     ///
     /// The walk reuses the shared [`walk_matched_files`] (same
     /// `.synignore` semantics as the parsers) and the pipeline's
@@ -144,7 +166,8 @@ impl<'db> DocumentJobQueue<'db> {
     /// the source's type word has no registered implementation,
     /// [`IngestionError::Io`]/[`IngestionError::NotADirectory`] when the
     /// source root is missing or not a directory (a broken walk must not
-    /// turn into a mass delete), or any [`IngestionError::Db`] failure.
+    /// turn into a mass delete), or any [`IngestionError::Db`] /
+    /// [`IngestionError::QueueTask`] failure.
     pub fn reconcile_source(
         &self,
         runner: &Runner<'_>,
@@ -208,14 +231,25 @@ impl<'db> DocumentJobQueue<'db> {
             &mut errors,
         );
 
-        // The known state: every document row and every job row (one
-        // connection round-trip; both tables are small on a laptop).
-        let (documents, jobs) = self.db.with_conn(|conn| {
-            let exec = ConnectionOrTx::Connection(conn);
-            let documents = DocumentDao::new(exec).list()?;
-            let jobs = DocumentJobDao::new(exec).list(None, None)?;
-            Ok::<_, DbError>((documents, jobs))
-        })??;
+        // The known state: every document row and every doc:* task row
+        // (both tables are small on a laptop).
+        let documents = self
+            .db
+            .with_conn(|conn| {
+                let exec = ConnectionOrTx::Connection(conn);
+                DocumentDao::new(exec).list()
+            })
+            .map_err(IngestionError::Db)?
+            .map_err(IngestionError::Db)?;
+        let all_tasks = self
+            .db
+            .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+            .map_err(IngestionError::Db)?
+            .map_err(IngestionError::QueueTask)?;
+        let doc_tasks: Vec<db::QueueTask> = all_tasks
+            .into_iter()
+            .filter(|t| t.task_type == "doc:index" || t.task_type == "doc:delete")
+            .collect();
         let documents_by_path: HashMap<&str, &db::Document> = documents
             .iter()
             .map(|doc| (doc.original_path.as_str(), doc))
@@ -234,11 +268,10 @@ impl<'db> DocumentJobQueue<'db> {
                 // A stale pending delete (the file was removed and came
                 // back before the worker ran) is cancelled: otherwise the
                 // worker would delete a live document (module docs).
-                if let Some(job) = jobs.iter().find(|job| job.path == *path)
-                    && job.op == "delete"
-                    && job.status == "pending"
-                {
-                    self.cancel_job(path)?;
+                if doc_tasks.iter().any(|t| {
+                    t.identity == *path && t.task_type == "doc:delete" && t.status == "pending"
+                }) {
+                    self.cancel_delete(path)?;
                     stats.stale_deletes_cancelled += 1;
                 }
             } else {
@@ -258,20 +291,20 @@ impl<'db> DocumentJobQueue<'db> {
                 )?;
             }
         }
-        for job in &jobs {
-            // This source's jobs only; `processing` rows are owned by the
+        for task in &doc_tasks {
+            // This source's tasks only; `processing` rows are owned by the
             // worker until it finishes (module docs).
-            if job.source_path == src.path && job.status != "processing" {
-                self.enqueue_delete_if_absent(&job.path, &on_disk, &mut deleted, &mut stats)?;
+            if task.status != "processing" && is_within(Path::new(&task.identity), root) {
+                self.enqueue_delete_if_absent(&task.identity, &on_disk, &mut deleted, &mut stats)?;
             }
         }
 
         Ok(stats)
     }
 
-    /// Enqueues `delete` for `path` when the per-path stat says the file is
-    /// gone; deduplicates across the two candidate sets (a path may be both
-    /// a document row and a job row).
+    /// Enqueues `doc:delete` for `path` when the per-path stat says the file
+    /// is gone; deduplicates across the two candidate sets (a path may be
+    /// both a document row and a task row).
     fn enqueue_delete_if_absent(
         &self,
         path: &str,
@@ -292,14 +325,26 @@ impl<'db> DocumentJobQueue<'db> {
         Ok(())
     }
 
-    /// Removes a stale job row (the stale-delete cancellation): the file is
-    /// back on disk unchanged, so the queued delete is obsolete.
-    fn cancel_job(&self, path: &str) -> Result<(), IngestionError> {
-        self.db.with_conn(|conn| {
-            DocumentJobDao::new(ConnectionOrTx::Connection(conn)).mark_deleted_row(path)
-        })??;
+    /// Removes a stale `doc:delete` row (the stale-delete cancellation): the
+    /// file is back on disk unchanged, so the queued delete is obsolete.
+    fn cancel_delete(&self, path: &str) -> Result<(), IngestionError> {
+        self.db
+            .with_conn(|conn| {
+                QueueTaskDao::new(ConnectionOrTx::Connection(conn))
+                    .delete(QueueTaskType::DocDelete, path)
+            })
+            .map_err(IngestionError::Db)?
+            .map_err(IngestionError::QueueTask)?;
         Ok(())
     }
+}
+
+/// The current Unix time in seconds.
+fn now_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -313,7 +358,7 @@ mod tests {
     use config::ontology::{GlobalConfig, GlobalNerConfig, SourceConfig, SourceType};
     use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, Db, DocumentDao, DocumentJobDao};
+    use db::{ConnectionOrTx, Db, DocumentDao, QueueTaskDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
     use vectors::{VectorIndex, VectorsError};
 
@@ -488,11 +533,14 @@ mod tests {
         }
     }
 
-    /// All `document_jobs` rows (test helper).
-    fn list_jobs(db: &Db) -> Vec<db::DocumentJob> {
-        db.with_conn(|conn| DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+    /// All `doc:*` tasks (test helper).
+    fn list_doc_tasks(db: &Db) -> Vec<db::QueueTask> {
+        db.with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
             .unwrap()
             .unwrap()
+            .into_iter()
+            .filter(|t| t.task_type == "doc:index" || t.task_type == "doc:delete")
+            .collect()
     }
 
     /// Seeds one `documents` row (test helper).
@@ -522,18 +570,18 @@ mod tests {
             .enqueue_index("/docs/a.md", "/docs", Some("h2"))
             .unwrap();
 
-        let jobs = list_jobs(&db);
-        assert_eq!(jobs.len(), 1, "one job per path");
-        let job = &jobs[0];
-        assert_eq!(job.path, "/docs/a.md");
-        assert_eq!(job.source_path, "/docs");
-        assert_eq!(job.op, "index");
-        assert_eq!(job.status, "pending");
-        assert_eq!(job.content_hash.as_deref(), Some("h2"), "latest hash wins");
-        assert_eq!(job.attempts, 0, "re-enqueue must reset attempts");
+        let tasks = list_doc_tasks(&db);
+        assert_eq!(tasks.len(), 1, "one task per (type, identity)");
+        let task = &tasks[0];
+        assert_eq!(task.task_type, "doc:index");
+        assert_eq!(task.identity, "/docs/a.md");
+        assert_eq!(task.status, "pending");
+        assert_eq!(task.attempts, 0, "re-enqueue must reset attempts");
+        let v: serde_json::Value = serde_json::from_str(&task.event).unwrap();
+        assert_eq!(v["content_hash"], "h2", "latest hash wins");
     }
 
-    // reconcile_source: index for new/changed, delete for removed, no job
+    // reconcile_source: index for new/changed, delete for removed, no task
     // for unchanged.
     #[test]
     fn reconcile_source_enqueues_the_disk_diff() {
@@ -558,7 +606,7 @@ mod tests {
         );
         seed_document(&harness.db, &format!("{root}/b.txt"), "sha256:stale");
         seed_document(&harness.db, &format!("{root}/d.txt"), "sha256:gone");
-        // A pending index job for e.txt: queued, then the file was removed
+        // A pending index task for e.txt: queued, then the file was removed
         // before the worker ran.
         queue
             .enqueue_index(&format!("{root}/e.txt"), &root, Some("sha256:e"))
@@ -566,55 +614,53 @@ mod tests {
 
         let stats = queue.reconcile_source(&runner, &root).unwrap();
         assert_eq!(stats.indexed, 2, "b.txt (changed) + c.txt (new)");
-        assert_eq!(stats.deleted, 2, "d.txt (DB only) + e.txt (job only)");
+        assert_eq!(stats.deleted, 2, "d.txt (DB only) + e.txt (task only)");
         assert_eq!(stats.unchanged, 1, "a.txt");
         assert_eq!(stats.stale_deletes_cancelled, 0);
 
-        let jobs = list_jobs(&harness.db);
-        let by_path: HashMap<String, &db::DocumentJob> =
-            jobs.iter().map(|job| (job.path.clone(), job)).collect();
+        let tasks = list_doc_tasks(&harness.db);
 
-        // a.txt: unchanged → no job.
+        // a.txt: unchanged → no new task.
         assert!(
-            !by_path.contains_key(&format!("{root}/a.txt")),
-            "unchanged files produce no job"
+            !tasks.iter().any(|t| t.identity == format!("{root}/a.txt")),
+            "unchanged files produce no task"
         );
 
-        // b.txt: changed → pending index with the fresh hash.
-        let b = by_path
-            .get(&format!("{root}/b.txt"))
+        // b.txt: changed → pending doc:index with the fresh hash.
+        let b = tasks
+            .iter()
+            .find(|t| t.identity == format!("{root}/b.txt"))
             .expect("b.txt must be queued");
-        assert_eq!(b.op, "index");
+        assert_eq!(b.task_type, "doc:index");
         assert_eq!(b.status, "pending");
-        assert_eq!(
-            b.content_hash.as_deref(),
-            Some(compute_content_hash("beta v2\n").as_str())
-        );
-        assert_eq!(b.source_path, root);
+        let v: serde_json::Value = serde_json::from_str(&b.event).unwrap();
+        assert_eq!(v["content_hash"], compute_content_hash("beta v2\n"));
 
-        // c.txt: new → pending index.
-        let c = by_path
-            .get(&format!("{root}/c.txt"))
+        // c.txt: new → pending doc:index.
+        let c = tasks
+            .iter()
+            .find(|t| t.identity == format!("{root}/c.txt"))
             .expect("c.txt must be queued");
-        assert_eq!(c.op, "index");
-        assert_eq!(
-            c.content_hash.as_deref(),
-            Some(compute_content_hash("gamma\n").as_str())
-        );
+        assert_eq!(c.task_type, "doc:index");
+        let v: serde_json::Value = serde_json::from_str(&c.event).unwrap();
+        assert_eq!(v["content_hash"], compute_content_hash("gamma\n"));
 
-        // d.txt: DB only → pending delete.
-        let d = by_path
-            .get(&format!("{root}/d.txt"))
+        // d.txt: DB only → pending doc:delete.
+        let d = tasks
+            .iter()
+            .find(|t| t.identity == format!("{root}/d.txt"))
             .expect("d.txt must be queued");
-        assert_eq!(d.op, "delete");
+        assert_eq!(d.task_type, "doc:delete");
         assert_eq!(d.status, "pending");
 
-        // e.txt: the stale index job was replaced by a delete.
-        let e = by_path
-            .get(&format!("{root}/e.txt"))
-            .expect("e.txt must be queued");
-        assert_eq!(e.op, "delete", "the stale index job must be replaced");
-        assert_eq!(e.status, "pending");
+        // e.txt: the file is absent → a doc:delete is enqueued alongside the
+        // stale doc:index (which converges via the worker's process_document
+        // path: file absent → remove doc → mark done).
+        let e_delete = tasks
+            .iter()
+            .find(|t| t.identity == format!("{root}/e.txt") && t.task_type == "doc:delete")
+            .expect("e.txt must have a doc:delete task");
+        assert_eq!(e_delete.status, "pending");
 
         // Reconcile is a producer: the documents table is untouched.
         let doc_count: i64 = harness
@@ -656,7 +702,7 @@ mod tests {
         assert_eq!(stats.stale_deletes_cancelled, 1);
 
         assert!(
-            list_jobs(&harness.db).is_empty(),
+            list_doc_tasks(&harness.db).is_empty(),
             "the stale delete must be cancelled"
         );
     }
@@ -693,7 +739,7 @@ mod tests {
         let err = queue.reconcile_source(&runner, &root).unwrap_err();
         assert!(matches!(err, IngestionError::Io { .. }), "got {err:?}");
         assert!(
-            list_jobs(&harness.db).is_empty(),
+            list_doc_tasks(&harness.db).is_empty(),
             "a broken walk must not enqueue deletes"
         );
     }

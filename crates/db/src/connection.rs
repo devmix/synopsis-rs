@@ -335,7 +335,7 @@ mod tests {
     }
 
     // (a, 1.1) open a nonexistent file → the full schema in one squashed init
-    //     migration (base tables + document_jobs + usearch_vectors_log +
+    //     migration (base tables + queue_tasks + usearch_vectors_log +
     //     chunks.search_text), user_version = 1, no _schema_migrations table.
     #[test]
     fn open_creates_fresh_v5_schema() {
@@ -387,7 +387,6 @@ mod tests {
             "chunks_fts_data",
             "chunks_fts_docsize",
             "chunks_fts_idx",
-            "document_jobs",
             "documents",
             "entity_links",
             "entity_sources",

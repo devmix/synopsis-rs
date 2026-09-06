@@ -1,14 +1,14 @@
-//! `queue` subcommand body: inspect and repair the document job queue
-//! (`document_jobs`, migration `2-document-jobs`).
+//! `queue` subcommand body: inspect and repair the event task queue
+//! (`queue_tasks`, init migration).
 //!
-//! New Rust operational command (document-jobs-queue task 1.7): the document
-//! job queue is a native concept with its own operational surface.
+//! New Rust operational command (event-queue-incremental-linking task 1.2):
+//! the event queue is a native concept with its own operational surface.
 //!
 //! - `queue status [--source PATH] [--status NAME]` prints the queue table
-//!   (columns: path, source, status, attempts, last_error, next_attempt_at)
-//!   from [`DocumentJobDao::list`];
-//! - `queue reset-retries [--source PATH] [--path PATH]` re-queues `error`
-//!   jobs via [`DocumentJobDao::reset_retries`] (status -> `pending`,
+//!   (columns: type, identity, status, attempts, last_error, next_attempt_at)
+//!   from [`QueueTaskDao::list`];
+//! - `queue reset-retries [--source PATH] [--identity PATH]` re-queues
+//!   `error` tasks via [`QueueTaskDao::reset_retries`] (status -> `pending`,
 //!   attempts -> 0, next_attempt_at -> now); the background worker then
 //!   re-processes them.
 //!
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use config::{Config, ConfigError, load};
-use db::{ConnectionOrTx, Db, DocumentJob, DocumentJobDao};
+use db::{ConnectionOrTx, Db, QueueTask, QueueTaskDao};
 
 use crate::cli::QueueAction;
 use crate::error::CliError;
@@ -64,8 +64,9 @@ pub fn run_queue(req: &QueueRequest) -> ExitCode {
 ///
 /// [`CliError::Config`] for config load/validation failures,
 /// [`CliError::Db`] when the knowledge database cannot be opened or the
-/// queue queries fail, [`CliError::Unsupported`] when no `error` job matches
-/// `reset-retries --path`, [`CliError::Io`] when `out` cannot be written.
+/// queue queries fail, [`CliError::Unsupported`] when no `error` task
+/// matches `reset-retries --identity`, [`CliError::Io`] when `out` cannot be
+/// written.
 pub fn queue_flow(req: &QueueRequest, out: &mut dyn Write) -> Result<(), CliError> {
     // The queue commands need only the paths + dataset to locate the
     // knowledge database (no `validate`: the queue is operational state, not
@@ -75,11 +76,11 @@ pub fn queue_flow(req: &QueueRequest, out: &mut dyn Write) -> Result<(), CliErro
 
     match &req.action {
         QueueAction::Status { source, status } => {
-            let jobs = list_jobs(&db, status.as_deref(), source.as_deref())?;
-            print_status(out, &jobs)
+            let tasks = list_tasks(&db, status.as_deref(), source.as_deref())?;
+            print_status(out, &tasks)
         }
-        QueueAction::ResetRetries { source, path } => {
-            reset_retries(&db, source.as_deref(), path.as_deref(), out)
+        QueueAction::ResetRetries { source, identity } => {
+            reset_retries(&db, source.as_deref(), identity.as_deref(), out)
         }
     }
 }
@@ -99,7 +100,7 @@ fn load_config(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Config
     }
     if config.dataset.name.is_empty() {
         return Err(CliError::Config(ConfigError::Validation {
-            message: "no dataset configured (dataset.name is empty); the document job \
+            message: "no dataset configured (dataset.name is empty); the event task \
                       queue lives in the dataset-bound knowledge database"
                 .to_string(),
         }));
@@ -109,18 +110,18 @@ fn load_config(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Config
 
 /// The queue rows for the `status` action (exact-status and source-prefix
 /// filters, both optional).
-fn list_jobs(
+fn list_tasks(
     db: &Db,
     status: Option<&str>,
     source: Option<&str>,
-) -> Result<Vec<DocumentJob>, CliError> {
-    Ok(db.with_conn(|conn| {
-        DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(status, source)
-    })??)
+) -> Result<Vec<QueueTask>, CliError> {
+    db.with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(source, status))
+        .map_err(CliError::Db)
+        .and_then(|r| r.map_err(|e| CliError::Unsupported(format!("queue task: {e}"))))
 }
 
 /// Renders the `queue status` table (columns per the cli-surface spec:
-/// path, source, status, attempts, last_error, next_attempt_at).
+/// type, identity, status, attempts, last_error, next_attempt_at).
 ///
 /// `last_error` is the free-form column (never truncated; `-` when absent);
 /// `next_attempt_at` is Unix seconds.
@@ -128,86 +129,67 @@ fn list_jobs(
 /// # Errors
 ///
 /// [`CliError::Io`] when `out` cannot be written.
-fn print_status(out: &mut dyn Write, jobs: &[DocumentJob]) -> Result<(), CliError> {
-    writeln!(out, "Document Job Queue:")?;
+fn print_status(out: &mut dyn Write, tasks: &[QueueTask]) -> Result<(), CliError> {
+    writeln!(out, "Event Queue:")?;
     writeln!(out, "{}", "-".repeat(90))?;
     writeln!(
         out,
-        "{:<40} {:<24} {:<10} {:<8} {:<40} NEXT_ATTEMPT_AT",
-        "PATH", "SOURCE", "STATUS", "ATTEMPTS", "LAST_ERROR"
+        "{:<12} {:<40} {:<10} {:<8} {:<40} NEXT_ATTEMPT_AT",
+        "TYPE", "IDENTITY", "STATUS", "ATTEMPTS", "LAST_ERROR"
     )?;
     writeln!(out, "{}", "-".repeat(90))?;
-    for job in jobs {
+    for task in tasks {
         writeln!(
             out,
-            "{:<40} {:<24} {:<10} {:<8} {:<40} {}",
-            job.path,
-            job.source_path,
-            job.status,
-            job.attempts,
-            job.last_error.as_deref().unwrap_or("-"),
-            job.next_attempt_at,
+            "{:<12} {:<40} {:<10} {:<8} {:<40} {}",
+            task.task_type,
+            task.identity,
+            task.status,
+            task.attempts,
+            task.last_error.as_deref().unwrap_or("-"),
+            task.next_attempt_at,
         )?;
     }
     writeln!(out, "{}", "-".repeat(90))?;
-    writeln!(out, "{} jobs", jobs.len())?;
+    writeln!(out, "{} tasks", tasks.len())?;
     writeln!(out)?;
     Ok(())
 }
 
-/// The `queue reset-retries` action: re-queue `error` jobs (status ->
+/// The `queue reset-retries` action: re-queue `error` tasks (status ->
 /// `pending`, attempts -> 0, next_attempt_at -> now).
 ///
-/// With `path`, exactly that job is re-queued (an error when no `error` job
-/// has it). Without, every `error` job (optionally narrowed to the `source`
-/// prefix) is re-queued and the count is reported.
+/// With `identity`, exactly that task is re-queued (an error when no
+/// `error` task has it). Without, every `error` task (optionally narrowed to
+/// the `source` prefix) is re-queued and the count is reported.
 ///
 /// # Errors
 ///
 /// [`CliError::Db`] when the queue queries fail,
-/// [`CliError::Unsupported`] when no `error` job matches `--path`,
+/// [`CliError::Unsupported`] when no `error` task matches `--identity`,
 /// [`CliError::Io`] when `out` cannot be written.
 fn reset_retries(
     db: &Db,
     source: Option<&str>,
-    path: Option<&str>,
+    identity: Option<&str>,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    match path {
-        Some(path) => {
-            let changed = db.with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).reset_retries(path)
-            })??;
-            if !changed {
-                return Err(CliError::Unsupported(format!(
-                    "no error job for path {path:?} (only jobs in status 'error' can be re-queued)"
-                )));
-            }
-            writeln!(
-                out,
-                "1 job re-queued: {path} (error -> pending, attempts -> 0)"
-            )?;
-            Ok(())
-        }
-        None => {
-            let jobs = list_jobs(db, Some("error"), source)?;
-            let mut reset = 0usize;
-            db.with_conn(|conn| -> Result<(), db::DbError> {
-                let dao = DocumentJobDao::new(ConnectionOrTx::Connection(conn));
-                for job in &jobs {
-                    if dao.reset_retries(&job.path)? {
-                        reset += 1;
-                    }
-                }
-                Ok(())
-            })??;
-            writeln!(
-                out,
-                "{reset} job(s) re-queued (error -> pending, attempts -> 0)"
-            )?;
-            Ok(())
-        }
+    let reset = db
+        .with_conn(|conn| {
+            QueueTaskDao::new(ConnectionOrTx::Connection(conn)).reset_retries(source, identity)
+        })
+        .map_err(CliError::Db)?
+        .map_err(|e| CliError::Unsupported(format!("queue task: {e}")))?;
+    if identity.is_some() && reset == 0 {
+        return Err(CliError::Unsupported(format!(
+            "no error task for identity {identity:?} (only tasks in status 'error' can be re-queued)"
+        )));
     }
+    writeln!(
+        out,
+        "{reset} task(s) re-queued (error -> pending, attempts -> 0)"
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -216,6 +198,8 @@ mod tests {
 
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    use db::QueueTaskType;
 
     use super::*;
 
@@ -283,37 +267,49 @@ mod tests {
         }
     }
 
-    /// Seeds `path` into the queue and forces its state (status/attempts/
-    /// last_error) directly: the DAO only reaches `error` through the
-    /// worker's failure path, which the CLI tests do not exercise.
-    fn seed_job(
+    /// Seeds a `doc:index` task at `identity` and forces its state
+    /// (status/attempts/last_error) directly: the DAO only reaches `error`
+    /// through the worker's failure path, which the CLI tests do not
+    /// exercise.
+    fn seed_task(
         db: &Db,
-        path: &str,
+        identity: &str,
         source: &str,
         status: &str,
         attempts: i32,
         last_error: Option<&str>,
     ) {
-        db.with_conn(|conn| -> Result<(), db::DbError> {
-            let jobs = DocumentJobDao::new(ConnectionOrTx::Connection(conn));
-            jobs.enqueue_index(path, source, None)?;
-            conn.execute(
-                "UPDATE document_jobs SET status = ?1, attempts = ?2, last_error = ?3 \
-                 WHERE path = ?4",
-                rusqlite::params![status, attempts, last_error, path],
+        db.with_conn(|conn| -> Result<(), db::QueueTaskError> {
+            let tasks = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
+            tasks.enqueue(
+                QueueTaskType::DocIndex,
+                identity,
+                &db::DocIndexPayload {
+                    source_path: source.to_owned(),
+                    content_hash: None,
+                },
+                100,
             )?;
+            conn.execute(
+                "UPDATE queue_tasks SET status = ?1, attempts = ?2, last_error = ?3 \
+                 WHERE identity = ?4 AND type = 'doc:index'",
+                rusqlite::params![status, attempts, last_error, identity],
+            )
+            .map_err(|e| db::QueueTaskError::Db(e.into()))?;
             Ok(())
         })
         .expect("with_conn")
-        .expect("seed job");
+        .expect("seed task");
     }
 
-    /// The job row for `path` (must exist).
-    fn get_job(db: &Db, path: &str) -> DocumentJob {
-        db.with_conn(|conn| DocumentJobDao::new(ConnectionOrTx::Connection(conn)).get_by_path(path))
+    /// The task row for `identity` (must exist).
+    fn get_task(db: &Db, identity: &str) -> QueueTask {
+        db.with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
             .expect("with_conn")
-            .expect("query job")
-            .expect("the job must exist")
+            .expect("query task")
+            .into_iter()
+            .find(|t| t.identity == identity)
+            .expect("the task must exist")
     }
 
     /// Runs the `queue` flow with the given action; returns the rendered
@@ -329,14 +325,12 @@ mod tests {
         (String::from_utf8_lossy(&out).into_owned(), result)
     }
 
-    /// The whitespace-separated columns of the status row for `path`
-    /// (path, source, status, attempts, then the free-form last_error,
-    /// then next_attempt_at).
-    fn row_fields<'a>(stdout: &'a str, path: &str) -> Vec<&'a str> {
+    /// The whitespace-separated columns of the status row for `identity`.
+    fn row_fields<'a>(stdout: &'a str, identity: &str) -> Vec<&'a str> {
         stdout
             .lines()
-            .find(|line| line.contains(path))
-            .unwrap_or_else(|| panic!("no table row for {path}:\n{stdout}"))
+            .find(|line| line.contains(identity))
+            .unwrap_or_else(|| panic!("no table row for {identity}:\n{stdout}"))
             .split_whitespace()
             .collect()
     }
@@ -346,7 +340,7 @@ mod tests {
     #[test]
     fn status_prints_queue_table() {
         let f = QueueFixture::new("status");
-        seed_job(
+        seed_task(
             &f.db,
             "/docs/a.md",
             "/docs",
@@ -354,8 +348,8 @@ mod tests {
             3,
             Some("parse error: boom"),
         );
-        seed_job(&f.db, "/docs/b.md", "/docs", "pending", 0, None);
-        seed_job(&f.db, "/docs/c.md", "/docs", "done", 1, None);
+        seed_task(&f.db, "/docs/b.md", "/docs", "pending", 0, None);
+        seed_task(&f.db, "/docs/c.md", "/docs", "done", 1, None);
 
         let (stdout, result) = run_flow(
             &f,
@@ -365,10 +359,10 @@ mod tests {
             },
         );
         result.expect("status must succeed");
-        assert!(stdout.starts_with("Document Job Queue:\n"), "{stdout:?}");
+        assert!(stdout.starts_with("Event Queue:\n"), "{stdout:?}");
         for column in [
-            "PATH",
-            "SOURCE",
+            "TYPE",
+            "IDENTITY",
             "STATUS",
             "ATTEMPTS",
             "LAST_ERROR",
@@ -376,26 +370,26 @@ mod tests {
         ] {
             assert!(stdout.contains(column), "column {column}: {stdout:?}");
         }
-        assert!(stdout.contains("3 jobs"), "{stdout:?}");
+        assert!(stdout.contains("3 tasks"), "{stdout:?}");
 
         let fields = row_fields(&stdout, "/docs/a.md");
         assert_eq!(
             fields.iter().take(4).copied().collect::<Vec<_>>(),
-            vec!["/docs/a.md", "/docs", "error", "3"],
+            vec!["doc:index", "/docs/a.md", "error", "3"],
             "a.md row: {fields:?}"
         );
         assert!(fields.contains(&"parse"), "a.md last_error: {fields:?}");
         let fields = row_fields(&stdout, "/docs/b.md");
         assert_eq!(
             fields.iter().take(4).copied().collect::<Vec<_>>(),
-            vec!["/docs/b.md", "/docs", "pending", "0"],
+            vec!["doc:index", "/docs/b.md", "pending", "0"],
             "{fields:?}"
         );
         assert_eq!(fields[4], "-", "no last_error: {fields:?}");
         let fields = row_fields(&stdout, "/docs/c.md");
         assert_eq!(
             fields.iter().take(4).copied().collect::<Vec<_>>(),
-            vec!["/docs/c.md", "/docs", "done", "1"],
+            vec!["doc:index", "/docs/c.md", "done", "1"],
             "{fields:?}"
         );
     }
@@ -403,9 +397,9 @@ mod tests {
     #[test]
     fn status_filters_by_status_and_source() {
         let f = QueueFixture::new("status-filter");
-        seed_job(&f.db, "/src1/a.md", "/src1", "error", 3, Some("e1"));
-        seed_job(&f.db, "/src1/b.md", "/src1", "pending", 0, None);
-        seed_job(&f.db, "/src2/c.md", "/src2", "error", 3, Some("e2"));
+        seed_task(&f.db, "/src1/a.md", "/src1", "error", 3, Some("e1"));
+        seed_task(&f.db, "/src1/b.md", "/src1", "pending", 0, None);
+        seed_task(&f.db, "/src2/c.md", "/src2", "error", 3, Some("e2"));
 
         let (stdout, result) = run_flow(
             &f,
@@ -421,7 +415,7 @@ mod tests {
             !stdout.contains("/src1/b.md"),
             "the pending row must be filtered: {stdout:?}"
         );
-        assert!(stdout.contains("2 jobs"), "{stdout:?}");
+        assert!(stdout.contains("2 tasks"), "{stdout:?}");
 
         let (stdout, result) = run_flow(
             &f,
@@ -447,7 +441,7 @@ mod tests {
         );
         result.expect("status must succeed");
         assert!(stdout.contains("/src1/b.md"), "{stdout:?}");
-        assert!(stdout.contains("1 jobs"), "{stdout:?}");
+        assert!(stdout.contains("1 tasks"), "{stdout:?}");
     }
 
     #[test]
@@ -461,16 +455,16 @@ mod tests {
             },
         );
         result.expect("status must succeed");
-        assert!(stdout.contains("Document Job Queue:"), "{stdout:?}");
-        assert!(stdout.contains("0 jobs"), "{stdout:?}");
+        assert!(stdout.contains("Event Queue:"), "{stdout:?}");
+        assert!(stdout.contains("0 tasks"), "{stdout:?}");
     }
 
     // --- queue reset-retries -----------------------------------------------
 
     #[test]
-    fn reset_retries_path_flips_error_to_pending() {
-        let f = QueueFixture::new("reset-path");
-        seed_job(
+    fn reset_retries_identity_flips_error_to_pending() {
+        let f = QueueFixture::new("reset-identity");
+        seed_task(
             &f.db,
             "/docs/a.md",
             "/docs",
@@ -483,70 +477,70 @@ mod tests {
             &f,
             QueueAction::ResetRetries {
                 source: None,
-                path: Some("/docs/a.md".to_string()),
+                identity: Some("/docs/a.md".to_string()),
             },
         );
         result.expect("reset must succeed");
-        assert!(stdout.contains("1 job re-queued"), "{stdout:?}");
+        assert!(stdout.contains("1 task(s) re-queued"), "{stdout:?}");
 
-        let job = get_job(&f.db, "/docs/a.md");
-        assert_eq!(job.status, "pending");
-        assert_eq!(job.attempts, 0);
+        let task = get_task(&f.db, "/docs/a.md");
+        assert_eq!(task.status, "pending");
+        assert_eq!(task.attempts, 0);
     }
 
     #[test]
-    fn reset_retries_path_without_error_job_is_an_error() {
-        let f = QueueFixture::new("reset-path-pending");
-        seed_job(&f.db, "/docs/a.md", "/docs", "pending", 0, None);
+    fn reset_retries_identity_without_error_task_is_an_error() {
+        let f = QueueFixture::new("reset-identity-pending");
+        seed_task(&f.db, "/docs/a.md", "/docs", "pending", 0, None);
 
         let (_, result) = run_flow(
             &f,
             QueueAction::ResetRetries {
                 source: None,
-                path: Some("/docs/a.md".to_string()),
+                identity: Some("/docs/a.md".to_string()),
             },
         );
-        let err = result.expect_err("a pending job must not be re-queued");
+        let err = result.expect_err("a pending task must not be re-queued");
         assert!(
-            matches!(err, CliError::Unsupported(ref msg) if msg.contains("no error job")),
+            matches!(err, CliError::Unsupported(ref msg) if msg.contains("no error task")),
             "got: {err:?}"
         );
         assert_eq!(
-            get_job(&f.db, "/docs/a.md").status,
+            get_task(&f.db, "/docs/a.md").status,
             "pending",
             "the row must be untouched"
         );
     }
 
     #[test]
-    fn reset_retries_bulk_resets_only_error_jobs() {
+    fn reset_retries_bulk_resets_only_error_tasks() {
         let f = QueueFixture::new("reset-bulk");
-        seed_job(&f.db, "/docs/a.md", "/docs", "error", 3, Some("e1"));
-        seed_job(&f.db, "/docs/b.md", "/docs", "error", 2, Some("e2"));
-        seed_job(&f.db, "/docs/c.md", "/docs", "pending", 0, None);
-        seed_job(&f.db, "/docs/d.md", "/docs", "done", 1, None);
+        seed_task(&f.db, "/docs/a.md", "/docs", "error", 3, Some("e1"));
+        seed_task(&f.db, "/docs/b.md", "/docs", "error", 2, Some("e2"));
+        seed_task(&f.db, "/docs/c.md", "/docs", "pending", 0, None);
+        seed_task(&f.db, "/docs/d.md", "/docs", "done", 1, None);
 
         let (stdout, result) = run_flow(
             &f,
             QueueAction::ResetRetries {
                 source: None,
-                path: None,
+                identity: None,
             },
         );
         result.expect("reset must succeed");
-        assert!(stdout.contains("2 job(s) re-queued"), "{stdout:?}");
+        assert!(stdout.contains("2 task(s) re-queued"), "{stdout:?}");
 
-        assert_eq!(get_job(&f.db, "/docs/a.md").status, "pending");
-        assert_eq!(get_job(&f.db, "/docs/a.md").attempts, 0);
-        assert_eq!(get_job(&f.db, "/docs/b.md").status, "pending");
-        assert_eq!(get_job(&f.db, "/docs/b.md").attempts, 0);
+        assert_eq!(get_task(&f.db, "/docs/a.md").status, "pending");
+        assert_eq!(get_task(&f.db, "/docs/a.md").attempts, 0);
+        assert_eq!(get_task(&f.db, "/docs/b.md").status, "pending");
+        assert_eq!(get_task(&f.db, "/docs/b.md").attempts, 0);
         assert_eq!(
-            get_job(&f.db, "/docs/c.md").status,
+            get_task(&f.db, "/docs/c.md").status,
             "pending",
             "the pending row is untouched"
         );
         assert_eq!(
-            get_job(&f.db, "/docs/d.md").status,
+            get_task(&f.db, "/docs/d.md").status,
             "done",
             "the done row is untouched"
         );
@@ -555,40 +549,40 @@ mod tests {
     #[test]
     fn reset_retries_bulk_source_filter() {
         let f = QueueFixture::new("reset-bulk-source");
-        seed_job(&f.db, "/src1/a.md", "/src1", "error", 3, Some("e1"));
-        seed_job(&f.db, "/src2/b.md", "/src2", "error", 3, Some("e2"));
+        seed_task(&f.db, "/src1/a.md", "/src1", "error", 3, Some("e1"));
+        seed_task(&f.db, "/src2/b.md", "/src2", "error", 3, Some("e2"));
 
         let (stdout, result) = run_flow(
             &f,
             QueueAction::ResetRetries {
                 source: Some("/src1".to_string()),
-                path: None,
+                identity: None,
             },
         );
         result.expect("reset must succeed");
-        assert!(stdout.contains("1 job(s) re-queued"), "{stdout:?}");
-        assert_eq!(get_job(&f.db, "/src1/a.md").status, "pending");
+        assert!(stdout.contains("1 task(s) re-queued"), "{stdout:?}");
+        assert_eq!(get_task(&f.db, "/src1/a.md").status, "pending");
         assert_eq!(
-            get_job(&f.db, "/src2/b.md").status,
+            get_task(&f.db, "/src2/b.md").status,
             "error",
             "the other source is untouched"
         );
     }
 
     #[test]
-    fn reset_retries_bulk_without_error_jobs_reports_zero() {
+    fn reset_retries_bulk_without_error_tasks_reports_zero() {
         let f = QueueFixture::new("reset-bulk-none");
-        seed_job(&f.db, "/docs/a.md", "/docs", "pending", 0, None);
+        seed_task(&f.db, "/docs/a.md", "/docs", "pending", 0, None);
 
         let (stdout, result) = run_flow(
             &f,
             QueueAction::ResetRetries {
                 source: None,
-                path: None,
+                identity: None,
             },
         );
         result.expect("reset must succeed");
-        assert!(stdout.contains("0 job(s) re-queued"), "{stdout:?}");
+        assert!(stdout.contains("0 task(s) re-queued"), "{stdout:?}");
     }
 
     // --- config / exit codes -------------------------------------------------

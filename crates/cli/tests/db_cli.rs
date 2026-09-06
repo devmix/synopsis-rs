@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use db::{
-    ChunkDao, ConnectionOrTx, Db, DocumentDao, DocumentJobDao, EntityDao, EntityLink,
-    EntityLinkDao, FactDao,
+    ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, EntityLink, EntityLinkDao, FactDao,
+    QueueTaskDao, QueueTaskType,
 };
 
 fn synopsis() -> Command {
@@ -134,7 +134,17 @@ fn seed(db: &Db) {
             "INSERT INTO chunk_entities (chunk_id, entity_id) VALUES (?1, ?2)",
             rusqlite::params![chunk, e1],
         )?;
-        DocumentJobDao::new(exec).enqueue_index("/docs/a.md", "/docs", None)?;
+        QueueTaskDao::new(exec)
+            .enqueue(
+                QueueTaskType::DocIndex,
+                "/docs/a.md",
+                &db::DocIndexPayload {
+                    source_path: "/docs".to_owned(),
+                    content_hash: None,
+                },
+                0,
+            )
+            .expect("enqueue task");
         Ok(())
     })
     .expect("with_conn")
@@ -168,7 +178,7 @@ fn assert_seeded(dir: &Path) {
     assert_eq!(table_count(dir, "entities"), 3);
     assert_eq!(table_count(dir, "entity_links"), 1);
     assert_eq!(table_count(dir, "facts"), 1);
-    assert_eq!(table_count(dir, "document_jobs"), 1);
+    assert_eq!(table_count(dir, "queue_tasks"), 1);
     assert_eq!(table_count(dir, "chunk_entities"), 1);
     assert_eq!(table_count(dir, "fact_sources"), 1);
     assert_eq!(table_count(dir, "entity_sources"), 1);
@@ -191,7 +201,7 @@ fn db_stats_prints_counts_and_changes_nothing() {
     assert!(stdout.contains("Entities:     3"), "{stdout:?}");
     assert!(stdout.contains("Entity links: 1"), "{stdout:?}");
     assert!(stdout.contains("Facts:        1"), "{stdout:?}");
-    assert!(stdout.contains("Queue jobs:   1"), "{stdout:?}");
+    assert!(stdout.contains("Queue tasks:  1"), "{stdout:?}");
     assert!(
         !stdout.contains("Confirm deletion"),
         "stats must not prompt: {stdout:?}"

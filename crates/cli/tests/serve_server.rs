@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use config::preset::GraphConfig;
 use config::{Config, GlobalConfig, OnnxConfig};
-use db::{ChunkDao, ConnectionOrTx, DocumentDao, DocumentJobDao};
+use db::{ChunkDao, ConnectionOrTx, DocumentDao, QueueTaskDao};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::GraphIndex;
 use search::Searcher;
@@ -356,7 +356,7 @@ fn one_markdown_source(src: &Path) -> GlobalConfig {
 
 /// The task 1.6 acceptance shape: with an active dataset and one enabled
 /// markdown source, the startup reconcile enqueues the disk diff (new,
-/// changed, removed) into `document_jobs`, and the worker — driven on the
+/// changed, removed) into `queue_tasks`, and the worker — driven on the
 /// owner thread — processes the pending rows during serve startup: the
 /// new/changed documents land in `documents`, the removed one is deleted,
 /// the job rows flip to `done` (the delete job row is removed), and the
@@ -453,37 +453,40 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
     assert!(healthy, "/health must answer 200 before the stop signal");
 
     // The worker processed the queued diff during serve startup: new.md
-    // and changed.md are (re)indexed and their job rows flip to `done`;
-    // gone.md is deleted and its job row removed; same.md stays unqueued.
-    let jobs = boot
+    // and changed.md are (re)indexed and their task rows flip to `done`;
+    // gone.md is deleted and its task row removed; same.md stays unqueued.
+    let tasks = boot
         .db
-        .with_conn(|conn| DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
-        .expect("with_conn jobs")
-        .expect("list jobs");
-    let jobs_by_path: BTreeMap<&str, &db::DocumentJob> =
-        jobs.iter().map(|job| (job.path.as_str(), job)).collect();
+        .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+        .expect("with_conn tasks")
+        .map_err(|e| panic!("list tasks: {e}"))
+        .expect("list tasks");
+    let tasks_by_path: BTreeMap<&str, &db::QueueTask> = tasks
+        .iter()
+        .map(|task| (task.identity.as_str(), task))
+        .collect();
     assert_eq!(
-        jobs_by_path.len(),
+        tasks_by_path.len(),
         2,
-        "new + changed processed (done), gone's row removed, same untouched: {jobs:?}"
+        "new + changed processed (done), gone's row removed, same untouched: {tasks:?}"
     );
-    let new_job = jobs_by_path
+    let new_task = tasks_by_path
         .get(src.join("new.md").to_string_lossy().as_ref())
         .expect("new.md must be processed");
-    assert_eq!(new_job.op, "index");
-    assert_eq!(new_job.status, "done", "{new_job:?}");
-    let changed_job = jobs_by_path
+    assert_eq!(new_task.task_type, "doc:index");
+    assert_eq!(new_task.status, "done", "{new_task:?}");
+    let changed_task = tasks_by_path
         .get(src.join("changed.md").to_string_lossy().as_ref())
         .expect("changed.md must be processed");
-    assert_eq!(changed_job.op, "index");
-    assert_eq!(changed_job.status, "done", "{changed_job:?}");
+    assert_eq!(changed_task.task_type, "doc:index");
+    assert_eq!(changed_task.status, "done", "{changed_task:?}");
     assert!(
-        !jobs_by_path.contains_key(src.join("gone.md").to_string_lossy().as_ref()),
-        "the gone.md delete job row must be gone: {jobs:?}"
+        !tasks_by_path.contains_key(src.join("gone.md").to_string_lossy().as_ref()),
+        "the gone.md delete task row must be gone: {tasks:?}"
     );
     assert!(
-        !jobs_by_path.contains_key(src.join("same.md").to_string_lossy().as_ref()),
-        "same.md must stay unqueued: {jobs:?}"
+        !tasks_by_path.contains_key(src.join("same.md").to_string_lossy().as_ref()),
+        "same.md must stay unqueued: {tasks:?}"
     );
 
     // The documents table reflects the processed diff: new.md created

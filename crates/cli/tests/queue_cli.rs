@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use db::{ConnectionOrTx, Db, DocumentJobDao};
+use db::{ConnectionOrTx, Db, QueueTaskDao};
 
 fn synopsis() -> Command {
     Command::new(env!("CARGO_BIN_EXE_synopsis"))
@@ -77,18 +77,27 @@ fn fixture(tag: &str) -> Fixture {
 /// last_error) directly: the DAO only reaches `error` through the worker's
 /// failure path, which these tests do not exercise.
 fn seed(db: &Db, path: &str, source: &str, status: &str, attempts: i32, last_error: Option<&str>) {
-    db.with_conn(|conn| -> Result<(), db::DbError> {
-        let jobs = DocumentJobDao::new(ConnectionOrTx::Connection(conn));
-        jobs.enqueue_index(path, source, None)?;
-        conn.execute(
-            "UPDATE document_jobs SET status = ?1, attempts = ?2, last_error = ?3 \
-             WHERE path = ?4",
-            rusqlite::params![status, attempts, last_error, path],
+    db.with_conn(|conn| -> Result<(), db::QueueTaskError> {
+        let tasks = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
+        tasks.enqueue(
+            db::QueueTaskType::DocIndex,
+            path,
+            &db::DocIndexPayload {
+                source_path: source.to_owned(),
+                content_hash: None,
+            },
+            0,
         )?;
+        conn.execute(
+            "UPDATE queue_tasks SET status = ?1, attempts = ?2, last_error = ?3 \
+             WHERE identity = ?4 AND type = 'doc:index'",
+            rusqlite::params![status, attempts, last_error, path],
+        )
+        .map_err(|e| db::QueueTaskError::Db(e.into()))?;
         Ok(())
     })
     .expect("with_conn")
-    .expect("seed job");
+    .expect("seed task");
 }
 
 /// The whitespace-separated columns of the status row for `path` (path,
@@ -114,10 +123,10 @@ fn queue_status_prints_seeded_queue_table_and_exits_zero() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Document Job Queue:"), "{stdout:?}");
+    assert!(stdout.contains("Event Queue:"), "{stdout:?}");
     for column in [
-        "PATH",
-        "SOURCE",
+        "TYPE",
+        "IDENTITY",
         "STATUS",
         "ATTEMPTS",
         "LAST_ERROR",
@@ -130,18 +139,18 @@ fn queue_status_prints_seeded_queue_table_and_exits_zero() {
     assert!(stdout.contains("/docs/b.md"), "{stdout:?}");
     assert!(stdout.contains("ner timeout"), "{stdout:?}");
     assert!(stdout.contains("/docs/c.md"), "{stdout:?}");
-    assert!(stdout.contains("3 jobs"), "{stdout:?}");
+    assert!(stdout.contains("3 tasks"), "{stdout:?}");
 
     let fields = row_fields(&stdout, "/docs/a.md");
     assert_eq!(
         fields.iter().take(4).copied().collect::<Vec<_>>(),
-        vec!["/docs/a.md", "/docs", "error", "3"],
+        vec!["doc:index", "/docs/a.md", "error", "3"],
         "{fields:?}"
     );
     let fields = row_fields(&stdout, "/docs/c.md");
     assert_eq!(
         fields.iter().take(4).copied().collect::<Vec<_>>(),
-        vec!["/docs/c.md", "/docs", "pending", "0"],
+        vec!["doc:index", "/docs/c.md", "pending", "0"],
         "{fields:?}"
     );
     let _ = std::fs::remove_dir_all(&f.dir);
@@ -171,7 +180,7 @@ fn queue_status_status_filter_shows_only_matching_rows() {
         !stdout.contains("/docs/c.md"),
         "the pending row must be filtered: {stdout:?}"
     );
-    assert!(stdout.contains("2 jobs"), "{stdout:?}");
+    assert!(stdout.contains("2 tasks"), "{stdout:?}");
     let _ = std::fs::remove_dir_all(&f.dir);
 }
 
@@ -183,7 +192,7 @@ fn queue_reset_retries_path_flips_error_to_pending() {
         f.cfg.to_str().unwrap(),
         "queue",
         "reset-retries",
-        "--path",
+        "--identity",
         "/docs/a.md",
     ]);
     assert_eq!(
@@ -193,7 +202,7 @@ fn queue_reset_retries_path_flips_error_to_pending() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("1 job re-queued"), "{stdout:?}");
+    assert!(stdout.contains("1 task(s) re-queued"), "{stdout:?}");
 
     // The task acceptance: verified by a subsequent `queue status`.
     let out = run(&["--config", f.cfg.to_str().unwrap(), "queue", "status"]);
@@ -201,14 +210,14 @@ fn queue_reset_retries_path_flips_error_to_pending() {
     let fields = row_fields(&stdout, "/docs/a.md");
     assert_eq!(
         fields.iter().take(4).copied().collect::<Vec<_>>(),
-        vec!["/docs/a.md", "/docs", "pending", "0"],
+        vec!["doc:index", "/docs/a.md", "pending", "0"],
         "a.md must be re-queued: {fields:?}"
     );
     // The other rows are untouched.
     let fields = row_fields(&stdout, "/docs/b.md");
     assert_eq!(
         fields.iter().take(4).copied().collect::<Vec<_>>(),
-        vec!["/docs/b.md", "/docs", "error", "1"],
+        vec!["doc:index", "/docs/b.md", "error", "1"],
         "b.md must stay error: {fields:?}"
     );
     let _ = std::fs::remove_dir_all(&f.dir);
@@ -230,7 +239,7 @@ fn queue_reset_retries_bulk_resets_all_error_jobs() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("2 job(s) re-queued"), "{stdout:?}");
+    assert!(stdout.contains("2 task(s) re-queued"), "{stdout:?}");
 
     let out = run(&["--config", f.cfg.to_str().unwrap(), "queue", "status"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -250,7 +259,7 @@ fn queue_reset_retries_unknown_path_exits_one() {
         f.cfg.to_str().unwrap(),
         "queue",
         "reset-retries",
-        "--path",
+        "--identity",
         "/docs/missing.md",
     ]);
     assert_eq!(
@@ -260,6 +269,6 @@ fn queue_reset_retries_unknown_path_exits_one() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no error job"), "stderr: {stderr}");
+    assert!(stderr.contains("no error task"), "stderr: {stderr}");
     let _ = std::fs::remove_dir_all(&f.dir);
 }

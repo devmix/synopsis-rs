@@ -11,7 +11,7 @@ Every Rust task must leave the workspace green (`cargo fmt --check`, `cargo
 clippy --all-targets -- -D warnings`, `cargo test`). The full concept
 reference for all tasks is ADR 0005 (`docs/adr/0005-event-task-queue.md`).
 
-- [ ] **1.1** — `queue_tasks` table + `QueueTaskDao` (additive)
+- [x] **1.1** — `queue_tasks` table + `QueueTaskDao` (additive)
 
 **Goal.** Add the event-queue table to the init migration and implement the
 DAO in `crates/db`. `document_jobs` and `DocumentJobDao` stay untouched in

@@ -6,7 +6,7 @@
 //!
 //! - `db stats` opens the dataset-bound knowledge database and prints row
 //!   counts gathered through the existing DAOs (documents, chunks, entities,
-//!   entity_links, facts and `document_jobs` queue rows). Read-only: no
+//!   entity_links, facts and `queue_tasks` queue rows). Read-only: no
 //!   prompt, no deletion.
 //! - `db clear` prints the same statistics, then prompts
 //!   `Confirm deletion? [y/N]` on stdin; only `y`/`Y` proceeds to
@@ -24,8 +24,8 @@ use std::process::ExitCode;
 
 use config::{Config, ConfigError, load};
 use db::{
-    ChunkDao, ConnectionOrTx, Db, DbError, DocumentDao, DocumentFilter, DocumentJobDao, EntityDao,
-    EntityFilter, EntityLinkDao, FactDao,
+    ChunkDao, ConnectionOrTx, Db, DbError, DocumentDao, DocumentFilter, EntityDao, EntityFilter,
+    EntityLinkDao, FactDao, QueueTaskDao,
 };
 
 use crate::cli::DbAction;
@@ -112,8 +112,8 @@ struct Stats {
     entity_links: i64,
     /// `facts` row count.
     facts: i64,
-    /// `document_jobs` (queue) row count.
-    queue_jobs: i64,
+    /// `queue_tasks` (queue) row count.
+    queue_tasks: i64,
 }
 
 /// Loads the config for the `db` commands: load + defaults + the
@@ -142,18 +142,32 @@ fn load_config(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Config
 /// The row counts of the dataset knowledge database (all-matching filters:
 /// a `None`/empty filter member is not applied).
 fn collect_stats(db: &Db) -> Result<Stats, CliError> {
-    Ok(db.with_conn(|conn| -> Result<Stats, DbError> {
-        let exec = ConnectionOrTx::Connection(conn);
-        Ok(Stats {
-            documents: DocumentDao::new(exec).count(&DocumentFilter::default())?,
-            chunks: ChunkDao::new(exec).count()?,
-            entities: EntityDao::new(exec).count(&EntityFilter::default())?,
-            entity_links: EntityLinkDao::new(exec).count()?,
-            facts: FactDao::new(exec).count()?,
-            // `usize` row counts fit in `i64` on every supported platform.
-            queue_jobs: DocumentJobDao::new(exec).list(None, None)?.len() as i64,
+    let base = db
+        .with_conn(|conn| -> Result<(i64, i64, i64, i64, i64), DbError> {
+            let exec = ConnectionOrTx::Connection(conn);
+            Ok((
+                DocumentDao::new(exec).count(&DocumentFilter::default())?,
+                ChunkDao::new(exec).count()?,
+                EntityDao::new(exec).count(&EntityFilter::default())?,
+                EntityLinkDao::new(exec).count()?,
+                FactDao::new(exec).count()?,
+            ))
         })
-    })??)
+        .map_err(CliError::Db)?
+        .map_err(CliError::Db)?;
+    let queue_count = db
+        .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+        .map_err(CliError::Db)?
+        .map_err(|e| CliError::Unsupported(format!("queue task: {e}")))?
+        .len() as i64;
+    Ok(Stats {
+        documents: base.0,
+        chunks: base.1,
+        entities: base.2,
+        entity_links: base.3,
+        facts: base.4,
+        queue_tasks: queue_count,
+    })
 }
 
 /// Renders the statistics block to `out`.
@@ -169,7 +183,7 @@ fn print_stats(out: &mut dyn Write, stats: &Stats) -> Result<(), CliError> {
     writeln!(out, "Entities:     {}", stats.entities)?;
     writeln!(out, "Entity links: {}", stats.entity_links)?;
     writeln!(out, "Facts:        {}", stats.facts)?;
-    writeln!(out, "Queue jobs:   {}", stats.queue_jobs)?;
+    writeln!(out, "Queue tasks:  {}", stats.queue_tasks)?;
     writeln!(out, "{}", "-".repeat(60))?;
     Ok(())
 }
@@ -223,7 +237,7 @@ pub(crate) fn clear_dataset(state_path: &Path) -> Result<(), CliError> {
 /// go, the file stays.
 ///
 /// One transaction deleting in dependency order: `entity_links`, `facts`,
-/// `chunks`, `entities`, `documents`, `document_jobs`. The join tables
+/// `chunks`, `entities`, `documents`, `queue_tasks`. The join tables
 /// (`chunk_entities`, `fact_sources`, `entity_sources`) are cleared by the
 /// schema's `ON DELETE CASCADE` (`foreign_keys=ON` on every pooled
 /// connection), and the `chunks_fts` FTS5 external-content index follows the
@@ -240,7 +254,7 @@ pub(crate) fn clear_dataset_tables(db: &Db) -> Result<(), CliError> {
              DELETE FROM chunks;
              DELETE FROM entities;
              DELETE FROM documents;
-             DELETE FROM document_jobs;",
+             DELETE FROM queue_tasks;",
         )?;
         Ok(())
     })?;
@@ -375,7 +389,17 @@ mod tests {
                 "INSERT INTO chunk_entities (chunk_id, entity_id) VALUES (?1, ?2)",
                 rusqlite::params![chunk, e1],
             )?;
-            DocumentJobDao::new(exec).enqueue_index("/docs/a.md", "/docs", None)?;
+            QueueTaskDao::new(exec)
+                .enqueue(
+                    db::QueueTaskType::DocIndex,
+                    "/docs/a.md",
+                    &db::DocIndexPayload {
+                        source_path: "/docs".to_owned(),
+                        content_hash: None,
+                    },
+                    100,
+                )
+                .expect("enqueue task");
             Ok(())
         })
         .expect("with_conn")
@@ -411,7 +435,7 @@ mod tests {
         assert_eq!(table_count(db, "entities"), 3);
         assert_eq!(table_count(db, "entity_links"), 1);
         assert_eq!(table_count(db, "facts"), 1);
-        assert_eq!(table_count(db, "document_jobs"), 1);
+        assert_eq!(table_count(db, "queue_tasks"), 1);
         assert_eq!(table_count(db, "chunk_entities"), 1);
         assert_eq!(table_count(db, "fact_sources"), 1);
         assert_eq!(table_count(db, "entity_sources"), 1);
@@ -430,7 +454,7 @@ mod tests {
         assert!(stdout.contains("Entities:     3"), "{stdout:?}");
         assert!(stdout.contains("Entity links: 1"), "{stdout:?}");
         assert!(stdout.contains("Facts:        1"), "{stdout:?}");
-        assert!(stdout.contains("Queue jobs:   1"), "{stdout:?}");
+        assert!(stdout.contains("Queue tasks:  1"), "{stdout:?}");
         assert!(
             !stdout.contains("Confirm deletion"),
             "stats must not prompt: {stdout:?}"
@@ -542,7 +566,7 @@ mod tests {
             "entities",
             "entity_links",
             "facts",
-            "document_jobs",
+            "queue_tasks",
             "chunk_entities",
             "fact_sources",
             "entity_sources",

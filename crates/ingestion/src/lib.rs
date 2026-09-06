@@ -28,9 +28,9 @@
 //! NER → one SQLite transaction → post-commit vector writes) and the
 //! [`Runner`] executes the queue worker's per-document operations —
 //! single-file indexing, per-document deletion, orphan cleanup and
-//! cross-domain entity linking (the `document_jobs` queue, producer plus
-//! worker, is the only processing path). Run statistics are reported as
-//! [`ProgressStats`] per source and [`SummaryStats`] per run; an orphan
+//! cross-domain entity linking (the `queue_tasks` event queue, producer
+//! plus worker, is the only processing path). Run statistics are reported
+//! as [`ProgressStats`] per source and [`SummaryStats`] per run; an orphan
 //! sweep reports [`OrphanCleanupStats`]. Vector writes go through the narrow
 //! [`VectorSink`] seam (blanket-implemented over every vectors engine) so
 //! tests can record or fail writes without an index engine.

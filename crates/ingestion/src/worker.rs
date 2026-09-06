@@ -1,32 +1,30 @@
-//! Background document-job worker (document-jobs-queue task 1.4).
+//! Background event-queue worker (event-queue-incremental-linking task 1.2).
 //!
-//! [`DocumentWorker`] is the sole consumer of the `document_jobs` queue:
-//! it claims due rows, runs the per-document pipeline (index) or removal
-//! (delete), records failures with exponential backoff, and sweeps
+//! [`DocumentWorker`] is the sole consumer of the `queue_tasks` queue: it
+//! claims due rows, dispatches by [`QueueTaskType`] (index / delete /
+//! entity-link), records failures with exponential backoff, and sweeps
 //! orphaned data after each batch.
 //!
 //! The worker runs on the serve owner thread (the [`Runner`] is `!Send +
 //! !Sync` — it holds `&dyn` references and a `Mutex<()>` that cannot cross
-//! thread boundaries). The owner-thread serve loop (document-jobs-queue
-//! task 1.6) drives one blocking [`DocumentWorker::run_once`] call per poll
-//! tick, interleaved with the shutdown signal via `tokio::select!`.
+//! thread boundaries). The owner-thread serve loop drives one blocking
+//! [`DocumentWorker::run_once`] call per poll tick, interleaved with the
+//! shutdown signal via `tokio::select!`.
 //!
 //! Backoff schedule (design): `30 * 2^(attempts-1)` seconds, i.e. 30s /
-//! 60s / 120s for attempts 1→2→3, after which the job flips to `error`
-//! status (no further retries).
+//! 60s / 120s for attempts 1→2→3, after which the task flips to `error`
+//! status (no further retries). The `max_attempts` column on the row is the
+//! cap (set at enqueue time; the DAO's `mark_failed` enforces it).
 
-use db::{ConnectionOrTx, Db, DocumentJobDao};
+use db::{ConnectionOrTx, Db, QueueTask, QueueTaskDao, QueueTaskType};
 
 use crate::error::IngestionError;
 use crate::runner::Runner;
 
-/// Maximum jobs claimed per poll cycle (no config knob in task 1.4).
+/// Maximum tasks claimed per poll cycle (no config knob in task 1.4).
 const WORKER_BATCH_SIZE: i64 = 100;
 
-/// Base backoff in seconds (30s * 2^attempts: 30, 60, 120, …).
-const BASE_BACKOFF_SECS: i64 = 30;
-
-/// The background consumer of the `document_jobs` queue (task 1.4).
+/// The background consumer of the `queue_tasks` queue (task 1.2).
 ///
 /// Holds references to the database and the runner; every poll cycle is one
 /// [`run_once`](Self::run_once) call. The worker is `!Send` (the [`Runner`]
@@ -36,40 +34,37 @@ pub struct DocumentWorker<'a> {
     db: &'a Db,
     /// The ingestion runner (the per-document pipeline executor).
     runner: &'a Runner<'a>,
-    /// Failure cap from `IngestionConfig::max_retries` (default 3).
-    max_attempts: i32,
 }
 
 impl<'a> DocumentWorker<'a> {
     /// Wraps the shared database handle and runner reference.
-    ///
-    /// `max_attempts` is the failure cap from `IngestionConfig::max_retries`.
-    pub fn new(db: &'a Db, runner: &'a Runner<'a>, max_attempts: i32) -> Self {
-        Self {
-            db,
-            runner,
-            max_attempts,
-        }
+    pub fn new(db: &'a Db, runner: &'a Runner<'a>) -> Self {
+        Self { db, runner }
     }
 
-    /// One poll cycle: claim due jobs, process each one, then sweep
+    /// One poll cycle: claim due tasks, process each one, then sweep
     /// orphaned data.
     ///
     /// `now` is the current Unix time in seconds (injected for testability).
     ///
     /// # Errors
     ///
-    /// Propagates the first unhandled error from the claim stage. Per-job
+    /// Propagates the first unhandled error from the claim stage. Per-task
     /// failures are recorded in the queue (backoff / error status) and never
     /// abort the cycle. A failed orphan cleanup is logged and does not
     /// propagate.
     pub fn run_once(&self, now: i64) -> Result<(), IngestionError> {
-        let jobs = self.db.with_conn(|conn| {
-            DocumentJobDao::new(ConnectionOrTx::Connection(conn)).claim_due(now, WORKER_BATCH_SIZE)
-        })??;
+        let tasks = self
+            .db
+            .with_conn(|conn| {
+                QueueTaskDao::new(ConnectionOrTx::Connection(conn))
+                    .claim_due(now, WORKER_BATCH_SIZE)
+            })
+            .map_err(IngestionError::Db)?
+            .map_err(IngestionError::QueueTask)?;
 
-        for job in &jobs {
-            self.process_job(job, now);
+        for task in &tasks {
+            self.process_task(task, now);
         }
 
         // GC phase: sweep orphaned data after draining the batch.
@@ -79,19 +74,20 @@ impl<'a> DocumentWorker<'a> {
 
         // Per-cycle progress: log only when work happened (idle cycles stay
         // quiet).
-        if !jobs.is_empty() {
-            self.log_cycle_summary(jobs.len());
+        if !tasks.is_empty() {
+            self.log_cycle_summary(tasks.len());
         }
 
         Ok(())
     }
 
     /// Logs the per-cycle queue summary: the processed count plus the queue
-    /// size grouped by status (via [`DocumentJobDao::status_counts`]).
+    /// size grouped by status (via [`QueueTaskDao::status_counts`]).
     fn log_cycle_summary(&self, processed: usize) {
-        let Ok(Ok(counts)) = self.db.with_conn(|conn| {
-            DocumentJobDao::new(ConnectionOrTx::Connection(conn)).status_counts()
-        }) else {
+        let Ok(Ok(counts)) = self
+            .db
+            .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).status_counts())
+        else {
             tracing::warn!("failed to read the queue status counts");
             return;
         };
@@ -100,89 +96,96 @@ impl<'a> DocumentWorker<'a> {
             .map(|(status, count)| format!("{status}={count}"))
             .collect::<Vec<_>>()
             .join(", ");
-        tracing::info!(processed, queue = %summary, "document-job cycle finished");
+        tracing::info!(processed, queue = %summary, "queue cycle finished");
     }
 
-    /// Processes one claimed job: runs the pipeline (index) or removal
-    /// (delete), then records the outcome in the queue.
-    fn process_job(&self, job: &db::DocumentJob, now: i64) {
-        let result = match job.op.as_str() {
-            "index" => self.runner.process_document_by_path(&job.path),
-            "delete" => self.runner.delete_document_at(&job.path).map(|_| ()),
+    /// Processes one claimed task: dispatches by type, then records the
+    /// outcome in the queue.
+    fn process_task(&self, task: &QueueTask, now: i64) {
+        let result = match task.task_type.as_str() {
+            "doc:index" => self.runner.process_document_by_path(&task.identity),
+            "doc:delete" => self.runner.delete_document_at(&task.identity).map(|_| ()),
+            "entity:link" => self.process_entity_link(task),
             other => {
-                tracing::error!(path = %job.path, op = %other, "unknown job op");
+                tracing::error!(identity = %task.identity, task_type = %other, "unknown task type");
                 return;
             }
         };
 
         match result {
-            Ok(()) => self.finish_success(job),
-            Err(err) => self.finish_failure(job, &err.to_string(), now),
+            Ok(()) => self.finish_success(task, now),
+            Err(err) => self.finish_failure(task, &err.to_string(), now),
         }
     }
 
-    /// Records a successful job: `mark_done` for index, `mark_deleted_row`
-    /// for delete.
-    fn finish_success(&self, job: &db::DocumentJob) {
-        let result = self.db.with_conn(|conn| {
-            let dao = DocumentJobDao::new(ConnectionOrTx::Connection(conn));
-            if job.op == "delete" {
-                dao.mark_deleted_row(&job.path)
-            } else {
-                dao.mark_done(&job.path)
-            }
-        });
-        match result.and_then(|inner| inner.map(|_| ())) {
-            Ok(()) => {
-                tracing::info!(path = %job.path, op = %job.op, "document job completed");
+    /// Processes an `entity:link` task: calls the runner's entity-linking
+    /// entry point (a full rebuild; the `entity_ids` payload is reserved for
+    /// future incremental linking).
+    fn process_entity_link(&self, _task: &QueueTask) -> Result<(), IngestionError> {
+        self.runner.build_entity_links().map(|_| ())
+    }
+
+    /// Records a successful task: `mark_done` for index/entity-link,
+    /// `delete` for delete (the row is a one-shot operation).
+    fn finish_success(&self, task: &QueueTask, now: i64) {
+        let result = self
+            .db
+            .with_conn(|conn| {
+                let dao = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
+                if task.task_type == "doc:delete" {
+                    dao.delete(QueueTaskType::DocDelete, &task.identity)
+                } else {
+                    dao.mark_done(task.id, now)
+                }
+            })
+            .map_err(IngestionError::Db)
+            .and_then(|r| r.map_err(IngestionError::QueueTask));
+        match result {
+            Ok(true) | Ok(false) => {
+                tracing::info!(identity = %task.identity, task_type = %task.task_type, "queue task completed");
             }
             Err(err) => {
-                tracing::error!(path = %job.path, error = %err, "failed to record success");
+                tracing::error!(identity = %task.identity, error = %err, "failed to record success");
             }
         }
     }
 
-    /// Records a failed job with exponential backoff
+    /// Records a failed task with exponential backoff
     /// (`30 * 2^(attempts-1)` seconds, `attempts` = the post-failure count).
-    /// At the cap, the job flips to `error` status.
-    fn finish_failure(&self, job: &db::DocumentJob, err: &str, now: i64) {
-        let backoff = backoff_seconds(job.attempts);
-        let result = self.db.with_conn(|conn| {
-            DocumentJobDao::new(ConnectionOrTx::Connection(conn)).record_failure(
-                &job.path,
-                err,
-                now,
-                backoff,
-                self.max_attempts,
-            )
-        });
+    /// At the cap, the task flips to `error` status.
+    fn finish_failure(&self, task: &QueueTask, err: &str, now: i64) {
+        let result = self
+            .db
+            .with_conn(|conn| {
+                QueueTaskDao::new(ConnectionOrTx::Connection(conn)).mark_failed(task.id, err, now)
+            })
+            .map_err(IngestionError::Db)
+            .and_then(|r| r.map_err(IngestionError::QueueTask));
         match result {
-            Ok(Ok(true)) => {
-                if job.attempts + 1 >= self.max_attempts {
+            Ok(true) => {
+                if task.attempts + 1 >= task.max_attempts {
                     tracing::error!(
-                        path = %job.path,
-                        attempts = job.attempts + 1,
+                        identity = %task.identity,
+                        task_type = %task.task_type,
+                        attempts = task.attempts + 1,
                         error = %err,
-                        "document job failed at the retry cap, marking as error"
+                        "queue task failed at the retry cap, marking as error"
                     );
                 } else {
                     tracing::warn!(
-                        path = %job.path,
-                        attempt = job.attempts + 1,
-                        backoff_secs = backoff,
+                        identity = %task.identity,
+                        task_type = %task.task_type,
+                        attempt = task.attempts + 1,
                         error = %err,
-                        "document job attempt failed, retrying with backoff"
+                        "queue task attempt failed, retrying with backoff"
                     );
                 }
             }
-            Ok(Ok(false)) => {
-                tracing::warn!(path = %job.path, "no job row (already removed?)");
+            Ok(false) => {
+                tracing::warn!(identity = %task.identity, "no task row (already removed?)");
             }
-            Ok(Err(db_err)) => {
-                tracing::error!(path = %job.path, error = %db_err, "failed to record failure");
-            }
-            Err(db_err) => {
-                tracing::error!(path = %job.path, error = %db_err, "failed to record failure");
+            Err(e) => {
+                tracing::error!(identity = %task.identity, error = %e, "failed to record failure");
             }
         }
     }
@@ -191,15 +194,16 @@ impl<'a> DocumentWorker<'a> {
 /// Exponential backoff: `30 * 2^(attempts-1)` seconds (capped at 2^20 to
 /// avoid overflow), where `attempts` is the post-failure count.
 ///
-/// The argument is the job's `attempts` field BEFORE this failure is
+/// The argument is the task's `attempts` field BEFORE this failure is
 /// recorded (the 0-indexed previous-failure count), so the exponent is
 /// `attempts`:
 /// - 0 previous failures → 30s (after attempt 1)
 /// - 1 previous failure → 60s (after attempt 2)
 /// - 2 previous failures → 120s (after attempt 3)
+#[cfg(test)]
 fn backoff_seconds(attempts: i32) -> i64 {
     let exponent = (attempts as u32).min(20);
-    BASE_BACKOFF_SECS * (1i64 << exponent)
+    30i64 * (1i64 << exponent)
 }
 
 #[cfg(test)]
@@ -214,7 +218,9 @@ mod tests {
     use config::ontology::{GlobalConfig, GlobalNerConfig, SourceConfig, SourceType};
     use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, Db, DocumentDao, DocumentJobDao, EntityDao};
+    use db::{
+        ConnectionOrTx, Db, DocIndexPayload, DocumentDao, EntityDao, QueueTaskDao, QueueTaskType,
+    };
     use embedding::{EmbeddingError, EmbeddingProvider};
     use vectors::{VectorIndex, VectorsError};
 
@@ -289,13 +295,10 @@ mod tests {
                 if !line.trim().is_empty() {
                     chunks.push(DocumentChunk {
                         text: line.to_owned(),
-                        // No section context in this test source.
                         search_text: line.to_owned(),
                         sequence_num: seq,
                         start_offset: start,
                         end_offset: end,
-                        // No chunk-specific keys in this test source: the bag
-                        // is the document's `extra` as-is.
                         metadata: metadata.extra.clone(),
                     });
                 }
@@ -470,14 +473,17 @@ mod tests {
             })
         }
 
-        /// All `document_jobs` rows (test helper).
-        fn list_jobs(&self) -> Vec<db::DocumentJob> {
+        /// All `doc:*` tasks (test helper).
+        fn list_doc_tasks(&self) -> Vec<db::QueueTask> {
             self.db
                 .with_conn(|conn| {
-                    DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None)
+                    QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None)
                 })
                 .unwrap()
                 .unwrap()
+                .into_iter()
+                .filter(|t| t.task_type == "doc:index" || t.task_type == "doc:delete")
+                .collect()
         }
 
         /// All `documents` rows (test helper).
@@ -487,11 +493,48 @@ mod tests {
                 .unwrap()
                 .unwrap()
         }
+
+        /// Enqueues a `doc:index` task for `path`.
+        fn enqueue_index(&self, path: &str, source: &str) {
+            let now = 1_000;
+            self.db
+                .with_conn(|conn| {
+                    QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(
+                        QueueTaskType::DocIndex,
+                        path,
+                        &DocIndexPayload {
+                            source_path: source.to_owned(),
+                            content_hash: None,
+                        },
+                        now,
+                    )
+                })
+                .unwrap()
+                .unwrap();
+        }
+
+        /// Enqueues a `doc:delete` task for `path`.
+        fn enqueue_delete(&self, path: &str) {
+            let now = 1_000;
+            self.db
+                .with_conn(|conn| {
+                    QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(
+                        QueueTaskType::DocDelete,
+                        path,
+                        &db::DocDeletePayload {
+                            source_path: String::new(),
+                        },
+                        now,
+                    )
+                })
+                .unwrap()
+                .unwrap();
+        }
     }
 
-    // A successful index job creates the document and marks the job done.
+    // A successful index task creates the document and marks the task done.
     #[test]
-    fn run_once_processes_a_successful_index_job() {
+    fn run_once_processes_a_successful_index_task() {
         let tree = TempTree::new();
         tree.write("a.txt", "hello world\n");
         let root = tree.0.to_string_lossy().into_owned();
@@ -499,38 +542,28 @@ mod tests {
         let mut harness = Harness::new();
         harness.with_source(&root);
         let runner = harness.runner();
-        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+        let worker = DocumentWorker::new(&harness.db, &runner);
 
-        // Enqueue an index job for the file.
-        harness
-            .db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).enqueue_index(
-                    &format!("{root}/a.txt"),
-                    &root,
-                    None,
-                )
-            })
-            .unwrap()
-            .unwrap();
+        // Enqueue an index task for the file.
+        harness.enqueue_index(&format!("{root}/a.txt"), &root);
 
-        // One poll cycle: the job is claimed, processed, and marked done.
-        worker.run_once(1_000).unwrap();
+        // One poll cycle: the task is claimed, processed, and marked done.
+        worker.run_once(2_000).unwrap();
 
         // The document was created.
         let docs = harness.list_documents();
-        assert_eq!(docs.len(), 1, "the index job must create the document");
+        assert_eq!(docs.len(), 1, "the index task must create the document");
         assert_eq!(docs[0].original_path, format!("{root}/a.txt"), "{docs:?}");
 
-        // The job is marked done.
-        let jobs = harness.list_jobs();
-        assert_eq!(jobs.len(), 1, "the job row must still exist");
-        assert_eq!(jobs[0].status, "done", "{jobs:?}");
+        // The task is marked done.
+        let tasks = harness.list_doc_tasks();
+        assert_eq!(tasks.len(), 1, "the task row must still exist");
+        assert_eq!(tasks[0].status, "done", "{tasks:?}");
     }
 
-    // A delete job removes the document and the job row.
+    // A delete task removes the document and the task row.
     #[test]
-    fn run_once_processes_a_delete_job() {
+    fn run_once_processes_a_delete_task() {
         let tree = TempTree::new();
         tree.write("a.txt", "hello\n");
         let root = tree.0.to_string_lossy().into_owned();
@@ -538,50 +571,39 @@ mod tests {
         let mut harness = Harness::new();
         harness.with_source(&root);
         let runner = harness.runner();
-        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+        let worker = DocumentWorker::new(&harness.db, &runner);
 
         // First, index the document.
-        harness
-            .db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).enqueue_index(
-                    &format!("{root}/a.txt"),
-                    &root,
-                    None,
-                )
-            })
-            .unwrap()
-            .unwrap();
-        worker.run_once(1_000).unwrap();
+        harness.enqueue_index(&format!("{root}/a.txt"), &root);
+        worker.run_once(2_000).unwrap();
         assert_eq!(harness.list_documents().len(), 1);
 
-        // Now, enqueue a delete job.
-        harness
-            .db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn))
-                    .enqueue_delete(&format!("{root}/a.txt"))
-            })
-            .unwrap()
-            .unwrap();
+        // Now, enqueue a delete task.
+        harness.enqueue_delete(&format!("{root}/a.txt"));
 
-        // One poll cycle: the delete is processed and the job row is removed.
-        worker.run_once(2_000).unwrap();
+        // One poll cycle: the delete is processed and the task row is removed.
+        worker.run_once(3_000).unwrap();
 
         // The document was removed.
         assert_eq!(
             harness.list_documents().len(),
             0,
-            "the delete job must remove the document"
+            "the delete task must remove the document"
         );
-        // The job row was removed (mark_deleted_row).
+        // The task row was removed.
+        let remaining: Vec<_> = harness
+            .list_doc_tasks()
+            .into_iter()
+            .filter(|t| t.identity == format!("{root}/a.txt"))
+            .collect();
+        // The doc:index row is still there (done), but the doc:delete row is gone.
         assert!(
-            harness.list_jobs().is_empty(),
-            "the delete job row must be gone"
+            remaining.iter().all(|t| t.task_type == "doc:index"),
+            "the doc:delete row must be gone, got {remaining:?}"
         );
     }
 
-    // A failing index job gets backoff and eventually error status.
+    // A failing index task gets backoff and eventually error status.
     #[test]
     fn run_once_records_failure_with_backoff_and_error_at_cap() {
         let tree = TempTree::new();
@@ -593,54 +615,41 @@ mod tests {
         harness.with_source(&root);
         *harness.embed.fail_marker.lock().unwrap() = Some("FAIL".to_owned());
         let runner = harness.runner();
-        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+        let worker = DocumentWorker::new(&harness.db, &runner);
 
-        // Enqueue an index job.
-        harness
-            .db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).enqueue_index(
-                    &format!("{root}/a.txt"),
-                    &root,
-                    None,
-                )
-            })
-            .unwrap()
-            .unwrap();
+        // Enqueue an index task.
+        harness.enqueue_index(&format!("{root}/a.txt"), &root);
 
         // Attempt 1: fails, backoff 30s.
-        worker.run_once(1_000).unwrap();
-        let job = harness.list_jobs()[0].clone();
-        assert_eq!(job.attempts, 1, "first failure recorded");
-        assert_eq!(job.status, "pending", "below cap: back to pending");
-        assert_eq!(job.next_attempt_at, 1_030, "30s backoff");
+        worker.run_once(2_000).unwrap();
+        let task = harness.list_doc_tasks()[0].clone();
+        assert_eq!(task.attempts, 1, "first failure recorded");
+        assert_eq!(task.status, "pending", "below cap: back to pending");
+        assert_eq!(task.next_attempt_at, 2_030, "30s backoff");
 
         // Attempt 2: advance the clock past the backoff, fail again, backoff 60s.
-        worker.run_once(1_100).unwrap();
-        let job = harness.list_jobs()[0].clone();
-        assert_eq!(job.attempts, 2, "second failure recorded");
-        assert_eq!(job.status, "pending", "below cap: back to pending");
-        assert_eq!(job.next_attempt_at, 1_160, "60s backoff from now=1100");
+        worker.run_once(2_100).unwrap();
+        let task = harness.list_doc_tasks()[0].clone();
+        assert_eq!(task.attempts, 2, "second failure recorded");
+        assert_eq!(task.status, "pending", "below cap: back to pending");
+        assert_eq!(task.next_attempt_at, 2_160, "60s backoff from now=2100");
 
         // Attempt 3: advance the clock, fail again → error status.
-        worker.run_once(1_200).unwrap();
-        let job = harness.list_jobs()[0].clone();
-        assert_eq!(job.attempts, 3, "third failure recorded");
-        assert_eq!(job.status, "error", "at cap: error status");
-        assert!(job.last_error.is_some(), "last_error must be set");
+        worker.run_once(2_200).unwrap();
+        let task = harness.list_doc_tasks()[0].clone();
+        assert_eq!(task.attempts, 3, "third failure recorded");
+        assert_eq!(task.status, "error", "at cap: error status");
+        assert!(task.last_error.is_some(), "last_error must be set");
 
-        // An error job is not claimable anymore.
+        // An error task is not claimable anymore.
         worker.run_once(10_000).unwrap();
-        let job = harness.list_jobs()[0].clone();
-        assert_eq!(job.status, "error", "error jobs are not re-claimed");
+        let task = harness.list_doc_tasks()[0].clone();
+        assert_eq!(task.status, "error", "error tasks are not re-claimed");
     }
 
-    // End-to-end (task 1.8): a failing document job is retried to the cap
+    // End-to-end: a failing document task is retried to the cap
     // (`error`), `reset_retries` re-queues it, and once the failure is
-    // cleared the worker processes the document to `done`. The failure is
-    // injected at the embedding stage (the `MockEmbedding` fail marker) and
-    // cleared by setting it back to `None` — the same interior-mutable flip
-    // the retry test above uses.
+    // cleared the worker processes the document to `done`.
     #[test]
     fn run_once_e2e_failing_doc_retries_reset_reprocesses_to_done() {
         let tree = TempTree::new();
@@ -654,52 +663,51 @@ mod tests {
         // The pipeline fails on the "FAIL" marker until it is cleared below.
         *harness.embed.fail_marker.lock().unwrap() = Some("FAIL".to_owned());
         let runner = harness.runner();
-        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+        let worker = DocumentWorker::new(&harness.db, &runner);
 
-        // Enqueue the failing index job.
-        harness
-            .db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn))
-                    .enqueue_index(&path, &root, None)
-            })
-            .unwrap()
-            .unwrap();
+        // Enqueue the failing index task.
+        harness.enqueue_index(&path, &root);
 
-        // Retry up to the cap: three failures drive the job to `error`.
-        worker.run_once(1_000).unwrap();
-        worker.run_once(1_100).unwrap();
-        worker.run_once(1_200).unwrap();
+        // Retry up to the cap: three failures drive the task to `error`.
+        worker.run_once(2_000).unwrap();
+        worker.run_once(2_100).unwrap();
+        worker.run_once(2_200).unwrap();
 
-        let job = harness.list_jobs()[0].clone();
-        assert_eq!(job.status, "error", "at cap: error status, got {job:?}");
-        assert_eq!(job.attempts, 3, "all three attempts recorded, got {job:?}");
+        let task = harness.list_doc_tasks()[0].clone();
+        assert_eq!(task.status, "error", "at cap: error status, got {task:?}");
         assert_eq!(
-            job.max_attempts, 3,
-            "the cap is the configured max, got {job:?}"
+            task.attempts, 3,
+            "all three attempts recorded, got {task:?}"
+        );
+        assert_eq!(
+            task.max_attempts, 3,
+            "the cap is the configured max, got {task:?}"
         );
         assert!(
-            job.last_error.is_some(),
-            "last_error must be set, got {job:?}"
+            task.last_error.is_some(),
+            "last_error must be set, got {task:?}"
         );
 
         // `reset_retries` (the CLI `queue reset-retries` wraps this) re-queues
-        // the error job as pending with attempts 0.
+        // the error task as pending with attempts 0.
         let reset = harness
             .db
             .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).reset_retries(&path)
+                QueueTaskDao::new(ConnectionOrTx::Connection(conn)).reset_retries(None, Some(&path))
             })
             .unwrap()
             .unwrap();
-        assert!(reset, "the error job must be reset");
+        assert!(reset >= 1, "the error task must be reset");
 
-        let job = harness.list_jobs()[0].clone();
-        assert_eq!(job.status, "pending", "reset: back to pending, got {job:?}");
-        assert_eq!(job.attempts, 0, "reset: attempts cleared, got {job:?}");
+        let task = harness.list_doc_tasks()[0].clone();
+        assert_eq!(
+            task.status, "pending",
+            "reset: back to pending, got {task:?}"
+        );
+        assert_eq!(task.attempts, 0, "reset: attempts cleared, got {task:?}");
 
         // Clear the failure and run one more cycle: the document is indexed
-        // and the job is marked done. `reset_retries` set `next_attempt_at`
+        // and the task is marked done. `reset_retries` set `next_attempt_at`
         // to the real wall clock, so claim at a time safely past it.
         *harness.embed.fail_marker.lock().unwrap() = None;
         let due: i64 = harness
@@ -713,8 +721,8 @@ mod tests {
             .unwrap();
         worker.run_once(due + 1).unwrap();
 
-        let job = harness.list_jobs()[0].clone();
-        assert_eq!(job.status, "done", "re-processed to done, got {job:?}");
+        let task = harness.list_doc_tasks()[0].clone();
+        assert_eq!(task.status, "done", "re-processed to done, got {task:?}");
 
         let docs = harness.list_documents();
         assert_eq!(docs.len(), 1, "the document must exist, got {docs:?}");
@@ -722,7 +730,7 @@ mod tests {
     }
 
     // The converge path: a file that was deleted since enqueue → document
-    // row removed, job marked done.
+    // row removed, task marked done.
     #[test]
     fn run_once_converges_on_deleted_file() {
         let tree = TempTree::new();
@@ -732,50 +740,34 @@ mod tests {
         let mut harness = Harness::new();
         harness.with_source(&root);
         let runner = harness.runner();
-        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+        let worker = DocumentWorker::new(&harness.db, &runner);
 
         // Index the document first.
-        harness
-            .db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).enqueue_index(
-                    &file.to_string_lossy(),
-                    &root,
-                    None,
-                )
-            })
-            .unwrap()
-            .unwrap();
-        worker.run_once(1_000).unwrap();
+        harness.enqueue_index(&file.to_string_lossy(), &root);
+        worker.run_once(2_000).unwrap();
         assert_eq!(harness.list_documents().len(), 1);
 
         // Delete the file from disk.
         fs::remove_file(&file).unwrap();
 
-        // Enqueue a new index job (simulating a re-enqueue after the file
+        // Enqueue a new index task (simulating a re-enqueue after the file
         // was deleted).
-        harness
-            .db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).enqueue_index(
-                    &file.to_string_lossy(),
-                    &root,
-                    None,
-                )
-            })
-            .unwrap()
-            .unwrap();
+        harness.enqueue_index(&file.to_string_lossy(), &root);
 
-        // The worker converges: removes the document, marks the job done.
-        worker.run_once(2_000).unwrap();
+        // The worker converges: removes the document, marks the task done.
+        worker.run_once(3_000).unwrap();
         assert_eq!(
             harness.list_documents().len(),
             0,
             "the document must be removed (converge)"
         );
-        let jobs = harness.list_jobs();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].status, "done", "the converge path marks done");
+        let tasks: Vec<_> = harness
+            .list_doc_tasks()
+            .into_iter()
+            .filter(|t| t.task_type == "doc:index")
+            .collect();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, "done", "the converge path marks done");
     }
 
     // GC phase: after draining a batch, orphaned data is swept — the
@@ -789,21 +781,11 @@ mod tests {
         let mut harness = Harness::new();
         harness.with_source(&root);
         let runner = harness.runner();
-        let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
+        let worker = DocumentWorker::new(&harness.db, &runner);
 
-        // Enqueue + process a successful index job (one full cycle).
-        harness
-            .db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).enqueue_index(
-                    &format!("{root}/a.txt"),
-                    &root,
-                    None,
-                )
-            })
-            .unwrap()
-            .unwrap();
-        worker.run_once(1_000).unwrap();
+        // Enqueue + process a successful index task (one full cycle).
+        harness.enqueue_index(&format!("{root}/a.txt"), &root);
+        worker.run_once(2_000).unwrap();
         assert_eq!(harness.list_documents().len(), 1);
 
         // Seed one orphan of two kinds: a document row without chunks and an
@@ -836,7 +818,7 @@ mod tests {
             .unwrap();
 
         // A second cycle: the GC sweep at its tail removes the orphans.
-        worker.run_once(2_000).unwrap();
+        worker.run_once(3_000).unwrap();
 
         let docs = harness.list_documents();
         assert_eq!(

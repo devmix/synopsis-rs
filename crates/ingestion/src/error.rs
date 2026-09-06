@@ -261,6 +261,13 @@ pub enum IngestionError {
     /// D8).
     #[error("entity linking: {0}")]
     Graph(#[from] graph::GraphError),
+
+    /// A queue-task DAO failure (event-queue-incremental-linking task 1.2):
+    /// the db crate is the source of truth for the `queue_tasks` state
+    /// machine. Producers and the worker call [`db::QueueTaskDao`] methods
+    /// that return [`db::QueueTaskError`].
+    #[error("queue task: {0}")]
+    QueueTask(#[from] db::QueueTaskError),
 }
 
 #[cfg(test)]

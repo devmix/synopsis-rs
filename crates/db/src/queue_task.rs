@@ -155,8 +155,7 @@ pub struct EntityLinkPayload {
 /// State machine over the `queue_tasks` table.
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
-/// in-flight transaction (design D2) via [`ConnectionOrTx`] — the same
-/// pattern as [`crate::DocumentJobDao`].
+/// in-flight transaction (design D2) via [`ConnectionOrTx`].
 pub struct QueueTaskDao<'conn> {
     exec: ConnectionOrTx<'conn>,
 }
@@ -267,13 +266,14 @@ impl<'conn> QueueTaskDao<'conn> {
         Ok(claimed)
     }
 
-    /// Mark task `id` as `done`. Returns `true` if a row was updated,
-    /// `false` if no task has `id`.
-    pub fn mark_done(&self, id: i64) -> Result<bool, QueueTaskError> {
+    /// Mark task `id` as `done`, stamping `updated_at` to `now` (Unix
+    /// seconds). Returns `true` if a row was updated, `false` if no task has
+    /// `id`.
+    pub fn mark_done(&self, id: i64, now: i64) -> Result<bool, QueueTaskError> {
         let changed = self.exec.execute(
-            "UPDATE queue_tasks SET status = 'done', updated_at = strftime('%s','now') \
+            "UPDATE queue_tasks SET status = 'done', updated_at = ?2 \
              WHERE id = ?1",
-            [id],
+            params![id, now],
         )?;
         Ok(changed > 0)
     }
@@ -367,6 +367,19 @@ impl<'conn> QueueTaskDao<'conn> {
             "DELETE FROM queue_tasks WHERE type = 'entity:link' AND identity = ?1",
             [doc_id.to_string()],
         )?)
+    }
+
+    /// Delete a task row by `(type, identity)`. Used by the worker to remove
+    /// a `doc:delete` row after successful processing (the row is not kept
+    /// as `done` — it is a one-shot operation), and by the reconcile to
+    /// cancel a stale `doc:delete` when the file is back on disk. Returns
+    /// `true` if a row was deleted, `false` if no matching row existed.
+    pub fn delete(&self, ty: QueueTaskType, identity: &str) -> Result<bool, QueueTaskError> {
+        let changed = self.exec.execute(
+            "DELETE FROM queue_tasks WHERE type = ?1 AND identity = ?2",
+            params![ty.as_str(), identity],
+        )?;
+        Ok(changed > 0)
     }
 }
 
@@ -474,12 +487,11 @@ mod tests {
         }
     }
 
-    // The squashed init migration: queue_tasks + both indexes exist next to
-    // the (still-present) document_jobs table.
+    // The squashed init migration: queue_tasks + both indexes exist.
     #[test]
     fn fresh_db_has_queue_tasks_table_and_indexes() {
         let db = in_memory_db();
-        let (table, due_index, identity_index, document_jobs): (i64, i64, i64, i64) = db
+        let (table, due_index, identity_index): (i64, i64, i64) = db
             .with_conn(|conn| {
                 let count = |name: &str, kind: &str| -> i64 {
                     conn.query_row(
@@ -493,17 +505,12 @@ mod tests {
                     count("queue_tasks", "table"),
                     count("idx_queue_tasks_due", "index"),
                     count("idx_queue_tasks_identity", "index"),
-                    count("document_jobs", "table"),
                 )
             })
             .unwrap();
         assert_eq!(table, 1, "queue_tasks table must exist");
         assert_eq!(due_index, 1, "idx_queue_tasks_due must exist");
         assert_eq!(identity_index, 1, "idx_queue_tasks_identity must exist");
-        assert_eq!(
-            document_jobs, 1,
-            "document_jobs stays until task 1.2 removes it"
-        );
     }
 
     // enqueue inserts a pending row due at `now` with the JSON payload.
@@ -664,7 +671,7 @@ mod tests {
                 )
                 .unwrap();
             let claimed = tasks.claim_due(1_000, 10).unwrap();
-            assert!(tasks.mark_done(claimed[0].id).unwrap());
+            assert!(tasks.mark_done(claimed[0].id, 1_000).unwrap());
 
             tasks
                 .enqueue(
@@ -843,9 +850,9 @@ mod tests {
                 .unwrap();
             let id = get_task(tasks, "/a.md").id;
 
-            assert!(tasks.mark_done(id).unwrap());
+            assert!(tasks.mark_done(id, 100).unwrap());
             assert_eq!(get_task(tasks, "/a.md").status, "done");
-            assert!(!tasks.mark_done(999).unwrap(), "missing id: false");
+            assert!(!tasks.mark_done(999, 100).unwrap(), "missing id: false");
             assert!(
                 !tasks.mark_failed(999, "e", 0).unwrap(),
                 "missing id: false"
@@ -959,7 +966,7 @@ mod tests {
                 )
                 .unwrap();
             let a_id = get_task(tasks, "/src1/a.md").id;
-            tasks.mark_done(a_id).unwrap();
+            tasks.mark_done(a_id, 100).unwrap();
 
             let all = tasks.list(None, None).unwrap();
             assert_eq!(all.len(), 4);
@@ -1005,7 +1012,7 @@ mod tests {
                 .enqueue(QueueTaskType::DocIndex, "/c.md", &doc_payload("/s"), 100)
                 .unwrap();
 
-            tasks.mark_done(get_task(tasks, "/a.md").id).unwrap();
+            tasks.mark_done(get_task(tasks, "/a.md").id, 100).unwrap();
             fail_to_error(tasks, get_task(tasks, "/b.md").id, 3, 1_000);
 
             assert_eq!(
@@ -1049,6 +1056,56 @@ mod tests {
                 tasks.delete_entity_link(8).unwrap(),
                 0,
                 "unknown doc id: no row"
+            );
+
+            let rows = tasks.list(None, None).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].task_type, "doc:index");
+        });
+    }
+
+    // delete removes a task by (type, identity); a different type with the
+    // same identity is untouched; a missing row returns false.
+    #[test]
+    fn delete_by_type_and_identity() {
+        let db = in_memory_db();
+        with_tasks(&db, |tasks| {
+            tasks
+                .enqueue(
+                    QueueTaskType::DocDelete,
+                    "/docs/a.md",
+                    &DocDeletePayload {
+                        source_path: "/docs".to_owned(),
+                    },
+                    100,
+                )
+                .unwrap();
+            tasks
+                .enqueue(
+                    QueueTaskType::DocIndex,
+                    "/docs/a.md",
+                    &doc_payload("/docs"),
+                    100,
+                )
+                .unwrap();
+
+            assert!(
+                tasks
+                    .delete(QueueTaskType::DocDelete, "/docs/a.md")
+                    .unwrap(),
+                "the doc:delete row must be deleted"
+            );
+            assert!(
+                !tasks
+                    .delete(QueueTaskType::DocDelete, "/docs/a.md")
+                    .unwrap(),
+                "second call: no row"
+            );
+            assert!(
+                !tasks
+                    .delete(QueueTaskType::DocDelete, "/docs/missing.md")
+                    .unwrap(),
+                "unknown identity: no row"
             );
 
             let rows = tasks.list(None, None).unwrap();

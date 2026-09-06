@@ -25,8 +25,8 @@ use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, S
 use config::preset::{IngestionConfig, LinkerConfig};
 use db::test_util::in_memory_db;
 use db::{
-    Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, Document, DocumentDao, DocumentJobDao,
-    Entity, EntityDao, FactDao, FactSourceDao,
+    Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, Document, DocumentDao, Entity, EntityDao,
+    FactDao, FactSourceDao, QueueTaskDao,
 };
 use embedding::{EmbeddingError, EmbeddingProvider};
 use ingestion::worker::DocumentWorker;
@@ -430,13 +430,11 @@ impl Harness {
             .unwrap()
     }
 
-    fn jobs(&self) -> Vec<db::DocumentJob> {
+    fn jobs(&self) -> Vec<db::QueueTask> {
         self.db
-            .with_conn(|conn| {
-                DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None)
-            })
-            .unwrap()
-            .unwrap()
+            .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+            .expect("with_conn")
+            .expect("list tasks")
     }
 
     /// The queue/worker path that replaced the direct whole-tree run:
@@ -449,7 +447,7 @@ impl Harness {
                 .reconcile_source(runner, &src.path)
                 .unwrap_or_else(|err| panic!("reconcile {} failed: {err}", src.path));
         }
-        let worker = DocumentWorker::new(&self.db, runner, self.cfg.max_retries);
+        let worker = DocumentWorker::new(&self.db, runner);
         worker
             .run_once(now)
             .unwrap_or_else(|err| panic!("worker cycle failed: {err}"));
@@ -485,7 +483,7 @@ fn first_run_populates_documents_chunks_entities_and_vectors() {
     h.seed();
     let runner = h.runner();
 
-    h.reconcile_and_process(&runner, 1_000);
+    h.reconcile_and_process(&runner, i64::MAX / 2);
 
     // Both sources' jobs were processed (two new files → two index jobs).
     let jobs = h.jobs();
@@ -566,7 +564,7 @@ fn second_run_skips_every_unchanged_document() {
     h.seed();
     let runner = h.runner();
     let queue = DocumentJobQueue::new(&h.db);
-    let worker = DocumentWorker::new(&h.db, &runner, h.cfg.max_retries);
+    let worker = DocumentWorker::new(&h.db, &runner);
 
     // First run: both files are new → two index jobs, both processed.
     let first_md = queue
@@ -577,7 +575,7 @@ fn second_run_skips_every_unchanged_document() {
         .unwrap();
     assert_eq!(first_md.indexed, 1, "{first_md:?}");
     assert_eq!(first_json.indexed, 1, "{first_json:?}");
-    worker.run_once(1_000).unwrap();
+    worker.run_once(i64::MAX / 2).unwrap();
     assert_eq!(h.docs().len(), 2);
     let rows_after_first = h.sink.ids().len();
 
@@ -593,7 +591,7 @@ fn second_run_skips_every_unchanged_document() {
     assert_eq!(second_md.indexed, 0, "{second_md:?}");
     assert_eq!(second_json.unchanged, 1, "{second_json:?}");
     assert_eq!(second_json.indexed, 0, "{second_json:?}");
-    worker.run_once(2_000).unwrap();
+    worker.run_once(i64::MAX / 2).unwrap();
 
     // No re-embedding, no new chunk rows, no new vector rows.
     assert_eq!(h.sink.ids().len(), rows_after_first);
@@ -609,9 +607,9 @@ fn modified_file_is_updated_and_stale_data_replaced() {
     h.seed();
     let runner = h.runner();
     let queue = DocumentJobQueue::new(&h.db);
-    let worker = DocumentWorker::new(&h.db, &runner, h.cfg.max_retries);
+    let worker = DocumentWorker::new(&h.db, &runner);
 
-    h.reconcile_and_process(&runner, 1_000);
+    h.reconcile_and_process(&runner, i64::MAX / 2);
 
     let md = h.doc_by_suffix("team.md");
     let old_chunk_ids: Vec<i64> = h.chunks_of(md.id).into_iter().map(|c| c.id).collect();
@@ -626,7 +624,7 @@ fn modified_file_is_updated_and_stale_data_replaced() {
         .unwrap();
     assert_eq!(md_stats.indexed, 1, "{md_stats:?}"); // changed hash → re-index
     assert_eq!(json_stats.unchanged, 1, "{json_stats:?}");
-    worker.run_once(2_000).unwrap();
+    worker.run_once(i64::MAX / 2).unwrap();
 
     // The md document now has exactly one chunk with the new content; the
     // old chunk rows are gone (full-clear on update).
@@ -654,7 +652,7 @@ fn cleanup_orphaned_data_sweeps_leftovers_and_keeps_live_data() {
     let h = Harness::new();
     h.seed();
     let runner = h.runner();
-    h.reconcile_and_process(&runner, 1_000);
+    h.reconcile_and_process(&runner, i64::MAX / 2);
 
     // One orphan of every kind.
     let ghost =

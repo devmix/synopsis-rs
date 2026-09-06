@@ -6,8 +6,8 @@
 -- 5.1 consolidated the former five forward-only migrations — 1-init through
 -- 5-search-text — into this single init migration). It builds the full final
 -- v5 schema shape in one step: the base tables/indexes/FTS triggers (with the
--- `search_text` re-point folded in), `document_jobs` + its due index,
--- `queue_tasks` + its due/identity indexes, and `usearch_vectors_log`
+-- `search_text` re-point folded in), `queue_tasks` + its due/identity
+-- indexes, and `usearch_vectors_log`
 -- (composite (segment_id, chunk_id) PK + flags/segment indexes).
 --
 -- `PRAGMA user_version` is NOT set here: `rusqlite_migration::to_latest` sets
@@ -65,20 +65,15 @@
 -- v5 shape; explicit, justified deviation from the v5 schema (the
 -- v5 `chunks` table has no metadata column).
 --
--- Folded-in Rust operational tables (formerly the forward-only document-jobs and
--- usearch-WAL migrations):
---   document_jobs            -- persistent state machine for document operations
---                              (document-jobs-queue change, task 1.1). New Rust
---                              operational table; the prior implementation has
---                              no equivalent queue (it ingests synchronously), so
---                              no parity is required.
+-- Folded-in Rust operational tables (formerly the forward-only usearch-WAL
+-- migration):
 --   queue_tasks              -- generic event queue for ALL background work
 --                              (event-queue-incremental-linking task 1.1,
 --                              ADR 0005): typed events (doc:index | doc:delete |
 --                              entity:link), one row per (type, identity)
---                              (unique index), the same pending -> processing ->
---                              done|error lifecycle as document_jobs. New Rust
---                              operational table; no parity is required.
+--                              (unique index), the pending -> processing ->
+--                              done|error lifecycle. New Rust operational
+--                              table; no parity is required.
 --   usearch_vectors_log      -- write-ahead log for the usearch ANN engine
 --                              (usearch-wal-persistence, tasks 2.1/2.4). Composite
 --                              (segment_id, chunk_id) PK; segment_id = 0 means
@@ -218,36 +213,14 @@ END;
 
 CREATE UNIQUE INDEX idx_documents_original_path ON documents(original_path);
 
--- document_jobs: persistent state machine for document operations (folded in
--- from the former document-jobs migration; document-jobs-queue task 1.1).
--- Producers (file watcher, startup reconcile, CLI) enqueue one row per
--- document path; a single background worker claims due rows and runs the
--- per-document pipeline. Statuses: pending -> processing -> done|error
--- (bounded retries with backoff; the index serves the due query).
-CREATE TABLE document_jobs (
-  path TEXT PRIMARY KEY,
-  source_path TEXT NOT NULL,
-  op TEXT NOT NULL DEFAULT 'index',
-  status TEXT NOT NULL DEFAULT 'pending',
-  content_hash TEXT,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 3,
-  last_error TEXT,
-  next_attempt_at INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-);
-
-CREATE INDEX idx_document_jobs_due ON document_jobs(status, next_attempt_at);
-
 -- queue_tasks: generic event queue for all background work (event-queue-
 -- incremental-linking task 1.1, ADR 0005). One row per (type, identity) —
 -- the unique index is the dedup/upsert key; the due index serves the
 -- worker's claim query. Typed events: doc:index | doc:delete | entity:link;
 -- `event` holds only the JSON residual payload (source_path/content_hash or
--- entity_ids). Same lifecycle as document_jobs: pending -> processing ->
--- done|error (bounded retries with exponential backoff; re-enqueue moves
--- the row to the end of the claim order via next_attempt_at = now).
+-- entity_ids). Lifecycle: pending -> processing -> done|error (bounded
+-- retries with exponential backoff; re-enqueue moves the row to the end of
+-- the claim order via next_attempt_at = now).
 CREATE TABLE IF NOT EXISTS queue_tasks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     type            TEXT NOT NULL, -- 'doc:index' | 'doc:delete' | 'entity:link'

@@ -99,22 +99,23 @@ pub enum ModelAction {
     Benchmark,
 }
 
-/// `queue` sub-actions (new operational command, document-jobs-queue task
-/// 1.7).
+/// `queue` sub-actions (new operational command, event-queue-incremental-
+/// linking task 1.2).
 pub enum QueueAction {
-    /// `status`: print the document job queue table.
+    /// `status`: print the event queue table.
     Status {
         /// `--source`: filter by source path prefix.
         source: Option<String>,
         /// `--status`: filter by exact status.
         status: Option<String>,
     },
-    /// `reset-retries`: re-queue failed jobs (error -> pending, attempts -> 0).
+    /// `reset-retries`: re-queue failed tasks (error -> pending, attempts ->
+    /// 0).
     ResetRetries {
         /// `--source`: filter by source path prefix.
         source: Option<String>,
-        /// `--path`: re-queue a single job (wins over `--source`).
-        path: Option<String>,
+        /// `--identity`: re-queue a single task (wins over `--source`).
+        identity: Option<String>,
     },
 }
 
@@ -246,8 +247,8 @@ fn auto_rebuild_vectors_flag() -> Arg {
         .help("automatically rebuild vectors on dimension mismatch")
 }
 
-/// Builds the `queue` subcommand: `status|reset-retries` (document-jobs-queue
-/// task 1.7; new operational command).
+/// Builds the `queue` subcommand: `status|reset-retries`
+/// (event-queue-incremental-linking task 1.2; new operational command).
 fn build_queue_command() -> ClapCommand {
     let source_arg = || {
         Arg::new("source")
@@ -258,12 +259,12 @@ fn build_queue_command() -> ClapCommand {
     };
 
     ClapCommand::new("queue")
-        .about("inspect and repair the document job queue (document_jobs)")
+        .about("inspect and repair the event task queue (queue_tasks)")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(
             ClapCommand::new("status")
-                .about("print the document job queue table")
+                .about("print the event queue table")
                 .arg(source_arg())
                 .arg(
                     Arg::new("status")
@@ -275,14 +276,14 @@ fn build_queue_command() -> ClapCommand {
         )
         .subcommand(
             ClapCommand::new("reset-retries")
-                .about("re-queue failed jobs: status -> pending, attempts -> 0")
+                .about("re-queue failed tasks: status -> pending, attempts -> 0")
                 .arg(source_arg())
                 .arg(
-                    Arg::new("path")
-                        .long("path")
-                        .value_name("PATH")
+                    Arg::new("identity")
+                        .long("identity")
+                        .value_name("IDENTITY")
                         .action(ArgAction::Set)
-                        .help("re-queue a single job (wins over --source)"),
+                        .help("re-queue a single task (wins over --source)"),
                 ),
         )
 }
@@ -399,7 +400,7 @@ impl Cli {
                     },
                     "reset-retries" => QueueAction::ResetRetries {
                         source: action_matches.get_one::<String>("source").cloned(),
-                        path: action_matches.get_one::<String>("path").cloned(),
+                        identity: action_matches.get_one::<String>("identity").cloned(),
                     },
                     other => unreachable!("clap only accepts the declared sub-actions: {other}"),
                 };

@@ -26,7 +26,7 @@
 //!   worker's per-job pipeline + GC sweep) runs inline on the main thread
 //!   *between* runtime-context entries (the watcher batch, the startup
 //!   reconcile and the forced-rebuild clear + reconcile only enqueue
-//!   `document_jobs` rows — no vector-engine work);
+//!   `queue_tasks` rows — no vector-engine work);
 //! - the runtime is entered only for short async bits that require it:
 //!   creating the watcher debounce task, spawning the worker's sweep-tick
 //!   timer, binding the listener, and the owner-loop event select
@@ -111,7 +111,7 @@ pub struct ServeRequest {
     pub cfg_path: PathBuf,
     /// `--dataset` dataset name override (wins over `config.dataset.name`).
     pub dataset: Option<String>,
-    /// `--no-initial-sync`: skip the startup reconcile (the `document_jobs`
+    /// `--no-initial-sync`: skip the startup reconcile (the `queue_tasks`
     /// enqueue) on startup.
     pub no_initial_sync: bool,
     /// `--port` override; `0` keeps the `server.port` config value.
@@ -386,15 +386,15 @@ pub fn serve_with_stop(
         llm_cache: cache,
     });
 
-    // The `document_jobs` producer (document-jobs-queue task 1.5): the
-    // startup reconcile and the watcher enqueue through it; the background
-    // worker (task 1.6) is the sole consumer.
+    // The `queue_tasks` producer (event-queue-incremental-linking task 1.2):
+    // the startup reconcile and the watcher enqueue through it; the
+    // background worker is the sole consumer.
     let job_queue = DocumentJobQueue::new(&db);
 
-    // Initial sync (document-jobs-queue task 1.5): startup is a producer —
-    // reconcile every enabled source against the disk and enqueue the diff
-    // into `document_jobs`; the background worker runs the pipeline before
-    // the index is up to date. No direct ingestion at startup.
+    // Initial sync (event-queue-incremental-linking task 1.2): startup is a
+    // producer — reconcile every enabled source against the disk and enqueue
+    // the diff into `queue_tasks`; the background worker runs the pipeline
+    // before the index is up to date. No direct ingestion at startup.
     // No-data semantics (design D2): without an active dataset there is
     // nothing to reconcile — the server simply starts with an empty index.
     let initial_sync_due =
@@ -429,13 +429,13 @@ pub fn serve_with_stop(
         );
     }
 
-    // The document-jobs worker (document-jobs-queue task 1.6): the sole
-    // consumer of the queue. The Runner is `!Send`, so the worker runs on
-    // this owner thread: one immediate drain right here (the startup
+    // The event-queue worker (event-queue-incremental-linking task 1.2):
+    // the sole consumer of the queue. The Runner is `!Send`, so the worker
+    // runs on this owner thread: one immediate drain right here (the startup
     // reconcile's diff is processed before the index serves traffic), then
     // the owner-loop select! keeps it ticking — the periodic sweep (below)
     // and an on-demand cycle after a watcher batch enqueues new work.
-    let worker = DocumentWorker::new(&db, &runner, config.ingestion.max_retries);
+    let worker = DocumentWorker::new(&db, &runner);
     if let Err(err) = worker.run_once(now_unix_seconds()) {
         tracing::warn!(error = %err, "worker startup cycle failed");
     }
@@ -680,12 +680,12 @@ fn reap_serve(raw: std::result::Result<io::Result<()>, tokio::task::JoinError>) 
     }
 }
 
-/// Runs one document-worker cycle inline on the owner thread (the
+/// Runs one event-queue worker cycle inline on the owner thread (the
 /// ingestion Runner is `!Send` — the worker module docs): claim due
-/// `document_jobs`, process each one, sweep orphaned data.
+/// `queue_tasks`, process each one, sweep orphaned data.
 fn run_worker_cycle(worker: &DocumentWorker<'_>) {
     if let Err(err) = worker.run_once(now_unix_seconds()) {
-        tracing::warn!(error = %err, "document worker cycle failed");
+        tracing::warn!(error = %err, "event queue worker cycle failed");
     }
 }
 

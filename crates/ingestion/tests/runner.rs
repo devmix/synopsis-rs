@@ -21,7 +21,7 @@ use config::DomainConfig;
 use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
 use config::preset::{IngestionConfig, LinkerConfig};
 use db::test_util::in_memory_db;
-use db::{ChunkDao, ConnectionOrTx, Db, DocumentDao, DocumentJobDao, EntityDao};
+use db::{ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, QueueTaskDao};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use vectors::{VectorIndex, VectorsError};
 
@@ -373,14 +373,14 @@ fn failing_source_does_not_stop_the_run() {
         .unwrap();
     assert_eq!(stats.indexed, 1, "{stats:?}");
 
-    let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
-    worker.run_once(1_000).unwrap();
+    let worker = DocumentWorker::new(&harness.db, &runner);
+    worker.run_once(i64::MAX / 2).unwrap();
 
     // The good source was processed after the failure: the job is done
     // and vectors were written (the run did not stop at the first error).
     let jobs = harness
         .db
-        .with_conn(|conn| DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+        .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
         .unwrap()
         .unwrap();
     assert_eq!(jobs.len(), 1, "{jobs:?}");
@@ -423,18 +423,18 @@ fn disabled_sources_produce_no_jobs() {
         assert_eq!(stats.indexed, 1, "{stats:?}");
     }
 
-    let worker = DocumentWorker::new(&harness.db, &runner, harness.cfg.max_retries);
-    worker.run_once(1_000).unwrap();
+    let worker = DocumentWorker::new(&harness.db, &runner);
+    worker.run_once(i64::MAX / 2).unwrap();
 
     // Zero jobs for the disabled source; the enabled one is done.
     let jobs = harness
         .db
-        .with_conn(|conn| DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+        .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
         .unwrap()
         .unwrap();
     assert_eq!(jobs.len(), 1, "{jobs:?}");
     assert_eq!(
-        jobs[0].path,
+        jobs[0].identity,
         on.join("on.txt").to_string_lossy().into_owned()
     );
     assert_eq!(jobs[0].status, "done", "{jobs:?}");

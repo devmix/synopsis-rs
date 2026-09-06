@@ -4,14 +4,14 @@
 //! debounced tokio loop; once a quiet period of
 //! `config.auto_update.debounce_seconds` has elapsed, the accumulated batch is
 //! delivered to the caller through [`Watcher::next_batch`]. The production
-//! callback ([`IngestChangeHandler`]) is a producer (document-jobs-queue task
-//! 1.5): it enqueues one `document_jobs` row per changed file through the
-//! [`DocumentJobQueue`] — `index` (fresh content hash) for a file present on
-//! disk, `delete` for a removed one — and, when the graph is enabled, reloads
-//! the knowledge graph and hands the fresh index to the injected
-//! `on_graph_reload` hook. The background worker runs the ingestion pipeline
-//! later; the handler never ingests directly (state flows through the
-//! `document_jobs` table only).
+//! callback ([`IngestChangeHandler`]) is a producer (event-queue-incremental-
+//! linking task 1.2): it enqueues one `queue_tasks` row per changed file
+//! through the [`DocumentJobQueue`] — `doc:index` (fresh content hash) for a
+//! file present on disk, `doc:delete` for a removed one — and, when the
+//! graph is enabled, reloads the knowledge graph and hands the fresh index
+//! to the injected `on_graph_reload` hook. The background worker runs the
+//! ingestion pipeline later; the handler never ingests directly (state flows
+//! through the `queue_tasks` table only).
 //!
 //! Architectural notes:
 //! - **Threading.** The ingestion [`Runner`] borrows the source
@@ -92,9 +92,9 @@ pub enum WatcherError {
 /// thread. Tests substitute the collaborators through this seam (the task's
 /// "trait/closure" hook).
 pub trait ChangeHandler {
-    /// Enqueues a `document_jobs` row per changed file (index for a file
-    /// present on disk, delete for a removed one) and — when the graph is
-    /// enabled — reloads the graph index.
+    /// Enqueues a `queue_tasks` row per changed file (doc:index for a file
+    /// present on disk, doc:delete for a removed one) and — when the graph
+    /// is enabled — reloads the graph index.
     fn handle_changes(&self, paths: &[PathBuf]);
 }
 
@@ -109,18 +109,18 @@ where
 }
 
 /// Production [`ChangeHandler`] (design D5): a queue producer
-/// (document-jobs-queue task 1.5).
+/// (event-queue-incremental-linking task 1.2).
 ///
 /// `on_graph_reload` receives the freshly reloaded graph index after a
-/// successful reload; the serve wiring (task 1.6) uses it to rebuild the
-/// immutable searcher + MCP server (there is no `SetGraph`-style swap —
-/// search crate design D8).
+/// successful reload; the serve wiring uses it to rebuild the immutable
+/// searcher + MCP server (there is no `SetGraph`-style swap — search crate
+/// design D8).
 pub struct IngestChangeHandler<'a> {
     runner: &'a Runner<'a>,
     db: &'a Db,
     graph_cfg: &'a GraphConfig,
     on_graph_reload: Option<Arc<dyn Fn(Arc<GraphIndex>) + Send + Sync>>,
-    /// The `document_jobs` producer: one row per changed file, processed by
+    /// The `queue_tasks` producer: one row per changed file, processed by
     /// the background worker (the handler never ingests directly).
     job_queue: &'a DocumentJobQueue<'a>,
 }
@@ -152,13 +152,14 @@ impl ChangeHandler for IngestChangeHandler<'_> {
         }
         tracing::info!(files_changed = paths.len(), "auto-update triggered");
 
-        // Producer (document-jobs-queue task 1.5): one job per changed file,
-        // resolved against the configured sources. A file present on disk is
-        // queued for (re)indexing with its fresh content hash (the pipeline's
-        // dedup key); a removed file is queued for deletion. The background
-        // worker runs the pipeline later — no direct ingestion here (state
-        // flows through `document_jobs` only). The debouncer already dedupes
-        // paths within a batch, so no per-source dedup map is needed.
+        // Producer (event-queue-incremental-linking task 1.2): one task per
+        // changed file, resolved against the configured sources. A file
+        // present on disk is queued for (re)indexing with its fresh content
+        // hash (the pipeline's dedup key); a removed file is queued for
+        // deletion. The background worker runs the pipeline later — no
+        // direct ingestion here (state flows through `queue_tasks` only).
+        // The debouncer already dedupes paths within a batch, so no per-
+        // source dedup map is needed.
         for path in paths {
             let path_str = path.to_string_lossy();
             let Some(source) = self.runner.find_source_for_path(&path_str) else {
@@ -535,7 +536,7 @@ mod tests {
     use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
     use config::preset::{GraphConfig, IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, DocumentDao, DocumentJobDao};
+    use db::{ConnectionOrTx, DocumentDao, QueueTaskDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
     use ingestion::{
         DocumentJobQueue, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource,
@@ -735,9 +736,9 @@ mod tests {
         doc_paths(db).len()
     }
 
-    /// All `document_jobs` rows (the producer's output).
-    fn job_rows(db: &db::Db) -> Vec<db::DocumentJob> {
-        db.with_conn(|conn| DocumentJobDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+    /// All `queue_tasks` rows (the producer's output).
+    fn job_rows(db: &db::Db) -> Vec<db::QueueTask> {
+        db.with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
             .unwrap()
             .unwrap()
     }
@@ -1016,23 +1017,25 @@ mod tests {
             foreign.join("x.md"),
         ]);
 
-        // The handler is a producer: pending jobs, no documents (the worker
+        // The handler is a producer: pending tasks, no documents (the worker
         // ingests later). The foreign file (no configured source) contributes
         // nothing.
-        let jobs = job_rows(&fixture.db);
-        assert_eq!(jobs.len(), 3, "a.md + ghost.md + b.md enqueued; {jobs:?}");
-        let by_path: HashMap<&str, &db::DocumentJob> =
-            jobs.iter().map(|job| (job.path.as_str(), job)).collect();
+        let tasks = job_rows(&fixture.db);
+        assert_eq!(tasks.len(), 3, "a.md + ghost.md + b.md enqueued; {tasks:?}");
+        let by_path: HashMap<&str, &db::QueueTask> = tasks
+            .iter()
+            .map(|task| (task.identity.as_str(), task))
+            .collect();
 
         // a.md: present on disk → pending index with the fresh hash.
         let a = by_path
             .get(src_a.join("a.md").to_string_lossy().as_ref())
             .expect("a.md must be queued");
-        assert_eq!(a.op, "index");
+        assert_eq!(a.task_type, "doc:index");
         assert_eq!(a.status, "pending");
-        assert_eq!(a.source_path, src_a.to_string_lossy().into_owned());
+        let payload: db::DocIndexPayload = serde_json::from_str(&a.event).expect("valid payload");
         assert_eq!(
-            a.content_hash.as_deref(),
+            payload.content_hash.as_deref(),
             Some(compute_content_hash("# Doc A\ncontent a\n").as_str())
         );
 
@@ -1040,14 +1043,14 @@ mod tests {
         let ghost = by_path
             .get(src_a.join("ghost.md").to_string_lossy().as_ref())
             .expect("ghost.md must be queued");
-        assert_eq!(ghost.op, "delete");
+        assert_eq!(ghost.task_type, "doc:delete");
         assert_eq!(ghost.status, "pending");
 
         // b.md: present on disk → pending index.
         let b = by_path
             .get(src_b.join("b.md").to_string_lossy().as_ref())
             .expect("b.md must be queued");
-        assert_eq!(b.op, "index");
+        assert_eq!(b.task_type, "doc:index");
         assert_eq!(b.status, "pending");
 
         assert!(
@@ -1079,13 +1082,14 @@ mod tests {
         let handler = IngestChangeHandler::new(&runner, &fixture.db, &graph_cfg, None, &queue);
 
         handler.handle_changes(&[src_a.join("a.md"), src_b.join("b.md")]);
-        // Two pending index jobs; the documents table is still empty.
-        let jobs = job_rows(&fixture.db);
-        assert_eq!(jobs.len(), 2, "{jobs:?}");
+        // Two pending index tasks; the documents table is still empty.
+        let tasks = job_rows(&fixture.db);
+        assert_eq!(tasks.len(), 2, "{tasks:?}");
         assert!(
-            jobs.iter()
-                .all(|job| job.op == "index" && job.status == "pending"),
-            "{jobs:?}"
+            tasks
+                .iter()
+                .all(|t| t.task_type == "doc:index" && t.status == "pending"),
+            "{tasks:?}"
         );
         assert_eq!(
             doc_count(&fixture.db),
@@ -1095,22 +1099,28 @@ mod tests {
 
         fs::remove_file(src_a.join("a.md")).unwrap();
         handler.handle_changes(&[src_a.join("a.md")]);
-        // The vanished file's job is replaced by a pending delete (upsert by
-        // path); the live file's job survives. The documents table is still
-        // unchanged (the worker removes the row later).
-        let jobs = job_rows(&fixture.db);
-        assert_eq!(jobs.len(), 2, "{jobs:?}");
-        let a = jobs
+        // The vanished file gets a pending delete task (the stale doc:index
+        // for the same path is a separate row — the worker converges via
+        // process_document_by_path). The live file's task survives. The
+        // documents table is still unchanged (the worker removes the row
+        // later).
+        let tasks = job_rows(&fixture.db);
+        assert_eq!(tasks.len(), 3, "{tasks:?}");
+        let a_delete = tasks
             .iter()
-            .find(|job| job.path.ends_with("a/a.md"))
-            .expect("a.md job present");
-        assert_eq!(a.op, "delete");
-        assert_eq!(a.status, "pending");
-        let b = jobs
+            .find(|t| t.identity.ends_with("a/a.md") && t.task_type == "doc:delete")
+            .expect("a.md delete task present");
+        assert_eq!(a_delete.status, "pending");
+        let a_index = tasks
             .iter()
-            .find(|job| job.path.ends_with("b/b.md"))
-            .expect("b.md job present");
-        assert_eq!(b.op, "index");
+            .find(|t| t.identity.ends_with("a/a.md") && t.task_type == "doc:index")
+            .expect("a.md stale index task present");
+        assert_eq!(a_index.status, "pending");
+        let b = tasks
+            .iter()
+            .find(|t| t.identity.ends_with("b/b.md"))
+            .expect("b.md task present");
+        assert_eq!(b.task_type, "doc:index");
         assert_eq!(b.status, "pending");
         assert_eq!(
             doc_count(&fixture.db),

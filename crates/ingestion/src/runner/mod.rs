@@ -4,27 +4,29 @@
 //! configs, registry, providers) is a reference passed to [`Runner::new`]
 //! via [`RunnerParams`].
 //!
-//! Responsibilities (queue-only model, remove-direct-ingest task 1.4):
+//! Responsibilities (queue-only model, event-queue-incremental-linking
+//! task 1.2):
 //!
-//! - [`Runner::process_document_by_path`] — the worker's `index` op: the
-//!   per-document pipeline for a single file (no source-tree walk), with
-//!   per-source NER provider assembly and domain enrichment.
-//! - [`Runner::delete_document_at`] — the worker's `delete` op (full
-//!   per-document cleanup in one transaction).
+//! - [`Runner::process_document_by_path`] — the worker's `doc:index`
+//!   dispatch: the per-document pipeline for a single file (no source-tree
+//!   walk), with per-source NER provider assembly and domain enrichment.
+//! - [`Runner::delete_document_at`] — the worker's `doc:delete` dispatch
+//!   (full per-document cleanup in one transaction).
 //! - [`Runner::cleanup_orphaned_data`] / [`Runner::build_entity_links`] —
 //!   post-batch maintenance (orphan sweep + cross-domain entity linking,
 //!   `runner/cleanup.rs`); the worker's GC phase drives the sweep and the
-//!   linking entry point is called directly.
+//!   `entity:link` dispatch calls the linking entry point directly.
 //! - [`Runner::find_source_for_path`] / [`Runner::belongs_to_source`] —
 //!   source containment used by the queue producer, the worker and the
 //!   cleanup stage.
 //!
-//! The `document_jobs` queue is the only processing path:
+//! The `queue_tasks` event queue is the only processing path:
 //! [`DocumentJobQueue`](crate::job_queue::DocumentJobQueue) (producer)
-//! enqueues per-file jobs and
+//! enqueues typed events and
 //! [`DocumentWorker`](crate::worker::DocumentWorker) (consumer) claims them
-//! and drives [`Runner::process_document_by_path`] /
-//! [`Runner::delete_document_at`].
+//! and dispatches by type to
+//! [`Runner::process_document_by_path`] /
+//! [`Runner::delete_document_at`] / [`Runner::build_entity_links`].
 //!
 //! All mutating entry points are serialized by an internal mutex: the
 //! worker and a CLI operation must never write SQLite concurrently
