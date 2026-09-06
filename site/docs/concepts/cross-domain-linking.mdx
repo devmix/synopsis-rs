@@ -80,7 +80,7 @@ Linking is a **post-processing step of the ingestion pipeline** — not a separa
 1. documents are ingested (parse, chunk, embed, NER, entities, facts);
 2. **link building runs** over the entities, if the `cross-domain-links` configuration is present.
 
-The run is **incremental**: the window of entities to consider is taken from the timestamp of the last run (stored in the application key-value store) and written back after the run; a first run with no stored timestamp links over all entities. Linking errors land in the run statistics without aborting the run.
+The run is **incremental and event-driven**: when a run creates or updates entities, the pipeline enqueues an `entity:link` event (identity = document id), and the background worker links only those candidates against the rest of the dataset — never the document's full entity set. A per-pair linking error is logged and skipped without aborting the run.
 
 ## Using links
 

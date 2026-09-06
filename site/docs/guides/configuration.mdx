@@ -158,7 +158,7 @@ ingestion:
 | `ingestion.ner.llm.timeout_ms` | integer | 60000 | HTTP request timeout in milliseconds. |
 | `ingestion.ner.llm.max_retries` | integer | 3 | Retry attempts for transient errors (429, 5xx). |
 | `ingestion.batch_size` | integer | 100 | How many documents are processed per ingest batch. |
-| `ingestion.max_retries` | integer | 3 | Maximum automatic re-indexing attempts for a problematic document by the background worker; after exhaustion the document gets `error` status in the `document_jobs` queue. |
+| `ingestion.max_retries` | integer | 3 | Maximum automatic re-processing attempts for a problematic task by the background worker; after exhaustion the task gets `error` status in the `queue_tasks` queue. |
 | `ingestion.resolver.similarity_threshold` | float | 0.8 | Jaro-Winkler similarity threshold for merging duplicate entity names. |
 
 See [Ingestion](./ingestion) for how the chunking and NER settings drive the pipeline.
@@ -293,8 +293,8 @@ auto_update:
 | `auto_update.watch_sources` | boolean | `true` | Watch all sources. **Presence semantics**: absent → `true`; an explicit `false` is honored. |
 | `auto_update.initial_sync` | boolean | `true` (absent section) | Run a full source scan (startup reconcile) on startup. `serve --no-initial-sync` also skips it. |
 | `auto_update.retry_failed` | object | `{ enabled: true, poll_interval_seconds: 60 }` | Background re-processing of problematic documents. |
-| `auto_update.retry_failed.enabled` | boolean | `true` | Enable the worker's retry sweep of the `document_jobs` queue. |
-| `auto_update.retry_failed.poll_interval_seconds` | integer | 60 | Poll interval for the `document_jobs` queue in seconds. |
+| `auto_update.retry_failed.enabled` | boolean | `true` | Enable the worker's retry sweep of the `queue_tasks` queue. |
+| `auto_update.retry_failed.poll_interval_seconds` | integer | 60 | Poll interval for the `queue_tasks` queue in seconds. |
 
 See [Job Queue](../concepts/job-queue) for the queue states and the `queue status` / `queue reset-retries` commands.
 

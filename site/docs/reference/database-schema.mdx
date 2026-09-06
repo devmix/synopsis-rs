@@ -137,23 +137,23 @@ Cross-domain entity links created during ingestion (see [Cross-Domain Linking](.
 
 Primary key: `(subject_entity_id, target_entity_id, relation_type)`. Check constraint: `subject_entity_id != target_entity_id`.
 
-### `document_jobs`
+### `queue_tasks`
 
-The persistent state machine for document operations — the single queue the file watcher, the startup reconcile, and the background worker all enqueue into (see [Job Queue](../concepts/job-queue.mdx)).
+The generic event queue — the single state machine the file watcher, the startup reconcile, the pipeline, and the background worker all enqueue into (see [Job Queue](../concepts/job-queue.mdx)). One row per `(type, identity)`, covering document operations (`doc:index`, `doc:delete`) and entity-linking tasks (`entity:link`).
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `path` | TEXT | PRIMARY KEY | The document path (one row per path). |
-| `source_path` | TEXT | NOT NULL | The source that owns the path. |
-| `op` | TEXT | NOT NULL DEFAULT `'index'` | `'index'` or `'delete'`. |
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Row id; the claim-order tie-breaker. |
+| `type` | TEXT | NOT NULL | Event type: `doc:index`, `doc:delete`, or `entity:link`. |
+| `identity` | TEXT | NOT NULL | Dedup key: the document path for `doc:*` events, the document id (decimal string) for `entity:link`. |
+| `event` | TEXT | NOT NULL | JSON residual payload (`source_path`/`content_hash` or `entity_ids`). |
 | `status` | TEXT | NOT NULL DEFAULT `'pending'` | `'pending'` → `'processing'` → `'done'` or `'error'`. |
-| `content_hash` | TEXT | | Content hash for change detection. |
 | `attempts` | INTEGER | NOT NULL DEFAULT 0 | Attempts so far. |
 | `max_attempts` | INTEGER | NOT NULL DEFAULT 3 | Retry limit (driven by `ingestion.max_retries`). |
 | `last_error` | TEXT | | Last failure message. |
-| `next_attempt_at` | INTEGER | NOT NULL DEFAULT 0 | Unix-seconds due time for the next attempt. |
-| `created_at` | INTEGER | NOT NULL DEFAULT `(strftime('%s','now'))` | Unix seconds. |
-| `updated_at` | INTEGER | NOT NULL DEFAULT `(strftime('%s','now'))` | Unix seconds. |
+| `next_attempt_at` | INTEGER | NOT NULL DEFAULT 0 | Unix-seconds due time for the next attempt (also the re-enqueue "move to end" lever). |
+| `created_at` | INTEGER | NOT NULL | Unix seconds. |
+| `updated_at` | INTEGER | NOT NULL | Unix seconds. |
 
 ### `usearch_vectors_log`
 
@@ -189,7 +189,8 @@ Primary key: `(segment_id, chunk_id)`.
 | `idx_entity_links_target` | `entity_links` | `target_entity_id` | |
 | `idx_entity_sources_entity_id` | `entity_sources` | `entity_id` | |
 | `idx_entity_sources_document_id` | `entity_sources` | `document_id` | |
-| `idx_document_jobs_due` | `document_jobs` | `status, next_attempt_at` | Serves the worker's due query |
+| `idx_queue_tasks_due` | `queue_tasks` | `status, next_attempt_at` | Serves the worker's due query |
+| `idx_queue_tasks_identity` | `queue_tasks` | `type, identity` | UNIQUE — at most one row per event identity (the dedup/upsert key) |
 | `idx_usearch_vectors_log_flags` | `usearch_vectors_log` | `flags` | |
 | `idx_usearch_vectors_log_segment` | `usearch_vectors_log` | `segment_id` | |
 

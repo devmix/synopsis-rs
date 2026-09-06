@@ -61,7 +61,7 @@ The full resolution order and every key it loads is in [Configuration](./configu
    synopsis serve --auto-rebuild-vectors
    ```
 
-   **Clear-then-queue** runs: the dataset DB is cleared in place, the startup reconcile re-enqueues **all** files into `document_jobs`, and the background worker re-embeds them through the normal pipeline. There is no direct ingestion and no vector migration — the vectors are rebuilt from the chunk text.
+       **Clear-then-queue** runs: the dataset DB is cleared in place, the startup reconcile re-enqueues **all** files into `queue_tasks`, and the background worker re-embeds them through the normal pipeline. There is no direct ingestion and no vector migration — the vectors are rebuilt from the chunk text.
 
 2. **Manual full re-ingest** — clear the dataset and restart:
 
@@ -72,23 +72,23 @@ The full resolution order and every key it loads is in [Configuration](./configu
 
 Remember to update `embeddings.local.vector_dim` (and the model) to a matching pair before re-running. The full recovery model is on the [Vector Rebuild](../concepts/vector-rebuild) page.
 
-## Stuck queue jobs
+## Stuck queue tasks
 
 **Symptom** — documents never appear in search, or re-ingestion stalls; the worker keeps failing the same files.
 
-**Cause** — ingestion is driven by the `document_jobs` queue. A job that fails its maximum attempts (`ingestion.max_retries`, default 3) lands in `error` status with `last_error` populated and stops being retried until you intervene.
+**Cause** — ingestion is driven by the `queue_tasks` event queue. A task that fails its maximum attempts (`ingestion.max_retries`, default 3) lands in `error` status with `last_error` populated and stops being retried until you intervene.
 
 **Fix** — inspect and repair:
 
 ```bash
-# All jobs, or filtered by source path prefix / status
+# All tasks, or filtered by source path prefix / status
 synopsis queue status [--source PATH] [--status NAME]
 
-# Re-queue failed jobs: error -> pending, attempts -> 0
-synopsis queue reset-retries [--source PATH] [--path PATH]
+# Re-queue failed tasks: error -> pending, attempts -> 0
+synopsis queue reset-retries [--source PATH] [--identity VALUE]
 ```
 
-`queue status` prints a table with columns `PATH`, `SOURCE`, `STATUS`, `ATTEMPTS`, `LAST_ERROR`, `NEXT_ATTEMPT_AT` (statuses: `pending`, `processing`, `done`, `error`). `reset-retries` moves the selected `error` jobs back to `pending` with a zeroed attempt counter — the background worker re-indexes them on its next cycle (`auto_update.retry_failed.poll_interval_seconds`, default 60 s). If the same jobs fail again, the problem is upstream of the queue — a source, a parser, or the LLM endpoint (check `last_error` and the logs at `logging.level: debug`).
+`queue status` prints a table with columns `TYPE`, `IDENTITY`, `STATUS`, `ATTEMPTS`, `LAST_ERROR`, `NEXT_ATTEMPT_AT` (statuses: `pending`, `processing`, `done`, `error`). `reset-retries` moves the selected `error` tasks back to `pending` with a zeroed attempt counter — the background worker re-processes them on its next cycle (`auto_update.retry_failed.poll_interval_seconds`, default 60 s). If the same tasks fail again, the problem is upstream of the queue — a source, a parser, or the LLM endpoint (check `last_error` and the logs at `logging.level: debug`).
 
 The full state machine is on the [Job Queue](../concepts/job-queue) page.
 
@@ -130,7 +130,7 @@ What the cache holds and why it is global is on the [Cache Database](../concepts
 
 ```bash
 synopsis queue status --status error
-synopsis queue reset-retries --status error
+synopsis queue reset-retries
 ```
 
 If the queue is clean, inspect the statuses directly:

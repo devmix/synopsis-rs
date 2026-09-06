@@ -1,6 +1,6 @@
 ---
 title: Architecture Decision Records
-description: The four ADRs behind the Rust implementation — the bundled SQLite/FTS5 seam, the ONNX runtime seam, the ANN engine decision, and the usearch two-tier RAM/DISK layout
+description: The five ADRs behind the Rust implementation — the bundled SQLite/FTS5 seam, the ONNX runtime seam, the ANN engine decision, the usearch two-tier RAM/DISK layout, and the event task queue
 sidebar_position: 9
 ---
 
@@ -43,6 +43,15 @@ The design decisions behind the Rust implementation are recorded as ADRs under `
 **Decision.** usearch 2.x is the sole ANN engine, arranged as a two-tier RAM/DISK architecture: a RAM segment (an in-memory copy via `restore_from_buffer`, persisted by explicit saves) plus read-only DISK segments (mmap views, never mutated), searched in parallel over a dedicated thread pool and merged with the freshest tier winning on duplicates. A per-segment WAL in SQLite records only invalidations (`DEL` rows), sidecar `.keys` manifests make key enumeration scan-free, RAM overflow flushes a new monotonically-numbered segment (no renumbering), and background compaction runs when the stale-vector threshold is exceeded.
 
 **Rationale.** An audit of the partial implementation found 12 defects — a dead DISK tier, an unwired WAL, non-persisting mmap writes, no crash recovery — so the engine was rewritten wholesale against this architecture: disk-backed and scalar-quantized (bf16 default) to fit the 16 GB laptop, WAL-first atomic supersession for crash safety, and zero SQL on the steady-state search path.
+
+## ADR 0005 — Event task queue: one typed event queue for all background work
+
+- **Status:** accepted (2026-09-06, human decision; change `event-queue-incremental-linking`)
+- **Full text:** `docs/adr/0005-event-task-queue.md`
+
+**Decision.** All background work — document indexing, document deletion, and cross-domain entity linking — is queued in a single `queue_tasks` table: a typed event (`type` column, `{group}:{name}` namespace), a stable dedup `identity`, a JSON residual payload, and one shared status/backoff lifecycle. Enqueue is a per-`(type, identity)` upsert with per-type payload semantics (doc events replace, `entity:link` merges), claim order is `(next_attempt_at, id)` so a re-enqueue moves to the end, and the same column drives the `30 × 2^(attempts−1)` backoff. A single sequential worker dispatches by type; a new work kind is a code-level addition (event type + dispatch arm), never a new table or subcommand.
+
+**Rationale.** A document-only queue plus a scheduled link batch gives derived work no per-item status, retry, or console visibility, and forces either a full rebuild or its own incrementality machinery (time windows, extra columns). One table per work kind duplicates the durability/retry/console logic and re-implements the cross-kind invariants. The generic event queue is the only option where per-item visibility and lossless merging of pending derived work hold for *every* work kind by construction — incremental linking (only the created/updated entities) falls out of the event model, and the frozen contract surface stays at one table and one `queue` subcommand.
 
 ## See also
 

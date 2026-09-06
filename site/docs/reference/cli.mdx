@@ -15,7 +15,7 @@ synopsis [--config PATH] [--preset NAME] [--dataset NAME] [--version] <subcomman
 | Subcommand | Purpose |
 | --- | --- |
 | `serve` | Start the MCP server (startup reconcile + file watching + background job worker) |
-| `queue status \| reset-retries` | Inspect and repair the document job queue |
+| `queue status \| reset-retries` | Inspect and repair the event task queue |
 | `db stats \| clear` | Dataset statistics / delete the entire dataset state |
 | `model list \| download \| delete \| info \| benchmark [NAME]` | Manage embedding models |
 | `onnx-runtime install \| status \| uninstall` | Manage the ONNX Runtime library |
@@ -56,7 +56,7 @@ In short: `<exeDir>/workspace/configs/` → parent directory → CWD. The execut
 
 ## `serve`
 
-The only long-running mode: a startup reconcile (the diff of changed sources is enqueued into the document job queue), the MCP server over HTTP, and a file watcher (changed sources are enqueued again). A background worker processes the queue.
+The only long-running mode: a startup reconcile (the diff of changed sources is enqueued into the event task queue), the MCP server over HTTP, and a file watcher (changed sources are enqueued again). A background worker processes the queue.
 
 ```
 synopsis serve [--no-initial-sync] [--port N] [--auto-rebuild-vectors]
@@ -83,16 +83,16 @@ synopsis --preset default serve --port 9090   # global preset, per-command flag 
 
 ## `queue`
 
-Inspect and repair the document indexing queue. Both actions operate on the dataset-bound knowledge database and do not load the embedding model or the ONNX runtime; a non-empty dataset name is required (from the config or `--dataset`).
+Inspect and repair the event task queue (`queue_tasks`). Both actions operate on the dataset-bound knowledge database and do not load the embedding model or the ONNX runtime; a non-empty dataset name is required (from the config or `--dataset`).
 
 ```
 synopsis queue status [--source PATH] [--status NAME]
-synopsis queue reset-retries [--source PATH] [--path PATH]
+synopsis queue reset-retries [--source PATH] [--identity VALUE]
 ```
 
 ### `queue status`
 
-Prints the queue as a table with the columns `path`, `source`, `status`, `attempts`, `last_error`, `next_attempt_at`, followed by the job count.
+Prints the queue as a table with the columns `type`, `identity`, `status`, `attempts`, `last_error`, `next_attempt_at`, followed by the task count. `type` is the event type (`doc:index`, `doc:delete`, `entity:link`); `identity` is the dedup key (a file path for `doc:*` events, a document id for `entity:link`).
 
 | Flag | Description |
 | --- | --- |
@@ -101,19 +101,19 @@ Prints the queue as a table with the columns `path`, `source`, `status`, `attemp
 
 ### `queue reset-retries`
 
-Re-queues failed jobs: status → `pending`, attempts → `0`, `next_attempt_at` → now. The background worker re-indexes them on its next cycle.
+Re-queues failed tasks: status → `pending`, attempts → `0`, `next_attempt_at` → now. The background worker re-processes them on its next cycle. It applies to all event types.
 
 | Flag | Description |
 | --- | --- |
-| `--source PATH` | Limit the reset to jobs of one source (path prefix) |
-| `--path PATH` | Re-queue a single job (wins over `--source`); an error if no `error` job has that path |
+| `--source PATH` | Limit the reset to doc tasks of one source (path prefix) |
+| `--identity VALUE` | Re-queue a single task (wins over `--source`); an error if no `error` task has that identity |
 
-Without `--path`, every `error` job (optionally narrowed by `--source`) is re-queued and the count is reported.
+Without `--identity`, every `error` task (optionally narrowed by `--source`) is re-queued and the count is reported.
 
 ```bash
 synopsis queue status
 synopsis queue status --status error
-synopsis queue reset-retries --path workspace/datasets/edtech/content/documents/product/adaptive_learning_prd.md
+synopsis queue reset-retries --identity workspace/datasets/edtech/content/documents/product/adaptive_learning_prd.md
 ```
 
 ## `db`
@@ -127,7 +127,7 @@ synopsis db clear
 
 ### `db stats`
 
-Prints dataset statistics — documents, chunks, entities, entity links, facts, and queue-job counts. Read-only: no modification and no confirmation.
+Prints dataset statistics — documents, chunks, entities, entity links, facts, and queue-task counts. Read-only: no modification and no confirmation.
 
 ### `db clear`
 
@@ -231,4 +231,4 @@ Every fatal error exits with code `1`.
 - [Load Testing](../guides/load-testing.mdx) — load-test scales, report format, and interpretation
 - [Troubleshooting](../guides/troubleshooting.mdx) — dimension mismatch, stuck queue jobs, missing model / ONNX runtime
 - [MCP Tools](./mcp-tools/index.mdx) — the 12 tools served by `serve`
-- [Job Queue](../concepts/job-queue.mdx) — the `document_jobs` queue behind `queue status` / `queue reset-retries`
+- [Job Queue](../concepts/job-queue.mdx) — the `queue_tasks` event queue behind `queue status` / `queue reset-retries`

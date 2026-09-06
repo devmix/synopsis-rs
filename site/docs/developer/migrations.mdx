@@ -24,7 +24,7 @@ migrations/
 
 ## One squashed init migration
 
-Each database has exactly **one** migration: `1-init/up.sql`, the squashed init. For the knowledge DB it creates the full schema in a single file — all tables (`documents`, `chunks`, `entities`, `facts`, the link tables, and the `usearch_vectors_log` ANN write-ahead log), all indexes, the FTS5 `chunks_fts` table with its sync triggers, and the `document_jobs` queue (folded into the init at squash time — there is no separate `2-document-jobs` migration). The cache DB's init creates its own tables (the LLM/NER caches and the `app_kv` markers) in its own `1-init/up.sql`.
+Each database has exactly **one** migration: `1-init/up.sql`, the squashed init. For the knowledge DB it creates the full schema in a single file — all tables (`documents`, `chunks`, `entities`, `facts`, the link tables, and the `usearch_vectors_log` ANN write-ahead log), all indexes, the FTS5 `chunks_fts` table with its sync triggers, and the `queue_tasks` event queue (folded into the init at squash time — there is no separate forward migration for it). The cache DB's init creates its own tables (the LLM/NER caches and the `app_kv` markers) in its own `1-init/up.sql`.
 
 ## `PRAGMA user_version` is the sole source of schema state
 

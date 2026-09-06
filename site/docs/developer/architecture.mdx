@@ -20,7 +20,7 @@ The project is a Cargo workspace with 11 crates:
 | `crates/db` | rusqlite connections, migrations, DAOs, FTS5 queries |
 | `crates/vectors` | ANN index contract (trait) + usearch engine; WAL + compaction |
 | `crates/embedding` | ONNX runtime lifecycle + bge-m3 int8 provider |
-| `crates/ingestion` | document parsers, chunkers, NER, entity extraction, job queue + worker |
+| `crates/ingestion` | document parsers, chunkers, NER, entity extraction, event task queue + worker |
 | `crates/graph` | knowledge graph (petgraph) + CEL linkers + minijinja prompts |
 | `crates/search` | hybrid (FTS5 + vector) search with RRF fusion |
 | `crates/mcp` | MCP server (double transport) + 12 tool handlers |
@@ -52,8 +52,8 @@ Documents (Markdown, JSON, web pages) move through the workspace in one directio
   Documents (Markdown, JSON, web pages)
         │
         ▼
-  ingestion    parse → chunk → embed (local ONNX) → NER → entity/fact extraction
-               cross-domain linking; a background worker drains the document_jobs queue
+   ingestion    parse → chunk → embed (local ONNX) → NER → entity/fact extraction
+                cross-domain linking; a background worker drains the queue_tasks event queue
         │
         ▼
   db / vectors / graph
@@ -77,7 +77,7 @@ Query time: an MCP client calls `search`; the lexical and semantic legs run in p
 
 All runtime state lives under `workspace/` (gitignored; created and downloaded by the binary). There are **two SQLite databases** plus the ANN index files:
 
-- **Per-dataset knowledge DB** — `workspace/datasets/<name>/state/knowledge.db`: documents, chunks with the FTS5 index, entities, facts, entity links, and the `document_jobs` queue. It is always built from scratch: one squashed init migration, `PRAGMA user_version` as the sole source of schema state — the `_schema_migrations` table is deliberately not created, and existing `knowledge.db` files are never opened or upgraded.
+- **Per-dataset knowledge DB** — `workspace/datasets/<name>/state/knowledge.db`: documents, chunks with the FTS5 index, entities, facts, entity links, and the `queue_tasks` event queue. It is always built from scratch: one squashed init migration, `PRAGMA user_version` as the sole source of schema state — the `_schema_migrations` table is deliberately not created, and existing `knowledge.db` files are never opened or upgraded.
 - **Global cache DB** — `workspace/db/cache/cache.db`: the persistent LLM/NER decision caches, shared across datasets and independent of any single dataset.
 - **usearch index files** — under the dataset's `state/`: the disk-backed, scalar-quantized HNSW index with its WAL and segments. Vectors are rebuilt from chunk text; they are never read from any previous store.
 

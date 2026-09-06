@@ -128,7 +128,7 @@ OpenAI-compatible endpoint used for LLM-based entity extraction.
 
 | Key | Type | Default | Behavior |
 |---|---|---|---|
-| `ingestion.max_retries` | integer | `3` | Maximum number of automatic re-indexing attempts for a problematic document by the background worker; after exhaustion the document gets `error` status in the `document_jobs` queue. |
+| `ingestion.max_retries` | integer | `3` | Maximum number of automatic re-processing attempts for a problematic task by the background worker; after exhaustion the task gets `error` status in the `queue_tasks` queue. |
 
 ### `ingestion.resolver`
 
@@ -213,9 +213,9 @@ File watching and startup reconcile during `serve` mode (see [Job Queue](../conc
 | `auto_update.debounce_seconds` | integer | `30` | Minimum interval between re-indexings after file changes. Shipped config: `1`. |
 | `auto_update.watch_sources` | bool | `true` | Watch all enabled sources for changes. **Presence semantics**: absent → `true`; an explicit `false` is honored. |
 | `auto_update.initial_sync` | bool | `true` (absent section) | Run a full source scan (startup reconcile) on startup. Can also be skipped per run with `serve --no-initial-sync`. |
-| `auto_update.retry_failed` | object | `{ enabled: true, poll_interval_seconds: 60 }` | Background re-processing of problematic documents and the polling interval for the `document_jobs` queue. |
-| `auto_update.retry_failed.enabled` | bool | `true` | Enable the worker's retry sweep of the `document_jobs` queue. |
-| `auto_update.retry_failed.poll_interval_seconds` | integer | `60` | Poll interval for the `document_jobs` queue in seconds. |
+| `auto_update.retry_failed` | object | `{ enabled: true, poll_interval_seconds: 60 }` | Background re-processing of problematic tasks and the polling interval for the `queue_tasks` queue. |
+| `auto_update.retry_failed.enabled` | bool | `true` | Enable the worker's retry sweep of the `queue_tasks` queue. |
+| `auto_update.retry_failed.poll_interval_seconds` | integer | `60` | Poll interval for the `queue_tasks` queue in seconds. |
 
 ## `scheduler`
 

@@ -1,21 +1,33 @@
 ---
 title: Job Queue
-description: The document_jobs table — the single state machine shared by the startup reconcile, the file watcher, and the background worker; states, retries, and the queue CLI
+description: The queue_tasks event table — the single state machine shared by the startup reconcile, the file watcher, the pipeline, and the background worker; event types, upsert semantics, states, retries, and the queue CLI
 sidebar_position: 7
 ---
 
 # Job Queue
 
-Synopsis has no `sync` subcommand and no separate ingestion daemon. Instead, **one table — `document_jobs` in the knowledge DB — is the single state machine** shared by the three parties that touch document state: the startup reconcile, the file watcher, and the background worker. The queue *is* the ingestion model: everything that ever gets (re-)indexed passes through it.
+Synopsis has no `sync` subcommand and no separate ingestion daemon. Instead, **one table — `queue_tasks` in the knowledge DB — is the single state machine** shared by the parties that touch document and knowledge state: the startup reconcile, the file watcher, the pipeline itself, and the background worker. The queue *is* the ingestion model: everything that ever gets (re-)indexed, deleted, or linked passes through it.
 
-## The `document_jobs` table
+`queue_tasks` is a **generic event queue**, not a document-only queue. It carries three typed events, so a future kind of background work is a code-level addition (an event type + a dispatch arm) — never a new table, a new worker, or a new CLI subcommand. The design rationale is recorded in [ADR 0005](../developer/adrs#adr-0005--event-task-queue-one-typed-event-queue-for-all-background-work).
 
-The table lives in the per-dataset knowledge DB. It tracks each document's path, its source, its current state, its retry progress (attempts against a cap), the last error, and when the next attempt is allowed. The full column reference lives in the [Database schema reference](../reference/database-schema).
+## The `queue_tasks` table
+
+The table lives in the per-dataset knowledge DB. Every row is one queued event: a `type`, a stable `identity` (the dedup key), a JSON `event` payload, and the shared status/retry columns. There is **at most one row per `(type, identity)`** (a unique index is the dedup/upsert key). The full column reference lives in the [Database schema reference](../reference/database-schema).
+
+### Event types
+
+| `type` | `identity` | `event` payload | What the worker does |
+|--------|------------|-----------------|----------------------|
+| `doc:index` | the document path | `source_path`, `content_hash` | Runs the per-document pipeline (parse → … → write) for that file. |
+| `doc:delete` | the document path | `source_path` | Deletes the document and all its data, then removes the row (a one-shot operation). |
+| `entity:link` | the document id (decimal string) | `entity_ids` (array) | Incrementally links the created/updated entities against the rest of the dataset. |
+
+`type` and `identity` are real columns — the queue mechanics (dedup, ordering, filters, CLI display) never parse JSON. The `event` column holds only the residual payload and is parsed at dispatch time.
 
 ## States
 
 ```
-         enqueue            worker picks up         success
+          enqueue            worker picks up         success
   ┌───────────┐  ─────────────────▶  ┌────────────┐  ───────────▶  ┌──────┐
   │  pending  │                      │ processing │                │ done │
   └───────────┘  ◀─────────────────  └────────────┘                └──────┘
@@ -28,24 +40,34 @@ The table lives in the per-dataset knowledge DB. It tracks each document's path,
 ```
 
 - **`pending`** — queued, waiting for the worker.
-- **`processing`** — the worker has picked the job up.
-- **`done`** — the document was indexed (or deleted) successfully.
-- **`error`** — the retry budget is exhausted; `last_error` carries the reason. `queue reset-retries` moves the job back to `pending`.
+- **`processing`** — the worker has picked the task up.
+- **`done`** — the task succeeded (a document was indexed or linked; a `doc:delete` task's row is removed instead, since it is one-shot).
+- **`error`** — the retry budget is exhausted; `last_error` carries the reason. `queue reset-retries` moves the task back to `pending`.
 
-## How jobs get enqueued
+## How events get enqueued
 
 | Trigger | What happens |
 |---------|--------------|
-| **Startup reconcile** | When `serve` starts, the dataset is scanned and the diff — new or changed files — is enqueued. `--no-initial-sync` skips this step at boot. |
-| **File watcher** | While the server runs, file changes enqueue diffs into the same queue; a vanished file enqueues a `delete` operation, and the worker deletes the document and all its data cascadingly. |
+| **Startup reconcile** | When `serve` starts, the dataset is scanned and the diff — new or changed files — is enqueued as `doc:index` events. `--no-initial-sync` skips this step at boot. |
+| **File watcher** | While the server runs, file changes enqueue `doc:index` events; a vanished file enqueues a `doc:delete`, and the worker deletes the document and all its data cascadingly. |
+| **The pipeline** | During indexing, when a run creates or updates entities it enqueues an `entity:link` event (see [How `entity:link` events are emitted](#how-entitylink-events-are-emitted)). |
 
 Deduplication by hash keeps the queue honest: the SHA-256 of the content is compared with the stored one, so an unchanged document is skipped entirely and a changed one is refreshed (old data deleted cascadingly, new data written in one transaction). See [The Pipeline](./pipeline) for the per-document stages the worker runs.
 
+### Upsert semantics
+
+Enqueue is an **upsert on `(type, identity)`**: an existing row is reset to `pending`, `attempts = 0`, and `next_attempt_at = now`, and its payload is updated. The payload update depends on the type:
+
+- **`doc:index` / `doc:delete` REPLACE** the payload — the file on disk is the source of truth, so re-indexing reads the current content and the new payload wins.
+- **`entity:link` MERGES** its `entity_ids` (union, deduped) while the row is `pending`, `processing`, or `error`, so pending link candidates are never lost. When the row is already `done`, only the new ids are stored — the old ones were already linked.
+
+Because every upsert sets `next_attempt_at = now`, a **re-enqueued event moves to the END of the queue**: claim order is `(next_attempt_at, id)`, so a re-enqueued task is claimed after the older pending tasks. This is what makes "emission #1 queues 10 entities, emission #2 queues 5" lose nothing.
+
 ## The worker and retries
 
-A background worker polls the queue for due jobs (`pending` with `next_attempt_at` reached) and processes each one. A single document's failure is counted and does not abort the rest of the queue.
+A single background worker is the sole consumer: it polls the queue for due tasks (`pending` with `next_attempt_at` reached), claims a batch, and **dispatches each task by its `type`** — `doc:index` runs the per-document pipeline, `doc:delete` deletes the document (and cascades to its `entity:link` row), and `entity:link` runs the incremental linker. Tasks are processed sequentially on the serve owner thread; a single task's failure is counted and does not abort the rest of the queue.
 
-On failure the worker applies **exponential backoff**: `attempts` is incremented, `next_attempt_at` is pushed out by `30 × 2^(attempts−1)` seconds (30, 60, 120, …), and the job stays `pending`. Once `attempts` reaches `max_attempts` (default **3**, set by `ingestion.max_retries`), the row lands in `error` with `last_error` populated — the worker leaves it alone until someone resets it.
+On failure the worker applies **exponential backoff**: `attempts` is incremented, `next_attempt_at` is pushed out by `30 × 2^(attempts−1)` seconds (30, 60, 120, …), and the task stays `pending`. Once `attempts` reaches `max_attempts` (default **3**, set by `ingestion.max_retries`), the row lands in `error` with `last_error` populated — the worker leaves it alone until someone resets it. After each batch the worker also sweeps orphaned data.
 
 ## The CLI
 
@@ -55,13 +77,19 @@ Two subcommands inspect and repair the queue (full reference in the [CLI referen
 synopsis queue status [--source PATH] [--status NAME]
 ```
 
-Tabular output of the job state with the columns **path, source, status, attempts, last_error, next_attempt_at**. `--source PATH` narrows the output to a single source; `--status NAME` to a single status.
+Tabular output of the task state with the columns **type, identity, status, attempts, last_error, next_attempt_at**. `--source PATH` narrows the output to a single source (doc events); `--status NAME` to a single status.
 
 ```
-synopsis queue reset-retries [--source PATH] [--path PATH]
+synopsis queue reset-retries [--source PATH] [--identity VALUE]
 ```
 
-Resets the retry counter for jobs in `error` status: status → `pending`, `attempts` → 0, `next_attempt_at` → now. The background worker re-indexes them on its next cycle. `--path PATH` targets a single job; `--source PATH` narrows to one source.
+Resets the retry counter for tasks in `error` status: status → `pending`, `attempts` → 0, `next_attempt_at` → now. The background worker re-processes them on its next cycle. `--identity VALUE` targets a single task (a file path for `doc:*` events, a document id for `entity:link`); `--source PATH` narrows to one source.
+
+## How `entity:link` events are emitted
+
+Cross-domain entity linking is **event-driven and incremental**. During indexing the entity resolver reports the ids it **created** (new entities) or **updated** (a name promotion onto an existing entity) for that document. When that set is non-empty, the pipeline enqueues one `entity:link` event per document — `identity` = the document id, payload = exactly those ids. When the set is empty, **no event is enqueued**.
+
+Re-indexing a document enqueues only the newly created/updated entities — never the document's full entity set — so a document that touches 10 of 1000 entities re-links those 10, not all 1000. If the document is re-indexed again before the first event is processed, the new ids are **merged** into the pending task (union), so nothing is dropped. The worker then links the candidates against the remaining cross-domain entities (see [Cross-Domain Linking](./cross-domain-linking)); per-pair errors are logged and skipped, and a task-level failure retries with backoff like any other task. Deleting a document removes its `entity:link` row with it (cascade delete).
 
 ## Full re-ingest
 
@@ -70,6 +98,7 @@ There is **no `sync` subcommand** — and no need for one. A full re-ingest is `
 ## See also
 
 - [The Pipeline](./pipeline) — the stages each queued document goes through
+- [Cross-Domain Linking](./cross-domain-linking) — the incremental linking the `entity:link` events drive
 - [Workspace Layout](./workspace-layout) — where the queue's database lives
-- [Ingestion guide](../guides/ingestion) — sources, parsing, and stuck jobs in practice
+- [Ingestion guide](../guides/ingestion) — sources, parsing, and stuck tasks in practice
 - [CLI reference](../reference/cli) — every flag of `queue status` and `queue reset-retries`

@@ -146,7 +146,7 @@ D8, D10, D11 (doc-event half).
 **Estimated size.** ~550 lines (net new/changed; the `document_job.rs`
 deletion is not counted).
 
-- [ ] **1.3** — `entity:link` end-to-end: resolver report, emission, incremental linking
+- [x] **1.3** — `entity:link` end-to-end: resolver report, emission, incremental linking
 
 **Goal.** Wire incremental entity linking through the queue: the resolver
 reports created/updated entity ids per document, the runner enqueues an

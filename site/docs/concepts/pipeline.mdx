@@ -53,19 +53,20 @@ Each document goes through the stages below, in order, inside the background wor
 | 4 | **NER** | Named entities are extracted over the chunks by the configured providers — regex rules from the domain configs and LLM-based extraction with structured output — with the local models running on the ONNX runtime. |
 | 5 | **Entities + facts** | Extracted entities are resolved into canonical records (deduplicated by name similarity, tagged with domain and confidence); structured subject → predicate → object facts are created with confidence scores, linked to their source chunks, and stored with a quote window around the entity's occurrence in the chunk. |
 | 6 | **Write** | A single SQLite transaction writes the document, chunks, entity relations, and facts. A per-document error is counted in the run statistics and does not abort the run. |
-| 7 | **Cross-domain linking** | After ingestion, entities that appear in more than one domain are linked where applicable (CEL expressions, equality, or LLM decisions). See [Cross-Domain Linking](./cross-domain-linking). |
+| 7 | **Cross-domain linking** | When a run creates or updates entities, the pipeline enqueues an `entity:link` event; the worker then links those candidates against the rest of the dataset (CEL expressions, equality, or LLM decisions) — incrementally, with per-pair errors logged and skipped. See [Cross-Domain Linking](./cross-domain-linking). |
 
 **Deduplication by hash.** Each document is identified by its path; the SHA-256 of its content is compared with the stored hash. An unchanged document is skipped entirely; a changed one is refreshed — its old chunks, relations, and facts are deleted cascadingly, then the new data is written atomically in one transaction. Before indexing, a WAL snapshot of the database is written to the backups directory (a snapshot failure is a warning, not a failure).
 
-**Pruning and cleanup.** When an indexed file vanishes from disk, its document and all its data are deleted cascadingly. Orphan cleanup removes entities without sources (infrastructure types excepted), facts without sources (approved ones excepted), and orphan documents; vectors without a live chunk are removed from the index.
+**Pruning and cleanup.** When an indexed file vanishes from disk, its document and all its data are deleted cascadingly — including its pending `entity:link` queue task (cascade delete). Orphan cleanup removes entities without sources (infrastructure types excepted), facts without sources (approved ones excepted), and orphan documents; vectors without a live chunk are removed from the index.
 
 ## How ingestion is triggered
 
-Synopsis keeps a single queue table — `document_jobs` — shared by the watcher, the startup scan, and the background worker:
+Synopsis keeps a single event queue — `queue_tasks` — shared by the watcher, the startup scan, the pipeline, and the background worker:
 
-- **Startup reconcile** — when `serve` starts, the dataset is scanned and the diff (new or changed files) is enqueued. (`--no-initial-sync` skips this step.)
-- **File watcher** — while the server runs, file changes enqueue diffs into the same queue.
-- **Background worker** — processes the queue with retries: a job that fails its maximum number of attempts lands in `error` status with `last_error` populated. Inspect the queue with `synopsis queue status` (filters: `--source PATH`, `--status NAME`); recover stuck jobs with `synopsis queue reset-retries` (moves `error` jobs back to `pending` with the attempt counter reset).
+- **Startup reconcile** — when `serve` starts, the dataset is scanned and the diff (new or changed files) is enqueued as `doc:index` events. (`--no-initial-sync` skips this step.)
+- **File watcher** — while the server runs, file changes enqueue `doc:index` events; a vanished file enqueues a `doc:delete`.
+- **The pipeline** — during indexing, when a run creates or updates entities it enqueues an `entity:link` event (the incremental linking trigger — only the created/updated entities, never the document's full set).
+- **Background worker** — processes the queue with retries: a task that fails its maximum number of attempts lands in `error` status with `last_error` populated. Inspect the queue with `synopsis queue status` (filters: `--source PATH`, `--status NAME`); recover stuck tasks with `synopsis queue reset-retries` (moves `error` tasks back to `pending` with the attempt counter reset).
 
 There is **no `sync` subcommand** — the queue *is* the ingestion model. A full re-ingest is `db clear` followed by a `serve` restart, after which the startup reconcile re-enqueues all files and the worker re-embeds them.
 

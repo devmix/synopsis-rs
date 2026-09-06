@@ -33,7 +33,7 @@ A local RAG + knowledge-graph MCP server, one binary for a 16 GB laptop. Toolcha
 | `crates/db` | rusqlite connections, migrations, DAOs, FTS5 queries |
 | `crates/vectors` | ANN index contract (trait) + usearch engine; WAL + compaction |
 | `crates/embedding` | ONNX runtime lifecycle + bge-m3 int8 provider |
-| `crates/ingestion` | document parsers, chunkers, NER, entity extraction, job queue + worker |
+| `crates/ingestion` | document parsers, chunkers, NER, entity extraction, event task queue + worker |
 | `crates/graph` | knowledge graph (petgraph) + CEL linkers + minijinja prompts |
 | `crates/search` | hybrid (FTS5 + vector) search with RRF fusion |
 | `crates/mcp` | MCP server (double transport) + 12 tool handlers |

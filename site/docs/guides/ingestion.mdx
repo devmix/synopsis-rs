@@ -1,12 +1,12 @@
 ---
 title: Ingestion
-description: Supported source formats, parsing and chunking, local ONNX embeddings, NER, entity/fact extraction, cross-domain linking, and the document_jobs re-ingest model
+description: Supported source formats, parsing and chunking, local ONNX embeddings, NER, entity/fact extraction, cross-domain linking, and the event-queue re-ingest model
 sidebar_position: 3
 ---
 
 # Ingestion
 
-Ingestion is the "processing" stage of the [pipeline](../concepts/pipeline): documents are parsed, chunked, embedded, enriched with entities and facts, and indexed for hybrid search. There is no `sync` subcommand — ingestion is driven by the **`document_jobs` queue**: a startup reconcile and a file watcher enqueue diffs, and a background worker processes them (see [Job Queue](../concepts/job-queue)).
+Ingestion is the "processing" stage of the [pipeline](../concepts/pipeline): documents are parsed, chunked, embedded, enriched with entities and facts, and indexed for hybrid search. There is no `sync` subcommand — ingestion is driven by the **`queue_tasks` event queue**: a startup reconcile and a file watcher enqueue doc events, and a background worker processes them (see [Job Queue](../concepts/job-queue)).
 
 ## Declaring sources
 
@@ -90,21 +90,21 @@ Facts carry a lifecycle (`draft`, `pending`, `approved`, `rejected`); only **`ap
 
 ## Cross-domain entity linking
 
-After ingestion, entities that appear in more than one domain are linked where applicable — by **CEL expressions** (`expression` method), normalized-name equality (`equals`), or an LLM decision (`llm`) — each link recording its method, confidence, and evidence. The run is incremental (a window from the last run's timestamp) and idempotent, so re-running is always safe. See [Cross-Domain Linking](../concepts/cross-domain-linking).
+When a run creates or updates entities, the pipeline enqueues an `entity:link` event; the background worker links those candidates against the rest of the dataset — by **CEL expressions** (`expression` method), normalized-name equality (`equals`), or an LLM decision (`llm`) — each link recording its method, confidence, and evidence. The run is incremental (only the entities created or updated by the run, never the document's full set) and idempotent, so re-running is always safe. See [Cross-Domain Linking](../concepts/cross-domain-linking).
 
 ## How ingestion is triggered
 
-`serve` keeps the knowledge base current through the `document_jobs` queue — there is no separate ingestion daemon:
+`serve` keeps the knowledge base current through the `queue_tasks` event queue — there is no separate ingestion daemon:
 
 | Trigger              | What happens                                                                                                                                             |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Startup reconcile** | When `serve` starts, the dataset is scanned and the diff — new or changed files — is enqueued. `--no-initial-sync` skips this step at boot.            |
 | **File watcher**      | While the server runs, file changes enqueue diffs into the same queue (debounced by `auto_update.debounce_seconds`, default 1 s); a vanished file enqueues a delete, and the document's data is removed cascadingly. |
-| **Background worker** | Polls the queue (`auto_update.retry_failed.poll_interval_seconds`, default 60 s) and runs each job through the full pipeline — parse → chunk → embed → NER → entities/facts → write — with retries. A job that fails its maximum attempts (`ingestion.max_retries`, default 3) lands in `error` status with `last_error` populated. |
+| **Background worker** | Polls the queue (`auto_update.retry_failed.poll_interval_seconds`, default 60 s) and dispatches each due task by type — `doc:index` runs the full pipeline (parse → chunk → embed → NER → entities/facts → write), `doc:delete` removes the document, `entity:link` links the candidates — with retries. A task that fails its maximum attempts (`ingestion.max_retries`, default 3) lands in `error` status with `last_error` populated. |
 
 Deduplication by hash keeps re-ingests cheap: the SHA-256 of the content is compared with the stored one, so an unchanged document is skipped entirely, and a changed one is refreshed (old data deleted cascadingly, new data written in one transaction).
 
-### Stuck jobs
+### Stuck tasks
 
 Inspect the queue with:
 
@@ -112,13 +112,13 @@ Inspect the queue with:
 synopsis queue status [--source PATH] [--status NAME]
 ```
 
-(tabular output: path, source, status, attempts, last_error, next_attempt_at; `--source PATH` narrows to a single source, `--status NAME` to a single status), and recover failed jobs with:
+(tabular output: type, identity, status, attempts, last_error, next_attempt_at; `--source PATH` narrows to a single source, `--status NAME` to a single status), and recover failed tasks with:
 
 ```
-synopsis queue reset-retries [--source PATH] [--path PATH]
+synopsis queue reset-retries [--source PATH] [--identity VALUE]
 ```
 
-(error → `pending`, attempt counter reset; the worker re-indexes them on its next cycle). The full state machine is on the [Job Queue](../concepts/job-queue) page.
+(error → `pending`, attempt counter reset; the worker re-processes them on its next cycle). The full state machine is on the [Job Queue](../concepts/job-queue) page.
 
 ### Full re-ingest
 
@@ -128,5 +128,5 @@ There is no `sync` subcommand. A full re-ingest is `synopsis db clear` (removes 
 
 - [Searching](./searching) — query what you just ingested
 - [Configuration](./configuration#ingestion) — every ingestion knob
-- [Job Queue](../concepts/job-queue) — the `document_jobs` state machine in detail
+- [Job Queue](../concepts/job-queue) — the `queue_tasks` event queue in detail
 - [Troubleshooting](./troubleshooting) — when ingestion misbehaves

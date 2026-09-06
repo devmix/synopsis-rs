@@ -9,7 +9,7 @@ const PIPELINE_STAGES: readonly PipelineStage[] = [
   {
     num: '01',
     title: 'Sources',
-    desc: 'Markdown, JSON, and web pages from the configured sources. A startup reconcile plus a file watcher enqueue document diffs into document_jobs; a background worker processes the queue.',
+    desc: 'Markdown, JSON, and web pages from the configured sources. A startup reconcile, a file watcher, and the pipeline enqueue events into queue_tasks; a background worker processes the queue.',
     meta: '.md · .json · web',
     chips: ['Markdown', 'JSON', 'Web pages'],
   },

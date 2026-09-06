@@ -57,7 +57,7 @@ synopsis [--config PATH] [--preset NAME] [--dataset NAME] <subcommand>
 | Subcommand | Purpose |
 |---|---|
 | `serve [--no-initial-sync] [--port N] [--auto-rebuild-vectors]` | start the MCP server with initial sync + file watching |
-| `queue status\|reset-retries` | inspect/repair the document job queue |
+| `queue status\|reset-retries` | inspect/repair the event task queue |
 | `db stats\|clear` | dataset statistics / delete all dataset state |
 | `model list\|download\|delete\|info\|benchmark [NAME]` | manage embedding models |
 | `onnx-runtime install\|status\|uninstall` | manage the ONNX runtime library |
@@ -104,7 +104,7 @@ to `approved` status. Wire contract: `openspec/specs/mcp-contract/`.
 
 Workspace crates: `config` (presets/ontology), `db` (SQLite/FTS5/migrations),
 `vectors` (ANN engine), `embedding` (ONNX runtime), `ingestion` (parsers,
-chunkers, NER, job queue), `graph` (knowledge graph + linkers), `search`
+chunkers, NER, event task queue), `graph` (knowledge graph + linkers), `search`
 (hybrid/RRF), `mcp` (server + tools), `llm` (LLM client), `utils` (shared
 helpers), `cli` (the `synopsis` binary).
 

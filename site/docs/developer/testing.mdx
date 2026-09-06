@@ -36,7 +36,7 @@ Tests are co-located in each crate (`#[cfg(test)]` modules and integration tests
 | `db` | DAO CRUD, pagination with filters, batch operations, transactions, FTS5 search against the knowledge DB fixture, PRAGMA parity |
 | `search` | the two legs (FTS5 BM25, vector), RRF fusion, reranking, and the hybrid end-to-end path |
 | `vectors` | the usearch engine, WAL + segments, compaction, and the recall/latency gates |
-| `ingestion` | parsers, chunkers, NER pipelines, the `document_jobs` queue state machine |
+| `ingestion` | parsers, chunkers, NER pipelines, the `queue_tasks` event queue state machine |
 | `graph` | traversal, CEL linkers, cross-domain linking with the decision cache |
 | `mcp` | one test module per tool handler: success, parameter validation, edge cases |
 | `cli` | subcommand dispatch and config path resolution |

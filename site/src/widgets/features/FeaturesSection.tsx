@@ -44,9 +44,9 @@ const FEATURES: readonly Feature[] = [
   {
     num: '/06',
     icon: <LinkIcon />,
-    name: 'Document Job Queue',
-    desc: 'A startup reconcile and a file watcher enqueue document diffs into document_jobs; a background worker processes the queue with retries and status reporting.',
-    tags: ['document_jobs', 'background worker', 'retries'],
+    name: 'Event Task Queue',
+    desc: 'A startup reconcile, a file watcher, and the pipeline enqueue events (doc:index / doc:delete / entity:link) into queue_tasks; a background worker processes the queue with retries and status reporting.',
+    tags: ['queue_tasks', 'background worker', 'retries'],
   },
 ];
 

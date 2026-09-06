@@ -41,7 +41,7 @@ Vectors correspond to SQLite chunks **one-to-one by `chunk_id`**, and the two st
 The index is created for a fixed dimensionality. If the stored index's dimension does not match the configured model (a model switch, a preset change), the mismatch surfaces when `serve` opens the engine:
 
 - **Without the flag** — `serve` fails with an explicit error: a dimension mismatch was detected, and the run must be retried with `--auto-rebuild-vectors` (or the stored vector index must be deleted).
-- **With `synopsis serve --auto-rebuild-vectors`** (or the `embeddings.auto_rebuild_vectors` config flag, OR-ed with the CLI flag) — the engine is recreated at the new dimensionality, and **clear-then-queue** runs: the dataset DB is cleared in place (`clear_dataset`), the startup reconcile re-enqueues **all** files into `document_jobs`, and the background worker re-embeds them through the normal pipeline. There is no direct ingestion and no vector migration: the content-hash dedup of the [job queue](./job-queue) cannot force re-embedding of unchanged documents — which is exactly why the clear precedes the queue.
+- **With `synopsis serve --auto-rebuild-vectors`** (or the `embeddings.auto_rebuild_vectors` config flag, OR-ed with the CLI flag) — the engine is recreated at the new dimensionality, and **clear-then-queue** runs: the dataset DB is cleared in place (`clear_dataset`), the startup reconcile re-enqueues **all** files into `queue_tasks`, and the background worker re-embeds them through the normal pipeline. There is no direct ingestion and no vector migration: the content-hash dedup of the [job queue](./job-queue) cannot force re-embedding of unchanged documents — which is exactly why the clear precedes the queue.
 
 This is the same recovery shape as a manual full re-ingest (`synopsis db clear` + `serve` restart), covered by the [Job Queue](./job-queue) page.
 
@@ -61,6 +61,6 @@ The optional `vectors:` section of the preset overrides the index parameters; a 
 
 - [Hybrid Search](./hybrid-search) — how the index feeds the semantic leg of `search`
 - [The Pipeline](./pipeline) — where embedding happens in ingestion
-- [Job Queue](./job-queue) — the `document_jobs` state machine behind clear-then-queue
+- [Job Queue](./job-queue) — the `queue_tasks` event queue behind clear-then-queue
 - [Workspace Layout](./workspace-layout) — where `state/vectors/` lives
 - [Model Management](../guides/model-management) — switching embedding models

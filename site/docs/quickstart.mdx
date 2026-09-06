@@ -49,7 +49,7 @@ synopsis serve
 
 The server listens on port **8080** with the `default` preset. Without `--config`, the config is auto-searched: `<exeDir>/workspace/configs/` → parent directory → CWD. `--preset NAME` selects `config.{NAME}.yaml`; `--dataset NAME` overrides the configured dataset.
 
-On startup, `serve` performs a startup reconcile (enqueueing a diff into the document job queue) and starts a file watcher; a background worker processes the queue and builds the index. Pass `--no-initial-sync` to skip the startup reconcile.
+On startup, `serve` performs a startup reconcile (enqueueing a diff into the event task queue) and starts a file watcher; a background worker processes the queue and builds the index. Pass `--no-initial-sync` to skip the startup reconcile.
 
 Endpoints:
 

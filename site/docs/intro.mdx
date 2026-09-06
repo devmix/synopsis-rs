@@ -27,7 +27,7 @@ Each stage in detail: [The Pipeline](./concepts/pipeline).
 - **MCP server** — 12 read-only tools over Streamable HTTP (`/mcp`), with the legacy HTTP+SSE transport (`GET /sse` + `POST /message`) also served, plus `GET /health`
 - **Disk-backed ANN** — usearch HNSW (mmap, scalar-quantized, WAL + segments); the query path never loads the embedding model
 - **Self-contained build** — SQLite/FTS5 compiled in-tree (bundled), no system dependencies; the ONNX runtime library and model weights are downloaded by the binary on demand (verified by URL + size + SHA-256)
-- **Document job queue** — a background worker keeps the index up to date: startup reconcile and a file watcher enqueue diffs, the worker processes them
+- **Event task queue** — a background worker keeps the index up to date: startup reconcile, a file watcher, and the pipeline enqueue events (`doc:index` / `doc:delete` / `entity:link`), the worker processes them
 
 ## What Synopsis is not
 
