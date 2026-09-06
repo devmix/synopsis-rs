@@ -76,7 +76,7 @@ pub use chunkers::json::JsonChunker;
 pub use chunkers::markdown::MarkdownChunker;
 pub use chunkers::mediawiki::MediawikiChunker;
 pub use entities::{
-    ResolvedEntity, Resolver, bigrams, canonical_proto, cluster_batch, jaro_winkler,
+    EntityChanges, ResolvedEntity, Resolver, bigrams, canonical_proto, cluster_batch, jaro_winkler,
     normalize_name, scope_entity_metadata,
 };
 pub use error::IngestionError;
@@ -160,6 +160,7 @@ mod root_api {
         let _composite = CompositeNer::new(Vec::new(), &[]);
         let _resolver = Resolver::new(0.8);
         let _resolved: Option<ResolvedEntity> = None;
+        let _changes: Option<EntityChanges> = None;
         let _prompts: Option<NerPrompts> = None;
         let _hashes: Option<TemplateHashes> = None;
         let _cache: Option<LlmNerCache<'_>> = None;

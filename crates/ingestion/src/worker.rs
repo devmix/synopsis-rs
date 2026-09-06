@@ -118,11 +118,19 @@ impl<'a> DocumentWorker<'a> {
         }
     }
 
-    /// Processes an `entity:link` task: calls the runner's entity-linking
-    /// entry point (a full rebuild; the `entity_ids` payload is reserved for
-    /// future incremental linking).
-    fn process_entity_link(&self, _task: &QueueTask) -> Result<(), IngestionError> {
-        self.runner.build_entity_links().map(|_| ())
+    /// Processes an `entity:link` task: parses the doc_id from the identity
+    /// and the entity_ids from the payload, then calls the runner's
+    /// incremental linking entry point.
+    fn process_entity_link(&self, task: &QueueTask) -> Result<(), IngestionError> {
+        use serde::de::Error as _;
+        let doc_id: i64 = task.identity.parse().map_err(|_| {
+            IngestionError::QueueTask(db::QueueTaskError::Json(serde_json::Error::custom(
+                format!("invalid doc_id in entity:link identity: {}", task.identity),
+            )))
+        })?;
+        let payload: db::EntityLinkPayload =
+            serde_json::from_str(&task.event).map_err(db::QueueTaskError::Json)?;
+        self.runner.link_entities(doc_id, &payload.entity_ids)
     }
 
     /// Records a successful task: `mark_done` for index/entity-link,

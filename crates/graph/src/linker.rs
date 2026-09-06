@@ -797,16 +797,31 @@ fn run_llm(
 /// absent); it is ignored by every other method. `cache` is the cache
 /// database (task 1.10): the `llm` method stores its decisions in its
 /// `llm_linker_cache` table; `None` runs the method uncached.
+///
+/// `candidates` controls the pair scope (incremental linking, design D9):
+/// `None` = full rebuild (all cross-domain pairs, current behavior);
+/// `Some(ids)` = consider only pairs with at least one member in the set
+/// (the entity ids changed by the latest index run).
 pub fn build_entity_links(
     db: &Db,
     cache: Option<&Db>,
     links_config: &CrossDomainLinksConfig,
     linker_config: &LinkerConfig,
     prompts_path: &str,
+    candidates: Option<&[i64]>,
 ) -> Result<LinkResult, GraphError> {
     let entities =
         db.with_conn(|conn| EntityDao::new(ConnectionOrTx::Connection(conn)).list())??;
-    let pairs = cross_domain_pairs(&entities);
+    let mut pairs = cross_domain_pairs(&entities);
+
+    // Incremental mode: keep only pairs with at least one member in the
+    // candidate set.
+    if let Some(ids) = candidates {
+        let candidate_set: std::collections::HashSet<i64> = ids.iter().copied().collect();
+        pairs.retain(|pair| {
+            candidate_set.contains(&pair.a.id) || candidate_set.contains(&pair.b.id)
+        });
+    }
 
     let mut result = LinkResult::default();
     for method in &links_config.methods {
@@ -1176,6 +1191,7 @@ mod tests {
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &linker,
             TEST_PROMPTS_PATH,
+            None,
         )
         .unwrap();
 
@@ -1215,6 +1231,7 @@ mod tests {
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &linker,
             TEST_PROMPTS_PATH,
+            None,
         )
         .unwrap();
 
@@ -1260,6 +1277,7 @@ mod tests {
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &linker,
             TEST_PROMPTS_PATH,
+            None,
         )
         .unwrap();
 
@@ -1287,15 +1305,29 @@ mod tests {
         let config = links_config(vec![LinkMethod::Llm], Vec::new());
         let cache = TempCacheDb::new("cache-hit");
 
-        let first =
-            build_entity_links(&db, Some(&cache.db), &config, &linker, TEST_PROMPTS_PATH).unwrap();
+        let first = build_entity_links(
+            &db,
+            Some(&cache.db),
+            &config,
+            &linker,
+            TEST_PROMPTS_PATH,
+            None,
+        )
+        .unwrap();
         assert_eq!(first.links_created, 1);
         assert_eq!(server.request_count(), 1);
 
         // Re-run: the cached decision applies, the row already exists, and
         // the server must not see a second request.
-        let second =
-            build_entity_links(&db, Some(&cache.db), &config, &linker, TEST_PROMPTS_PATH).unwrap();
+        let second = build_entity_links(
+            &db,
+            Some(&cache.db),
+            &config,
+            &linker,
+            TEST_PROMPTS_PATH,
+            None,
+        )
+        .unwrap();
         assert_eq!(second.links_created, 0);
         assert_eq!(
             second.links_skipped, 1,
@@ -1328,8 +1360,15 @@ mod tests {
         let config = links_config(vec![LinkMethod::Equals, LinkMethod::Llm], Vec::new());
         let cache = TempCacheDb::new("call-failure");
 
-        let result =
-            build_entity_links(&db, Some(&cache.db), &config, &linker, TEST_PROMPTS_PATH).unwrap();
+        let result = build_entity_links(
+            &db,
+            Some(&cache.db),
+            &config,
+            &linker,
+            TEST_PROMPTS_PATH,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(result.links_created, 1, "equals still links the pair");
         assert!(
@@ -1371,6 +1410,7 @@ mod tests {
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &disabled,
             TEST_PROMPTS_PATH,
+            None,
         )
         .unwrap();
 
@@ -1430,6 +1470,7 @@ mod tests {
             &links_config(vec![LinkMethod::Llm], Vec::new()),
             &linker,
             TEST_PROMPTS_PATH,
+            None,
         )
         .unwrap();
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);

@@ -118,22 +118,23 @@ impl Resolver {
         doc_id: i64,
         entities: &[NerEntity],
     ) -> Result<Vec<i64>, IngestionError> {
-        let (ids, _) = self.lookup_or_create_with_stats(exec, doc_id, entities)?;
+        let (ids, _, _) = self.lookup_or_create_with_stats(exec, doc_id, entities)?;
         Ok(ids)
     }
 
     /// Resolves each entity against the hydrated index, creating missing
     /// ones (per-entity, no batch clustering). Returns the resolved ids
-    /// aligned with the input plus the number of newly created entities;
-    /// created ids are linked to `doc_id` via `entity_sources`.
+    /// aligned with the input, the number of newly created entities, and
+    /// the change report (created/updated ids); created ids are linked to
+    /// `doc_id` via `entity_sources`.
     pub fn lookup_or_create_with_stats(
         &self,
         exec: ConnectionOrTx<'_>,
         doc_id: i64,
         entities: &[NerEntity],
-    ) -> Result<(Vec<i64>, usize), IngestionError> {
+    ) -> Result<(Vec<i64>, i64, EntityChanges), IngestionError> {
         if entities.is_empty() {
-            return Ok((Vec::new(), 0));
+            return Ok((Vec::new(), 0, EntityChanges::default()));
         }
         if doc_id <= 0 {
             return Err(IngestionError::InvalidDocumentId(doc_id));
@@ -145,7 +146,8 @@ impl Resolver {
         state.hydrate(&dao)?;
 
         let mut ids = Vec::with_capacity(entities.len());
-        let mut created = Vec::new();
+        let mut linked = Vec::new();
+        let mut changes = EntityChanges::default();
         for entity in entities {
             match state.find_best_candidate(entity) {
                 Some(candidate) if candidate.score >= self.threshold => {
@@ -153,28 +155,35 @@ impl Resolver {
                 }
                 _ => {
                     let resolved = self.resolve_one(&mut state, &dao, entity)?;
-                    created.push(resolved.id);
-                    ids.push(resolved.id);
+                    let (e, is_created, is_updated) = resolved.into_parts();
+                    let id = e.id;
+                    ids.push(id);
+                    linked.push(id);
+                    if is_created {
+                        changes.created.push(id);
+                    } else if is_updated {
+                        changes.updated.push(id);
+                    }
                 }
             }
         }
-        sources.link_batch(doc_id, &created)?;
-        Ok((ids, created.len()))
+        sources.link_batch(doc_id, &linked)?;
+        Ok((ids, changes.created.len() as i64, changes))
     }
 
     /// Normalizes, deduplicates and persists the batch: clusters similar
     /// names first (one canonical per cluster), resolves each canonical
     /// against the database, and links every resolved entity to `doc_id`
-    /// for provenance. Returns the resolved entities in cluster order,
-    /// deduplicated by id.
+    /// for provenance. Returns the resolved entities in cluster order
+    /// (deduplicated by id) and the change report (created/updated ids).
     pub fn add_entities(
         &self,
         exec: ConnectionOrTx<'_>,
         doc_id: i64,
         entities: &[NerEntity],
-    ) -> Result<Vec<ResolvedEntity>, IngestionError> {
+    ) -> Result<(Vec<ResolvedEntity>, EntityChanges), IngestionError> {
         if entities.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), EntityChanges::default()));
         }
         if doc_id <= 0 {
             return Err(IngestionError::InvalidDocumentId(doc_id));
@@ -187,34 +196,44 @@ impl Resolver {
 
         let mut resolved = Vec::new();
         let mut ids = Vec::new();
+        let mut changes = EntityChanges::default();
         for cluster in cluster_batch(entities, self.threshold) {
             let canonical = canonical_proto(&cluster);
-            let entity = self.resolve_one(&mut state, &dao, canonical)?;
-            if !ids.contains(&entity.id) {
-                ids.push(entity.id);
+            let resolved_entity = self.resolve_one(&mut state, &dao, canonical)?;
+            let (entity, is_created, is_updated) = resolved_entity.into_parts();
+            let id = entity.id;
+            if !ids.contains(&id) {
+                ids.push(id);
                 resolved.push(entity);
+                if is_created {
+                    changes.created.push(id);
+                } else if is_updated {
+                    changes.updated.push(id);
+                }
             }
         }
         sources.link_batch(doc_id, &ids)?;
-        Ok(resolved)
+        Ok((resolved, changes))
     }
 
     /// Merges `entity` into an existing canonical entity when a similar
     /// candidate is found, otherwise creates a new one. Called with the
-    /// index lock already held.
+    /// index lock already held. Returns a [`Resolved`] carrying the entity
+    /// and whether it was created, updated (name promotion), or unchanged.
     fn resolve_one(
         &self,
         state: &mut BlockingIndex,
         dao: &EntityDao<'_>,
         entity: &NerEntity,
-    ) -> Result<ResolvedEntity, IngestionError> {
+    ) -> Result<Resolved, IngestionError> {
         let mut rehydrated = false;
         loop {
             let Some(candidate) = state
                 .find_best_candidate(entity)
                 .filter(|candidate| candidate.score >= self.threshold)
             else {
-                return self.create_entity(state, dao, entity);
+                let e = self.create_entity(state, dao, entity)?;
+                return Ok(Resolved::Created(e));
             };
 
             let candidate_id = candidate.id;
@@ -226,6 +245,7 @@ impl Resolver {
                     // database (hydration and promotion keep them in sync),
                     // and using the DB copy also ends `candidate`'s borrow
                     // of the index before the mutation below.
+                    let mut updated = false;
                     if entity.name.chars().count() > existing.name.chars().count() {
                         dao.update_name(candidate_id, &entity.name)?;
                         let domain = state.domains[&candidate_id].clone();
@@ -244,14 +264,20 @@ impl Resolver {
                                 .push(candidate_id);
                         }
                         existing.name = entity.name.clone();
+                        updated = true;
                     }
-                    return Ok(ResolvedEntity {
+                    let resolved = ResolvedEntity {
                         id: existing.id,
                         entity_type: existing.entity_type,
                         name: existing.name,
                         domain: existing.domain,
                         description: existing.description,
                         confidence: existing.confidence,
+                    };
+                    return Ok(if updated {
+                        Resolved::Updated(resolved)
+                    } else {
+                        Resolved::Unchanged(resolved)
                     });
                 }
                 // The candidate was deleted mid-run (GC): rebuild the
@@ -326,6 +352,75 @@ pub struct ResolvedEntity {
     /// Confidence (stored value for merged entities, input value for
     /// created ones).
     pub confidence: Option<f64>,
+}
+
+/// The outcome of one [`Resolver::resolve_one`] call: the resolved entity
+/// plus whether it was created, updated (name promotion), or unchanged.
+/// Private: the public API surfaces the change report through
+/// [`EntityChanges`] instead.
+enum Resolved {
+    /// A new entity was created.
+    Created(ResolvedEntity),
+    /// An existing entity was updated (canonical-name promotion).
+    Updated(ResolvedEntity),
+    /// An existing entity was unchanged.
+    Unchanged(ResolvedEntity),
+}
+
+impl Resolved {
+    /// Destructures into the entity and two change flags
+    /// (`is_created`, `is_updated`).
+    fn into_parts(self) -> (ResolvedEntity, bool, bool) {
+        match self {
+            Resolved::Created(e) => (e, true, false),
+            Resolved::Updated(e) => (e, false, true),
+            Resolved::Unchanged(e) => (e, false, false),
+        }
+    }
+}
+
+/// The resolver's change report for one document's index run (design D6):
+/// the entity ids **created** and **updated** (name promotion) during the
+/// run. The pipeline enqueues one `entity:link` event carrying exactly
+/// these ids; an empty report means no event.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntityChanges {
+    /// Entity ids created by this run.
+    pub created: Vec<i64>,
+    /// Entity ids updated (name promotion) by this run.
+    pub updated: Vec<i64>,
+}
+
+impl EntityChanges {
+    /// All entity ids (created + updated), deduplicated.
+    pub fn ids(&self) -> Vec<i64> {
+        let mut ids = self.created.clone();
+        for id in &self.updated {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        ids
+    }
+
+    /// True when no entity was created or updated.
+    pub fn is_empty(&self) -> bool {
+        self.created.is_empty() && self.updated.is_empty()
+    }
+
+    /// Merges another change set into this one (union, dedup).
+    pub fn merge(&mut self, other: EntityChanges) {
+        for id in other.created {
+            if !self.created.contains(&id) {
+                self.created.push(id);
+            }
+        }
+        for id in other.updated {
+            if !self.updated.contains(&id) {
+                self.updated.push(id);
+            }
+        }
+    }
 }
 
 /// The in-memory blocking index (design D9 state): name keys, canonical
@@ -612,7 +707,7 @@ mod tests {
         ];
         for (name, entities, want_resolved, want_name) in cases {
             let f = fixture();
-            let resolved = run_op(&f, |exec, r| r.add_entities(exec, f.doc_id, &entities));
+            let (resolved, _) = run_op(&f, |exec, r| r.add_entities(exec, f.doc_id, &entities));
             assert_eq!(resolved.len(), want_resolved, "{name}");
             assert_eq!(entity_count(&f), want_resolved as i64, "{name}");
             for resolved_entity in &resolved {
@@ -633,10 +728,10 @@ mod tests {
     #[test]
     fn add_entities_incremental_reuses_existing() {
         let f = fixture();
-        let first = run_op(&f, |exec, r| {
+        let (first, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("Apple Inc.", "ORGANIZATION", "")])
         });
-        let second = run_op(&f, |exec, r| {
+        let (second, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("Apple", "ORGANIZATION", "")])
         });
         assert_eq!(entity_count(&f), 1);
@@ -652,7 +747,7 @@ mod tests {
     fn add_entities_case_insensitive_exact_match() {
         let f = fixture();
         let existing = seed_entity(&f, "ORGANIZATION", "Apple");
-        let resolved = run_op(&f, |exec, r| {
+        let (resolved, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("apple", "ORGANIZATION", "")])
         });
         assert_eq!(entity_count(&f), 1);
@@ -665,13 +760,13 @@ mod tests {
     fn add_entities_promotes_canonical_name() {
         let f = fixture();
         let existing = seed_entity(&f, "ORGANIZATION", "Apple");
-        let resolved = run_op(&f, |exec, r| {
+        let (resolved, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("Apple Inc.", "ORGANIZATION", "")])
         });
         assert_eq!(resolved[0].id, existing);
         assert_eq!(stored_entity(&f, existing).name, "Apple Inc.");
 
-        let again = run_op(&f, |exec, r| {
+        let (again, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("Apple", "ORGANIZATION", "")])
         });
         assert_eq!(again[0].id, existing, "the old name must still resolve");
@@ -694,10 +789,10 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let first = run_op(&f, |exec, r| {
+        let (first, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("Apple", "ORGANIZATION", "")])
         });
-        let second = run_op(&f, |exec, r| {
+        let (second, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, doc2, &[entity("Apple", "ORGANIZATION", "")])
         });
         assert_eq!(first[0].id, second[0].id);
@@ -708,7 +803,11 @@ mod tests {
     #[test]
     fn add_entities_empty_and_invalid_doc_id() {
         let f = fixture();
-        assert!(run_op(&f, |exec, r| r.add_entities(exec, f.doc_id, &[])).is_empty());
+        assert!(
+            run_op(&f, |exec, r| r.add_entities(exec, f.doc_id, &[]))
+                .0
+                .is_empty()
+        );
 
         let err =
             f.db.with_conn(|conn| {
@@ -728,7 +827,7 @@ mod tests {
     #[test]
     fn add_entities_within_transaction() {
         let f = fixture();
-        let resolved =
+        let (resolved, _) =
             f.db.exec_tx(|tx| {
                 let exec = ConnectionOrTx::Transaction(&*tx);
                 DocumentDao::new(exec).create("markdown", "/test/txdoc.md", None, None)?;
@@ -745,10 +844,10 @@ mod tests {
     #[test]
     fn index_survives_handle_change() {
         let f = fixture();
-        let first = run_op(&f, |exec, r| {
+        let (first, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("Apple", "ORGANIZATION", "")])
         });
-        let second =
+        let (second, _) =
             f.db.exec_tx(|tx| {
                 f.resolver.add_entities(
                     ConnectionOrTx::Transaction(&*tx),
@@ -768,7 +867,7 @@ mod tests {
     fn add_entities_domain_isolation_and_normalization() {
         // Identical (name, type) in DIFFERENT domains: distinct entities.
         let f = fixture();
-        let resolved = run_op(&f, |exec, r| {
+        let (resolved, _) = run_op(&f, |exec, r| {
             r.add_entities(
                 exec,
                 f.doc_id,
@@ -785,7 +884,7 @@ mod tests {
         // Domains differing only in case/whitespace: one entity, and the
         // stored domain is normalized.
         let f = fixture();
-        let resolved = run_op(&f, |exec, r| {
+        let (resolved, _) = run_op(&f, |exec, r| {
             r.add_entities(
                 exec,
                 f.doc_id,
@@ -812,7 +911,7 @@ mod tests {
         ent.metadata
             .insert("model".to_string(), Value::String("gpt-4".to_string()));
 
-        let resolved = run_op(&f, |exec, r| {
+        let (resolved, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, std::slice::from_ref(&ent))
         });
         assert_eq!(resolved.len(), 1);
@@ -937,7 +1036,7 @@ mod tests {
         let f = fixture();
         let alice = seed_entity(&f, "PERSON", "Alice");
 
-        let (ids, created) = run_op(&f, |exec, r| {
+        let (ids, created, _) = run_op(&f, |exec, r| {
             r.lookup_or_create_with_stats(
                 exec,
                 f.doc_id,
@@ -959,7 +1058,7 @@ mod tests {
         let synthetic = run_op(&f, |exec, r| {
             r.lookup_or_create(exec, f.doc_id, &[entity("SynthCorp", "ORGANIZATION", "")])
         });
-        let resolved = run_op(&f, |exec, r| {
+        let (resolved, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("SynthCorp", "ORGANIZATION", "")])
         });
         assert_eq!(resolved[0].id, synthetic[0]);
@@ -973,7 +1072,7 @@ mod tests {
         let f = fixture();
         let apple = seed_entity(&f, "ORGANIZATION", "Apple Inc.");
 
-        let (ids, created) = run_op(&f, |exec, r| {
+        let (ids, created, _) = run_op(&f, |exec, r| {
             r.lookup_or_create_with_stats(
                 exec,
                 f.doc_id,
@@ -984,7 +1083,7 @@ mod tests {
         assert_eq!(created, 0, "the entity already exists");
         assert_eq!(entity_count(&f), 1);
 
-        let (ids, created) = run_op(&f, |exec, r| {
+        let (ids, created, _) = run_op(&f, |exec, r| {
             r.lookup_or_create_with_stats(exec, f.doc_id, &[entity("NewCorp", "ORGANIZATION", "")])
         });
         assert!(ids[0] > 0);
@@ -996,17 +1095,17 @@ mod tests {
             entity("ProjectAlpha", "PROJECT", ""),
             entity("TeamBeta", "TEAM", ""),
         ];
-        let (_, created1) = run_op(&f, |exec, r| {
+        let (_, created1, _) = run_op(&f, |exec, r| {
             r.lookup_or_create_with_stats(exec, f.doc_id, &batch)
         });
         assert_eq!(created1, 2);
-        let (_, created2) = run_op(&f, |exec, r| {
+        let (_, created2, _) = run_op(&f, |exec, r| {
             r.lookup_or_create_with_stats(exec, f.doc_id, &batch)
         });
         assert_eq!(created2, 0, "duplicate ingestion must create nothing");
         assert_eq!(entity_count(&f), 4);
 
-        let (ids, created) = run_op(&f, |exec, r| {
+        let (ids, created, _) = run_op(&f, |exec, r| {
             r.lookup_or_create_with_stats(exec, f.doc_id, &[])
         });
         assert!(ids.is_empty());
@@ -1019,7 +1118,7 @@ mod tests {
     #[test]
     fn gc_deleted_candidate_triggers_rehydrate_and_retry() {
         let f = fixture();
-        let first = run_op(&f, |exec, r| {
+        let (first, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("Apple Inc.", "ORGANIZATION", "")])
         });
         let old_id = first[0].id;
@@ -1032,7 +1131,7 @@ mod tests {
 
         // "Apple" (JW 0.9) resolves through the stale index to the deleted
         // id → DB miss → rehydrate + retry → fresh creation.
-        let second = run_op(&f, |exec, r| {
+        let (second, _) = run_op(&f, |exec, r| {
             r.add_entities(exec, f.doc_id, &[entity("Apple", "ORGANIZATION", "")])
         });
         assert_eq!(second.len(), 1);
@@ -1087,5 +1186,112 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(lenient_ids[0].is_some(), "0.756 >= 0.5: merge");
+    }
+
+    /// Design D6: `add_entities` reports created and updated entity ids.
+    /// New entities appear in `created`, name-promoted entities in
+    /// `updated`, and unchanged entities in neither.
+    #[test]
+    fn add_entities_reports_change_set() {
+        let f = fixture();
+        // First run: two new entities → both in `created`.
+        let (_, changes) = run_op(&f, |exec, r| {
+            r.add_entities(
+                exec,
+                f.doc_id,
+                &[
+                    entity("Apple", "ORGANIZATION", ""),
+                    entity("Bob", "PERSON", ""),
+                ],
+            )
+        });
+        assert_eq!(changes.created.len(), 2, "two new entities");
+        assert!(changes.updated.is_empty());
+        assert_eq!(changes.ids().len(), 2);
+        assert!(!changes.is_empty());
+
+        // Second run: same entities → no changes.
+        let (_, changes) = run_op(&f, |exec, r| {
+            r.add_entities(
+                exec,
+                f.doc_id,
+                &[
+                    entity("Apple", "ORGANIZATION", ""),
+                    entity("Bob", "PERSON", ""),
+                ],
+            )
+        });
+        assert!(
+            changes.is_empty(),
+            "duplicate ingestion must report no changes"
+        );
+        assert!(changes.created.is_empty());
+        assert!(changes.updated.is_empty());
+        assert!(changes.ids().is_empty());
+    }
+
+    /// Name promotion: the longer name wins and the entity is reported as
+    /// `updated`, not `created`.
+    #[test]
+    fn add_entities_reports_name_promotion_as_update() {
+        let f = fixture();
+        let apple = seed_entity(&f, "ORGANIZATION", "Apple");
+
+        let (_, changes) = run_op(&f, |exec, r| {
+            r.add_entities(exec, f.doc_id, &[entity("Apple Inc.", "ORGANIZATION", "")])
+        });
+        assert!(changes.created.is_empty(), "no new entity");
+        assert_eq!(changes.updated, vec![apple], "name promotion is an update");
+        assert_eq!(changes.ids(), vec![apple]);
+    }
+
+    /// Mixed: one new entity and one unchanged entity in the same batch.
+    #[test]
+    fn add_entities_mixed_created_and_unchanged() {
+        let f = fixture();
+        let apple = seed_entity(&f, "ORGANIZATION", "Apple");
+
+        let (_, changes) = run_op(&f, |exec, r| {
+            r.add_entities(
+                exec,
+                f.doc_id,
+                &[
+                    entity("Apple", "ORGANIZATION", ""),
+                    entity("NewCorp", "ORGANIZATION", ""),
+                ],
+            )
+        });
+        assert_eq!(changes.created.len(), 1, "only NewCorp is created");
+        assert!(changes.updated.is_empty());
+        assert!(!changes.ids().contains(&apple));
+    }
+
+    /// `EntityChanges::merge` unions two change sets (dedup).
+    #[test]
+    fn entity_changes_merge_dedup() {
+        let mut a = EntityChanges {
+            created: vec![1, 2],
+            updated: vec![3],
+        };
+        let b = EntityChanges {
+            created: vec![2, 4],
+            updated: vec![3, 5],
+        };
+        a.merge(b);
+        assert_eq!(a.created, vec![1, 2, 4]);
+        assert_eq!(a.updated, vec![3, 5]);
+        let ids = a.ids();
+        assert_eq!(ids.len(), 5);
+        for id in [1, 2, 3, 4, 5] {
+            assert!(ids.contains(&id), "missing {id} in {ids:?}");
+        }
+    }
+
+    /// `EntityChanges::is_empty` and `EntityChanges::ids` on default.
+    #[test]
+    fn entity_changes_default_is_empty() {
+        let c = EntityChanges::default();
+        assert!(c.is_empty());
+        assert!(c.ids().is_empty());
     }
 }

@@ -58,7 +58,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use config::DomainConfig;
 use config::ontology::{GlobalConfig, SourceConfig, SourceType};
 use config::preset::{IngestionConfig, LinkerConfig};
-use db::{ConnectionOrTx, Db, DocumentDao, GcDao};
+use db::{ConnectionOrTx, Db, DocumentDao, GcDao, QueueTaskDao};
 use embedding::EmbeddingProvider;
 use serde_json::Value;
 use vectors::VectorIndex;
@@ -372,12 +372,15 @@ impl<'a> Runner<'a> {
     /// Removes a document row and all its dependent data (chunks, entity
     /// links, facts, provenance, scoped orphans) in one transaction
     /// (shared by [`Self::delete_document_at`] and the worker's
-    /// converge-on-deleted-file path).
+    /// converge-on-deleted-file path). Also removes the document's
+    /// `entity:link` queue row (design D11: cascade delete).
     fn clear_and_delete_doc(&self, doc_id: i64) -> Result<(), IngestionError> {
         self.db.exec_tx(|tx| -> Result<(), IngestionError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             GcDao::new(exec).full_clear_doc_by_id(doc_id)?;
             DocumentDao::new(exec).delete(doc_id)?;
+            // Design D11: cascade-delete the document's entity:link task.
+            QueueTaskDao::new(exec).delete_entity_link(doc_id)?;
             Ok(())
         })
     }

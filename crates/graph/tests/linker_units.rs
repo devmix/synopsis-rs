@@ -101,6 +101,7 @@ fn equals_links_matching_names_and_skips_short_or_different_names() {
         &links_config(vec![LinkMethod::Equals], Vec::new()),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(result.links_created, 1);
@@ -135,6 +136,7 @@ fn equals_respects_configured_min_words() {
         &config,
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(result.links_created, 1);
@@ -183,6 +185,7 @@ fn expression_rule_creates_link_with_rule_attributes() {
         &links_config(vec![LinkMethod::Expression], vec![rule]),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(result.links_created, 1);
@@ -233,6 +236,7 @@ fn expression_priority_order_and_first_true_wins() {
         &links_config(vec![LinkMethod::Expression], rules.clone()),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(r1.links_created, 1);
@@ -252,6 +256,7 @@ fn expression_priority_order_and_first_true_wins() {
         &links_config(vec![LinkMethod::Expression], rules),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(r2.links_created, 1);
@@ -280,6 +285,7 @@ fn expression_errors_are_recorded_not_fatal() {
         &links_config(vec![LinkMethod::Expression], vec![bad]),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(r1.links_created, 0);
@@ -307,6 +313,7 @@ fn expression_errors_are_recorded_not_fatal() {
         &links_config(vec![LinkMethod::Expression], vec![non_bool]),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(r2.links_created, 0);
@@ -342,6 +349,7 @@ fn method_order_from_config_is_respected() {
         ),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(first.links_created, 1);
@@ -356,6 +364,7 @@ fn method_order_from_config_is_respected() {
         &links_config(vec![LinkMethod::Expression, LinkMethod::Equals], vec![rule]),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(second.links_created, 1);
@@ -386,6 +395,7 @@ fn self_link_never_created() {
         &links_config(vec![LinkMethod::Equals], Vec::new()),
         &LinkerConfig::default(),
         TEST_PROMPTS_PATH,
+        None,
     )
     .unwrap();
     assert_eq!(result.links_created, 0);

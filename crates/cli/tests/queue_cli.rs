@@ -28,7 +28,9 @@ struct Fixture {
     cfg: PathBuf,
 }
 
-fn fixture(tag: &str) -> Fixture {
+/// The config + migrated knowledge DB at the derived dataset path (the
+/// fixture boilerplate shared by [`fixture`] and [`entity_link_fixture`]).
+fn base_fixture(tag: &str) -> (PathBuf, PathBuf, Db) {
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -58,6 +60,11 @@ fn fixture(tag: &str) -> Fixture {
             .join("knowledge.db"),
     )
     .expect("open knowledge db");
+    (dir, cfg, db)
+}
+
+fn fixture(tag: &str) -> Fixture {
+    let (dir, cfg, db) = base_fixture(tag);
     seed(
         &db,
         "/docs/a.md",
@@ -68,6 +75,33 @@ fn fixture(tag: &str) -> Fixture {
     );
     seed(&db, "/docs/b.md", "/docs", "error", 1, Some("ner timeout"));
     seed(&db, "/docs/c.md", "/docs", "pending", 0, None);
+    drop(db);
+
+    Fixture { dir, cfg }
+}
+
+/// Like [`fixture`] but with one `entity:link` row (identity `"42"`: the
+/// document id) in `error` status, so the binary-level tests can assert the
+/// new task type's visibility and re-queue.
+fn entity_link_fixture(tag: &str) -> Fixture {
+    let (dir, cfg, db) = base_fixture(tag);
+    seed(
+        &db,
+        "/docs/a.md",
+        "/docs",
+        "error",
+        3,
+        Some("parse error: boom"),
+    );
+    seed(&db, "/docs/c.md", "/docs", "pending", 0, None);
+    seed_entity_link(
+        &db,
+        "42",
+        vec![7, 8],
+        "error",
+        3,
+        Some("linker failure: boom"),
+    );
     drop(db);
 
     Fixture { dir, cfg }
@@ -100,13 +134,45 @@ fn seed(db: &Db, path: &str, source: &str, status: &str, attempts: i32, last_err
     .expect("seed task");
 }
 
+/// Seeds an `entity:link` task at `identity` (the document id) and forces
+/// its state (status/attempts/last_error) directly.
+fn seed_entity_link(
+    db: &Db,
+    identity: &str,
+    entity_ids: Vec<i64>,
+    status: &str,
+    attempts: i32,
+    last_error: Option<&str>,
+) {
+    db.with_conn(|conn| -> Result<(), db::QueueTaskError> {
+        let tasks = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
+        tasks.enqueue(
+            db::QueueTaskType::EntityLink,
+            identity,
+            &db::EntityLinkPayload { entity_ids },
+            0,
+        )?;
+        conn.execute(
+            "UPDATE queue_tasks SET status = ?1, attempts = ?2, last_error = ?3 \
+             WHERE identity = ?4 AND type = 'entity:link'",
+            rusqlite::params![status, attempts, last_error, identity],
+        )
+        .map_err(|e| db::QueueTaskError::Db(e.into()))?;
+        Ok(())
+    })
+    .expect("with_conn")
+    .expect("seed task");
+}
+
 /// The whitespace-separated columns of the status row for `path` (path,
 /// source, status, attempts, then the free-form last_error, then
-/// next_attempt_at).
+/// next_attempt_at). The identity is matched as a WHOLE field: the binary
+/// also prints tracing log lines to stdout, and a substring match would
+/// collide with the temp-dir timestamps they carry.
 fn row_fields<'a>(stdout: &'a str, path: &str) -> Vec<&'a str> {
     stdout
         .lines()
-        .find(|line| line.contains(path))
+        .find(|line| line.split_whitespace().any(|field| field == path))
         .unwrap_or_else(|| panic!("no table row for {path}:\n{stdout}"))
         .split_whitespace()
         .collect()
@@ -270,5 +336,66 @@ fn queue_reset_retries_unknown_path_exits_one() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no error task"), "stderr: {stderr}");
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+/// The `entity:link` row is visible in `queue status` (identity = the
+/// document id, with status/attempts/last_error), and
+/// `queue reset-retries --identity <doc_id>` re-queues it.
+#[test]
+fn queue_status_shows_entity_link_tasks_and_reset_requeues_them() {
+    let f = entity_link_fixture("entity-link");
+    let out = run(&["--config", f.cfg.to_str().unwrap(), "queue", "status"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("entity:link"), "{stdout:?}");
+    assert!(stdout.contains("3 tasks"), "{stdout:?}");
+    let fields = row_fields(&stdout, "42");
+    assert_eq!(
+        fields.iter().take(4).copied().collect::<Vec<_>>(),
+        vec!["entity:link", "42", "error", "3"],
+        "{fields:?}"
+    );
+    assert!(fields.contains(&"linker"), "last_error column: {fields:?}");
+
+    // `queue reset-retries --identity <doc_id>` resets the entity:link task.
+    let out = run(&[
+        "--config",
+        f.cfg.to_str().unwrap(),
+        "queue",
+        "reset-retries",
+        "--identity",
+        "42",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 task(s) re-queued"), "{stdout:?}");
+
+    // Verified by a subsequent `queue status`.
+    let out = run(&["--config", f.cfg.to_str().unwrap(), "queue", "status"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let fields = row_fields(&stdout, "42");
+    assert_eq!(
+        fields.iter().take(4).copied().collect::<Vec<_>>(),
+        vec!["entity:link", "42", "pending", "0"],
+        "42 must be re-queued: {fields:?}"
+    );
+    // The other rows are untouched.
+    let fields = row_fields(&stdout, "/docs/a.md");
+    assert_eq!(
+        fields.iter().take(4).copied().collect::<Vec<_>>(),
+        vec!["doc:index", "/docs/a.md", "error", "3"],
+        "a.md must stay error: {fields:?}"
+    );
     let _ = std::fs::remove_dir_all(&f.dir);
 }

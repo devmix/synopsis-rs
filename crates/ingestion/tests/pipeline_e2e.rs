@@ -21,19 +21,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use config::DomainConfig;
-use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
-use config::preset::{IngestionConfig, LinkerConfig};
+use config::ontology::{
+    CrossDomainLinksConfig, EqualsConfig, GlobalConfig, GlobalNerConfig, LinkExpression,
+    LinkMethod, NerMethod, SourceConfig, SourceType,
+};
+use config::preset::{IngestionConfig, LinkerConfig, LlmConfig};
 use db::test_util::in_memory_db;
 use db::{
     Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, Document, DocumentDao, Entity, EntityDao,
-    FactDao, FactSourceDao, QueueTaskDao,
+    EntityLinkDao, EntityLinkPayload, EntitySourceDao, FactDao, FactSourceDao, QueueTaskDao,
+    QueueTaskType,
 };
 use embedding::{EmbeddingError, EmbeddingProvider};
 use ingestion::worker::DocumentWorker;
 use ingestion::{
-    DocumentJobQueue, Ingester, IngestionError, JsonChunker, JsonSource, MarkdownChunker,
-    MarkdownSource, NerEntity, NerFact, NerPrompts, NerProvider, NerResult, Registry, Resolver,
-    Runner, RunnerParams, VectorSink, load_ner_prompts,
+    CompositeNer, DocumentJobQueue, Ingester, IngestionError, JsonChunker, JsonSource,
+    MarkdownChunker, MarkdownSource, NerEntity, NerFact, NerPrompts, NerProvider, NerResult,
+    Registry, Resolver, Runner, RunnerParams, VectorSink, load_ner_prompts,
 };
 use serde_json::{Map, Value};
 use vectors::{VectorIndex, VectorsError};
@@ -45,6 +49,9 @@ const MD_CONTENT_V2: &str = "# Team\n\nDave joined the team: dave@example.com.\n
 /// One JSON array document with two text fields; the description carries an
 /// email.
 const JSON_CONTENT: &str = "[\n  {\"title\": \"Widget\", \"description\": \"A blue widget maintained by carol@example.com\"}\n]\n";
+/// Seven emails: the five pre-existing ones (alice..erin) plus two new
+/// hires (frank, grace) — the 10-of-1000 emission fixture.
+const MD_LINK_CONTENT: &str = "# Team\n\nContact alice@example.com, bob@corp.io, carol@example.com, dave@corp.io or erin@example.com for onboarding.\n\n## New hires\n\nfrank@example.com and grace@corp.io joined recently.\n";
 
 // ── Test collaborators (same stub patterns as the unit tests) ─────────────
 
@@ -247,6 +254,61 @@ fn hr_domain() -> DomainConfig {
     config::load_domain_config(&path).unwrap()
 }
 
+/// The "it" domain: the same email rule as [`hr_domain`], the second half
+/// of the cross-domain fixture.
+fn it_domain() -> DomainConfig {
+    let dir = TempDir::new("domain-it");
+    let xml = r#"<domain name="it" version="1.0"><extraction><regex-rules><regex id="employee_from_email" entity="employee" pattern="([a-zA-Z0-9._%+\-]+)@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" confidence="0.9"/></regex-rules></extraction></domain>"#;
+    let path = dir.0.join("it.xml");
+    fs::write(&path, xml).unwrap();
+    config::load_domain_config(&path).unwrap()
+}
+
+/// The `equals`-only links config (one word is enough for the fixture
+/// names).
+fn equals_links() -> CrossDomainLinksConfig {
+    CrossDomainLinksConfig {
+        methods: vec![LinkMethod::Equals],
+        equals: Some(EqualsConfig { min_words: 1 }),
+        llm_confidence_threshold: 0.7,
+        batch_size: 5,
+        expressions: Vec::new(),
+    }
+}
+
+/// The `expression`-only links config with one CEL rule that compiles but
+/// evaluates to a non-boolean per pair (the per-pair failure fixture).
+fn non_bool_expression_links() -> CrossDomainLinksConfig {
+    CrossDomainLinksConfig {
+        methods: vec![LinkMethod::Expression],
+        equals: None,
+        llm_confidence_threshold: 0.7,
+        batch_size: 5,
+        expressions: vec![LinkExpression {
+            name: "non_bool".to_owned(),
+            description: String::new(),
+            priority: 0,
+            where_: "A.name".to_owned(),
+            relation_type: "same_entity".to_owned(),
+        }],
+    }
+}
+
+/// A markdown document with `count` distinct emails (the merge fixture; the
+/// names are pairwise far enough apart that Jaro-Winkler stays under the
+/// 0.8 resolver threshold).
+fn emails_md(count: usize) -> String {
+    const NAMES: [&str; 15] = [
+        "amy", "ben", "cyd", "dan", "eve", "fin", "gus", "hal", "ida", "jon", "kim", "lee", "max",
+        "nina", "osk",
+    ];
+    let mut lines = vec!["# Team".to_owned()];
+    for name in NAMES.iter().take(count) {
+        lines.push(format!("{name}@example.com works here."));
+    }
+    lines.join("\n\n")
+}
+
 /// Builds a [`SourceConfig`] for the fixtures.
 fn source_config(path: &str, source_type: SourceType, domains: &[&str]) -> SourceConfig {
     SourceConfig {
@@ -269,6 +331,9 @@ struct Harness {
     root: TempDir,
     md_src: PathBuf,
     json_src: PathBuf,
+    /// The third source directory (the "it" domain half of the
+    /// cross-domain fixtures; empty until [`Self::add_it_source`]).
+    it_src: PathBuf,
     db: Db,
     cfg: IngestionConfig,
     global: GlobalConfig,
@@ -285,14 +350,17 @@ impl Harness {
         let root = TempDir::new("src");
         let md_src = root.sub("docs");
         let json_src = root.sub("data");
+        let it_src = root.sub("it");
         fs::create_dir_all(&md_src).unwrap();
         fs::create_dir_all(&json_src).unwrap();
+        fs::create_dir_all(&it_src).unwrap();
 
         let mut cfg = IngestionConfig::default();
         // A directly constructed config skips the config crate's
         // apply_defaults: set the markdown cap explicitly (the chunker
         // clamps 0 to 1 character).
         cfg.chunking.markdown.max_chunk_size = 10_000;
+        cfg.resolver.similarity_threshold = 0.8;
 
         let mut registry = Registry::new();
         registry
@@ -340,6 +408,7 @@ impl Harness {
             root,
             md_src,
             json_src,
+            it_src,
             db: in_memory_db(),
             cfg,
             global,
@@ -452,6 +521,86 @@ impl Harness {
             .run_once(now)
             .unwrap_or_else(|err| panic!("worker cycle failed: {err}"));
     }
+
+    // ── Cross-domain fixture wiring (entity:link tests) ───────────────────
+
+    /// Registers the "it" domain and a third (markdown) source bound to it —
+    /// the second half of the cross-domain fixture.
+    fn add_it_source(&mut self) {
+        self.domains.insert("it".to_owned(), it_domain());
+        self.global.sources.push(source_config(
+            self.it_src.to_string_lossy().as_ref(),
+            SourceType::Markdown,
+            &["it"],
+        ));
+    }
+
+    /// Enables cross-domain linking with the given config.
+    fn with_links(mut self, links: CrossDomainLinksConfig) -> Self {
+        self.global.cross_domain_links = Some(links);
+        self
+    }
+
+    /// Creates a pre-existing (employee, name, hr) entity; returns its id.
+    fn seed_entity(&self, name: &str) -> i64 {
+        self.db
+            .with_conn(|conn| {
+                EntityDao::new(ConnectionOrTx::Connection(conn))
+                    .create("employee", name, "hr", None, None, None)
+            })
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The id of the (name, domain) entity (must exist exactly once).
+    fn entity_id(&self, name: &str, domain: &str) -> i64 {
+        let matches: Vec<_> = self
+            .entities()
+            .into_iter()
+            .filter(|entity| entity.name == name && entity.domain == domain)
+            .collect();
+        assert_eq!(matches.len(), 1, "entity {name:?} in domain {domain:?}");
+        matches.into_iter().next().unwrap().id
+    }
+
+    /// All `entity:link` queue rows.
+    fn entity_link_tasks(&self) -> Vec<db::QueueTask> {
+        self.jobs()
+            .into_iter()
+            .filter(|task| task.task_type == "entity:link")
+            .collect()
+    }
+
+    /// All `entity_links` rows.
+    fn link_rows(&self) -> Vec<db::EntityLink> {
+        self.db
+            .with_conn(|conn| EntityLinkDao::new(ConnectionOrTx::Connection(conn)).list_all())
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The `entity_ids` carried by an `entity:link` task payload.
+    fn link_payload_ids(&self, task: &db::QueueTask) -> Vec<i64> {
+        serde_json::from_str::<EntityLinkPayload>(&task.event)
+            .unwrap()
+            .entity_ids
+    }
+
+    /// Enqueues an `entity:link` task directly (the worker-dispatch tests do
+    /// not go through the pipeline).
+    fn enqueue_entity_link(&self, identity: &str, entity_ids: Vec<i64>, now: i64) {
+        self.db
+            .with_conn(|conn| {
+                QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(
+                    QueueTaskType::EntityLink,
+                    identity,
+                    &EntityLinkPayload { entity_ids },
+                    now,
+                )
+            })
+            .unwrap()
+            .unwrap();
+    }
 }
 
 /// Asserts the sorted entity-name set equals `expected` (sorted).
@@ -486,7 +635,11 @@ fn first_run_populates_documents_chunks_entities_and_vectors() {
     h.reconcile_and_process(&runner, i64::MAX / 2);
 
     // Both sources' jobs were processed (two new files → two index jobs).
-    let jobs = h.jobs();
+    let jobs: Vec<_> = h
+        .jobs()
+        .into_iter()
+        .filter(|job| job.task_type == "doc:index" || job.task_type == "doc:delete")
+        .collect();
     assert_eq!(jobs.len(), 2, "{jobs:?}");
     assert!(jobs.iter().all(|job| job.status == "done"), "{jobs:?}");
 
@@ -824,4 +977,305 @@ fn facts_and_quotes_are_persisted_end_to_end() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].0, chunk_id as u32);
     assert_eq!(rows[0].1, vec![1.0f32; 4]);
+}
+
+// ── entity:link (change event-queue-incremental-linking, task 1.3) ────────
+
+/// The 10-of-1000 scenario: a document whose entities are all pre-existing
+/// except N gets an `entity:link` task with exactly the N new ids (the
+/// pre-existing ids are absent); a document with NO new entities emits no
+/// task at all.
+#[test]
+fn entity_link_task_carries_exactly_the_new_entity_ids() {
+    let h = Harness::new();
+    // Pre-existing: the five md emails and the json email.
+    for name in ["alice", "bob", "carol", "dave", "erin"] {
+        h.seed_entity(name);
+    }
+    // md: 5 pre-existing + 2 new; json: 1 pre-existing (nothing new).
+    fs::write(h.md_src.join("team.md"), MD_LINK_CONTENT).unwrap();
+    fs::write(h.json_src.join("widgets.json"), JSON_CONTENT).unwrap();
+    let runner = h.runner();
+    h.reconcile_and_process(&runner, i64::MAX / 2);
+
+    let md = h.doc_by_suffix("team.md");
+    let js = h.doc_by_suffix("widgets.json");
+
+    // Exactly one entity:link task: the md document's, still pending (the
+    // worker cycle that indexed the documents claimed only the doc:index
+    // rows).
+    let tasks = h.entity_link_tasks();
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let task = &tasks[0];
+    assert_eq!(task.identity, md.id.to_string(), "{task:?}");
+    assert_eq!(task.status, "pending", "{task:?}");
+
+    // Exactly the two NEW ids; the five pre-existing ones are absent.
+    let mut got = h.link_payload_ids(task);
+    got.sort();
+    let mut want = vec![h.entity_id("frank", "hr"), h.entity_id("grace", "hr")];
+    want.sort();
+    assert_eq!(got, want, "exactly the N new ids");
+    for name in ["alice", "bob", "carol", "dave", "erin"] {
+        let id = h.entity_id(name, "hr");
+        assert!(!got.contains(&id), "pre-existing {name:?} must be absent");
+    }
+
+    // The json document (all entities pre-existing) emitted no task.
+    assert!(
+        h.jobs()
+            .iter()
+            .all(|t| t.task_type != "entity:link" || t.identity != js.id.to_string()),
+        "the all-pre-existing document must not emit: {:?}",
+        h.jobs()
+    );
+}
+
+/// Design D4 merge: two successive index runs enqueue 10 then 5 ids → the
+/// still-pending task carries the union (15 unique ids), nothing lost.
+#[test]
+fn entity_link_task_merges_ids_across_index_runs() {
+    let h = Harness::new();
+    // The Ingester over the markdown source with the real regex NER and no
+    // queue/worker: the emitted `entity:link` tasks stay `pending` across
+    // the two runs.
+    let source = MarkdownSource::new(Box::new(MarkdownChunker::new(
+        h.cfg.chunking.markdown.clone(),
+    )));
+    let ner = CompositeNer::build_from_stages(
+        &[NerMethod::Regex],
+        &[h.domains["hr"].clone()],
+        &LlmConfig::default(),
+        h.prompts.clone(),
+        None,
+    )
+    .unwrap();
+    let resolver = Resolver::new(0.8);
+    let ingester = Ingester::new(
+        &h.db,
+        &h.cfg,
+        &source,
+        &h.embed,
+        Some(&ner),
+        &resolver,
+        h.sink.as_ref(),
+    );
+
+    // Run 1: 10 new entities → a pending task with 10 ids.
+    fs::write(h.md_src.join("team.md"), emails_md(10)).unwrap();
+    let stats1 = ingester.ingest(&h.md_src, false).unwrap();
+    assert_eq!(stats1.errors, 0, "{stats1:?}");
+    let first = h.entity_link_tasks();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0].status, "pending", "{first:?}");
+    let first_ids = h.link_payload_ids(&first[0]);
+    assert_eq!(first_ids.len(), 10, "{first_ids:?}");
+
+    // Pin the 10 entities: a second document references them, so the
+    // re-index GC does not delete them as orphans. That makes them
+    // genuinely unchanged in run 2 (design D4: update #1 enqueues 10,
+    // update #2 enqueues the 5 new — the 10 must not be lost).
+    let pin_doc =
+        h.db.with_conn(|conn| {
+            DocumentDao::new(ConnectionOrTx::Connection(conn))
+                .create("markdown", "/pin.md", None, None)
+        })
+        .unwrap()
+        .unwrap();
+    h.db.with_conn(|conn| {
+        EntitySourceDao::new(ConnectionOrTx::Connection(conn)).link_batch(pin_doc, &first_ids)
+    })
+    .unwrap()
+    .unwrap();
+
+    // Run 2: the same 10 (unchanged, pinned) + 5 new → the pending task
+    // merges to the union.
+    fs::write(h.md_src.join("team.md"), emails_md(15)).unwrap();
+    let stats2 = ingester.ingest(&h.md_src, false).unwrap();
+    assert_eq!(stats2.errors, 0, "{stats2:?}");
+
+    let merged = h.entity_link_tasks();
+    assert_eq!(
+        merged.len(),
+        1,
+        "still one row per (type, identity): {merged:?}"
+    );
+    let task = &merged[0];
+    assert_eq!(task.status, "pending", "{task:?}");
+    let ids = h.link_payload_ids(task);
+    assert_eq!(ids.len(), 15, "union of 10 + 5 unique ids: {ids:?}");
+    for id in &first_ids {
+        assert!(ids.contains(id), "run-1 id {id} must survive the merge");
+    }
+}
+
+/// Worker dispatch: the `entity:link` tasks are claimed on the next cycle
+/// and the incremental linker creates the cross-domain pairs (equals,
+/// bidirectional); a second task over the same pairs is idempotent.
+#[test]
+fn worker_processes_entity_link_tasks_and_creates_links() {
+    let mut h = Harness::new();
+    h.add_it_source();
+    h = h.with_links(equals_links());
+    let staff = "Contact alice@example.com and bob@corp.io.\n";
+    fs::write(h.md_src.join("team.md"), staff).unwrap();
+    fs::write(h.it_src.join("staff.md"), staff).unwrap();
+    let runner = h.runner();
+    h.reconcile_and_process(&runner, i64::MAX / 2);
+
+    // Both documents indexed (all four entities new) → two pending
+    // entity:link tasks, one per document.
+    let tasks = h.entity_link_tasks();
+    assert_eq!(tasks.len(), 2, "{tasks:?}");
+    assert!(tasks.iter().all(|t| t.status == "pending"), "{tasks:?}");
+
+    // Second worker cycle: the entity:link tasks are claimed and linked.
+    let worker = DocumentWorker::new(&h.db, &runner);
+    worker.run_once(i64::MAX / 2).unwrap();
+    assert!(
+        h.entity_link_tasks().iter().all(|t| t.status == "done"),
+        "{:?}",
+        h.entity_link_tasks()
+    );
+
+    // Two pairs, bidirectional: alice (hr<->it) and bob (hr<->it).
+    let links = h.link_rows();
+    assert_eq!(links.len(), 4, "{links:?}");
+    for link in &links {
+        assert_eq!(link.method, "equals", "{link:?}");
+        assert_eq!(link.relation_type, "same_entity", "{link:?}");
+    }
+    for (name, a, b) in [
+        (
+            "alice",
+            h.entity_id("alice", "hr"),
+            h.entity_id("alice", "it"),
+        ),
+        ("bob", h.entity_id("bob", "hr"), h.entity_id("bob", "it")),
+    ] {
+        assert!(
+            links
+                .iter()
+                .any(|l| (l.subject_entity_id, l.target_entity_id) == (a, b)),
+            "{name}: {a} -> {b} missing: {links:?}"
+        );
+        assert!(
+            links
+                .iter()
+                .any(|l| (l.subject_entity_id, l.target_entity_id) == (b, a)),
+            "{name}: {b} -> {a} missing: {links:?}"
+        );
+    }
+}
+
+/// Worker dispatch, failure path: a linker-level DB failure is recorded
+/// with the exponential backoff (30s / 60s) and the task reaches `error`
+/// status at `max_attempts` (3); an `error` task is not claimed again.
+#[test]
+fn worker_entity_link_linker_failure_reaches_error_status() {
+    let mut h = Harness::new();
+    h = h.with_links(equals_links());
+    h.enqueue_entity_link("1", vec![1, 2], 1_000);
+
+    // Simulate a linker-level DB failure: the linker cannot read the
+    // entities table (the in-memory DB is test-owned).
+    h.db.with_conn(|conn| conn.execute("DROP TABLE entities", []))
+        .unwrap()
+        .unwrap();
+    let runner = h.runner();
+    let worker = DocumentWorker::new(&h.db, &runner);
+
+    // Attempt 1: fails, 30s backoff.
+    worker.run_once(2_000).unwrap();
+    let task = h.entity_link_tasks().pop().unwrap();
+    assert_eq!(task.attempts, 1, "{task:?}");
+    assert_eq!(task.status, "pending", "below the cap: {task:?}");
+    assert_eq!(task.next_attempt_at, 2_030, "30s backoff: {task:?}");
+    assert!(task.last_error.is_some(), "{task:?}");
+
+    // Attempt 2: fails, 60s backoff.
+    worker.run_once(2_100).unwrap();
+    let task = h.entity_link_tasks().pop().unwrap();
+    assert_eq!(task.attempts, 2, "{task:?}");
+    assert_eq!(task.status, "pending", "{task:?}");
+    assert_eq!(task.next_attempt_at, 2_160, "60s backoff: {task:?}");
+
+    // Attempt 3: at the cap → error status.
+    worker.run_once(2_200).unwrap();
+    let task = h.entity_link_tasks().pop().unwrap();
+    assert_eq!(task.attempts, 3, "{task:?}");
+    assert_eq!(task.status, "error", "at the cap: {task:?}");
+    assert!(task.last_error.is_some(), "{task:?}");
+
+    // An error task is not claimed anymore.
+    worker.run_once(10_000).unwrap();
+    assert_eq!(h.entity_link_tasks().pop().unwrap().status, "error");
+}
+
+/// Per-pair failure: a CEL rule that evaluates to a non-boolean is recorded
+/// in `LinkResult.errors` (warn, non-fatal) — the `entity:link` task still
+/// completes `done`, and no link rows are created.
+#[test]
+fn per_pair_link_failure_keeps_the_entity_link_task_done() {
+    let mut h = Harness::new();
+    h.add_it_source();
+    h = h.with_links(non_bool_expression_links());
+    let staff = "Contact alice@example.com and bob@corp.io.\n";
+    fs::write(h.md_src.join("team.md"), staff).unwrap();
+    fs::write(h.it_src.join("staff.md"), staff).unwrap();
+    let runner = h.runner();
+    h.reconcile_and_process(&runner, i64::MAX / 2);
+    assert_eq!(
+        h.entity_link_tasks().len(),
+        2,
+        "{:?}",
+        h.entity_link_tasks()
+    );
+
+    let worker = DocumentWorker::new(&h.db, &runner);
+    worker.run_once(i64::MAX / 2).unwrap();
+
+    // Both tasks complete `done` despite the per-pair CEL failures.
+    assert!(
+        h.entity_link_tasks().iter().all(|t| t.status == "done"),
+        "{:?}",
+        h.entity_link_tasks()
+    );
+    // No link rows: every pair failed.
+    assert!(h.link_rows().is_empty(), "{:?}", h.link_rows());
+}
+
+/// Cascade delete: deleting a document removes its `entity:link` queue row
+/// (the other documents' tasks are untouched).
+#[test]
+fn deleting_document_removes_its_entity_link_task() {
+    let h = Harness::new();
+    fs::write(h.md_src.join("team.md"), "Contact frank@example.com.\n").unwrap();
+    fs::write(h.json_src.join("widgets.json"), JSON_CONTENT).unwrap();
+    let runner = h.runner();
+    h.reconcile_and_process(&runner, i64::MAX / 2);
+
+    let md = h.doc_by_suffix("team.md");
+    // Both documents created NEW entities → two pending entity:link tasks.
+    let tasks = h.entity_link_tasks();
+    assert_eq!(tasks.len(), 2, "{tasks:?}");
+    assert!(
+        tasks.iter().any(|t| t.identity == md.id.to_string()),
+        "{tasks:?}"
+    );
+
+    // Cascade delete: the document row AND its entity:link row go away.
+    let removed = runner
+        .delete_document_at(h.md_src.join("team.md").to_string_lossy().as_ref())
+        .unwrap();
+    assert!(removed, "the document must exist");
+
+    let tasks = h.entity_link_tasks();
+    assert_eq!(
+        tasks.len(),
+        1,
+        "the md document's task must be gone: {tasks:?}"
+    );
+    assert_ne!(tasks[0].identity, md.id.to_string(), "{tasks:?}");
+    assert!(h.docs().iter().all(|d| d.id != md.id));
 }

@@ -137,6 +137,7 @@ impl<'a> Runner<'a> {
             links_config,
             self.linker_cfg,
             self.prompts_path,
+            None,
         )?;
         if result.errors.is_empty() {
             eprintln!(
@@ -152,6 +153,48 @@ impl<'a> Runner<'a> {
         }
         record_linking_run(cache);
         Ok(result)
+    }
+
+    /// Incremental entity linking (design D9): links only the entity pairs
+    /// where at least one member was created or updated by the latest index
+    /// run. Skips cleanly when the ontology carries no `cross-domain-links`
+    /// block. Per-pair errors are logged and do not fail the task; a
+    /// task-level failure (DB, config) returns `Err` so the worker applies
+    /// backoff.
+    pub fn link_entities(&self, doc_id: i64, entity_ids: &[i64]) -> Result<(), IngestionError> {
+        let _guard = self.lock();
+        let Some(links_config) = self.global.and_then(|g| g.cross_domain_links.as_ref()) else {
+            tracing::info!(
+                doc_id,
+                "link_entities: no cross-domain-links config, skipping"
+            );
+            return Ok(());
+        };
+        let cache = self.llm_cache.as_ref();
+        let result = graph::build_entity_links(
+            self.db,
+            cache,
+            links_config,
+            self.linker_cfg,
+            self.prompts_path,
+            Some(entity_ids),
+        )?;
+        if result.errors.is_empty() {
+            tracing::info!(
+                doc_id,
+                created = result.links_created,
+                skipped = result.links_skipped,
+                "link_entities: incremental linking complete"
+            );
+        } else {
+            tracing::warn!(
+                doc_id,
+                errors = result.errors.len(),
+                "link_entities: completed with per-pair errors"
+            );
+        }
+        record_linking_run(cache);
+        Ok(())
     }
 }
 

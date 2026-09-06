@@ -90,7 +90,7 @@ fn end_to_end_linking_and_idempotent_rerun() {
     // ── First run ─────────────────────────────────────────────────────────
     // The fixture methods are equals/expression only: the prompts path is
     // unused (a nonexistent path would fall back to the embedded templates).
-    let first = build_entity_links(&db, None, &config, &linker, "/nonexistent/prompts")
+    let first = build_entity_links(&db, None, &config, &linker, "/nonexistent/prompts", None)
         .expect("first run must succeed");
     assert!(
         first.errors.is_empty(),
@@ -145,7 +145,7 @@ fn end_to_end_linking_and_idempotent_rerun() {
     }
 
     // ── Second run: idempotent ────────────────────────────────────────────
-    let second = build_entity_links(&db, None, &config, &linker, "/nonexistent/prompts")
+    let second = build_entity_links(&db, None, &config, &linker, "/nonexistent/prompts", None)
         .expect("second run must succeed");
     assert!(
         second.errors.is_empty(),
@@ -155,4 +155,100 @@ fn end_to_end_linking_and_idempotent_rerun() {
     assert_eq!(second.links_created, 0, "no duplicates on the re-run");
     assert_eq!(second.links_skipped, 4, "every pair is already linked");
     assert_eq!(all_links(&db).len(), 8, "the row count is unchanged");
+}
+
+/// Incremental mode (`candidates: Some(ids)`): only pairs with at least one
+/// member in the candidate set are considered; a re-run over the same
+/// candidate is idempotent; full mode (`None`) is unchanged and completes
+/// the remaining pairs.
+#[test]
+fn incremental_mode_considers_only_candidate_pairs() {
+    let config = links_config();
+    let (db, ids) = fixture_db();
+    let linker = LinkerConfig::default();
+
+    // One candidate: Acme in `hr` (ids[0]). Only the Acme equals pair is
+    // considered — John and Jane are untouched.
+    let first = build_entity_links(
+        &db,
+        None,
+        &config,
+        &linker,
+        "/nonexistent/prompts",
+        Some(&[ids[0]]),
+    )
+    .expect("incremental run must succeed");
+    assert!(
+        first.errors.is_empty(),
+        "first run errors: {:?}",
+        first.errors
+    );
+    assert_eq!(first.links_created, 1, "only the Acme pair: {first:?}");
+    assert_eq!(
+        all_links(&db).len(),
+        2,
+        "Acme (2 rows); John/Jane untouched"
+    );
+
+    // Re-run with the same candidate: idempotent (already linked).
+    let second = build_entity_links(
+        &db,
+        None,
+        &config,
+        &linker,
+        "/nonexistent/prompts",
+        Some(&[ids[0]]),
+    )
+    .expect("re-run must succeed");
+    assert!(
+        second.errors.is_empty(),
+        "re-run errors: {:?}",
+        second.errors
+    );
+    assert_eq!(second.links_created, 0, "no duplicates: {second:?}");
+    assert_eq!(
+        second.links_skipped, 1,
+        "the Acme pair is already linked: {second:?}"
+    );
+    assert_eq!(all_links(&db).len(), 2, "the row count is unchanged");
+
+    // A different candidate: John in `it` (ids[3]). His equals pair AND the
+    // acme_workers expression pair (the fact hangs on ids[2]/ids[0]).
+    let third = build_entity_links(
+        &db,
+        None,
+        &config,
+        &linker,
+        "/nonexistent/prompts",
+        Some(&[ids[3]]),
+    )
+    .expect("third run must succeed");
+    assert!(
+        third.errors.is_empty(),
+        "third run errors: {:?}",
+        third.errors
+    );
+    assert_eq!(
+        third.links_created, 2,
+        "John equals + expression: {third:?}"
+    );
+    let links = all_links(&db);
+    assert_eq!(links.len(), 6, "Acme 2 + John 4 rows");
+    assert!(
+        links
+            .iter()
+            .all(|link| link.subject_entity_id != ids[4] && link.target_entity_id != ids[4]),
+        "Jane must still be untouched: {links:?}"
+    );
+
+    // Full mode is unchanged: it completes the remaining pair (Jane).
+    let fourth = build_entity_links(&db, None, &config, &linker, "/nonexistent/prompts", None)
+        .expect("full run must succeed");
+    assert!(
+        fourth.errors.is_empty(),
+        "full run errors: {:?}",
+        fourth.errors
+    );
+    assert_eq!(fourth.links_created, 1, "only Jane remains: {fourth:?}");
+    assert_eq!(all_links(&db).len(), 8, "the full fixture set");
 }

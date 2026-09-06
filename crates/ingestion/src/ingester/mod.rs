@@ -37,13 +37,17 @@ use std::fs;
 use std::path::Path;
 
 use config::preset::IngestionConfig;
-use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, GcDao};
+use db::{
+    ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, EntityLinkPayload, GcDao,
+    QueueTaskDao, QueueTaskType,
+};
 use embedding::EmbeddingProvider;
 use serde_json::{Map, Value};
 use vectors::VectorIndex;
 
-use crate::entities::Resolver;
+use crate::entities::{EntityChanges, Resolver};
 use crate::error::IngestionError;
+use crate::job_queue::now_unix_seconds;
 use crate::ner::{NerProvider, NerResult};
 use crate::parsers::walk_matched_files;
 use crate::progress::{ProgressStats, ProgressTracker};
@@ -264,91 +268,96 @@ impl<'a> Ingester<'a> {
         // (design D2): the DAOs, the GC and the resolver share the same
         // transaction handle, so entity resolution never hits the SQLite
         // write lock from a second connection.
-        let chunk_ids = self.db.exec_tx(|tx| -> Result<Vec<i64>, IngestionError> {
-            let exec = ConnectionOrTx::Transaction(&*tx);
-            let docs = DocumentDao::new(exec);
-            let chunk_dao = ChunkDao::new(exec);
-            let links = ChunkEntityDao::new(exec);
-            let gc = GcDao::new(exec);
+        let (chunk_ids, doc_id, entity_changes) = self.db.exec_tx(
+            |tx| -> Result<(Vec<i64>, i64, EntityChanges), IngestionError> {
+                let exec = ConnectionOrTx::Transaction(&*tx);
+                let docs = DocumentDao::new(exec);
+                let chunk_dao = ChunkDao::new(exec);
+                let links = ChunkEntityDao::new(exec);
+                let gc = GcDao::new(exec);
 
-            let (doc_id, is_new) = match &existing_doc {
-                Some(existing) => {
-                    docs.update(
-                        existing.id,
-                        &path,
-                        Some(&metadata_json),
-                        Some(&content_hash),
-                    )?;
-                    gc.full_clear_doc_by_id(existing.id)?;
-                    (existing.id, false)
-                }
-                None => {
-                    let doc_id = docs.create(
-                        source_type,
-                        &path,
-                        Some(&metadata_json),
-                        Some(&content_hash),
-                    )?;
-                    (doc_id, true)
-                }
-            };
-
-            let mut chunk_ids = Vec::with_capacity(chunks.len());
-            for (chunk, ner_result) in chunks.iter().zip(ner_results.iter()) {
-                // Persist both texts (search-text-embedding task 2.1): the
-                // pure-slice `chunk_text` (byte-offset invariant) and the
-                // `search_text` the FTS5 index and the embedding leg used,
-                // plus the chunk's own metadata bag as raw JSON
-                // (chunk-metadata-persistence task 3.1; `NULL` when the bag
-                // is empty).
-                let chunk_metadata = Self::chunk_metadata_json(&chunk.metadata)?;
-                let chunk_id = chunk_dao.create_with_search_text(
-                    doc_id,
-                    &chunk.text,
-                    &chunk.search_text,
-                    chunk_metadata.as_deref(),
-                    chunk.sequence_num as i64,
-                    // Byte offsets of a file-sized document cannot reach the
-                    // i64 boundary; the truncation is unreachable.
-                    Some(chunk.start_offset as i64),
-                    Some(chunk.end_offset as i64),
-                )?;
-                chunk_ids.push(chunk_id);
-
-                if let Some(ner_result) = ner_result {
-                    if !ner_result.entities.is_empty() {
-                        let resolved =
-                            self.resolver
-                                .add_entities(exec, doc_id, &ner_result.entities)?;
-                        tracker.add_entities(resolved.len() as u64);
-                        for entity in &resolved {
-                            links.link(chunk_id, entity.id)?;
-                        }
+                let (doc_id, is_new) = match &existing_doc {
+                    Some(existing) => {
+                        docs.update(
+                            existing.id,
+                            &path,
+                            Some(&metadata_json),
+                            Some(&content_hash),
+                        )?;
+                        gc.full_clear_doc_by_id(existing.id)?;
+                        (existing.id, false)
                     }
-                    // Task 3.5: the fact half of entity storage (no-op when
-                    // the chunk has no facts).
-                    facts::store_facts(
-                        exec,
-                        self.resolver,
-                        tracker,
-                        doc_id,
-                        chunk_id,
-                        &chunk.text,
-                        &ner_result.facts,
-                        &path,
-                        chunk.sequence_num,
-                    )?;
-                }
-            }
+                    None => {
+                        let doc_id = docs.create(
+                            source_type,
+                            &path,
+                            Some(&metadata_json),
+                            Some(&content_hash),
+                        )?;
+                        (doc_id, true)
+                    }
+                };
 
-            tracker.add_chunks(chunks.len() as u64);
-            if is_new {
-                tracker.increment_documents_created();
-            } else {
-                tracker.increment_documents_updated();
-            }
-            Ok(chunk_ids)
-        })?;
+                let mut chunk_ids = Vec::with_capacity(chunks.len());
+                let mut changes = EntityChanges::default();
+                for (chunk, ner_result) in chunks.iter().zip(ner_results.iter()) {
+                    // Persist both texts (search-text-embedding task 2.1): the
+                    // pure-slice `chunk_text` (byte-offset invariant) and the
+                    // `search_text` the FTS5 index and the embedding leg used,
+                    // plus the chunk's own metadata bag as raw JSON
+                    // (chunk-metadata-persistence task 3.1; `NULL` when the bag
+                    // is empty).
+                    let chunk_metadata = Self::chunk_metadata_json(&chunk.metadata)?;
+                    let chunk_id = chunk_dao.create_with_search_text(
+                        doc_id,
+                        &chunk.text,
+                        &chunk.search_text,
+                        chunk_metadata.as_deref(),
+                        chunk.sequence_num as i64,
+                        // Byte offsets of a file-sized document cannot reach the
+                        // i64 boundary; the truncation is unreachable.
+                        Some(chunk.start_offset as i64),
+                        Some(chunk.end_offset as i64),
+                    )?;
+                    chunk_ids.push(chunk_id);
+
+                    if let Some(ner_result) = ner_result {
+                        if !ner_result.entities.is_empty() {
+                            let (resolved, chunk_changes) =
+                                self.resolver
+                                    .add_entities(exec, doc_id, &ner_result.entities)?;
+                            tracker.add_entities(resolved.len() as u64);
+                            changes.merge(chunk_changes);
+                            for entity in &resolved {
+                                links.link(chunk_id, entity.id)?;
+                            }
+                        }
+                        // Task 3.5: the fact half of entity storage (no-op when
+                        // the chunk has no facts).
+                        let fact_changes = facts::store_facts(
+                            exec,
+                            self.resolver,
+                            tracker,
+                            doc_id,
+                            chunk_id,
+                            &chunk.text,
+                            &ner_result.facts,
+                            &path,
+                            chunk.sequence_num,
+                        )?;
+                        changes.merge(fact_changes);
+                    }
+                }
+
+                tracker.add_chunks(chunks.len() as u64);
+                if is_new {
+                    tracker.increment_documents_created();
+                } else {
+                    tracker.increment_documents_updated();
+                }
+                Ok((chunk_ids, doc_id, changes))
+            },
+        )?;
 
         // Design D5: vectors are written after the commit; the chunk row is
         // the source of truth, and a failure here is repaired by orphan
@@ -359,6 +368,34 @@ impl<'a> Ingester<'a> {
             .map(|(index, &chunk_id)| (chunk_id as u32, vectors[index].as_slice()))
             .collect();
         self.vectors.insert_batch(&rows)?;
+
+        // Design D6: enqueue an `entity:link` event when the change set is
+        // non-empty (created or updated entities). The worker processes it
+        // with the graph linker's incremental mode.
+        if !entity_changes.is_empty() {
+            let entity_ids = entity_changes.ids();
+            let identity = doc_id.to_string();
+            self.db
+                .with_conn(|conn| {
+                    let exec = ConnectionOrTx::Connection(conn);
+                    let dao = QueueTaskDao::new(exec);
+                    dao.enqueue(
+                        QueueTaskType::EntityLink,
+                        &identity,
+                        &EntityLinkPayload {
+                            entity_ids: entity_ids.clone(),
+                        },
+                        now_unix_seconds(),
+                    )
+                })
+                .map_err(IngestionError::Db)?
+                .map_err(IngestionError::QueueTask)?;
+            tracing::info!(
+                doc_id,
+                count = entity_ids.len(),
+                "entity:link event enqueued"
+            );
+        }
 
         Ok(())
     }

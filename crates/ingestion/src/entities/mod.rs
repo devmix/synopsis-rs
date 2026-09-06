@@ -22,5 +22,5 @@ mod resolver;
 mod similarity;
 
 pub use cluster::{canonical_proto, cluster_batch, scope_entity_metadata};
-pub use resolver::{ResolvedEntity, Resolver};
+pub use resolver::{EntityChanges, ResolvedEntity, Resolver};
 pub use similarity::{bigrams, jaro_winkler, normalize_name};

@@ -352,8 +352,15 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
     // equals skips Acme (one word < min-words 2) and links John; expression
     // links John (works_at Acme); llm consults the model for BOTH pairs.
     let (db1, ids1) = fixture_db();
-    let first = build_entity_links(&db1, Some(&cache), &config, &linker, EMBEDDED_PROMPTS_PATH)
-        .expect("first run");
+    let first = build_entity_links(
+        &db1,
+        Some(&cache),
+        &config,
+        &linker,
+        EMBEDDED_PROMPTS_PATH,
+        None,
+    )
+    .expect("first run");
     assert!(
         first.errors.is_empty(),
         "first run must not error: {:?}",
@@ -460,8 +467,15 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
     // dataset, so the identical rendered prompts still hit the cache — no new
     // LLM calls. equals/expression re-create the John rows on the fresh DB.
     let (db2, _ids2) = fixture_db();
-    let second = build_entity_links(&db2, Some(&cache), &config, &linker, EMBEDDED_PROMPTS_PATH)
-        .expect("second run");
+    let second = build_entity_links(
+        &db2,
+        Some(&cache),
+        &config,
+        &linker,
+        EMBEDDED_PROMPTS_PATH,
+        None,
+    )
+    .expect("second run");
     assert!(
         second.errors.is_empty(),
         "second run must not error: {:?}",
@@ -501,6 +515,7 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         &config,
         &linker,
         &prompts_dir.to_string_lossy(),
+        None,
     )
     .expect("third run");
     assert!(

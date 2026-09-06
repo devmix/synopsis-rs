@@ -32,7 +32,7 @@ use std::time::SystemTime;
 use db::{ChunkEntityDao, ConnectionOrTx, FactDao, FactSourceDao};
 use serde_json::Map;
 
-use crate::entities::Resolver;
+use crate::entities::{EntityChanges, Resolver};
 use crate::error::IngestionError;
 use crate::ner::{NerEntity, NerFact, normalize};
 use crate::parsers::format_rfc3339_utc;
@@ -45,12 +45,13 @@ type EntityKey = (String, String, String);
 
 /// Stores the fact half of entity storage for one chunk: synthetic endpoint
 /// entities, `facts` rows, `fact_sources` rows with quotes, and one weight
-/// recompute over the touched facts.
+/// recompute over the touched facts. Returns the resolver's change report
+/// (created/updated entity ids) for the synthetic endpoint entities.
 ///
 /// Must run inside the per-document transaction (the call site passes the
 /// transaction's [`ConnectionOrTx`], so entity resolution never hits the
 /// SQLite write lock from a second connection). A no-op when `facts` is
-/// empty.
+/// empty (returns an empty change report).
 ///
 /// # Errors
 ///
@@ -66,9 +67,9 @@ pub(super) fn store_facts(
     facts: &[NerFact],
     source_path: &str,
     sequence_num: usize,
-) -> Result<(), IngestionError> {
+) -> Result<EntityChanges, IngestionError> {
     if facts.is_empty() {
-        return Ok(());
+        return Ok(EntityChanges::default());
     }
 
     let endpoints = collect_endpoints(facts);
@@ -86,7 +87,7 @@ pub(super) fn store_facts(
         })
         .collect();
 
-    let (ids, created) = resolver.lookup_or_create_with_stats(exec, doc_id, &synthetic)?;
+    let (ids, created, changes) = resolver.lookup_or_create_with_stats(exec, doc_id, &synthetic)?;
     if created > 0 {
         tracker.add_entities(created as u64);
     }
@@ -111,7 +112,8 @@ pub(super) fn store_facts(
         tracker,
         source_path,
         sequence_num,
-    )
+    )?;
+    Ok(changes)
 }
 
 /// Persists `facts` against the resolved `entity_map` (the per-fact half of
