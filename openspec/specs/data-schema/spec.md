@@ -44,17 +44,43 @@ Embedding vectors are NOT carried over from the old vec0 table `chunks_vec` into
 - **WHEN** the Rust binary runs a vector rebuild on a v5 DB (no vec0 data)
 - **THEN** the index is built from the chunk text; semantic search returns recall@10 ≥ 0.95 against a brute-force ground truth on the same embedding model
 
-### Requirement: document_jobs table (indexing queue)
+### Requirement: queue_tasks table (event queue)
 
-The Rust binary keeps a queue of document operations in the `document_jobs` table (knowledge DB), created by the consolidated init migration `migrations/knowledge/1-init/up.sql` (the table was folded into the init migration at squash time, design D6; a separate forward-only migration `2-document-jobs` does not exist). The table is a single state machine for the watcher, the startup scan, and the background worker. Columns: `path TEXT PRIMARY KEY`, `source_path TEXT NOT NULL`, `op TEXT NOT NULL DEFAULT 'index'` (`index` | `delete`), `status TEXT NOT NULL DEFAULT 'pending'` (`pending` | `processing` | `done` | `error`), `content_hash TEXT`, `attempts INTEGER NOT NULL DEFAULT 0`, `max_attempts INTEGER NOT NULL DEFAULT 3`, `last_error TEXT`, `next_attempt_at INTEGER NOT NULL DEFAULT 0`, `created_at INTEGER`, `updated_at INTEGER`. Index `idx_document_jobs_due (status, next_attempt_at)` for due queries. The migration is idempotent (`IF NOT EXISTS`); a subsequent startup is a no-op.
+The Rust binary SHALL keep a generic event queue in the `queue_tasks` table (knowledge DB), created by the consolidated init migration `migrations/knowledge/1-init/up.sql`. The `document_jobs` table no longer exists (human decision 2026-09-06: the project has no deployed instances, so the table is defined directly in the init migration instead of a separate forward migration; `PRAGMA user_version` stays 1). The queue is the single state machine for the watcher, the startup scan, and the background worker, covering document operations and entity-linking tasks.
+
+Columns: `id INTEGER PRIMARY KEY AUTOINCREMENT`, `type TEXT NOT NULL` (`doc:index` | `doc:delete` | `entity:link`), `identity TEXT NOT NULL` (the document path for `doc:*` events; the document id as a decimal string for `entity:link`), `event TEXT NOT NULL` (JSON payload — `source_path` and `content_hash` for `doc:index`, `source_path` for `doc:delete`, an `entity_ids` array for `entity:link`), `status TEXT NOT NULL DEFAULT 'pending'` (`pending` | `processing` | `done` | `error`), `attempts INTEGER NOT NULL DEFAULT 0`, `max_attempts INTEGER NOT NULL DEFAULT 3`, `last_error TEXT`, `next_attempt_at INTEGER NOT NULL DEFAULT 0`, `created_at INTEGER NOT NULL`, `updated_at INTEGER NOT NULL`. Indexes: `idx_queue_tasks_due (status, next_attempt_at)` for due queries; unique `idx_queue_tasks_identity (type, identity)` — at most one row per event identity.
+
+Enqueue is an upsert on `(type, identity)`: an existing row is reset to `pending` with `attempts=0` and `next_attempt_at` set to the current time — a re-enqueued event moves to the END of the claim order — and its payload is updated. Payload update semantics depend on the type: `doc:index` and `doc:delete` REPLACE the payload (the file on disk is the source of truth); `entity:link` MERGES the `entity_ids` arrays (union) when the existing row is `pending`, `processing`, or `error`, and stores only the new ids when the existing row is `done` (the old ids were already linked).
+
+Claim order is `(next_attempt_at, id)`; the backoff schedule is `30 * 2^(attempts-1)` seconds and a task that fails `max_attempts` times lands in `error` status. The worker claims tasks ONE AT A TIME: a claim flips a single due `pending` row to `processing`, the worker processes it, then claims the next — so `processing` means "currently executing" (at most one row at a time), and a per-cycle cap (100 tasks) bounds one worker cycle so the owner thread does not starve the HTTP server. On serve startup, before the startup reconcile, rows left in `processing` by an unclean shutdown (crash, SIGKILL, power loss) are reset to `pending` with `attempts` and `last_error` preserved — an interrupted attempt is not a failed one.
 
 #### Scenario: Migration application
-- **WHEN** the binary starts on a knowledge.db without the `document_jobs` table
-- **THEN** the init migration `1-init` creates the table and the index once; a subsequent startup does not change the schema
+- **WHEN** the binary starts on a fresh knowledge.db
+- **THEN** the init migration `1-init` creates `queue_tasks` with both indexes once; the `document_jobs` table does not exist
 
-#### Scenario: Job state
-- **WHEN** a document has not been indexed after `max_attempts` attempts
-- **THEN** the row has `status='error'`, `attempts=max_attempts`, and `last_error` is populated; `index reset-retries` moves it to `pending` with `attempts=0`
+#### Scenario: Task state
+- **WHEN** a task has not succeeded after `max_attempts` attempts
+- **THEN** the row has `status='error'`, `attempts=max_attempts`, and `last_error` is populated; `queue reset-retries` moves it to `pending` with `attempts=0`
+
+#### Scenario: Re-enqueue moves to the end
+- **WHEN** an event with the same `(type, identity)` is enqueued while older pending tasks exist
+- **THEN** the existing row is reset to `pending` with `next_attempt_at` = now and is claimed after the older pending tasks
+
+#### Scenario: Link-event merge
+- **WHEN** an `entity:link` event is enqueued for a document whose `entity:link` row is `pending` with ids A
+- **THEN** the row's `entity_ids` becomes the union of A and the new ids; no pending candidate is lost
+
+#### Scenario: Doc-event replace
+- **WHEN** a `doc:index` event is enqueued for a path whose row already exists
+- **THEN** the payload is replaced with the new `source_path`/`content_hash` and the row is reset to `pending`
+
+#### Scenario: One-at-a-time claim
+- **WHEN** several due `pending` tasks exist and the worker starts a cycle
+- **THEN** exactly one row is `processing` at any instant; the remaining due rows stay `pending` until claimed one by one, and one cycle processes at most 100 tasks
+
+#### Scenario: Restart recovery
+- **WHEN** the server starts and rows are in `processing` status (left by an unclean shutdown)
+- **THEN** they are reset to `pending` with `attempts` and `last_error` preserved, before the startup reconcile runs, and the worker processes them in a later cycle
 
 ### Requirement: search_text column (explicit v5 deviation)
 The `chunks` table carries a `search_text TEXT NOT NULL` column (default = `chunk_text`) holding the search-oriented text: for Markdown chunks the heading breadcrumb (multi-line heading path) followed by the chunk body, or the body alone when the chunk has no breadcrumb. The FTS5 `chunks_fts` index is built over `search_text` (not `chunk_text`), and its `ai/ad/au` triggers reference `search_text`. This is an explicit, justified deviation from the v5 shape: the Rust database is always built from scratch (no pre-existing `knowledge.db` is opened or migrated), and the deviation improves RAG retrieval quality by giving both search legs the section context. The invariant-preserving `chunk_text` column and the byte offsets are unchanged.

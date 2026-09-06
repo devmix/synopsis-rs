@@ -26,7 +26,7 @@ Invocation format: `synopsis [--config PATH] [--preset NAME] [--dataset NAME] [-
 
 ### Requirement: serve subcommand
 
-The only long-running mode: startup reconcile (enqueue diff into `document_jobs`) + MCP over HTTP (Streamable HTTP, design D8) + file watching (enqueue diff). Flags: `--no-initial-sync` (skip startup reconcile at boot), `--port N` (default 8080, overrides server.port from config), `--auto-rebuild-vectors`. On a vector-engine dimension mismatch, serve clears the dataset DB (`clear_dataset`) and the startup reconcile re-enqueues all files — the worker re-embeds them (clear-then-queue, no direct ingestion).
+The only long-running mode: startup reconcile (enqueue diff into `queue_tasks`) + MCP over HTTP (Streamable HTTP, design D8) + file watching (enqueue diff). Flags: `--no-initial-sync` (skip startup reconcile at boot), `--port N` (default 8080, overrides server.port from config), `--auto-rebuild-vectors`. On a vector-engine dimension mismatch, serve clears the dataset DB (`clear_dataset`) and the startup reconcile re-enqueues all files — the worker re-embeds them (clear-then-queue, no direct ingestion).
 
 #### Scenario: Port
 - **WHEN** serve --port 9123
@@ -62,17 +62,23 @@ Priority: `--config` > `config.{preset}.yaml`, where the preset defaults to `def
 
 ### Requirement: queue subcommand
 
-A new subcommand for inspecting and maintaining the document indexing queue (`document_jobs`). Subcommands: `queue status [--source PATH] [--status NAME]` — tabular output of job state (columns: path, source, status, attempts, last_error, next_attempt_at); `queue reset-retries [--source PATH] [--path PATH]` — resets the retry counter for jobs in `error` status (status→`pending`, attempts→0, next_attempt_at→now), after which the background worker re-indexes them. The subcommand is additive to the existing ones (`serve`, `db`, `model`, `onnx-runtime`, `load-test`).
+The CLI SHALL provide a subcommand for inspecting and maintaining the event queue (`queue_tasks`). Subcommands: `queue status [--source PATH] [--status NAME]` — tabular output of task state (columns: type, identity, status, attempts, last_error, next_attempt_at); `queue reset-retries [--source PATH] [--identity VALUE]` — resets the retry counter for tasks in `error` status (status→`pending`, attempts→0, next_attempt_at→now) across all event types, after which the background worker re-processes them. The subcommand is additive to the existing ones (`serve`, `db`, `model`, `onnx-runtime`, `load-test`).
 
-> **Contract decision (2026-08-29):** the subcommand was originally designed as `index` but was renamed to `queue` by a human — the name `queue` more accurately reflects the entity (the single `document_jobs` state table, shared by watcher/startup/worker) rather than the indexing process. This is an explicit deviation from the original naming in task 1.7.
+> **Contract decision (2026-08-29):** the subcommand was originally designed as `index` but was renamed to `queue` by a human — the name `queue` more accurately reflects the entity (the single state table, shared by watcher/startup/worker) rather than the indexing process. This is an explicit deviation from the original naming in task 1.7.
+>
+> **Contract decision (2026-09-06):** the queue became a generic event queue (`queue_tasks`, human decision — event-queue-and-incremental-linking change). The `--path` filter was renamed to `--identity` because the row key is now the event identity (path for `doc:*` events, document id for `entity:link`), and `queue status` prints the event `type` column. The `queue` subcommand name, actions, and `--source`/`--status` filters are preserved.
 
 #### Scenario: Status
 - **WHEN** invoking `synopsis queue status`
-- **THEN** a table of all jobs in the `document_jobs` queue is printed with columns path/status/attempts/last_error/next_attempt_at; the `--source` filter narrows the output to a single source, `--status` — to a single status
+- **THEN** a table of all tasks in the `queue_tasks` queue is printed with columns type/identity/status/attempts/last_error/next_attempt_at; the `--source` filter narrows the output to a single source (doc events), `--status` — to a single status
+
+#### Scenario: Status of a link task
+- **WHEN** an `entity:link` task exists for a document
+- **THEN** `synopsis queue status` prints a row with type `entity:link` and identity equal to the document id
 
 #### Scenario: Reset retries
-- **WHEN** invoking `synopsis queue reset-retries --path workspace/datasets/edtech/ontology/../content/documents/product/adaptive_learning_prd.md`
-- **THEN** the job moves to `pending` with attempts=0; the next background-worker cycle re-indexes the document (the row is no longer in `error` status)
+- **WHEN** invoking `synopsis queue reset-retries --identity <doc-id>` for an `entity:link` task in `error` status
+- **THEN** the task moves to `pending` with attempts=0; the next background-worker cycle re-processes it (the row is no longer in `error` status)
 
 ### Requirement: db subcommand
 

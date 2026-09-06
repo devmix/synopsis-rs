@@ -275,7 +275,7 @@ the delta specs under this change's `specs/`, the final code state.
 
 **Estimated size.** ~200–300 lines of MDX/Markdown edits.
 
-- [ ] **1.5** — Accurate `processing` state: one-at-a-time claiming + startup recovery
+- [x] **1.5** — Accurate `processing` state: one-at-a-time claiming + startup recovery
 
 **Goal.** Fix two lifecycle defects of `queue_tasks` found in review after
 1.3: (1) `claim_due` pre-claims up to 100 rows into `processing` in one
