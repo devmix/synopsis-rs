@@ -36,6 +36,7 @@ pub mod executor;
 pub mod fact;
 pub mod fact_source;
 pub mod gc;
+pub mod queue_task;
 pub mod test_util;
 pub mod utils;
 
@@ -53,3 +54,7 @@ pub use executor::{ConnectionOrTx, DbExecutor};
 pub use fact::{Fact, FactDao, FactFilter};
 pub use fact_source::{FactSource, FactSourceDao};
 pub use gc::GcDao;
+pub use queue_task::{
+    DocDeletePayload, DocIndexPayload, EntityLinkPayload, QueueTask, QueueTaskDao, QueueTaskError,
+    QueueTaskType, UnknownTaskType,
+};

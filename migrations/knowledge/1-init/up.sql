@@ -6,9 +6,9 @@
 -- 5.1 consolidated the former five forward-only migrations — 1-init through
 -- 5-search-text — into this single init migration). It builds the full final
 -- v5 schema shape in one step: the base tables/indexes/FTS triggers (with the
--- `search_text` re-point folded in), `document_jobs` + its due index, and
--- `usearch_vectors_log` (composite (segment_id, chunk_id) PK + flags/segment
--- indexes).
+-- `search_text` re-point folded in), `document_jobs` + its due index,
+-- `queue_tasks` + its due/identity indexes, and `usearch_vectors_log`
+-- (composite (segment_id, chunk_id) PK + flags/segment indexes).
 --
 -- `PRAGMA user_version` is NOT set here: `rusqlite_migration::to_latest` sets
 -- it to the migration count (one migration → user_version 1). The schema
@@ -72,6 +72,13 @@
 --                              operational table; the prior implementation has
 --                              no equivalent queue (it ingests synchronously), so
 --                              no parity is required.
+--   queue_tasks              -- generic event queue for ALL background work
+--                              (event-queue-incremental-linking task 1.1,
+--                              ADR 0005): typed events (doc:index | doc:delete |
+--                              entity:link), one row per (type, identity)
+--                              (unique index), the same pending -> processing ->
+--                              done|error lifecycle as document_jobs. New Rust
+--                              operational table; no parity is required.
 --   usearch_vectors_log      -- write-ahead log for the usearch ANN engine
 --                              (usearch-wal-persistence, tasks 2.1/2.4). Composite
 --                              (segment_id, chunk_id) PK; segment_id = 0 means
@@ -232,6 +239,31 @@ CREATE TABLE document_jobs (
 );
 
 CREATE INDEX idx_document_jobs_due ON document_jobs(status, next_attempt_at);
+
+-- queue_tasks: generic event queue for all background work (event-queue-
+-- incremental-linking task 1.1, ADR 0005). One row per (type, identity) —
+-- the unique index is the dedup/upsert key; the due index serves the
+-- worker's claim query. Typed events: doc:index | doc:delete | entity:link;
+-- `event` holds only the JSON residual payload (source_path/content_hash or
+-- entity_ids). Same lifecycle as document_jobs: pending -> processing ->
+-- done|error (bounded retries with exponential backoff; re-enqueue moves
+-- the row to the end of the claim order via next_attempt_at = now).
+CREATE TABLE IF NOT EXISTS queue_tasks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    type            TEXT NOT NULL, -- 'doc:index' | 'doc:delete' | 'entity:link'
+    identity        TEXT NOT NULL, -- dedup key: file path (doc:*) / doc id (entity:link)
+    event           TEXT NOT NULL, -- JSON residual payload
+    status          TEXT NOT NULL DEFAULT 'pending', -- pending|processing|done|error
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    max_attempts    INTEGER NOT NULL DEFAULT 3,
+    last_error      TEXT,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
+CREATE INDEX idx_queue_tasks_due ON queue_tasks(status, next_attempt_at);
+CREATE UNIQUE INDEX idx_queue_tasks_identity ON queue_tasks(type, identity);
 
 -- usearch_vectors_log: write-ahead log for the usearch ANN engine (folded in
 -- from the former usearch-WAL migrations; usearch-wal-persistence tasks

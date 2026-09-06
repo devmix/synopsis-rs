@@ -23,3 +23,8 @@ include_dir = { workspace = true }
 r2d2 = { workspace = true }
 r2d2_sqlite = { workspace = true }
 thiserror = { workspace = true }
+# Event-queue JSON residual payloads (event-queue-incremental-linking task
+# 1.1, design D3): the `queue_tasks.event` column is a JSON payload
+# (serde Serialize/Deserialize) written/parsed by `QueueTaskDao`.
+serde = { workspace = true }
+serde_json = { workspace = true }

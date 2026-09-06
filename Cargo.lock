@@ -760,6 +760,8 @@ dependencies = [
  "r2d2_sqlite",
  "rusqlite",
  "rusqlite_migration",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

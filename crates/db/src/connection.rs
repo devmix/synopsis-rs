@@ -394,6 +394,7 @@ mod tests {
             "entities",
             "fact_sources",
             "facts",
+            "queue_tasks",
             "usearch_vectors_log",
         ]
         .into_iter()

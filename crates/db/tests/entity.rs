@@ -794,11 +794,14 @@ fn aggregations_on_empty_table() {
 #[test]
 fn list_created_since_strictly_after() {
     let db = in_memory_db();
-    let alice = db
+    // Explicit `i64`: once serde_json is a direct dependency (event-queue-
+    // incremental-linking task 1.1) its `impl PartialEq<Value> for i64`
+    // makes the inference here ambiguous.
+    let alice: i64 = db
         .with_conn(|conn| {
             conn.execute(
                 "INSERT INTO entities (type, name, domain, created_at) \
-             VALUES ('PERSON', 'Alice', 'hr', '2024-01-01 10:00:00')",
+              VALUES ('PERSON', 'Alice', 'hr', '2024-01-01 10:00:00')",
                 [],
             )
             .unwrap();
