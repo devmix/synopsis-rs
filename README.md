@@ -1,5 +1,13 @@
 # Synopsis
 
+[![CI](https://img.shields.io/github/actions/workflow/status/devmix/synopsis-rs/ci.yml?label=ci&branch=main)](https://github.com/devmix/synopsis-rs/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/devmix/synopsis-rs?include_prereleases)](https://github.com/devmix/synopsis-rs/releases)
+[![License](https://img.shields.io/github/license/devmix/synopsis-rs)](LICENSE)
+[![Rust 1.96.0](https://img.shields.io/badge/rust-1.96.0-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![MCP Server](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
+[![SQLite FTS5 + usearch](https://img.shields.io/badge/SQLite-FTS5%20+%20usearch-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![ONNX Runtime](https://img.shields.io/badge/embedding-ONNX%20Runtime-3E8EDE)](https://onnxruntime.ai)
+
 A local RAG + knowledge-graph MCP server in Rust — one binary, no external
 services, built for a 16 GB laptop. It ingests your documents (Markdown,
 JSON, web pages), builds a hybrid index (SQLite FTS5 + disk-backed quantized
