@@ -6,7 +6,10 @@ final pipeline shape). REVISION 2026-09-07 (first release run 34100195267 failed
 windows-msvc → windows-gnu, add the usearch `Windows.h` case shim) and stabilizes
 the rust-cache keys (per-leg + shared host) — MUST land before the tag re-push.
 1.5 (darwin legs need the macOS SDK — `SDKROOT`) also MUST land before the tag
-re-push. 1.6 (project docs) and 1.7 (site docs) follow AFTER a green release run.
+re-push. REVISION 2026-09-07 (second release run 34109187471 failed at
+packaging): 1.8 (create the `dist/` directory before writing the leg archives)
+MUST land before the NEXT tag re-push. 1.6 (project docs) and 1.7 (site docs)
+follow AFTER a green release run.
 All tasks touch YAML/docs/comments only — NO Rust source, NO Cargo.toml deps, NO
 Cargo.lock (1.6 touches comment lines in Cargo.toml files only). `cargo
 fmt/clippy/test` gates are not applicable (workspace behavior untouched); verify
@@ -635,5 +638,56 @@ Final state the pages must describe:
    `grep -q 'matrix' site/docs/developer/ci-cd.mdx`.
 8. No broken internal links: `grep -rc 'developer/gitea-releases' site/docs
    --include='*.mdx' | grep -v ':0'` exits non-zero.
-9. `git status --porcelain` shows ONLY files under `site/docs/` (including the
-   rename as `R` status).
+ 9. `git status --porcelain` shows ONLY files under `site/docs/` (including the
+    rename as `R` status).
+
+---
+
+## 1.8 Fix packaging — create `dist/` before writing the leg archives
+
+> **BLOCKING:** the second release run (34109187471, tag at 56f7cca) failed:
+> the `linux_amd64` leg compiled fine (`Finished release profile in 5m 30s`)
+> but packaging died with
+> `tar (child): dist/synopsis_0.1.0_linux_amd64.tar.gz: Cannot open: No such
+> file or directory` — the `Build + package` script writes the archive to
+> `dist/` but never creates it. A fresh runner has no `dist/`, so ALL 5 legs
+> fail at packaging (the `zip` leg has the same problem: `zip -qr` cannot
+> create parent directories). The other legs were cancelled by the workflow
+> after the first failure; `publish` was skipped.
+
+- **Goal:** make the packaging step create the output directory before writing
+  the archive, so all 5 legs produce their `dist/synopsis_<version>_<name>.<ext>`
+  archive on a fresh runner.
+- **File scope:** `.github/workflows/release.yml` ONLY — the `Build + package`
+  step of the `build` job.
+- **Dependencies:** 1.5 (edits the committed build job).
+- **Fix (exact):** add `mkdir -p dist` in the run block, immediately before the
+  line `archive="dist/synopsis_${GITHUB_REF_NAME#v}_${name}.${ext}"` (i.e. after
+  the four `cp` lines that fill `stage/`). One line. Do not reword or move
+  anything else; do not touch the `zip`/`tar` branches (with `dist/` existing,
+  both work — verified locally: without the mkdir the exact script reproduces
+  `Cannot open: No such file or directory`; with it, `tar czf` produces the
+  archive and `(cd stage && zip -qr "../${archive}" .)` produces a valid zip).
+- **Root cause note for the commit message:** the packaging script was written
+  in 1.2 and edited in 1.4/1.5 but never executed end-to-end (local
+  verification ran `cargo zigbuild` only, not the packaging block); review
+  checked YAML validity + AC greps, not script execution.
+
+**Acceptance criteria (machine-checkable):**
+1. `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"`
+   exits 0.
+2. `grep -c 'mkdir -p dist' .github/workflows/release.yml` prints `1` (exactly
+   one occurrence — the publish job's `Download archives` step uses
+   `download-artifact` with `path: dist`, which creates the directory itself,
+   and must NOT get a `mkdir`).
+3. In the `Build + package` run block, `mkdir -p dist` appears AFTER the
+   `cp -r workspace/datasets/edtech/ontology ...` line and BEFORE the
+   `archive="dist/` line (verify with `grep -n` line numbers).
+4. The `zip`/`tar` branches and the `Upload archive` step are byte-identical to
+   the committed version (`git diff` shows only the added `mkdir -p dist` line
+   in `.github/workflows/release.yml`).
+5. End-to-end local dry-run of the packaging block (excluding `cargo zigbuild`)
+   against a locally built binary in a clean temp dir: `tar czf` produces a
+   non-empty `dist/synopsis_0.1.0_linux_amd64.tar.gz` whose `tar tzf` listing
+   contains `./synopsis`, `./README.md`, `./workspace/configs/`.
+6. `git status --porcelain` shows ONLY `.github/workflows/release.yml` modified.

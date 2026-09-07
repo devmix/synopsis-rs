@@ -182,6 +182,7 @@ jobs:
           cp README.md stage/
           cp -r workspace/configs stage/workspace/configs
           cp -r workspace/datasets/edtech/ontology stage/workspace/datasets/edtech/ontology
+          mkdir -p dist
           archive="dist/synopsis_${GITHUB_REF_NAME#v}_${name}.${ext}"
           if [ "${ext}" = "zip" ]; then
             (cd stage && zip -qr "../${archive}" .)
