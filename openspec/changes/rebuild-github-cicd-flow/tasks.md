@@ -246,6 +246,10 @@ Requirements:
 
 ## 1.3 Update `AGENTS.md` — CI gotcha + cross-build target list (3 spots)
 
+> **DONE 2026-09-07 (commit 5c21cd0, with 1.1–1.2).** Note: the msvc wording
+> this task committed was reverted by task 1.6 (the pipeline went back to
+> windows-gnu in 1.4).
+
 - **Goal:** three places in `AGENTS.md` describe the OLD pipeline / OLD target
   matrix and would instruct future agents against what this change shipped —
   replace them.
@@ -306,6 +310,8 @@ Replacements (adapt wording, keep the bold-label style of the other bullets):
 ---
 
 ## 1.4 Fix `release.yml` build legs + stabilize rust-cache keys
+
+> **DONE 2026-09-07 (commit 62a43b1).**
 
 - **Goal:** make the release pipeline actually build all 5 targets and stop
   rebuilding from scratch on every run. Three fixes, all evidence-backed
