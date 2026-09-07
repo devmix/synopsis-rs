@@ -421,6 +421,8 @@ Changes:
 
 ## 1.5 Fix darwin legs — macOS SDK (`SDKROOT`)
 
+> **DONE 2026-09-07 (commit 0113c2a).**
+
 - **Goal:** the two darwin build legs fail at the final link on a Linux host:
   rustc's linker driver locates the macOS SDK via `xcrun --sdk macosx --show-sdk-path`,
   which does not exist on Linux → `error: linking with zigcc-<target> wrapper failed`
