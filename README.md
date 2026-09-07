@@ -32,7 +32,7 @@ cargo test                # full workspace suite; no services or network needed
 ```
 
 Prebuilt archives for the 5 supported targets (Linux amd64/arm64, Windows
-amd64, macOS arm64) are published as Gitea Releases on `v*` tags — the
+amd64, macOS arm64/amd64) are published as GitHub Releases on `v*` tags — the
 archive bundles the stripped binary, this README, `workspace/configs/` and
 the `edtech` demo ontology.
 
@@ -101,8 +101,8 @@ to `approved` status. Wire contract: `openspec/specs/mcp-contract/`.
 - Coverage: `cargo llvm-cov --workspace --html` — measure-first, no gates
   (see `COVERAGE.md`)
 - Cross-builds: `cargo zigbuild --release --target <t>` with Zig 0.16.0
-  (targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`,
-  `aarch64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`)
+  (targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+  `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`)
 
 Workspace crates: `config` (presets/ontology), `db` (SQLite/FTS5/migrations),
 `vectors` (ANN engine), `embedding` (ONNX runtime), `ingestion` (parsers,

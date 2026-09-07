@@ -232,7 +232,7 @@ ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dyn
 # D2); default features (progressbar/onig/esaxx_fast) kept as published.
 tokenizers = "0.23.1"
 # ureq 3.4.0 (MSRV 1.85): sync HTTP for the runtime/model downloader (design D8); default
-# rustls+gzip keeps TLS pure-Rust, which matters for the static musl and windows-gnu CI
+# rustls+gzip keeps TLS pure-Rust, which matters for the gnu cross-build CI
 # targets (no system OpenSSL).
 ureq = "3"
 # sha2 0.11.0 (MSRV 1.85): cache keys sha256(model|dim|text) (design D3).

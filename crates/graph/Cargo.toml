@@ -10,7 +10,8 @@ workspace = true
 # petgraph DiGraph + HashMap name/type indexes are a derived read-only
 # in-memory index; CEL entity-linking expressions run on the `cel` crate
 # (D2, replaces cel-interpreter). Feasibility gate for both new dependencies
-# passed in task 1.1 (host build, zigbuild windows-gnu + aarch64-apple-darwin,
+# passed in task 1.1 (host build, zigbuild windows-gnu + aarch64-apple-darwin
+# + x86_64-apple-darwin,
 # cel API verified against registry sources).
 [dependencies]
 config = { workspace = true }

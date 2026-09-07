@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 config = { workspace = true }
 # Sync HTTP (design D2): same ureq 3 pin as the embedding downloader; default
-# rustls+gzip keeps TLS pure-Rust for the static musl and windows-gnu CI targets.
+# rustls+gzip keeps TLS pure-Rust for the gnu cross-build CI targets.
 ureq = { workspace = true }
 # JSON request/response bodies (design D2; the call method lands in task 1.2).
 serde = { workspace = true }
