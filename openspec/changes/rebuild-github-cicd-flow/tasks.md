@@ -5,15 +5,18 @@ final pipeline shape). REVISION 2026-09-07 (first release run 34100195267 failed
 1.4 fixes the build legs (drop the redundant/ELF-only strip step, revert
 windows-msvc → windows-gnu, add the usearch `Windows.h` case shim) and stabilizes
 the rust-cache keys (per-leg + shared host) — MUST land before the tag re-push.
-1.5 (project docs) and 1.6 (site docs) follow AFTER a green release run.
+1.5 (darwin legs need the macOS SDK — `SDKROOT`) also MUST land before the tag
+re-push. 1.6 (project docs) and 1.7 (site docs) follow AFTER a green release run.
 All tasks touch YAML/docs/comments only — NO Rust source, NO Cargo.toml deps, NO
-Cargo.lock (1.5 touches comment lines in Cargo.toml files only). `cargo
+Cargo.lock (1.6 touches comment lines in Cargo.toml files only). `cargo
 fmt/clippy/test` gates are not applicable (workspace behavior untouched); verify
 via `git status --porcelain` that only the declared files changed.
 
 ---
 
 ## 1.1 Rewrite `ci.yml` — merge `checks` + `coverage` into one sequential job
+
+> **DONE 2026-09-07 (commit 5c21cd0).**
 
 - **Goal:** one job, one runner, one checkout, one toolchain install, one cargo cache;
   dev CI compiles the workspace per profile (clippy metadata, test codegen, llvm-cov
@@ -89,6 +92,8 @@ Requirements:
 ---
 
 ## 1.2 Rewrite `release.yml` — `gate` → `build` (5-way matrix) → `publish` + objcopy fix
+
+> **DONE 2026-09-07 (commit 5c21cd0).**
 
 > **SUPERSEDED in part by 1.4 (revision 2026-09-07):** the `zig objcopy` strip step
 > is REMOVED (D5 — the profile already strips; `zig objcopy` is ELF-only), and the
@@ -289,10 +294,10 @@ Replacements (adapt wording, keep the bold-label style of the other bullets):
 5. `git diff --stat AGENTS.md` shows a bounded change (only the three declared
    regions).
 
-> **SUPERSEDED in part by 1.5 (revision 2026-09-07):** the msvc wording in the
+> **SUPERSEDED in part by 1.6 (revision 2026-09-07):** the msvc wording in the
 > replacements above is reverted to windows-gnu (D7), and the "zig objcopy strip
 > with an explicit output file" clause is replaced (D5 — no strip step). AC #2 and
-> #4 above were correct for the as-committed state; 1.5 re-fixes these spots and is
+> #4 above were correct for the as-committed state; 1.6 re-fixes these spots and is
 > authoritative.
 
 ---
@@ -414,7 +419,75 @@ Changes:
 
 ---
 
-## 1.5 Fix project docs — AGENTS.md, README.md, Cargo.toml comments
+## 1.5 Fix darwin legs — macOS SDK (`SDKROOT`)
+
+- **Goal:** the two darwin build legs fail at the final link on a Linux host:
+  rustc's linker driver locates the macOS SDK via `xcrun --sdk macosx --show-sdk-path`,
+  which does not exist on Linux → `error: linking with zigcc-<target> wrapper failed`
+  (reproduced locally: every dependency compiled, then the `cli` binary link failed
+  for BOTH darwin legs). Fix: give the darwin legs Apple's `MacOSX11.3.sdk` and
+  export `SDKROOT` — the exact mechanism + SDK the official cargo-zigbuild
+  Dockerfile uses (design D9 of this change).
+- **File scope:** `.github/workflows/release.yml` ONLY (the `build` job).
+  Nothing else.
+- **Dependencies:** 1.4 (edits the committed build job).
+- **References:** `design.md` D9 of this change; the committed
+  `.github/workflows/release.yml`; cargo-zigbuild README (Environment Variables →
+  `SDKROOT`) and its official Dockerfile (`MacOSX11.3.sdk` + `ENV SDKROOT`).
+
+Changes (all in the `build` job of `release.yml`):
+
+1. Add TWO steps AFTER the `mlugg/setup-zig@v2` step and BEFORE the
+   "Build + package" step, both guarded by
+   `if: contains(matrix.target, 'apple-darwin')`:
+
+   a. **Cache macOS SDK** — `actions/cache@v4` with
+      `path: ${{ env.HOME }}/macosx-sdk/MacOSX11.3.sdk` and
+      `key: macosx-sdk-11.3`. (Restores the 575 MB extracted SDK on a cache hit;
+      saves it at the end of a successful leg.)
+   b. **Download macOS SDK** — `run: |` with `set -euo pipefail`, creating
+      `$HOME/macosx-sdk` and downloading + extracting ONLY if the SDK is not
+      already present (cache miss):
+      `curl -L --fail
+      "https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz"
+      | tar -J -x -C "$HOME/macosx-sdk"`.
+
+2. In the "Build + package" `run:` script, NEXT TO the existing windows-gnu
+   `CXXFLAGS` guard, add a darwin `SDKROOT` guard so the value is set only for the
+   darwin legs:
+   ```bash
+   case "${target}" in
+     *-apple-darwin) export SDKROOT="${HOME}/macosx-sdk/MacOSX11.3.sdk" ;;
+   esac
+   ```
+   (Place it after the `target/name/ext` assignment and the windows-gnu guard,
+   before `cargo zigbuild`.)
+
+3. Comments: update the header / per-step comments in the `build` job so they
+   match the shipped behavior (darwin legs need the macOS SDK + `SDKROOT`, design
+   D9). Keep the existing comment style. Do NOT change step order, action pins,
+   the matrix, the changelog script, or the publish job.
+
+**Acceptance criteria (machine-checkable):**
+1. `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/release.yml'))"` exits 0.
+2. `grep -q 'MacOSX11.3.sdk' .github/workflows/release.yml` AND
+   `grep -q 'phracker/MacOSX-SDKs' .github/workflows/release.yml`.
+3. `grep -q 'SDKROOT' .github/workflows/release.yml` AND
+   `grep -q 'macosx-sdk-11.3' .github/workflows/release.yml` (the cache key).
+4. `grep -q 'actions/cache@v4' .github/workflows/release.yml`.
+5. Both new steps are guarded: `grep -c "contains(matrix.target, 'apple-darwin')"
+   .github/workflows/release.yml` == 2 (the two `if:` guards).
+6. `python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/release.yml')); assert set(d['jobs']) == {'gate','build','publish'}"` exits 0
+   (job structure unchanged) AND
+   `grep -q 'softprops/action-gh-release@v3' .github/workflows/release.yml`.
+7. `grep -c 'zig objcopy' .github/workflows/release.yml` == 0 (1.4's fix intact)
+   AND `grep -q 'x86_64-pc-windows-gnu' .github/workflows/release.yml`.
+8. `git status --porcelain` shows ONLY `.github/workflows/release.yml` (plus this
+   change's tasks.md/design.md/proposal.md revision notes if any).
+
+---
+
+## 1.6 Fix project docs — AGENTS.md, README.md, Cargo.toml comments
 
 - **Goal:** bring the repo-root project docs in line with the shipped pipeline
   (design D5/D7/D8 of this change). Three classes of stale text: (a) the msvc
@@ -476,7 +549,7 @@ Changes:
 
 ---
 
-## 1.6 Fix site docs — GitHub Releases, new matrix, pipeline shape
+## 1.7 Fix site docs — GitHub Releases, new matrix, pipeline shape
 
 - **Goal:** the docs site (`site/docs/`) still describes the OLD Gitea pipeline
   (single job, Gitea-fork actions, musl targets, `zig objcopy` strip) and links to
@@ -498,7 +571,7 @@ Changes:
     `developer/github-releases` (found in `installation.mdx`, `roadmap.mdx`).
   Nothing else (no `docusaurus.config.*`, no `sidebars.ts` — the sidebar is
   autogenerated from the folder structure).
-- **Dependencies:** 1.4, 1.5 (docs describe the committed pipeline).
+- **Dependencies:** 1.4, 1.5, 1.6 (docs describe the committed pipeline).
 - **References:** `design.md` D1/D3/D5/D7/D8 of this change; the committed
   `.github/workflows/{release.yml,ci.yml}` (the source of truth for what the pages
   describe).

@@ -13,7 +13,7 @@ the Gitea runner executes nothing. The first tag (`v0.1.0`) exposed the latent
 `zig objcopy` bug in the single-job loop. The first run of THIS pipeline
 (34100195267) failed the `windows-msvc` leg (Zig has no MSVC libc for C
 compilation — D7) and showed the rust-cache keys are job-name-based (D8);
-both are fixed by revision 2026-09-07 (tasks 1.4–1.6).
+both are fixed by revision 2026-09-07 (tasks 1.4–1.5).
 
 Frozen stack + constraints: `openspec/config.yaml`. No recorded fixtures / contract
 specs are the reference (no behavior change).
@@ -62,8 +62,9 @@ specs are the reference (no behavior change).
      each row carries `target`, `name`, `ext`). Each leg: checkout → toolchain 1.96.0
      (`targets: ${{ matrix.target }}`) → rust-cache (`key: ${{ matrix.name }}`, D8) →
      `cargo install --locked cargo-zigbuild` → `mlugg/setup-zig@v2` (0.16.0) →
-     `cargo zigbuild --release --target` (Windows leg: `CXXFLAGS` case shim, D7) →
-     package `synopsis_<version>_<name>.<ext>` (no strip — profile strips, D5) →
+     (darwin legs: macOS SDK download + `SDKROOT`, D9) → `cargo zigbuild --release
+     --target` (Windows leg: `CXXFLAGS` case shim, D7) → package
+     `synopsis_<version>_<name>.<ext>` (no strip — profile strips, D5) →
      `actions/upload-artifact@v4` (`name: synopsis-<name>`, `path: dist/...`).
   3. `publish` (`needs: build`) — checkout (`fetch-depth: 0`, the changelog needs
      history + tags) → `actions/download-artifact@v4` (`merge-multiple: true`,
@@ -123,6 +124,20 @@ specs are the reference (no behavior change).
 - **Alternative rejected:** `llvm-strip` (handles all three formats) — rejected:
   not needed; the profile strips at link time for every target with no external
   tool, and adding a per-format strip toolchain is complexity for zero benefit.
+- **Mach-O note (verified 2026-09-07):** the darwin binaries retain 410 (x86_64)
+  / 694 (arm64) symbols — this is the **irreducible minimum for a dyld-linked
+  executable**, not a missing strip step. rustc 1.96.0 runs
+  `rust-objcopy --strip-all` post-link (`rustc_codegen_ssa/src/back/link.rs`);
+  LLVM's Mach-O objcopy backend keeps exactly the symbols the dynamic linker
+  requires (undefined imports for two-level namespace binding,
+  `REFERENCED_DYNAMICLY` symbols, and indirect-symbol-table entries for global
+  data via `__la_symbol_ptr`). Analysis of both darwin binaries: every retained
+  symbol is in one of those three categories; the only technically-removable
+  symbol is `__mh_execute_header`, which Apple's own toolchain also keeps.
+  ELF shows 0 symbols because glibc binding uses `.dynsym`, so the whole
+  `.symtab` can be dropped. Size impact ≈ 15 KB / 17.4 MB (0.09%). A
+  post-link `llvm-strip`/`zig objcopy` step for the darwin legs would change
+  nothing.
 
 ### D6 — Release body: categorized changelog from conventional commits
 
@@ -196,7 +211,8 @@ specs are the reference (no behavior change).
   (Upstream usearch should use lowercase; the shim stays until it does.)
 - **Risk (accepted):** `x86_64-unknown-linux-gnu` (replacing musl-amd64) and
   `x86_64-apple-darwin` are NEW legs for this workspace — verified by LOCAL builds
-  of all 5 targets before the tag re-push, then by the first release run.
+  of all 5 targets before the tag re-push (the darwin legs need the D9 macOS SDK),
+  then by the first release run.
 - **Archive contents per leg (unchanged, `make-ci-gitea-compatible` D4):** binary
   (`synopsis` / `synopsis.exe`, already stripped by the profile — D5),
   `README.md`, `workspace/configs/**`,
@@ -235,12 +251,44 @@ specs are the reference (no behavior change).
 - **Alternative rejected:** `restore-keys` prefix matching — not supported by this
   action (only `key` / `shared-key` inputs exist).
 
+### D9 — macOS SDK for the darwin legs
+
+- **Decision:** the two darwin legs get Apple's `MacOSX11.3.sdk` (48.85 MB
+  tarball from the `phracker/MacOSX-SDKs` GitHub release — the exact SDK the
+  official cargo-zigbuild Docker image ships) downloaded to `$HOME/macosx-sdk/`,
+  cached with `actions/cache@v4` (`key: macosx-sdk-11.3`), and
+  `SDKROOT=$HOME/macosx-sdk/MacOSX11.3.sdk` exported in the build script for the
+  darwin legs.
+- **Why:** rustc's linker driver locates the macOS SDK via
+  `xcrun --sdk macosx --show-sdk-path` — which does not exist on a Linux host →
+  the final link fails: `error: linking with zigcc-<target> wrapper failed`
+  (reproduced locally: both darwin legs compiled every dependency, then failed
+  linking the `cli` binary). The cargo-zigbuild README documents `SDKROOT` as the
+  mechanism ("Path to macOS SDK (auto-detected on macOS)"), and its official
+  Dockerfile installs exactly this SDK:
+  `curl ... MacOSX11.3.sdk.tar.xz | tar -J -x -C /opt; ENV SDKROOT=/opt/MacOSX11.3.sdk`.
+  The SDK also covers the C/C++ dependencies (ring, libsqlite3-sys, usearch):
+  zig cc for darwin targets reads `SDKROOT`, because zig bundles no darwin system
+  libraries.
+- **Evidence:** local reproduction without the SDK (both legs failed at the cli
+  link with the xcrun warning); local build with `SDKROOT` set — both legs
+  produce stripped Mach-O binaries (verified 2026-09-07).
+- **Why 11.3:** the exact SDK of the official cargo-zigbuild Dockerfile — a
+  proven combination with cargo-zigbuild 0.23.x + Zig 0.16. The binary uses no
+  macOS frameworks, so the SDK version only affects the embedded SDK-version
+  stamp.
+- **Alternative rejected:** a container image with the SDK preinstalled (the
+  cargo-zigbuild Docker image is pinned to Rust 1.93.0 and would need a custom
+  build) — the download + cache approach keeps the legs on plain `ubuntu-latest`
+  and costs one 51 MB download per cold cache.
+
 ## Action pins (carried over, verified 2026-09-04)
 
 `actions/checkout@v7`, `dtolnay/rust-toolchain@1.96.0` (must match
-`rust-toolchain.toml`), `Swatinem/rust-cache@v2`, `taiki-e/install-action@v2`
-(cargo-llvm-cov 0.9.0), `mlugg/setup-zig@v2` (Zig 0.16.0), `actions/upload-
-artifact@v4`, `actions/download-artifact@v4`, `softprops/action-gh-release@v3`.
+`rust-toolchain.toml`), `Swatinem/rust-cache@v2`, `actions/cache@v4` (macOS SDK,
+D9), `taiki-e/install-action@v2` (cargo-llvm-cov 0.9.0), `mlugg/setup-zig@v2`
+(Zig 0.16.0), `actions/upload-artifact@v4`, `actions/download-artifact@v4`,
+`softprops/action-gh-release@v3`.
 
 ## Risks
 

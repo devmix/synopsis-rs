@@ -4,7 +4,10 @@
 #   gate    → fmt + clippy + test on the tagged commit (fast, no coverage).
 #   build   → 5-way parallel matrix, one cargo-zigbuild target per leg, each leg
 #             packages synopsis_<version>_<name>.<ext> (no strip step — the
-#             [profile.release] strip = true already strips, design D5).
+#             [profile.release] strip = true already strips, design D5). The two
+#             darwin legs additionally download + cache Apple's MacOSX11.3.sdk and
+#             export SDKROOT, because a Linux host has no xcrun to locate the
+#             SDK (design D9).
 #   publish → merges the 5 archives, writes SHA256SUMS.txt, generates a categorized
 #             changelog from conventional commits, and publishes the GitHub Release.
 #
@@ -114,13 +117,40 @@ jobs:
         with:
           version: "0.16.0"
 
+      # The two darwin legs link against the macOS SDK, which a Linux host has no
+      # xcrun to locate (rustc's linker driver calls `xcrun --sdk macosx
+      # --show-sdk-path`); without it the final link fails (design D9). Cache the
+      # extracted ~575 MB SDK so only a cold cache pays the download + extraction;
+      # restore picks the latest save, and only successful legs save.
+      - name: Cache macOS SDK
+        if: contains(matrix.target, 'apple-darwin')
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HOME }}/macosx-sdk/MacOSX11.3.sdk
+          key: macosx-sdk-11.3
+
+      # Download + extract Apple's MacOSX11.3.sdk — the exact SDK the official
+      # cargo-zigbuild Docker image ships — only on a cache miss (design D9).
+      - name: Download macOS SDK
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/macosx-sdk"
+          if [ ! -d "$HOME/macosx-sdk/MacOSX11.3.sdk" ]; then
+            curl -L --fail \
+              "https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz" \
+              | tar -J -x -C "$HOME/macosx-sdk"
+          fi
+
       # Cross-compile this leg's target and package a clean archive bundling the
       # binary, README.md, the config presets and the ontology data; everything
       # else (notably the downloaded runtime library and model weights) is
       # intentionally excluded. No strip step: [profile.release] strip = true
       # already strips debug info and symbols at link time (design D5). The
       # windows-gnu leg puts the one-line case shim for usearch's
-      # `#include <Windows.h>` on the C++ include path (design D7).
+      # `#include <Windows.h>` on the C++ include path (design D7). The darwin
+      # legs export SDKROOT to point rustc's linker (and zig cc for the C/C++
+      # deps) at the downloaded macOS SDK (design D9).
       - name: Build + package
         run: |
           set -euo pipefail
@@ -130,6 +160,13 @@ jobs:
           if [ "${target}" = "x86_64-pc-windows-gnu" ]; then
             export CXXFLAGS_x86_64_pc_windows_gnu="-I${GITHUB_WORKSPACE}/third_party/windows-case-shim"
           fi
+          # The darwin legs link against the macOS SDK; a Linux host has no xcrun to
+          # locate it, so point rustc's linker (and zig cc for the C/C++ deps) at
+          # the downloaded SDK via SDKROOT — the mechanism the cargo-zigbuild
+          # README documents (design D9).
+          case "${target}" in
+            *-apple-darwin) export SDKROOT="${HOME}/macosx-sdk/MacOSX11.3.sdk" ;;
+          esac
           cargo zigbuild --release --target "${target}"
           bin="target/${target}/release/synopsis"
           case "${target}" in

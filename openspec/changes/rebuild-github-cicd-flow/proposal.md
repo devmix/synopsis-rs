@@ -27,11 +27,15 @@ The user approved (2026-09-07) a full restructure of the GitHub CI/CD flow.
 **Revision 2026-09-07:** the first run of the restructured pipeline (34100195267)
 failed the `windows-msvc` leg (Zig 0.16 has no libc/headers for the MSVC target —
 C code cannot compile) and showed the rust-cache keys are job-name-based (the job
-rename invalidated all caches; all 5 matrix legs shared one key). Revision: drop
-the strip step entirely (the profile already strips; `zig objcopy` is ELF-only),
-revert Windows to `x86_64-pc-windows-gnu` (+ a one-line `Windows.h` case shim for
-usearch), and stabilize the cache keys (per-leg + shared host). Docs (project +
-site) are updated in the same change, per the AGENTS.md doc rule.
+rename invalidated all caches; all 5 matrix legs shared one key). Local
+verification of the remaining legs then showed the darwin legs fail at the final
+link (rustc needs the macOS SDK via `xcrun`, which does not exist on Linux).
+Revision: drop the strip step entirely (the profile already strips; `zig objcopy`
+is ELF-only), revert Windows to `x86_64-pc-windows-gnu` (+ a one-line `Windows.h`
+case shim for usearch), stabilize the cache keys (per-leg + shared host), and give
+the darwin legs Apple's `MacOSX11.3.sdk` + `SDKROOT` (the exact SDK the official
+cargo-zigbuild Dockerfile ships). Docs (project + site) are updated in the same
+change, per the AGENTS.md doc rule.
 
 ## What
 
@@ -67,6 +71,10 @@ site) are updated in the same change, per the AGENTS.md doc rule.
 - **Stabilize rust-cache keys**: the action's default key embeds the job name, so
   the job rename invalidated all caches and the 5 matrix legs shared one key.
   Per-leg `key: <leg-name>` for `build`; `shared-key: host` for `gate` + `ci`.
+- **macOS SDK for the darwin legs**: rustc's linker driver needs the macOS SDK
+  (via `xcrun`, absent on Linux) — the two darwin legs download + cache Apple's
+  `MacOSX11.3.sdk` and export `SDKROOT` (the exact SDK of the official
+  cargo-zigbuild Dockerfile).
 - **Docs update (same change, per the AGENTS.md doc rule)**: `AGENTS.md` gotcha
   bullets, `README.md` target list + release wording, three Cargo.toml comments,
   and the site docs (`site/docs/developer/{ci-cd,setup,gitea-releases→
