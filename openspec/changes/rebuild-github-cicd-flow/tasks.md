@@ -645,6 +645,8 @@ Final state the pages must describe:
 
 ## 1.8 Fix packaging — create `dist/` before writing the leg archives
 
+> **DONE 2026-09-07 (commit f73f0d6).**
+
 > **BLOCKING:** the second release run (34109187471, tag at 56f7cca) failed:
 > the `linux_amd64` leg compiled fine (`Finished release profile in 5m 30s`)
 > but packaging died with
