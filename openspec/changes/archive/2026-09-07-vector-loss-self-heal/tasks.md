@@ -61,7 +61,7 @@ the existing `MemoryIndex` stub in `worker.rs` tests.
 
 **Estimated size.** ~150–200 lines (code + tests).
 
-- [ ] **1.2** — Startup vector self-heal (re-embed chunks without a vector)
+- [x] **1.2** — Startup vector self-heal (re-embed chunks without a vector)
 
 **Goal.** At serve startup, detect chunk rows that have no corresponding
 vector (the residual loss window after a mid-cycle `SIGKILL`) and enqueue
@@ -134,7 +134,7 @@ sequence in `serve/server.rs` (~line 449–460).
 
 **Estimated size.** ~300–400 lines (code + tests).
 
-- [ ] **1.3** — Granular re-embed op (`ReEmbed`): re-embed without the full pipeline
+- [x] **1.3** — Granular re-embed op (`ReEmbed`): re-embed without the full pipeline
 
 **Goal.** Make the self-heal's re-embed actually happen: add a `ReEmbed` op to
 the `doc:index` payload, a `Runner::reembed_document` that re-embeds the
