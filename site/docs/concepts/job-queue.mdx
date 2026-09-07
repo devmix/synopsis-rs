@@ -18,7 +18,7 @@ The table lives in the per-dataset knowledge DB. Every row is one queued event: 
 
 | `type` | `identity` | `event` payload | What the worker does |
 |--------|------------|-----------------|----------------------|
-| `doc:index` | the document path | `source_path`, `content_hash` | Runs the per-document pipeline (parse → … → write) for that file. |
+| `doc:index` | the document path | `source_path`, `content_hash`, `ops` (default `[full]`) | Runs the per-document pipeline (parse → … → write) for that file; with `ops: [reembed]` it re-embeds the document's existing chunks instead of running the full pipeline. |
 | `doc:delete` | the document path | `source_path` | Deletes the document and all its data, then removes the row (a one-shot operation). |
 | `entity:link` | the document id (decimal string) | `entity_ids` (array) | Incrementally links the created/updated entities against the rest of the dataset. |
 
@@ -49,6 +49,7 @@ The table lives in the per-dataset knowledge DB. Every row is one queued event: 
 | Trigger | What happens |
 |---------|--------------|
 | **Startup reconcile** | When `serve` starts, the dataset is scanned and the diff — new or changed files — is enqueued as `doc:index` events. `--no-initial-sync` skips this step at boot. |
+| **Startup self-heal** | At `serve` startup, chunk rows without a vector (lost in an unclean shutdown) are enqueued as `doc:index` with `ops: [reembed]` so the worker re-embeds them before the index serves traffic. |
 | **File watcher** | While the server runs, file changes enqueue `doc:index` events; a vanished file enqueues a `doc:delete`, and the worker deletes the document and all its data cascadingly. |
 | **The pipeline** | During indexing, when a run creates or updates entities it enqueues an `entity:link` event (see [How `entity:link` events are emitted](#how-entitylink-events-are-emitted)). |
 

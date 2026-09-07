@@ -72,6 +72,14 @@ The full resolution order and every key it loads is in [Configuration](./configu
 
 Remember to update `embeddings.local.vector_dim` (and the model) to a matching pair before re-running. The full recovery model is on the [Vector Rebuild](../concepts/vector-rebuild) page.
 
+## Semantic search returns nothing after an unclean shutdown
+
+**Symptom** — after a `SIGKILL`, crash, or power loss, `search` returns lexical (FTS5) results but no semantic (vector) results for the most recent documents.
+
+**Cause** — the vector RAM layer is persisted on a schedule (after each ingestion cycle and on graceful shutdown); a `SIGKILL` bypasses the shutdown save, so the in-progress cycle's vectors can be lost.
+
+**Fix** — none required: the next `serve` startup runs the self-heal, which detects the missing vectors and re-embeds the affected chunks (the `ReEmbed` op) before the index serves traffic; restart and the semantic leg recovers. If it ever does not recover (e.g. the chunk rows themselves were lost), the fallback is `synopsis db clear` plus a `serve` restart. The full model is on the [Vector Rebuild](../concepts/vector-rebuild) page.
+
 ## Stuck queue tasks
 
 **Symptom** — documents never appear in search, or re-ingestion stalls; the worker keeps failing the same files.

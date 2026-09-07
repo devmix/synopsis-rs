@@ -100,7 +100,7 @@ Trigger: `RAM.size() ≥ max_segment_vectors` inside `insert_batch`. Procedure u
 4. RAM: `reset()`, `ram_keys.clear()`, `save()` an empty `ram.usearch` + an empty sidecar;
 5. bump the cache version.
 
-**Loss window (honest semantics):** a WAL without vectors cannot replay inserts. A crash loses RAM inserts since the last flush/shutdown-save (≤ `max_segment_vectors`). The sidecar manifest + the chunks table let the consumer find the lost chunk_ids (SQLite − index) and re-ingest them; the ultimate repair is `rebuild`. This is a conscious "WAL without vectors" limitation, not a defect.
+**Loss window (honest semantics):** a WAL without vectors cannot replay inserts. A crash loses RAM inserts since the last flush/shutdown-save (≤ `max_segment_vectors`). The change `vector-loss-self-heal` narrows this: the per-cycle save (the RAM layer is persisted after each worker cycle that indexed or deleted documents) bounds the unclean-shutdown (`SIGKILL`) loss window to the in-progress worker cycle, and the startup self-heal finds the lost chunk_ids (SQLite − index) and re-embeds them via the `ReEmbed` op (no full re-ingest); `rebuild` remains the fallback. This is a conscious "WAL without vectors" limitation, not a defect.
 
 ### 6. Search
 
@@ -160,7 +160,7 @@ Trigger: `RAM.size() ≥ max_segment_vectors` inside `insert_batch`. Procedure u
 
 ## Open questions / residual risks
 
-1. **RAM loss window** (section 5): a crash loses up to `max_segment_vectors` inserts. Mitigation: consumer reconciliation SQLite−index + re-ingest / `rebuild`. Extending `reconcile_vectors` to "missing vectors" — a separate ingestion-crate task (not in this ADR).
+1. **RAM loss window** (section 5): a crash loses up to `max_segment_vectors` inserts. **Now implemented by change `vector-loss-self-heal`:** the per-cycle save bounds the window to one worker cycle, and the startup self-heal re-embeds the missing chunk_ids via the `ReEmbed` op (no full re-ingest); `rebuild` remains the fallback.
 2. **Default `max_segment_vectors = 1M`**: the RAM tier ≈ 2–2.5 GB (bf16 + HNSW graph) on a 16 GB laptop — tight. It is configurable; if needed the default is lowered by a separate decision (a config change — a frozen contract).
 3. **Recall under filtering:** `filtered_search` excludes stale keys inside the walk, but HNSW navigation over a "holey" graph theoretically loses recall at a high stale fraction — compaction (30% threshold) keeps the fraction in check; the recall@k/p95 gates are checked by the parity harness after implementation.
 4. **`remove` on a view is silent (`Ok(0)`)**: the safeguard — DISK segments are not mutated by construction; an assert test pins the behavior.

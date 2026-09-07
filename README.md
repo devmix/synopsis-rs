@@ -14,7 +14,9 @@ knowledge graph, and serves everything over MCP (12 read-only tools).
   HTTP+SSE transport (`GET /sse` + `POST /message`) also served, plus
   `GET /health`
 - **Disk-backed ANN** — usearch HNSW (mmap, scalar-quantized, WAL + segments);
-  the query path never loads the embedding model
+  the query path never loads the embedding model; vectors survive unclean
+  shutdowns: the RAM layer is persisted after each ingestion cycle, and missing
+  vectors are re-embedded at startup (the self-heal)
 - **Self-contained build** — SQLite/FTS5 compiled in-tree (bundled), no CGO,
   no system dependencies; the ONNX runtime `.so`/`.dylib` and model weights
   are downloaded by the binary on demand (verified by URL + size + SHA-256)

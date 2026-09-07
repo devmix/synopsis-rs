@@ -27,14 +27,19 @@ Insertion is streaming, in batches of `(chunk_id, vector)` pairs. **Neither the 
 The engine keeps a small **RAM layer** for recent writes and read-only **DISK segments** (mmap views) for everything else:
 
 - **Flush on overflow** — when the RAM layer reaches `vectors.usearch.max_segment_vectors` (default 1,000,000), it is saved as a new DISK segment, the WAL of the RAM segment is cleared, and the RAM is reset to empty.
-- **Per-segment WAL** — inserts and deletions are journaled to the `usearch_vectors_log` table in the knowledge DB, so a crash loses at most the RAM inserts since the last flush or shutdown-save (a documented window, repaired by reconciliation or a rebuild).
+- **Per-cycle save** — after a worker cycle that indexed or deleted one or more documents, the RAM layer is persisted to disk (`build_index`); an idle cycle (no document work) performs no save. This bounds the unclean-shutdown (`SIGKILL`) loss window to the in-progress cycle.
+- **Per-segment WAL** — the `usearch_vectors_log` table in the knowledge DB journals the DISK-tier supersessions (a key marked invalid in a DISK segment when a fresher layer supersedes or deletes it); it stores chunk ids and flags only — never the vector payload — and never replays inserts. With the per-cycle save persisting the RAM layer after each work cycle, a crash loses at most the vectors of the in-progress cycle, which the [startup self-heal](#unclean-shutdown-the-self-heal) restores.
 - **Stale filtering** — every search filters each layer's results by the WAL's stale set (removed and superseded keys); duplicates between layers resolve in favor of the fresher layer.
 - **Compaction** — when the share of stale vectors in the DISK layers exceeds `vectors.usearch.compaction_stale_threshold` (default 30), a background compaction packs the live vectors into new segments, swaps the segment catalog atomically, and clears the WAL.
 - **Self-healing restart** — on open, WAL rows of non-existent segments are dropped and garbage files cleaned up. Re-opening an existing index does **not** rebuild it; recreation (on a dimension change) atomically replaces the contents, with no garbage accumulation.
 
 ## Consistency with the chunk store
 
-Vectors correspond to SQLite chunks **one-to-one by `chunk_id`**, and the two stores must always agree. The cascade order on deletion is fixed: **vectors first, then the chunk rows** — a failure between the steps leaves a recoverable state (orphan vectors are cleaned up by reconciliation; missing vectors are restored by re-embedding).
+Vectors correspond to SQLite chunks **one-to-one by `chunk_id`**, and the two stores must always agree. The cascade order on deletion is fixed: **vectors first, then the chunk rows** — a failure between the steps leaves a recoverable state (orphan vectors are cleaned up by reconciliation; missing vectors are restored by the [startup self-heal](#unclean-shutdown-the-self-heal) re-embedding them via the `ReEmbed` op).
+
+## Unclean shutdown: the self-heal
+
+The per-cycle save bounds the loss window of an unclean shutdown, but a `SIGKILL` between two saves still drops the RAM layer's most recent vectors: the chunk rows in SQLite stay intact, only their vectors are gone. At `serve` startup — after the startup reconcile and before the worker's startup drain — the runner detects the chunk rows that have no corresponding vector and enqueues one `doc:index` task per affected document carrying the `ReEmbed` op (see [Job Queue](./job-queue)). The worker re-embeds those chunks from their stored text — no re-parsing, re-chunking, or NER — restoring the vectors before the index serves traffic. When every chunk row already has a vector, the self-heal is a no-op. The fallback, when the chunk rows themselves (not just their vectors) were lost, is `synopsis db clear` plus a `serve` restart.
 
 ## Dimension mismatch: clear-then-queue
 
