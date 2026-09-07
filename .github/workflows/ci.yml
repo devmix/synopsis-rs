@@ -58,8 +58,15 @@ jobs:
 
       # Caches ~/.cargo (registry, git deps) and ./target; keyed by the
       # installed rustc version, so it must run after the toolchain step.
+      # shared-key: host pins a stable slot that does not embed the job name
+      # (design D8): the action's default key is v0-rust-{job}-{OS}-{envHash},
+      # so the checks→ci job rename would have invalidated every saved cache.
+      # The release gate job (release.yml) restores/saves the same slot, so
+      # the frequent push runs keep the rare tag runs warm.
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: host
 
       # Gate 1 — formatting. Fails on any unformatted file in any member.
       - name: Check formatting

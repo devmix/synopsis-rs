@@ -24,10 +24,21 @@ and the review of the whole pipeline surfaced three structural problems:
 
 The user approved (2026-09-07) a full restructure of the GitHub CI/CD flow.
 
+**Revision 2026-09-07:** the first run of the restructured pipeline (34100195267)
+failed the `windows-msvc` leg (Zig 0.16 has no libc/headers for the MSVC target —
+C code cannot compile) and showed the rust-cache keys are job-name-based (the job
+rename invalidated all caches; all 5 matrix legs shared one key). Revision: drop
+the strip step entirely (the profile already strips; `zig objcopy` is ELF-only),
+revert Windows to `x86_64-pc-windows-gnu` (+ a one-line `Windows.h` case shim for
+usearch), and stabilize the cache keys (per-leg + shared host). Docs (project +
+site) are updated in the same change, per the AGENTS.md doc rule.
+
 ## What
 
-- **Fix `release.yml` strip step**: `zig objcopy --strip-all "${bin}" "${bin}.stripped"
-  && mv "${bin}.stripped" "${bin}"`.
+- **NO strip step in `release.yml`**: the old `zig objcopy --strip-all <bin>` fails
+  (`zig objcopy` is ELF-only — `InvalidElfMagic` on the built PE) AND redundant
+  (`[profile.release] strip = true` already strips at link time). The step is
+  removed.
 - **Rewrite `ci.yml`**: merge `checks` + `coverage` into ONE sequential job on one
   runner — one checkout, one toolchain install (components: `clippy`, `rustfmt`,
   `llvm-tools-preview`), one cargo cache. Steps: fmt → clippy → test →
@@ -35,30 +46,41 @@ The user approved (2026-09-07) a full restructure of the GitHub CI/CD flow.
   measure-first intent via `continue-on-error: true`.
 - **Rewrite `release.yml`**: three jobs — `gate` (fmt + clippy + test on the tagged
   commit: a release is never built from unverified code) → `build` (5-way matrix,
-  each leg builds one target in parallel, strips, packages, uploads the archive as an
-  artifact) → `publish` (`needs: build`; downloads the five archives, writes
-  `SHA256SUMS.txt`, generates a categorized changelog from conventional commits,
-  publishes).
+  each leg builds one target in parallel, packages, uploads the archive as an
+  artifact — no strip step) → `publish` (`needs: build`; downloads the five
+  archives, writes `SHA256SUMS.txt`, generates a categorized changelog from
+  conventional commits, publishes).
 - **Standard GitHub actions again**: `actions/upload-artifact@v4`,
   `actions/download-artifact@v4`, `softprops/action-gh-release@v3` replace the Gitea
   forks (`ChristopherHX/gitea-upload-artifact@v4`, `akkuman/gitea-release-action@v1`).
 - **Refresh the cross-build target matrix** (user decision 2026-09-07: the service
   is used by other people on different platforms): drop both `*-musl` targets
-  (slow to compile; fully-static benefit irrelevant for end-user machines), replace
-  `x86_64-pc-windows-gnu` with the standard `x86_64-pc-windows-msvc` (cargo-zigbuild
-  supports it; the "Zig cannot link MSVC ABI" note is stale), add
-  `x86_64-apple-darwin` (Intel Macs). Final matrix: `x86_64-unknown-linux-gnu`,
-  `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`,
-  `x86_64-apple-darwin`.
-- **`AGENTS.md` gotcha update**: the "CI is Gitea-compatible on purpose" bullet is
-  replaced with the new GitHub-native description.
+  (slow to compile; fully-static benefit irrelevant for end-user machines), KEEP
+  `x86_64-pc-windows-gnu` (the msvc switch failed — Zig has no MSVC libc for C
+  code), add `x86_64-apple-darwin` (Intel Macs). Final matrix:
+  `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+  `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`.
+- **Windows `Windows.h` case shim**: one-line header
+  `third_party/windows-case-shim/Windows.h` on the C++ include path for the
+  windows-gnu leg (usearch includes capital-W `Windows.h`; case-sensitive Linux
+  hosts only have `windows.h`).
+- **Stabilize rust-cache keys**: the action's default key embeds the job name, so
+  the job rename invalidated all caches and the 5 matrix legs shared one key.
+  Per-leg `key: <leg-name>` for `build`; `shared-key: host` for `gate` + `ci`.
+- **Docs update (same change, per the AGENTS.md doc rule)**: `AGENTS.md` gotcha
+  bullets, `README.md` target list + release wording, three Cargo.toml comments,
+  and the site docs (`site/docs/developer/{ci-cd,setup,gitea-releases→
+  github-releases}.mdx`, `quickstart.mdx`, `guides/installation.mdx`,
+  `roadmap.mdx`).
 
-**Frozen contracts:** NO behavior change. This change touches only
-`.github/workflows/{ci.yml,release.yml}` and the CI gotcha in `AGENTS.md`; it does not
-touch the MCP tools, CLI surface, data schema, or config format, and no Rust source or
-dependency changes. Parity is confirmed by the gates themselves (fmt/clippy/test stay
-green in the new pipeline) and by the release pipeline producing the same archive
-layout/naming as before (`synopsis_<version>_<name>.<ext>` + `SHA256SUMS.txt`).
+**Frozen contracts:** NO behavior change. This change touches
+`.github/workflows/{ci.yml,release.yml}`, a new one-line shim header, project docs
+(`AGENTS.md`, `README.md`, three Cargo.toml comments), and site docs; it does not
+touch the MCP tools, CLI surface, data schema, or config format, and no Rust source
+or dependency changes. Parity is confirmed by the gates themselves
+(fmt/clippy/test stay green in the new pipeline) and by the release pipeline
+producing the same archive layout/naming as before
+(`synopsis_<version>_<name>.<ext>` + `SHA256SUMS.txt`).
 
 ## Non-goals
 

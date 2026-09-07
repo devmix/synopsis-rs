@@ -3,7 +3,8 @@
 # Three jobs (change rebuild-github-cicd-flow, design D3):
 #   gate    → fmt + clippy + test on the tagged commit (fast, no coverage).
 #   build   → 5-way parallel matrix, one cargo-zigbuild target per leg, each leg
-#             strips its binary and packages synopsis_<version>_<name>.<ext>.
+#             packages synopsis_<version>_<name>.<ext> (no strip step — the
+#             [profile.release] strip = true already strips, design D5).
 #   publish → merges the 5 archives, writes SHA256SUMS.txt, generates a categorized
 #             changelog from conventional commits, and publishes the GitHub Release.
 #
@@ -43,9 +44,15 @@ jobs:
           components: clippy, rustfmt
 
       # Caches ~/.cargo (registry, git deps) and ./target; keyed by the installed
-      # rustc version, so it must run after the toolchain step.
+      # rustc version, so it must run after the toolchain step. The action's
+      # default key embeds the job NAME, so the old single-job→gate rename
+      # silently invalidated every saved cache; the shared host slot (design
+      # D8) is stable across renames and is also saved by the frequent dev-CI
+      # runs, so the gate's clippy + test start warm on tag pushes.
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: host
 
       - name: Check formatting
         run: cargo fmt --check
@@ -66,9 +73,12 @@ jobs:
     strategy:
       matrix:
         include:
+          # Windows stays x86_64-pc-windows-gnu: Zig 0.16 ships no libc/headers
+          # for the msvc target, so the C/C++ deps (ring, libsqlite3-sys,
+          # usearch) cannot compile for msvc from a Linux host (design D7).
           - { target: x86_64-unknown-linux-gnu, name: linux_amd64, ext: tar.gz }
           - { target: aarch64-unknown-linux-gnu, name: linux_arm64, ext: tar.gz }
-          - { target: x86_64-pc-windows-msvc, name: windows_amd64, ext: zip }
+          - { target: x86_64-pc-windows-gnu, name: windows_amd64, ext: zip }
           - { target: aarch64-apple-darwin, name: darwin_arm64, ext: tar.gz }
           - { target: x86_64-apple-darwin, name: darwin_amd64, ext: tar.gz }
     steps:
@@ -83,8 +93,13 @@ jobs:
           targets: ${{ matrix.target }}
 
       # Caches ~/.cargo and ./target; keyed by rustc version, so after toolchain.
+      # key: ${{ matrix.name }} gives each leg its own stable slot (design D8):
+      # with the default job-name key all 5 legs shared ONE slot and the last
+      # saver won, so 4 of 5 targets rebuilt from scratch on every tag.
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
 
       # Install cargo-zigbuild from crates.io (its documented method). The binary
       # lands in CARGO_HOME, which rust-cache already caches, so only a cold cache
@@ -99,27 +114,31 @@ jobs:
         with:
           version: "0.16.0"
 
-      # Cross-compile this leg's target, strip it, and package a clean archive
-      # bundling the stripped binary, README.md, the config presets and the
-      # ontology data; everything else (notably the downloaded runtime library and
-      # model weights) is intentionally excluded. zig objcopy handles all three
-      # object formats (ELF, PE/COFF, Mach-O) with one command, unlike the host
-      # strip (ELF/PE only).
-      - name: Build + strip + package
+      # Cross-compile this leg's target and package a clean archive bundling the
+      # binary, README.md, the config presets and the ontology data; everything
+      # else (notably the downloaded runtime library and model weights) is
+      # intentionally excluded. No strip step: [profile.release] strip = true
+      # already strips debug info and symbols at link time (design D5). The
+      # windows-gnu leg puts the one-line case shim for usearch's
+      # `#include <Windows.h>` on the C++ include path (design D7).
+      - name: Build + package
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"; name="${{ matrix.name }}"; ext="${{ matrix.ext }}"
+          # usearch includes <Windows.h> (capital W); case-sensitive Linux hosts only
+          # have windows.h — put the one-line shim on the C++ include path (design D7).
+          if [ "${target}" = "x86_64-pc-windows-gnu" ]; then
+            export CXXFLAGS_x86_64_pc_windows_gnu="-I${GITHUB_WORKSPACE}/third_party/windows-case-shim"
+          fi
           cargo zigbuild --release --target "${target}"
           bin="target/${target}/release/synopsis"
           case "${target}" in
             *-pc-windows-*) bin="${bin}.exe"; binname="synopsis.exe" ;;
             *) binname="synopsis" ;;
           esac
-          # zig objcopy has no in-place mode: it needs an explicit output file
-          # (run 34092788497: "error: expected output parameter"). So strip to a
-          # temp file (bin.stripped), then rename it over the original (design D5).
-          zig objcopy --strip-all "${bin}" "${bin}.stripped"
-          mv "${bin}.stripped" "${bin}"
+          # No strip step: [profile.release] strip = true already strips debug info and
+          # symbols at link time (design D5). The old external strip tool was ELF-only
+          # and would have failed on the PE/Mach-O legs.
           rm -rf stage
           mkdir -p stage/workspace/datasets/edtech
           cp "${bin}" "stage/${binname}"

@@ -10,7 +10,10 @@ a single sequential job, Gitea-fork actions swapped in. Since then the project h
 moved to GitHub: CI runs on GitHub Actions (`github` remote =
 `https://github.com/devmix/synopsis-rs.git`), and there is no `.gitea/` directory —
 the Gitea runner executes nothing. The first tag (`v0.1.0`) exposed the latent
-`zig objcopy` bug in the single-job loop.
+`zig objcopy` bug in the single-job loop. The first run of THIS pipeline
+(34100195267) failed the `windows-msvc` leg (Zig has no MSVC libc for C
+compilation — D7) and showed the rust-cache keys are job-name-based (D8);
+both are fixed by revision 2026-09-07 (tasks 1.4–1.6).
 
 Frozen stack + constraints: `openspec/config.yaml`. No recorded fixtures / contract
 specs are the reference (no behavior change).
@@ -21,8 +24,9 @@ specs are the reference (no behavior change).
 
 - **Decision:** a single job `ci` (display name `Checks + Coverage (ubuntu-latest)`):
   checkout → toolchain 1.96.0 (components `clippy, rustfmt, llvm-tools-preview`) →
-  `Swatinem/rust-cache@v2` → `cargo fmt --check` → `cargo clippy --all-targets --
-  -D warnings` → `cargo test` → install `cargo-llvm-cov@0.9.0`
+  `Swatinem/rust-cache@v2` (`shared-key: host`, D8) → `cargo fmt --check` →
+  `cargo clippy --all-targets -- -D warnings` → `cargo test` → install
+  `cargo-llvm-cov@0.9.0`
   (`taiki-e/install-action@v2`) → `cargo llvm-cov --workspace --lcov --output-path
   lcov.info` → `actions/upload-artifact@v4` (`name: coverage-lcov`, `path: lcov.info`).
   `concurrency` (cancel-in-progress) and `permissions: contents: read` are preserved.
@@ -51,13 +55,15 @@ specs are the reference (no behavior change).
 ### D3 — `release.yml`: `gate` → `build` (matrix) → `publish`
 
 - **Decision:** three jobs:
-  1. `gate` — checkout → toolchain 1.96.0 (`clippy, rustfmt`) → rust-cache → fmt →
-     clippy → test. No coverage (keeps the gate fast; coverage lives in dev CI).
-  2. `build` (`needs: gate`) — `strategy.matrix.include` of the 5 rows (table below;
+  1. `gate` — checkout → toolchain 1.96.0 (`clippy, rustfmt`) → rust-cache
+     (`shared-key: host`, D8) → fmt → clippy → test. No coverage (keeps the gate
+     fast; coverage lives in dev CI).
+  2. `build` (`needs: gate`) — `strategy.matrix.include` of the 5 rows (table in D7;
      each row carries `target`, `name`, `ext`). Each leg: checkout → toolchain 1.96.0
-     (`targets: ${{ matrix.target }}`) → rust-cache → `cargo install --locked
-     cargo-zigbuild` → `mlugg/setup-zig@v2` (0.16.0) → `cargo zigbuild --release
-     --target` → strip (D5) → package `synopsis_<version>_<name>.<ext>` →
+     (`targets: ${{ matrix.target }}`) → rust-cache (`key: ${{ matrix.name }}`, D8) →
+     `cargo install --locked cargo-zigbuild` → `mlugg/setup-zig@v2` (0.16.0) →
+     `cargo zigbuild --release --target` (Windows leg: `CXXFLAGS` case shim, D7) →
+     package `synopsis_<version>_<name>.<ext>` (no strip — profile strips, D5) →
      `actions/upload-artifact@v4` (`name: synopsis-<name>`, `path: dist/...`).
   3. `publish` (`needs: build`) — checkout (`fetch-depth: 0`, the changelog needs
      history + tags) → `actions/download-artifact@v4` (`merge-multiple: true`,
@@ -93,21 +99,30 @@ specs are the reference (no behavior change).
   current CI/CD may be fully changed), explicitly lifting the "Gitea-compatible on
   purpose / do not upgrade" gotcha. The Gitea remote stays a plain git mirror.
 
-### D5 — `zig objcopy` fix: explicit output file
+### D5 — NO strip step: `[profile.release] strip = true` already strips
 
-- **Decision:** `zig objcopy --strip-all "${bin}" "${bin}.stripped" && mv
-  "${bin}.stripped" "${bin}"`.
-- **Why:** verified against the Zig source (`lib/compiler/objcopy.zig`:
-  `opt_output orelse fatal("expected output parameter")`) — `zig objcopy` takes
-  input AND output positionals; there is no in-place mode. `--strip-all` is a
-  supported option (ELF, PE/COFF, Mach-O). The two-step write-then-rename keeps the
-  final binary path (`target/<target>/release/synopsis[.exe]`) unchanged for the
-  packaging step.
-- **Evidence:** release run 34092788497 — the first target compiled in 7m21s, then
-  `error: expected output parameter`, exit 1.
-- **Alternative rejected:** GNU `strip` — cannot handle Mach-O on the linux runner
-  (and PE only with `llvm-strip`); `zig objcopy` already covers all three formats
-  with one command (the original comment's rationale, kept).
+- **Decision:** the `build` legs do NOT strip the binary — the old
+  `zig objcopy --strip-all` step is removed entirely. The binary is packaged
+  as produced by `cargo zigbuild --release`.
+- **Why (two facts, both verified locally on this host, Zig 0.16.0 / rustc
+  1.96.0):**
+  1. **The profile already strips.** Root `Cargo.toml` sets
+     `[profile.release] strip = true`, so rustc strips debug info + symbols at
+     link time via LLVM. The built `x86_64-pc-windows-gnu` PE has **0 symbols**
+     (checked in the COFF header: `NumberOfSymbols == 0`), with or without any
+     external strip step. The step was redundant.
+  2. **`zig objcopy` is ELF-ONLY.** Run on the built PE it fails with
+     `error: invalid elf file: InvalidElfMagic`. The old comment ("handles ELF,
+     PE/COFF, Mach-O with one command") was WRONG — the step could never have
+     worked for the Windows (PE) or macOS (Mach-O) legs. So even the "fixed"
+     two-file form (revision 1) was a latent bug for 4 of 5 targets.
+- **Evidence:** local `zig objcopy --strip-all synopsis.exe out.exe` →
+  `InvalidElfMagic` on the PE; local `zig cc --target=x86_64-windows-gnu` on a
+  `#include <windows.h>` file → OK, on `#include <Windows.h>` → `file not found`
+  (case-sensitivity, see D7). PE symbol count 0 with no strip step.
+- **Alternative rejected:** `llvm-strip` (handles all three formats) — rejected:
+  not needed; the profile strips at link time for every target with no external
+  tool, and adding a per-format strip toolchain is complexity for zero benefit.
 
 ### D6 — Release body: categorized changelog from conventional commits
 
@@ -131,21 +146,22 @@ specs are the reference (no behavior change).
   rejected: GitHub's grouping is PR/commit-based, not conventional-commit-type-based,
   and the output is not reproducible.
 
-### D7 — 2026 target matrix: drop musl, windows-gnu → msvc, add Intel macOS
+### D7 — 2026 target matrix: drop musl, KEEP windows-gnu, add Intel macOS
 
-- **Decision:** the 5-target matrix becomes:
+- **Decision:** the 5-target matrix is:
 
 | zigbuild target | `<name>` | `<ext>` |
 |---|---|---|
 | `x86_64-unknown-linux-gnu` | `linux_amd64` | `tar.gz` |
 | `aarch64-unknown-linux-gnu` | `linux_arm64` | `tar.gz` |
-| `x86_64-pc-windows-msvc` | `windows_amd64` | `zip` |
+| `x86_64-pc-windows-gnu` | `windows_amd64` | `zip` |
 | `aarch64-apple-darwin` | `darwin_arm64` | `tar.gz` |
 | `x86_64-apple-darwin` | `darwin_amd64` | `tar.gz` |
 
-  Both `*-musl` targets are dropped; `x86_64-pc-windows-gnu` is replaced by
-  `x86_64-pc-windows-msvc`; `x86_64-apple-darwin` is added. The `linux_arm64` name
-  loses its `_gnu` disambiguation suffix (no musl sibling remains).
+  Both `*-musl` targets are dropped; Windows STAYS `x86_64-pc-windows-gnu` (the
+  msvc switch from revision 1 is reverted — see below); `x86_64-apple-darwin` is
+  added. The `linux_arm64` name loses its `_gnu` disambiguation suffix (no musl
+  sibling remains).
 - **Why (user context, 2026-09-07):** the service is used by other people on
   different platforms, so a broad standard matrix is required — but the OLD matrix
   was not the current standard:
@@ -153,23 +169,71 @@ specs are the reference (no behavior change).
     and its only benefit is a fully static binary with no glibc dependency —
     irrelevant for end-user laptops/desktops shipping a normal distro. cargo-
     zigbuild's own docs position `*-musl` as "if you need a fully static binary".
-  - **windows-msvc in:** the standard Rust Windows target (what rustup installs by
-    default on Windows). cargo-zigbuild explicitly supports `x86_64-pc-windows-msvc`
-    and `aarch64-pc-windows-msvc` (dedicated handling in `src/zig.rs`: MSVC response
-    files, `lib` archiver; `tests/hello-windows` covers it). The AGENTS.md note
-    "Zig cannot link MSVC ABI from a Linux host" is stale (true for zig ~0.10 /
-    2022; zig's linker gained MSVC-ABI support long ago).
   - **glibc:** no minimum-glibc suffix (e.g. `.2.28`) — zig's default minimum is
     broad enough for end-user machines; the suffix feature stays available if a
     minimum must be pinned later.
   - **Intel macOS in:** `x86_64-apple-darwin` covers the Intel Macs still in use.
-- **Risk (accepted):** `windows-msvc` via zigbuild is a NEW build path for this
-  project (the shipped matrix used `windows-gnu`); it is verified by the first
-  release run. Fallback if it fails: one matrix row back to `x86_64-pc-windows-gnu`.
-- **Archive contents per leg (unchanged, `make-ci-gitea-compatible` D4):** stripped
-  binary (`synopsis` / `synopsis.exe`), `README.md`, `workspace/configs/**`,
+- **windows-msvc TRIED AND REJECTED (2026-09-07, CI + local evidence):** the first
+  run of this pipeline (34100195267) failed the msvc leg: the `ring` crate's C code
+  could not compile — `fatal error: 'assert.h' file not found` (zig cc had no libc
+  headers for the MSVC target). Local reproduction (Zig 0.16.0):
+  `zig cc --target=x86_64-windows-msvc` → `error: unable to provide libc for target
+  'x86_64-windows...msvc'` / `info: zig can provide libc for related target
+  x86_64-windows-gnu`. **Zig ships no libc/headers for the MSVC target — only for
+  windows-gnu.** cargo-zigbuild's "msvc support" (`src/zig.rs`, `tests/hello-
+  windows`) applies to pure-Rust crates; this workspace compiles C/C++ (ring,
+  libsqlite3-sys, usearch). The OLD AGENTS.md note "Zig cannot link MSVC ABI from a
+  Linux host" was right in conclusion (the mechanism is C compilation, not linking).
+- **usearch `Windows.h` case bug (found during local verification; affects the
+  windows-gnu leg):** `include/usearch/index.hpp:78` does `#include <Windows.h>`
+  (capital W). On a Linux host (case-sensitive FS) Zig's mingw headers only have
+  `windows.h` → `fatal error: 'Windows.h' file not found` (reproduced locally; the
+  lowercase include compiles). Fix: a one-line shim header
+  `third_party/windows-case-shim/Windows.h` (`#include <windows.h>`) added to the
+  C++ include path for the Windows leg via `CXXFLAGS_x86_64_pc_windows_gnu`
+  (usearch's build.rs goes through cc-rs, which honors per-target env flags).
+  Verified locally: full `x86_64-pc-windows-gnu` build succeeds with the shim.
+  (Upstream usearch should use lowercase; the shim stays until it does.)
+- **Risk (accepted):** `x86_64-unknown-linux-gnu` (replacing musl-amd64) and
+  `x86_64-apple-darwin` are NEW legs for this workspace — verified by LOCAL builds
+  of all 5 targets before the tag re-push, then by the first release run.
+- **Archive contents per leg (unchanged, `make-ci-gitea-compatible` D4):** binary
+  (`synopsis` / `synopsis.exe`, already stripped by the profile — D5),
+  `README.md`, `workspace/configs/**`,
   `workspace/datasets/edtech/ontology/**`. Naming `synopsis_<version>_<name>.<ext>`
   (`<version>` = tag without the leading `v`).
+
+### D8 — rust-cache keys: per-leg stable keys + shared host key
+
+- **Decision:**
+  - `build` legs: `Swatinem/rust-cache@v2` with `key: ${{ matrix.name }}` → key
+    `v0-rust-<name>-build-Linux-x64-<envHash>`, one stable slot per target.
+  - `gate` job AND `ci` job: `shared-key: host` → key `v0-rust-host-Linux-x64-<envHash>`,
+    one shared slot for the host dev-profile build (clippy + test + llvm-cov).
+- **Why:** the action's default key is `v0-rust-{jobName}-{OS}-{envHash}` (source:
+  `src/config.ts`; `add-job-id-key` defaults to true, and the "job id" is the
+  `GITHUB_JOB` name). Two problems observed in runs 34100195267 / 34100170840
+  (2026-09-07):
+  1. **The job rename silently invalidated all saved caches.** The old jobs were
+     `checks`/`coverage`; the new ones are `ci`/`gate`/`build` → brand-new keys →
+     the whole run was cold (ci job: clippy 313s + test 298s + llvm-cov 551s).
+  2. **All 5 matrix legs shared ONE key** (`v0-rust-build-...`) — last saver wins,
+     so at most one target was warm per run and the other four rebuilt from
+     scratch on every tag.
+  With per-leg keys, after the first tag all 5 targets are warm on re-runs. With
+  the shared `host` key, the rare `gate` (tag) run reuses the cache saved by the
+  frequent `ci` (push) runs — the gate's clippy+test become warm.
+- **Concurrent-save note:** `ci` and `gate` can run concurrently (push + tag) and
+  save the same `host` key. GitHub cache saves are additive (each save is a new
+  entry; restore picks the latest) and only successful jobs save
+  (`cache-on-failure` defaults to false), so a partial/failed build cannot poison
+  the key.
+- **`llvm-cov` is a third build by design** (instrumented, own
+  `target/llvm-cov-target` dir, ~9 min cold) — it is NOT reducible without dropping
+  coverage from CI (a separate policy decision, D2). With a warm `host` cache the
+  instrumented artifacts are restored too, so it is fast on re-runs.
+- **Alternative rejected:** `restore-keys` prefix matching — not supported by this
+  action (only `key` / `shared-key` inputs exist).
 
 ## Action pins (carried over, verified 2026-09-04)
 
@@ -184,9 +248,13 @@ artifact@v4`, `actions/download-artifact@v4`, `softprops/action-gh-release@v3`.
   but wall time drops ~3×; dev CI halves its runner usage.
 - **`zip` availability** for the Windows leg: present on GitHub `ubuntu-latest`
   (same assumption as before).
-- **Parallel cache saves** (5 legs saving the same rust-cache key): last save wins;
-  the cache is content-addressed per rustc version, so a stale save cannot poison
-  builds.
+- **First tag after the key change is cold** (new `v0-rust-host-...` and
+  `v0-rust-<name>-build-...` namespaces): one-time cost; every subsequent
+  push/tag run is warm (D8).
+- **Windows case shim** (`third_party/windows-case-shim/Windows.h`): a one-line
+  header on the C++ include path; if upstream usearch switches to lowercase
+  `windows.h`, the shim becomes a harmless no-op (it is only searched when the
+  real header is not found first).
 - **Re-trigger of `v0.1.0`:** the tag must be deleted and re-pushed after the new
   pipeline lands (an operational step outside this change's file scope); the existing
   manual release body is replaced by the script output (empty for the first release)
