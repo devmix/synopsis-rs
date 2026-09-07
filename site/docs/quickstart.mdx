@@ -12,15 +12,15 @@ From a prebuilt archive (or source) to a searchable MCP.
 
 ### Option A — prebuilt archive
 
-Prebuilt archives are published as Gitea Releases on `v*` tags for the 5 supported targets:
+Prebuilt archives are published as GitHub Releases on `v*` tags for the 5 supported targets:
 
 | Target | Triple |
 | --- | --- |
-| Linux amd64 (fully static) | `x86_64-unknown-linux-musl` |
+| Linux amd64 | `x86_64-unknown-linux-gnu` |
 | Linux arm64 | `aarch64-unknown-linux-gnu` |
-| Linux arm64 (musl) | `aarch64-unknown-linux-musl` |
 | Windows amd64 | `x86_64-pc-windows-gnu` |
 | macOS arm64 | `aarch64-apple-darwin` |
+| macOS amd64 | `x86_64-apple-darwin` |
 
 Each archive bundles the stripped binary, the README, `workspace/configs/`, and the `edtech` demo dataset (ontology + content). Download the archive for your platform, extract it, and run the `synopsis` binary.
 

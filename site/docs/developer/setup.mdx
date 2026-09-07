@@ -59,13 +59,13 @@ The five supported targets (the CI cross-build matrix):
 
 | Target triple | Platform | Notes |
 |---|---|---|
-| `x86_64-unknown-linux-musl` | Linux amd64 | fully static artifact |
+| `x86_64-unknown-linux-gnu` | Linux amd64 | |
 | `aarch64-unknown-linux-gnu` | Linux arm64 | |
-| `aarch64-unknown-linux-musl` | Linux arm64 | musl |
-| `x86_64-pc-windows-gnu` | Windows amd64 | gnu, not msvc — Zig cannot link MSVC ABI from a Linux host |
+| `x86_64-pc-windows-gnu` | Windows amd64 | gnu, not msvc — Zig 0.16 has no libc/headers for the MSVC target |
 | `aarch64-apple-darwin` | macOS arm64 | |
+| `x86_64-apple-darwin` | macOS amd64 | |
 
-The release workflow cross-builds all five from a single runner — see [CI/CD](./ci-cd).
+The release workflow cross-builds all five in a parallel matrix — see [CI/CD](./ci-cd) and [GitHub Releases](./github-releases).
 
 ## Building the docs site
 

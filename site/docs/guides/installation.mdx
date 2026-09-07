@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Getting the synopsis binary — prebuilt Gitea release archives or a native build from source, cross-compilation with Zig, and the runtime-state bootstrap
+description: Getting the synopsis binary — prebuilt GitHub release archives or a native build from source, cross-compilation with Zig, and the runtime-state bootstrap
 sidebar_position: 1
 ---
 
@@ -17,15 +17,15 @@ There are two ways to get the binary:
 
 ## Prebuilt archives
 
-Prebuilt archives are published as **Gitea Releases on `v*` tags** for the 5 supported targets:
+Prebuilt archives are published as **GitHub Releases on `v*` tags** for the 5 supported targets:
 
 | Target | Triple | Notes |
 | --- | --- | --- |
-| Linux amd64 | `x86_64-unknown-linux-musl` | fully static artifact |
+| Linux amd64 | `x86_64-unknown-linux-gnu` | |
 | Linux arm64 | `aarch64-unknown-linux-gnu` | |
-| Linux arm64 | `aarch64-unknown-linux-musl` | musl |
-| Windows amd64 | `x86_64-pc-windows-gnu` | gnu, not msvc — Zig cannot link MSVC ABI from a Linux host |
+| Windows amd64 | `x86_64-pc-windows-gnu` | gnu, not msvc — Zig 0.16 has no libc/headers for the MSVC target |
 | macOS arm64 | `aarch64-apple-darwin` | |
+| macOS amd64 | `x86_64-apple-darwin` | |
 
 Each archive is named `synopsis_<version>_<name>.<ext>` and bundles the stripped binary, the README, `workspace/configs/` (presets, `onnx.yaml`, prompt templates), and the `edtech` demo ontology. A `SHA256SUMS.txt` is published alongside the archives.
 
@@ -69,13 +69,13 @@ cargo zigbuild --release --target <t>
 
 | Target triple | Platform | Notes |
 | --- | --- | --- |
-| `x86_64-unknown-linux-musl` | Linux amd64 | fully static artifact |
+| `x86_64-unknown-linux-gnu` | Linux amd64 | |
 | `aarch64-unknown-linux-gnu` | Linux arm64 | |
-| `aarch64-unknown-linux-musl` | Linux arm64 | musl |
 | `x86_64-pc-windows-gnu` | Windows amd64 | gnu, not msvc |
 | `aarch64-apple-darwin` | macOS arm64 | |
+| `x86_64-apple-darwin` | macOS amd64 | |
 
-For example, `cargo zigbuild --release --target aarch64-unknown-linux-musl` works from a Linux amd64 host without any ARM toolchain. The release workflow cross-builds all five targets on a single runner and publishes the archives — see [Gitea Releases](../developer/gitea-releases).
+For example, `cargo zigbuild --release --target aarch64-unknown-linux-gnu` works from a Linux amd64 host without any ARM toolchain. The release workflow cross-builds all five targets in a parallel matrix and publishes the archives — see [GitHub Releases](../developer/github-releases).
 
 ## Bootstrap the runtime state
 

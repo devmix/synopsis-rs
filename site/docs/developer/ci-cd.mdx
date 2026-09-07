@@ -1,6 +1,6 @@
 ---
 title: CI/CD
-description: Gitea-compatible CI (fmt, clippy, test, coverage) and the tag-triggered release pipeline — a 5-target zigbuild cross-build, packaging, and Gitea Release publication
+description: GitHub CI (fmt, clippy, test, coverage) in one job, and the tag-triggered release pipeline — gate, 5-way zigbuild matrix, and GitHub Release publication
 sidebar_position: 7
 ---
 
@@ -8,27 +8,16 @@ sidebar_position: 7
 
 Two workflows live in `.github/workflows/`: **`ci.yml`** runs on every push and pull request to `main`; **`release.yml`** cross-builds, packages, and publishes binaries when a `v*` tag is pushed.
 
-Both target a **self-hosted Gitea runner**, and the workflows are Gitea-compatible *on purpose*: the runner has no artifact service, so the standard GitHub artifact/release actions abort, and nothing can be passed between jobs. The consequences:
-
-- the dev CI stays fast — the 5-target cross-build lives in `release.yml` only;
-- the release is a **single job** that builds, packages, and publishes on one runner;
-- where an artifact action is needed (the coverage lcov file), the Gitea fork `ChristopherHX/gitea-upload-artifact` is used, and the release is published with the Gitea fork `akkuman/gitea-release-action`.
-
-Do not "upgrade" these to the standard GitHub actions — they break on the Gitea runner.
+Both run on GitHub's `ubuntu-latest` runners with the standard `actions/*` tooling.
 
 ## CI workflow (`ci.yml`)
 
-Triggered on push and pull request to `main`, with `concurrency: cancel-in-progress` so a stale run is cancelled when a new commit lands. Two jobs run in parallel on `ubuntu-latest`:
+Triggered on push and pull request to `main`, with `concurrency: cancel-in-progress` so a stale run is cancelled when a new commit lands. One job (`ci`) runs the four stages sequentially — they share a single toolchain install and cargo cache:
 
-| Job | Steps | Notes |
-|---|---|---|
-| **checks** | `cargo fmt --check` → `cargo clippy --all-targets -- -D warnings` → `cargo test` | one job runs all three gates sequentially — they share a single toolchain install and cargo cache; `cargo test` compiles and links the whole workspace, so it doubles as the native build check |
-| **coverage** | `cargo llvm-cov --workspace --lcov --output-path lcov.info` (cargo-llvm-cov 0.9.0) → upload the lcov file as a run artifact | runs in parallel to `checks` (no `needs:`) — measure-first, no gates: a coverage failure must not block the core gate, and there is deliberately no `--fail-under-*` flag |
-
-Setup steps for both jobs:
-
-1. **Install the pinned toolchain** — `dtolnay/rust-toolchain@1.96.0` (components `clippy, rustfmt` for `checks`, `llvm-tools-preview` for `coverage`; the action installs with `--profile minimal`, so components must be requested explicitly).
-2. **Cache cargo artifacts** — `Swatinem/rust-cache@v2` caches `~/.cargo` and `./target`, keyed by the installed rustc version, so it runs after the toolchain step.
+1. **Install the pinned toolchain** — `dtolnay/rust-toolchain@1.96.0` with components `clippy, rustfmt, llvm-tools-preview`.
+2. **Cache cargo artifacts** — `Swatinem/rust-cache@v2` caches `~/.cargo` and `./target`, keyed by the installed rustc version (runs after the toolchain step), with `shared-key: host` so the dev CI and the release `gate` job share one cache slot.
+3. **`cargo fmt --check`** → **`cargo clippy --all-targets -- -D warnings`** → **`cargo test`** — `cargo test` compiles and links the whole workspace, so it doubles as the native build check.
+4. **Coverage** — `cargo llvm-cov --workspace --lcov --output-path lcov.info` (cargo-llvm-cov 0.9.0, installed via `taiki-e/install-action@v2`), run with `continue-on-error` and uploaded as an artifact via `actions/upload-artifact@v4`. Measure-first, no gates: a coverage failure must not block the core gate, and there is deliberately no `--fail-under-*` flag.
 
 ### The toolchain-pin gotcha
 
@@ -36,33 +25,31 @@ Setup steps for both jobs:
 
 ## Release workflow (`release.yml`)
 
-Triggered by **push of tags matching `v*`** (for example `v0.1.0`). A single job on `ubuntu-latest` does everything — the Gitea runner has no artifact service, so no work product can be passed between jobs:
+Triggered by **push of tags matching `v*`** (for example `v0.1.0`). Three jobs run in sequence:
 
-1. Check out with full history (`fetch-depth: 0`) so the tag — and thus the version — is available.
-2. Install the pinned toolchain with all five target stds up front (the job cross-compiles for each target in turn; no clippy/rustfmt components are needed).
-3. `cargo install --locked cargo-zigbuild` — the binary lands in `CARGO_HOME`, which the rust-cache step already caches, so only a cold cache pays the compile.
-4. Install **Zig 0.16.0** (`mlugg/setup-zig@v2`) — the C toolchain for every target.
-5. **Build-and-package loop**: for each of the five targets — `cargo zigbuild --release --target <t>`, strip with `zig objcopy --strip-all` (one command handles all three object formats: ELF, PE/COFF, Mach-O), then rebuild a clean `stage/` directory and archive it as `dist/synopsis_<version>_<name>.<ext>`.
-6. Write `SHA256SUMS.txt` over all archives.
-7. Publish the **Gitea Release** via `akkuman/gitea-release-action@v1` — the body is deliberately empty (manual release), the name defaults to the tag, and a dash-suffixed tag (`vX.Y.Z-rc*`) is marked as a prerelease.
+1. **`gate`** — `cargo fmt --check` → `cargo clippy --all-targets -- -D warnings` → `cargo test` on the tagged commit (toolchain 1.96.0, rust-cache `shared-key: host` — the same slot as dev CI).
+2. **`build`** — a **5-way parallel matrix**, one leg per target triple. Each leg installs the pinned toolchain (only that target's std), caches under a **per-leg rust-cache key**, installs `cargo-zigbuild` (`--locked`) and **Zig 0.16.0** (`mlugg/setup-zig@v2`), then runs `cargo zigbuild --release --target <t>` and packages `synopsis_<version>_<name>.<ext>`. There is **no strip step** — `[profile.release] strip = true` strips at link time.
+3. **`publish`** — `actions/download-artifact@v4` fetches all five archives, writes `SHA256SUMS.txt`, and creates the GitHub Release via **`softprops/action-gh-release@v3`** with a changelog categorized from conventional commits.
+
+If any leg fails, **nothing is published** — delete the tag and re-push to retry.
 
 ### The five targets
 
 | Target triple | Platform | Archive (v0.1.0 example) |
 |---|---|---|
-| `x86_64-unknown-linux-musl` | Linux amd64 | `synopsis_0.1.0_linux_amd64.tar.gz` — **fully static** |
-| `aarch64-unknown-linux-gnu` | Linux arm64 | `synopsis_0.1.0_linux_arm64_gnu.tar.gz` |
-| `aarch64-unknown-linux-musl` | Linux arm64 | `synopsis_0.1.0_linux_arm64_musl.tar.gz` |
+| `x86_64-unknown-linux-gnu` | Linux amd64 | `synopsis_0.1.0_linux_amd64.tar.gz` |
+| `aarch64-unknown-linux-gnu` | Linux arm64 | `synopsis_0.1.0_linux_arm64.tar.gz` |
 | `x86_64-pc-windows-gnu` | Windows amd64 | `synopsis_0.1.0_windows_amd64.zip` |
 | `aarch64-apple-darwin` | macOS arm64 | `synopsis_0.1.0_darwin_arm64.tar.gz` |
+| `x86_64-apple-darwin` | macOS amd64 | `synopsis_0.1.0_darwin_amd64.tar.gz` |
 
-**windows-gnu, not msvc** — Zig cannot link the MSVC ABI from a Linux host, so the Windows target uses the GNU ABI.
+**windows-gnu, not msvc** — Zig 0.16 has no libc/headers for the MSVC target, so C code (ring, libsqlite3-sys, usearch) cannot compile for msvc from a Linux host; the Windows leg carries a one-line case-sensitivity shim for usearch's `#include <Windows.h>`.
 
 ### What ships in an archive
 
 Each archive bundles exactly:
 
-- the stripped `synopsis` binary (`synopsis.exe` on Windows),
+- the stripped `synopsis` binary (`synopsis.exe` on Windows) — stripped by `[profile.release] strip = true` at link time,
 - the root `README.md` (it doubles as the end-user documentation shipped with the binary),
 - `workspace/configs/**` (presets, `onnx.yaml`, prompt templates),
 - `workspace/datasets/edtech/ontology/**` (the demo ontology).
@@ -75,14 +62,17 @@ Deliberately excluded: the ONNX runtime library and the model weights (gitignore
 git tag -a v0.1.0 && git push origin v0.1.0
       │
       ▼
-release.yml (single job): 5× zigbuild → strip → package → SHA256SUMS.txt
+gate (fmt + clippy + test)
       │
       ▼
-Gitea Release with the 5 archives + checksum file
+build: 5 legs in parallel — zigbuild → package
+      │
+      ▼
+publish: SHA256SUMS.txt → GitHub Release with the 5 archives
 ```
 
-- The build runs first and the publish second: if the cross-build fails, **nothing is published** — fix and re-push the same tag to retry.
 - The 5-target build lives in `release.yml` and only there — the dev CI stays fast.
+- The build runs before the publish: if a leg fails, **nothing is published** — fix and re-push the same tag to retry.
 
 ## See also
 

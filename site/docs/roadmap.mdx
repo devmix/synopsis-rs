@@ -20,7 +20,7 @@ Two things are especially common to expect from a knowledge service and worth be
 - **Local embeddings** — ONNX Runtime with bge models, downloaded and verified by the binary per `onnx.yaml` — [Model Management](./guides/model-management)
 - **Event-queue ingestion** — `queue_tasks` (`doc:index` / `doc:delete` / `entity:link` events) with startup reconcile + file watcher, a background worker with retries, and content-hash dedup (unchanged docs are skipped) — [Job Queue](./concepts/job-queue)
 - **CLI surface** — `serve`, `queue status|reset-retries`, `db stats|clear`, `model list|download|delete|info|benchmark`, `onnx-runtime install|status|uninstall`, `load-test` — [CLI Reference](./reference/cli)
-- **Self-contained build + Gitea CI** — SQLite/FTS5 compiled in-tree, no system dependencies; CI runs fmt + clippy + test, and `v*` tags publish prebuilt archives for the 5 targets via zigbuild — [CI/CD](./developer/ci-cd), [Gitea Releases](./developer/gitea-releases)
+- **Self-contained build + GitHub CI** — SQLite/FTS5 compiled in-tree, no system dependencies; CI runs fmt + clippy + test, and `v*` tags publish prebuilt archives for the 5 targets via zigbuild — [CI/CD](./developer/ci-cd), [GitHub Releases](./developer/github-releases)
 - **Spec-driven development** — the OpenSpec workflow (proposal → design → specs → tasks → apply → archive) and ADRs 0001–0004 for the SQLite/FTS5, ONNX runtime, and ANN decisions — [OpenSpec Workflow](./developer/openspec-workflow), [ADRs](./developer/adrs)
 
 ## Fact review workflow

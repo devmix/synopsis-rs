@@ -1,0 +1,66 @@
+---
+title: GitHub Releases
+description: The release pipeline — on a v* tag, a gate job, a 5-way zigbuild build matrix, and a publish job that uploads archives + SHA256SUMS.txt to a GitHub Release
+sidebar_position: 8
+---
+
+# GitHub Releases
+
+The release pipeline lives in `.github/workflows/release.yml`. It is triggered by **push of a tag matching `v*`** (for example `v0.1.0`) and runs three jobs in sequence: a **gate**, a **5-way parallel build matrix**, and a **publish** that uploads the archives to a GitHub Release.
+
+## Pipeline shape
+
+```
+git tag -a v0.1.0 && git push origin v0.1.0
+      │
+      ▼
+gate ──► build (5 legs in parallel) ──► publish
+ fmt +     one cargo zigbuild target      download all 5 archives
+ clippy    per leg, package               + write SHA256SUMS.txt
+ test      synopsis_<version>_<name>      + create the GitHub Release
+ on the
+ tagged commit
+```
+
+- **`gate`** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` on the tagged commit (toolchain 1.96.0, rust-cache `shared-key: host` — the same cache slot as dev CI, so a green push to `main` keeps the gate warm).
+- **`build`** — a 5-way matrix, one leg per target triple. Each leg: `dtolnay/rust-toolchain@1.96.0` (only that target's std) → rust-cache with a **per-leg key** (`<leg name>`) → `cargo install --locked cargo-zigbuild` → `mlugg/setup-zig@v2` (Zig 0.16.0) → `cargo zigbuild --release --target <t>` → package `synopsis_<version>_<name>.<ext>`. The macOS legs additionally fetch the macOS SDK and set `SDKROOT` before the build.
+- **`publish`** — `actions/download-artifact@v4` (all 5 archives), writes `SHA256SUMS.txt`, and creates the GitHub Release via **`softprops/action-gh-release@v3`** with a changelog categorized from conventional commits.
+
+There is **no strip step** in the pipeline — `[profile.release] strip = true` in `Cargo.toml` strips at link time, so every `zigbuild` output is already stripped.
+
+### Caching behavior
+
+Each build leg caches under its own rust-cache key (`linux_amd64`, `linux_arm64`, `windows_amd64`, `darwin_arm64`, `darwin_amd64`), so a change to one target (for example the macOS SDK path) invalidates only that leg. The first tag pushed after a cache-key change is **cold** for the affected legs; the next tag is warm.
+
+### Retry rule
+
+If any leg fails, **nothing is published** — the `publish` job needs all five artifacts. Fix the leg, delete and re-push the same tag to retry.
+
+## The five targets
+
+| Target triple | Platform | Archive (v0.1.0 example) |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | Linux amd64 | `synopsis_0.1.0_linux_amd64.tar.gz` |
+| `aarch64-unknown-linux-gnu` | Linux arm64 | `synopsis_0.1.0_linux_arm64.tar.gz` |
+| `x86_64-pc-windows-gnu` | Windows amd64 | `synopsis_0.1.0_windows_amd64.zip` |
+| `aarch64-apple-darwin` | macOS arm64 | `synopsis_0.1.0_darwin_arm64.tar.gz` |
+| `x86_64-apple-darwin` | macOS amd64 | `synopsis_0.1.0_darwin_amd64.tar.gz` |
+
+**windows-gnu, not msvc** — Zig 0.16 has no libc/headers for the MSVC target, so C code (ring, libsqlite3-sys, usearch) cannot compile for msvc from a Linux host; the Windows leg carries a one-line case-sensitivity shim for usearch's `#include <Windows.h>` (`third_party/windows-case-shim/`).
+
+## What ships in an archive
+
+Each archive bundles exactly:
+
+- the stripped `synopsis` binary (`synopsis.exe` on Windows) — stripped by `[profile.release] strip = true` at link time;
+- the root `README.md` (it doubles as the end-user documentation shipped with the binary);
+- `workspace/configs/` — presets, `onnx.yaml`, prompt templates;
+- `workspace/datasets/edtech/ontology/` — the `edtech` demo ontology.
+
+Deliberately excluded: the ONNX runtime library and the model weights (gitignored runtime artifacts the binary downloads per `onnx.yaml`) and the demo corpus.
+
+## See also
+
+- [CI/CD](./ci-cd) — the dev workflow and the release pipeline side by side
+- [Development Setup](./setup) — local builds and cross-compilation with Zig
+- [CLI Reference](../reference/cli) — what the released binary does
