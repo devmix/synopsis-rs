@@ -10,6 +10,9 @@
 //! - [`Runner::process_document_by_path`] — the worker's `doc:index`
 //!   dispatch: the per-document pipeline for a single file (no source-tree
 //!   walk), with per-source NER provider assembly and domain enrichment.
+//! - [`Runner::reembed_document`] — the worker's `doc:index` dispatch for
+//!   the `ReEmbed` op (vector-loss-self-heal D5): re-embeds the document's
+//!   existing chunk rows only (no parse, no re-chunk, no NER, no dedup).
 //! - [`Runner::delete_document_at`] — the worker's `doc:delete` dispatch
 //!   (full per-document cleanup in one transaction).
 //! - [`Runner::cleanup_orphaned_data`] / [`Runner::build_entity_links`] —
@@ -20,6 +23,13 @@
 //!   (vector-loss-self-heal D1): the worker calls it after a cycle that
 //!   processed at least one `doc:*` task, bounding the unclean-shutdown
 //!   (`SIGKILL`) loss window to the in-progress batch.
+//! - [`Runner::heal_missing_vectors`] — the startup vector self-heal
+//!   (vector-loss-self-heal D2/D4/D5): detects chunk rows with no
+//!   corresponding vector (the residual loss window after a mid-cycle
+//!   `SIGKILL`) and enqueues one `doc:index` per affected document carrying
+//!   the `ReEmbed` op, so the worker's startup drain re-embeds the existing
+//!   chunk rows (a plain `doc:index` for an unchanged document is
+//!   dedup-skipped and would not restore the vectors).
 //! - [`Runner::find_source_for_path`] / [`Runner::belongs_to_source`] —
 //!   source containment used by the queue producer, the worker and the
 //!   cleanup stage.
@@ -55,14 +65,17 @@
 
 pub mod cleanup;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use config::DomainConfig;
 use config::ontology::{GlobalConfig, SourceConfig, SourceType};
 use config::preset::{IngestionConfig, LinkerConfig};
-use db::{ConnectionOrTx, Db, DocumentDao, GcDao, QueueTaskDao};
+use db::{
+    ChunkDao, ConnectionOrTx, Db, DocIndexPayload, DocumentDao, GcDao, QueueTaskDao, QueueTaskType,
+    ReIndexOp,
+};
 use embedding::EmbeddingProvider;
 use serde_json::Value;
 use vectors::VectorIndex;
@@ -82,6 +95,11 @@ use crate::types::{
 /// The `metadata.extra` key carrying the source's domain list (the
 /// [`DomainEnrichedSource`] wrapper stamps it on every parsed document).
 pub const DOMAIN_METADATA_KEY: &str = "domain";
+
+/// Default embedding batch size when the config declares none
+/// (`batch_size <= 0` → 100; the same default the ingester's pipeline leg
+/// uses).
+const EMBED_BATCH_SIZE: usize = 100;
 
 /// Aggregated outcome of a multi-source run.
 ///
@@ -322,6 +340,163 @@ impl<'a> Runner<'a> {
         let _guard = self.lock();
         self.vectors.build_index()?;
         Ok(())
+    }
+
+    /// Restores vectors lost to an unclean shutdown (vector-loss-self-heal
+    /// D2/D4/D5): finds chunk rows with no corresponding vector — the
+    /// residual loss window after a mid-cycle `SIGKILL` (the per-cycle save
+    /// of [`Self::persist_vectors`] bounds it to the in-progress batch) —
+    /// and enqueues one `doc:index` per affected document carrying the
+    /// `ReEmbed` op, so the worker's startup drain re-embeds the existing
+    /// chunk rows (a plain `doc:index` for an unchanged document is
+    /// dedup-skipped by the content-hash check and would not restore the
+    /// vectors).
+    ///
+    /// The set-diff is light (design D3): [`ChunkDao::list_id_doc_id`] loads
+    /// no text and [`VectorIndex::chunk_ids`] reads ids only. No missing
+    /// chunks → a no-op (`Ok(0)`). The enqueued payload carries
+    /// `content_hash: None` (design D4 — the re-embed path never re-hashes
+    /// the file) and `ops: [ReEmbed]` (design D5).
+    ///
+    /// `now` is the current Unix time in seconds (injected for testability),
+    /// stamped on the enqueued rows. Returns the number of documents
+    /// enqueued.
+    ///
+    /// # Errors
+    ///
+    /// [`IngestionError::Db`] when the chunk/document/queue access fails, or
+    /// [`IngestionError::Vectors`] when the index id read fails.
+    pub fn heal_missing_vectors(&self, now: i64) -> Result<usize, IngestionError> {
+        let _guard = self.lock();
+        self.heal_missing_vectors_locked(now)
+    }
+
+    /// The unlocked core of [`Self::heal_missing_vectors`] (callers hold the
+    /// runner mutex).
+    fn heal_missing_vectors_locked(&self, now: i64) -> Result<usize, IngestionError> {
+        // Light set-diff (design D3): (chunk id, doc id) pairs, no text.
+        let rows = self
+            .db
+            .with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).list_id_doc_id())??;
+        let indexed: HashSet<u32> = self.vectors.chunk_ids()?.into_iter().collect();
+        // Missing = present in SQLite, absent from the index; group by doc.
+        let mut by_doc: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (chunk_id, doc_id) in rows {
+            if !indexed.contains(&(chunk_id as u32)) {
+                by_doc.entry(doc_id).or_default().push(chunk_id);
+            }
+        }
+        if by_doc.is_empty() {
+            return Ok(0);
+        }
+        let doc_ids: Vec<i64> = by_doc.keys().copied().collect();
+        let docs = self.db.with_conn(|conn| {
+            DocumentDao::new(ConnectionOrTx::Connection(conn)).get_by_ids(&doc_ids)
+        })??;
+        // One doc:index per affected document (design D4/D5): identity =
+        // the document's original_path, content_hash = None (the re-embed
+        // path never re-hashes the file), ops = [ReEmbed] (the targeted
+        // re-embed of the existing chunk rows).
+        let mut enqueued = 0;
+        for doc in docs {
+            self.db.with_conn(|conn| {
+                QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(
+                    QueueTaskType::DocIndex,
+                    &doc.original_path,
+                    &DocIndexPayload {
+                        source_path: doc.original_path.clone(),
+                        content_hash: None,
+                        ops: vec![ReIndexOp::ReEmbed],
+                    },
+                    now,
+                )
+            })??;
+            enqueued += 1;
+        }
+        Ok(enqueued)
+    }
+
+    /// Re-embeds the existing chunk rows of the document at `path`
+    /// (vector-loss-self-heal D5): the targeted repair of a lost vector
+    /// (an unclean shutdown loses the vector RAM layer while the chunk rows
+    /// stay durable). Reads the document's chunk rows — which already carry
+    /// the `search_text` the embedding leg operates on — generates their
+    /// embeddings and `insert_batch`es the vectors. No parse, no re-chunk,
+    /// no NER, no dedup; present vectors are overwritten (idempotent).
+    ///
+    /// A document with no chunk rows is a no-op (`Ok(())`).
+    ///
+    /// # Errors
+    ///
+    /// [`IngestionError::DocumentNotFound`] when no document row exists for
+    /// `path`, [`IngestionError::Db`] when the document/chunk read fails,
+    /// [`IngestionError::Embedding`] when the provider fails (or returns a
+    /// mismatched vector count), or [`IngestionError::Vectors`] when the
+    /// index write fails.
+    pub fn reembed_document(&self, path: &str) -> Result<(), IngestionError> {
+        let _guard = self.lock();
+        self.reembed_document_locked(path)
+    }
+
+    /// The unlocked core of [`Self::reembed_document`] (callers hold the
+    /// runner mutex).
+    fn reembed_document_locked(&self, path: &str) -> Result<(), IngestionError> {
+        let doc = self.db.with_conn(|conn| {
+            DocumentDao::new(ConnectionOrTx::Connection(conn)).get_by_path(path)
+        })??;
+        let Some(doc) = doc else {
+            return Err(IngestionError::DocumentNotFound {
+                path: path.to_owned(),
+            });
+        };
+        let chunks = self.db.with_conn(|conn| {
+            ChunkDao::new(ConnectionOrTx::Connection(conn)).list_by_doc_id(doc.id)
+        })??;
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        // The embedding leg operates on `search_text` (the same text the
+        // original pipeline embedded — search-text-embedding design D3).
+        let texts: Vec<String> = chunks
+            .iter()
+            .map(|chunk| chunk.search_text.clone())
+            .collect();
+        let vectors = self.embed_texts(&texts)?;
+        let rows: Vec<(u32, &[f32])> = chunks
+            .iter()
+            .enumerate()
+            .map(|(index, chunk)| (chunk.id as u32, vectors[index].as_slice()))
+            .collect();
+        self.vectors.insert_batch(&rows)?;
+        Ok(())
+    }
+
+    /// Generates the embeddings of `texts` in config-sized batches (the
+    /// same batching contract as the ingester's pipeline leg): a provider
+    /// that returns a different vector count than text count is a hard
+    /// error — continuing would silently misalign every vector from that
+    /// batch on.
+    fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, IngestionError> {
+        let batch_size = if self.ingest_cfg.batch_size > 0 {
+            self.ingest_cfg.batch_size as usize
+        } else {
+            EMBED_BATCH_SIZE
+        };
+        let total_batches = texts.len().div_ceil(batch_size);
+        let mut all_vectors = Vec::with_capacity(texts.len());
+        for (batch_number, batch) in texts.chunks(batch_size).enumerate() {
+            let vectors = self.embed.generate_embeddings(batch)?;
+            if vectors.len() != batch.len() {
+                return Err(IngestionError::EmbeddingCountMismatch {
+                    batch: batch_number + 1,
+                    total_batches,
+                    expected: batch.len(),
+                    actual: vectors.len(),
+                });
+            }
+            all_vectors.extend(vectors);
+        }
+        Ok(all_vectors)
     }
 
     /// The unlocked core of [`Self::process_document_by_path`] (callers
@@ -724,12 +899,46 @@ mod tests {
     impl Source for TestSource {}
 
     /// A deterministic embedding provider: vector `i` is all `(i + 1)`.
+    /// `calls` counts `generate_embeddings` invocations and `embedded_texts`
+    /// the total texts embedded across them (the re-embed tests assert the
+    /// provider saw exactly the stored chunk count — no re-chunk).
     pub(super) struct MockEmbedding {
         dim: usize,
+        calls: Mutex<usize>,
+        embedded_texts: Mutex<usize>,
+    }
+
+    impl MockEmbedding {
+        /// A 4-dim provider (the harness default).
+        pub(super) fn new() -> Self {
+            Self {
+                dim: 4,
+                calls: Mutex::new(0),
+                embedded_texts: Mutex::new(0),
+            }
+        }
+
+        /// `generate_embeddings` invocations so far (test helper).
+        pub(super) fn calls(&self) -> usize {
+            *self.calls.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        /// Total texts embedded so far (test helper).
+        pub(super) fn embedded_texts(&self) -> usize {
+            *self
+                .embedded_texts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        }
     }
 
     impl EmbeddingProvider for MockEmbedding {
         fn generate_embeddings(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            *self.calls.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+            *self
+                .embedded_texts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) += texts.len();
             Ok((0..texts.len())
                 .map(|i| vec![(i + 1) as f32; self.dim])
                 .collect())
@@ -871,7 +1080,7 @@ mod tests {
                 },
                 domains: HashMap::new(),
                 registry,
-                embed: MockEmbedding { dim: 4 },
+                embed: MockEmbedding::new(),
                 sink: Arc::new(MemoryIndex::new()),
                 prompts: load_ner_prompts("/nonexistent-ner-prompts").unwrap(),
                 linker_cfg: LinkerConfig::default(),
@@ -935,5 +1144,201 @@ mod tests {
             domains: domains.iter().map(|d| (*d).to_owned()).collect(),
             dataset: String::new(),
         }
+    }
+
+    // Startup vector self-heal (vector-loss-self-heal D2): chunk rows whose
+    // vector was lost with the RAM layer are re-queued as one doc:index per
+    // affected document; a complete index is a no-op.
+    #[test]
+    fn heal_missing_vectors_requeues_documents_without_vectors() {
+        let root = TempDir::new("vector-heal");
+        let src = root.sub("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("doc.txt"), "hello world\n").unwrap();
+
+        let mut harness = Harness::new();
+        harness.global.sources = vec![source_config(
+            src.to_string_lossy().as_ref(),
+            SourceType::Unstructured,
+            false,
+            &[],
+        )];
+        let runner = harness.runner();
+        let path = src.join("doc.txt").to_string_lossy().into_owned();
+        runner.process_document_by_path(&path).unwrap();
+        let ids = harness.sink.chunk_ids().unwrap();
+        assert!(!ids.is_empty(), "the pipeline must have embedded chunks");
+
+        // Simulate the lost RAM layer: the index is empty, the chunk rows
+        // remain.
+        harness.sink.rebuild(&[]).unwrap();
+
+        let healed = runner.heal_missing_vectors(2_000).unwrap();
+        assert_eq!(healed, 1, "one document lost its vectors");
+
+        // A doc:index task for the document path is in queue_tasks, and its
+        // payload carries the ReEmbed op (vector-loss-self-heal D5): a plain
+        // doc:index for an unchanged document is dedup-skipped and would not
+        // restore the vectors.
+        let tasks = harness
+            .db
+            .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+            .unwrap()
+            .unwrap();
+        let task = tasks
+            .iter()
+            .find(|t| t.task_type == "doc:index" && t.identity == path)
+            .unwrap_or_else(|| {
+                panic!("a doc:index task for the affected document must be enqueued: {tasks:?}")
+            });
+        let payload: DocIndexPayload = serde_json::from_str(&task.event).unwrap();
+        assert_eq!(
+            payload.ops,
+            vec![ReIndexOp::ReEmbed],
+            "the self-heal's payload must request the targeted re-embed"
+        );
+
+        // Repopulated index (a completed re-embed): the self-heal is a no-op.
+        let repopulated: Vec<(u32, Vec<f32>)> =
+            ids.into_iter().map(|id| (id, vec![1.0f32; 4])).collect();
+        harness.sink.rebuild(&repopulated).unwrap();
+        assert_eq!(
+            runner.heal_missing_vectors(2_001).unwrap(),
+            0,
+            "no missing chunks: no-op"
+        );
+    }
+
+    // A fresh empty DB (no chunks) is a no-op (vector-loss-self-heal D2).
+    #[test]
+    fn heal_missing_vectors_is_a_no_op_on_an_empty_db() {
+        let harness = Harness::new();
+        let runner = harness.runner();
+        assert_eq!(
+            runner.heal_missing_vectors(2_000).unwrap(),
+            0,
+            "no chunks: nothing to heal"
+        );
+    }
+
+    /// The chunk rows of the whole database (test helper).
+    fn all_chunks(db: &Db) -> Vec<db::Chunk> {
+        db.with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).list_all())
+            .unwrap()
+            .unwrap()
+    }
+
+    // Targeted re-embed (vector-loss-self-heal D5): the chunk rows are
+    // intact, the vectors are gone (a lost RAM layer) — reembed_document
+    // restores the vectors from the stored search_text, with NO re-parse /
+    // re-chunk / NER: the provider sees exactly the stored chunk count and
+    // the chunk rows are unchanged.
+    #[test]
+    fn reembed_document_restores_lost_vectors_without_rechunking() {
+        let root = TempDir::new("reembed");
+        let src = root.sub("src");
+        fs::create_dir_all(&src).unwrap();
+        // Two non-empty lines → two chunks (the test chunker is line-based).
+        fs::write(src.join("doc.txt"), "hello world\nsecond line\n").unwrap();
+
+        let mut harness = Harness::new();
+        harness.global.sources = vec![source_config(
+            src.to_string_lossy().as_ref(),
+            SourceType::Unstructured,
+            false,
+            &[],
+        )];
+        let runner = harness.runner();
+        let path = src.join("doc.txt").to_string_lossy().into_owned();
+        runner.process_document_by_path(&path).unwrap();
+
+        let chunks_before = all_chunks(&harness.db);
+        assert_eq!(chunks_before.len(), 2, "two lines → two chunks");
+        let chunk_ids = harness.sink.chunk_ids().unwrap();
+        assert_eq!(
+            chunk_ids.len(),
+            2,
+            "the pipeline must have embedded both chunks"
+        );
+
+        // Simulate the lost RAM layer: the index is empty, the chunk rows
+        // remain.
+        harness.sink.rebuild(&[]).unwrap();
+        assert!(
+            harness.sink.chunk_ids().unwrap().is_empty(),
+            "the RAM layer is lost"
+        );
+        let embedded_before = harness.embed.embedded_texts();
+
+        runner.reembed_document(&path).unwrap();
+
+        // The vectors are restored for exactly the stored chunk ids.
+        let mut restored = harness.sink.chunk_ids().unwrap();
+        let mut expected: Vec<u32> = chunks_before.iter().map(|c| c.id as u32).collect();
+        restored.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(restored, expected, "the stored chunk ids are re-embedded");
+
+        // No re-parse / re-chunk: the provider embedded exactly the stored
+        // chunk count (no more — re-chunking would change the count).
+        assert_eq!(
+            harness.embed.embedded_texts() - embedded_before,
+            2,
+            "exactly the stored chunk count is re-embedded (no re-chunk)"
+        );
+        // The chunk rows are unchanged.
+        assert_eq!(
+            all_chunks(&harness.db),
+            chunks_before,
+            "the chunk rows are unchanged"
+        );
+    }
+
+    // A document without a row is a clear error (vector-loss-self-heal
+    // D5): not a silent no-op — the queue's retry surfaces the divergence
+    // (the document was deleted after the task was enqueued).
+    #[test]
+    fn reembed_document_errors_on_a_missing_document() {
+        let harness = Harness::new();
+        let runner = harness.runner();
+        let err = runner
+            .reembed_document("/no/such/document.txt")
+            .unwrap_err();
+        assert!(
+            matches!(err, IngestionError::DocumentNotFound { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    // A document row with no chunk rows is a no-op (vector-loss-self-heal
+    // D5): nothing to re-embed, the provider is never called.
+    #[test]
+    fn reembed_document_is_a_no_op_without_chunks() {
+        let harness = Harness::new();
+        let runner = harness.runner();
+        harness
+            .db
+            .with_conn(|conn| {
+                DocumentDao::new(ConnectionOrTx::Connection(conn)).create(
+                    "test",
+                    "/elsewhere/empty.txt",
+                    None,
+                    None,
+                )
+            })
+            .unwrap()
+            .unwrap();
+
+        runner.reembed_document("/elsewhere/empty.txt").unwrap();
+
+        assert!(
+            harness.sink.chunk_ids().unwrap().is_empty(),
+            "nothing was embedded"
+        );
+        assert_eq!(
+            harness.embed.calls(),
+            0,
+            "no chunks: the provider is never called"
+        );
     }
 }

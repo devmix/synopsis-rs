@@ -13,7 +13,7 @@ green: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` (whole workspace). The `vectors` crate is **unchanged** —
 `build_index` / `chunk_ids` already exist and are reused as-is.
 
-- [ ] **1.1** — Per-cycle vector persistence (bound the loss window)
+- [x] **1.1** — Per-cycle vector persistence (bound the loss window)
 
 **Goal.** After a `DocumentWorker` cycle that processed one or more `doc:*`
 tasks, persist the vector engine's RAM layer to disk so an unclean shutdown
@@ -66,7 +66,11 @@ the existing `MemoryIndex` stub in `worker.rs` tests.
 **Goal.** At serve startup, detect chunk rows that have no corresponding
 vector (the residual loss window after a mid-cycle `SIGKILL`) and enqueue
 `doc:index` for their documents so the startup drain re-embeds them. Design
-D2–D4.
+D2–D4. **Coupling note:** 1.2 provides the detection + enqueue; the `doc:index`
+payload's `ops` field (carrying `ReEmbed`) and the serve-level end-to-end
+assertion (vectors restored after the drain) are added in **task 1.3** — 1.3
+makes the re-embed actually happen (a plain `doc:index` for an unchanged
+document is dedup-skipped, so 1.2 alone does not restore the vectors).
 
 **File scope.**
 - `crates/db/src/chunk.rs` — add a light accessor to `ChunkDao`:
@@ -124,6 +128,73 @@ sequence in `serve/server.rs` (~line 449–460).
 - `serve/server.rs` performs the self-heal before the startup worker drain
   (verify by reading the call site; a serve-level test is optional if the
   harness does not drive startup — the runner test is the machine check).
+- The serve-level end-to-end assertion (vectors restored after the drain) is
+  delivered by **task 1.3** (1.2's serve test carries a NOTE until then).
 - No `vectors` crate change; no new dependency; no CLI/config/schema change.
 
 **Estimated size.** ~300–400 lines (code + tests).
+
+- [ ] **1.3** — Granular re-embed op (`ReEmbed`): re-embed without the full pipeline
+
+**Goal.** Make the self-heal's re-embed actually happen: add a `ReEmbed` op to
+the `doc:index` payload, a `Runner::reembed_document` that re-embeds the
+document's existing chunk rows (no parse/chunk/NER/dedup), and the worker
+dispatch by op. The self-heal (task 1.2) enqueues `doc:index` with
+`ops: [ReEmbed]`. Design D5.
+
+**File scope.**
+- `crates/db/src/queue_task.rs` — add a `ReIndexOp` enum (`Full`, `ReEmbed`,
+  serde `rename_all = "snake_case"`) and an `ops: Vec<ReIndexOp>` field on
+  `DocIndexPayload` (serde `#[serde(default = …)]` → `[Full]` so existing rows
+  parse). Export `ReIndexOp` from `crates/db/src/lib.rs`. Add tests: a
+  `DocIndexPayload` JSON without `ops` deserializes to `[Full]`; one with
+  `ops: ["reembed"]` deserializes to `[ReEmbed]`.
+- `crates/ingestion/src/runner/mod.rs` — add `pub fn reembed_document(&self,
+  path: &str) -> Result<(), IngestionError>`: acquire the runner mutex; get the
+  document by path (a clear error if absent); read its chunk rows
+  (`ChunkDao::list_by_doc_id`); if empty → `Ok(())`; else call
+  `self.embed.generate_embeddings` over the chunks' `search_text`, then
+  `self.vectors.insert_batch` the `(chunk_id, vector)` rows. No parse, no
+  re-chunk, no NER, no dedup. Also update `heal_missing_vectors` (task 1.2) to
+  enqueue with `ops: vec![ReIndexOp::ReEmbed]` (instead of the default
+  `[Full]`). Document both (the workspace denies `missing_docs`).
+- `crates/ingestion/src/worker.rs` — the `doc:index` dispatch parses the
+  `DocIndexPayload` and routes: `ops` contains `ReEmbed` (and not `Full`) →
+  `runner.reembed_document(identity)`; else → `runner.process_document_by_path
+  (identity)` (current behavior). Update the worker test harness if needed.
+- `crates/cli/tests/serve_server.rs` — replace the task-1.2 NOTE comment with
+  the real assertion: after the startup drain, every live chunk row has a
+  vector (the self-heal's `ReEmbed` re-embedded them).
+- Tests:
+  - `crates/db` (payload `ops` deserialize default + explicit, as above).
+  - `crates/ingestion` (runner): `reembed_document` on a document whose chunk
+    rows exist but whose vectors were cleared → the index gains the vectors
+    again (re-embedded from the stored `search_text`), with NO re-parse/
+    re-chunk/NER (assert the mock embedding provider's call count equals the
+    chunk count and the chunk rows are unchanged).
+  - `crates/ingestion` (worker): a `doc:index` task with `ops: [ReEmbed]`
+    routes to the re-embed path (not the full pipeline).
+  - `crates/cli` (serve): the end-to-end assertion (vectors restored after the
+    startup drain).
+
+**Dependencies.** 1.2 committed (1.3 modifies 1.2's self-heal payload and
+delivers its serve-test promise). Reference: design D5; delta spec
+`specs/pipeline/spec.md` (`Missing-vector self-heal at startup`);
+`DocIndexPayload` / `QueueTaskType` in `crates/db/src/queue_task.rs`;
+`Runner::heal_missing_vectors` (task 1.2); `ChunkDao::list_by_doc_id`
+(`crates/db/src/chunk.rs:219`).
+
+**Acceptance criteria (machine-checked).**
+- Gates green (whole workspace).
+- The payload `ops` deserialize tests pass (default `[Full]`, explicit
+  `[ReEmbed]`).
+- `reembed_document` re-embeds the existing chunk rows (vectors restored)
+  WITHOUT re-parsing/re-chunking/NER (mock embedding call count = chunk count;
+  chunk rows unchanged).
+- A `doc:index` task with `ops: [ReEmbed]` routes to the re-embed path.
+- The serve-level end-to-end assertion passes (every live chunk has a vector
+  after the startup drain); the task-1.2 NOTE is removed.
+- No `vectors` crate change; no new dependency; no queue schema or CLI change
+  (the `type` stays `doc:index`).
+
+**Estimated size.** ~350–450 lines (code + tests).

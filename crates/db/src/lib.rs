@@ -54,5 +54,5 @@ pub use fact_source::{FactSource, FactSourceDao};
 pub use gc::GcDao;
 pub use queue_task::{
     DocDeletePayload, DocIndexPayload, EntityLinkPayload, QueueTask, QueueTaskDao, QueueTaskError,
-    QueueTaskType, UnknownTaskType,
+    QueueTaskType, ReIndexOp, UnknownTaskType,
 };

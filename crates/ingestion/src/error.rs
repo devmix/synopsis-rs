@@ -255,6 +255,16 @@ pub enum IngestionError {
         path: String,
     },
 
+    /// No document row exists for the given path (vector-loss-self-heal
+    /// D5): the targeted re-embed refuses to run on a nonexistent document
+    /// instead of a silent no-op — the queue's retry surfaces the divergence
+    /// (the document was deleted after the task was enqueued).
+    #[error("no document found for {path}")]
+    DocumentNotFound {
+        /// The path that matched no document row.
+        path: String,
+    },
+
     /// A cross-domain entity-linking failure (pipeline task 3.8): the graph
     /// crate is the source of truth for CEL/linker failures. The linker's
     /// per-link failures are recorded in its result and never fatal (design
@@ -312,7 +322,16 @@ mod tests {
         let gone = IngestionError::EntityCandidateGone(7);
         assert_eq!(
             gone.to_string(),
-            "entity candidate 7 is gone and could not be re-resolved after index rehydration"
+            "entity candidate 7 is gone and could not be re-resolved after \
+             index rehydration"
+        );
+
+        let missing_doc = IngestionError::DocumentNotFound {
+            path: "/docs/gone.md".to_owned(),
+        };
+        assert_eq!(
+            missing_doc.to_string(),
+            "no document found for /docs/gone.md"
         );
 
         let metadata_json = IngestionError::EntityMetadataJson {

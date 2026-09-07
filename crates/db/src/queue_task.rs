@@ -139,6 +139,39 @@ pub struct DocIndexPayload {
     pub source_path: String,
     /// SHA-256 of the document content at enqueue time, if any.
     pub content_hash: Option<String>,
+    /// The granular operations to run (vector-loss-self-heal D5): `Full`
+    /// (the full pipeline, the default for rows enqueued before the field
+    /// existed) or `ReEmbed` (re-embed the existing chunk rows only).
+    #[serde(default = "default_reindex_ops")]
+    pub ops: Vec<ReIndexOp>,
+}
+
+/// The default `ops` set of a `doc:index` payload: `Full` (a row without
+/// the field — enqueued before vector-loss-self-heal D5 — keeps the
+/// full-pipeline semantics).
+fn default_reindex_ops() -> Vec<ReIndexOp> {
+    vec![ReIndexOp::Full]
+}
+
+/// The granular operations a `doc:index` event can request
+/// (vector-loss-self-heal D5). `Full` is the historical behavior (parse →
+/// chunk → NER → embed → write, with the content-hash dedup); `ReEmbed`
+/// re-embeds the document's EXISTING chunk rows only (no parse, no
+/// re-chunk, no NER, no dedup — the targeted repair of a lost vector).
+/// The set is extensible: a future granular operation (e.g. re-run NER
+/// only) is a new variant, not a payload schema break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReIndexOp {
+    /// The full per-document pipeline (the default).
+    Full,
+    /// Re-embed the document's existing chunk rows only.
+    ///
+    /// The wire form is the single word `reembed` (not `re_embed`): the
+    /// variant-level `rename` overrides the container's `snake_case` so the
+    /// payload reads `ops: ["reembed"]` (task 1.3).
+    #[serde(rename = "reembed")]
+    ReEmbed,
 }
 
 /// JSON payload of a `doc:delete` event (the delete needs only the path).
@@ -451,6 +484,7 @@ mod tests {
         DocIndexPayload {
             source_path: source.to_owned(),
             content_hash: None,
+            ops: vec![ReIndexOp::Full],
         }
     }
 
@@ -549,6 +583,7 @@ mod tests {
                     &DocIndexPayload {
                         source_path: "/docs".to_owned(),
                         content_hash: Some("h1".to_owned()),
+                        ops: vec![ReIndexOp::Full],
                     },
                     100,
                 )
@@ -585,6 +620,7 @@ mod tests {
                     &DocIndexPayload {
                         source_path: "/s1".to_owned(),
                         content_hash: Some("h1".to_owned()),
+                        ops: vec![ReIndexOp::Full],
                     },
                     100,
                 )
@@ -599,6 +635,7 @@ mod tests {
                     &DocIndexPayload {
                         source_path: "/s2".to_owned(),
                         content_hash: Some("h2".to_owned()),
+                        ops: vec![ReIndexOp::Full],
                     },
                     5_000,
                 )
@@ -1284,6 +1321,28 @@ mod tests {
         assert_eq!(QueueTaskType::DocIndex.as_ref(), "doc:index");
         assert_eq!(QueueTaskType::DocDelete.as_ref(), "doc:delete");
         assert_eq!(QueueTaskType::EntityLink.as_ref(), "entity:link");
+    }
+
+    // A `doc:index` payload WITHOUT `ops` (a row enqueued before
+    // vector-loss-self-heal D5) parses as the full pipeline.
+    #[test]
+    fn doc_index_payload_ops_default_to_full() {
+        let payload: DocIndexPayload =
+            serde_json::from_str(r#"{"source_path":"/docs","content_hash":null}"#).unwrap();
+        assert_eq!(payload.source_path, "/docs");
+        assert_eq!(payload.content_hash, None);
+        assert_eq!(payload.ops, vec![ReIndexOp::Full]);
+    }
+
+    // An explicit `ops: ["reembed"]` parses as the targeted re-embed (and
+    // the serialized form is the snake_case word).
+    #[test]
+    fn doc_index_payload_ops_parse_explicit_reembed() {
+        let json = r#"{"source_path":"/docs","content_hash":null,"ops":["reembed"]}"#;
+        let payload: DocIndexPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.ops, vec![ReIndexOp::ReEmbed]);
+        let round_trip = serde_json::to_string(&payload).unwrap();
+        assert!(round_trip.contains(r#""ops":["reembed"]"#), "{round_trip}");
     }
 
     // The DAO works over a transaction: commit and rollback paths.

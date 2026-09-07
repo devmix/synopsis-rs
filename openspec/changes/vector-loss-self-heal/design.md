@@ -39,21 +39,31 @@ batch.
 ## D2 — Self-heal missing vectors at startup
 
 **Decision.** At serve startup, before the worker's startup drain, the runner
-detects chunk rows with no corresponding vector and enqueues `doc:index` for
-their documents.
+detects chunk rows with no corresponding vector and enqueues a `doc:index`
+task carrying the `ReEmbed` op (D5) for their documents.
 
 **Why.** This repairs the residual loss (a mid-cycle `SIGKILL` between two
 saves) automatically, without a manual `rebuild`. It implements the
-"consumer reconciliation" repair the `vector-index` spec already names.
-Re-indexing the whole document is idempotent (the pipeline clears and
-rewrites the document's chunks + vectors), and the affected set is small
-because of D1.
+"consumer reconciliation" repair the `vector-index` spec already names. The
+affected set is small because of D1.
+
+**Why the repair is a targeted re-embed, not a full re-index.** The pipeline
+dedups on content hash (`ingester/mod.rs`): a document whose stored hash
+matches the file is **skipped entirely** — no re-embed. So a plain `doc:index`
+for an unchanged document (the exact SIGKILL residual: content unchanged,
+vectors lost) is a no-op. The self-heal therefore carries an explicit `ReEmbed`
+op (D5) that re-embeds the existing chunk rows without re-parsing,
+re-chunking, or re-running NER. A vector-aware dedup (re-checking
+`vectors.chunk_ids()` for every document) was rejected: it adds work to the
+common unchanged-document path for documents that are already fully
+vectorized.
 
 **Why not the alternatives.**
-- *Sub-chunk-level re-embed (only the missing chunks)* — rejected: the
-  pipeline re-indexes whole documents; a partial re-embed would need a new
-  pipeline path and would still re-create chunk rows (new ids), so it buys
-  little over whole-document re-index for the small residual set.
+- *Vector-aware dedup (re-index only if some chunk vector is missing)* —
+  rejected: it runs the `chunk_ids()` set-diff on **every** `doc:index`
+  (including already-vectorized documents), which is the extra work the
+  self-heal should avoid. The targeted `ReEmbed` op does the work only for the
+  documents the self-heal already knows are missing vectors.
 - *Continuous self-heal in every GC cycle* — rejected: during a live session
   the in-memory index already holds every vector (RAM + disk), so
   `chunks − vectors` is empty and the set-diff is wasted work every cycle.
@@ -89,13 +99,41 @@ pre-existing cost, and it runs in the GC, not on the query path).
 ## D4 — Enqueue semantics for the self-heal
 
 **Decision.** One `doc:index` per affected document, identity = the document's
-`original_path`, payload `DocIndexPayload { source_path, content_hash: None }`.
+`original_path`, payload `DocIndexPayload { source_path, content_hash: None,
+ops: [ReEmbed] }` (D5).
 
-**Why.** `content_hash: None` is safe: the worker's `process_document_by_path`
-re-reads and re-hashes the file (the payload hash is only used by the
-producer's content-hash diff, not by the worker). Reusing the ordinary
-`doc:index` path keeps the self-heal on the well-tested pipeline (no new
-entry point) and inherits the queue's upsert/backoff/status semantics.
+**Why.** `content_hash: None` is safe: the re-embed path does not re-hash the
+file. Reusing the `doc:index` task type (no new queue row type) keeps the
+self-heal on the existing queue (upsert/backoff/status semantics) and the
+`queue status` CLI surface unchanged.
+
+## D5 — Granular re-embed op (re-embed without the full pipeline)
+
+**Decision.** `DocIndexPayload` gains `ops: Vec<ReIndexOp>` (serde default
+`[Full]`). `ReIndexOp` is an enum: `Full` (the current full pipeline: parse →
+chunk → NER → embed → write, with the content-hash dedup) and `ReEmbed`
+(re-embed the document's **existing** chunk rows only). The worker dispatches
+`doc:index` by op: `Full` (or default) → `process_document_by_path`; `ReEmbed`
+→ a new `Runner::reembed_document`. `reembed_document` reads the document's
+chunk rows from SQLite (they already carry `search_text`), calls the embedding
+provider on them, and `insert_batch`es the vectors — no parse, no re-chunk, no
+NER, no dedup. Present vectors are overwritten (idempotent).
+
+**Why.** When only the vectors are lost (the SIGKILL residual), the chunk rows
+are intact, so re-running parse/chunk/NER is pure waste. A targeted re-embed
+does exactly the missing work. The op is a **set** (not a single boolean) so
+future granular operations (e.g. re-run NER only) extend it without a payload
+schema break. `Full` subsumes `ReEmbed`; the dispatch prefers `Full` when both
+are present.
+
+**Why not the alternatives.**
+- *A single `force: bool`* — rejected: it forces the **full** pipeline (parse +
+  chunk + NER + embed), which re-does work the intact chunk rows make
+  unnecessary. The op set lets the self-heal request the minimal work.
+- *A new `doc:reembed` queue task type* — rejected: it is a data-schema
+  surface change (new `type` value, `QueueTaskType` variant, `queue status`
+  output) for what is just a `doc:index` with a narrower payload. The op set
+  keeps the queue schema and CLI unchanged.
 
 ## Performance (N≈1M × 1024-dim)
 

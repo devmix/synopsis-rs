@@ -230,6 +230,20 @@ impl<'conn> ChunkDao<'conn> {
             .query(&format!("{SELECT_CHUNK} ORDER BY id"), [], row_to_chunk)
     }
 
+    /// Light `(id, doc_id)` accessor for the vector self-heal set-diff
+    /// (vector-loss-self-heal D3): the ids of every chunk with its owning
+    /// document, no text payload.
+    ///
+    /// At N≈1M [`Self::list_all`] would pull every chunk's text into memory
+    /// (hundreds of MB–GB); this query keeps the per-row footprint tiny for
+    /// the startup set-diff against the vector index.
+    pub fn list_id_doc_id(&self) -> Result<Vec<(i64, i64)>, DbError> {
+        self.exec
+            .query("SELECT id, doc_id FROM chunks ORDER BY id", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+    }
+
     /// Update text, position, offsets and the metadata bag of an existing
     /// chunk, refreshing the FTS index via the `chunks_fts_au` trigger.
     /// `search_text` is the new value of the indexed column (pass
@@ -734,6 +748,26 @@ mod tests {
             assert_eq!(
                 all.iter().map(|c| c.id).collect::<Vec<_>>(),
                 vec![a0, b0, a1]
+            );
+        });
+    }
+
+    // list_id_doc_id: the light (id, doc_id) accessor for the vector
+    // self-heal set-diff (vector-loss-self-heal D3), ordered by id.
+    #[test]
+    fn list_id_doc_id_returns_pairs_per_document() {
+        let db = in_memory_db();
+        let a = seed_doc(&db, "/docs/a.md", None);
+        let b = seed_doc(&db, "/docs/b.md", None);
+        with_chunks(&db, |chunks| {
+            let a0 = chunks.create(a, "a zero", 0, None, None).unwrap();
+            let b0 = chunks.create(b, "b zero", 0, None, None).unwrap();
+            let a1 = chunks.create(a, "a one", 1, None, None).unwrap();
+            let pairs = chunks.list_id_doc_id().unwrap();
+            assert_eq!(
+                pairs,
+                vec![(a0, a), (b0, b), (a1, a)],
+                "ordered by id, with the owning doc id"
             );
         });
     }

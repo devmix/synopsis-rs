@@ -48,7 +48,8 @@ use std::fs;
 use std::path::Path;
 
 use db::{
-    ConnectionOrTx, Db, DocDeletePayload, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType,
+    ConnectionOrTx, Db, DocDeletePayload, DocIndexPayload, DocumentDao, QueueTaskDao,
+    QueueTaskType, ReIndexOp,
 };
 
 use crate::error::IngestionError;
@@ -106,6 +107,7 @@ impl<'db> DocumentJobQueue<'db> {
         let payload = DocIndexPayload {
             source_path: source_path.to_owned(),
             content_hash: content_hash.map(str::to_owned),
+            ops: vec![ReIndexOp::Full],
         };
         self.db.with_conn(|conn| {
             QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(

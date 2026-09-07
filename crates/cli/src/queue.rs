@@ -287,6 +287,7 @@ mod tests {
                 &db::DocIndexPayload {
                     source_path: source.to_owned(),
                     content_hash: None,
+                    ops: vec![db::ReIndexOp::Full],
                 },
                 100,
             )?;

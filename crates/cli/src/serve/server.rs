@@ -448,6 +448,25 @@ pub fn serve_with_stop(
         );
     }
 
+    // Startup vector self-heal (vector-loss-self-heal D2): chunk rows whose
+    // vector was lost with the RAM layer (an unclean shutdown, SIGKILL) are
+    // re-embedded by the ordinary pipeline — one `doc:index` per affected
+    // document, processed by the startup drain below. A failure is a
+    // warning without aborting startup (the next startup retries).
+    let healed = match runner.heal_missing_vectors(now_unix_seconds()) {
+        Ok(healed) => healed,
+        Err(err) => {
+            tracing::warn!(error = %err, "startup vector self-heal failed");
+            0
+        }
+    };
+    if healed > 0 {
+        tracing::info!(
+            healed,
+            "re-queued documents with missing vectors for re-embedding"
+        );
+    }
+
     // The event-queue worker (event-queue-incremental-linking task 1.2):
     // the sole consumer of the queue. The Runner is `!Send`, so the worker
     // runs on this owner thread: one immediate drain right here (the startup

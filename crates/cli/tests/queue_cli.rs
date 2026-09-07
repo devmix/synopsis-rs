@@ -119,6 +119,7 @@ fn seed(db: &Db, path: &str, source: &str, status: &str, attempts: i32, last_err
             &db::DocIndexPayload {
                 source_path: source.to_owned(),
                 content_hash: None,
+                ops: vec![db::ReIndexOp::Full],
             },
             0,
         )?;

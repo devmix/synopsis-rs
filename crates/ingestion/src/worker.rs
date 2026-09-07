@@ -18,7 +18,7 @@
 //! status (no further retries). The `max_attempts` column on the row is the
 //! cap (set at enqueue time; the DAO's `mark_failed` enforces it).
 
-use db::{ConnectionOrTx, Db, QueueTask, QueueTaskDao, QueueTaskType};
+use db::{ConnectionOrTx, Db, DocIndexPayload, QueueTask, QueueTaskDao, QueueTaskType, ReIndexOp};
 
 use crate::error::IngestionError;
 use crate::runner::Runner;
@@ -126,7 +126,7 @@ impl<'a> DocumentWorker<'a> {
     /// outcome in the queue.
     fn process_task(&self, task: &QueueTask, now: i64) {
         let result = match task.task_type.as_str() {
-            "doc:index" => self.runner.process_document_by_path(&task.identity),
+            "doc:index" => self.process_doc_index(task),
             "doc:delete" => self.runner.delete_document_at(&task.identity).map(|_| ()),
             "entity:link" => self.process_entity_link(task),
             other => {
@@ -138,6 +138,21 @@ impl<'a> DocumentWorker<'a> {
         match result {
             Ok(()) => self.finish_success(task, now),
             Err(err) => self.finish_failure(task, &err.to_string(), now),
+        }
+    }
+
+    /// Processes a `doc:index` task: routes by the payload's `ops` set
+    /// (vector-loss-self-heal D5): `ReEmbed` without `Full` → the targeted
+    /// re-embed of the document's existing chunk rows (no parse, no
+    /// re-chunk, no NER, no dedup); otherwise (the `Full` default, which
+    /// subsumes `ReEmbed`) → the full per-document pipeline.
+    fn process_doc_index(&self, task: &QueueTask) -> Result<(), IngestionError> {
+        let payload: DocIndexPayload =
+            serde_json::from_str(&task.event).map_err(db::QueueTaskError::Json)?;
+        if payload.ops.contains(&ReIndexOp::ReEmbed) && !payload.ops.contains(&ReIndexOp::Full) {
+            self.runner.reembed_document(&task.identity)
+        } else {
+            self.runner.process_document_by_path(&task.identity)
         }
     }
 
@@ -250,7 +265,8 @@ mod tests {
     use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
     use db::{
-        ConnectionOrTx, Db, DocIndexPayload, DocumentDao, EntityDao, QueueTaskDao, QueueTaskType,
+        ChunkDao, ConnectionOrTx, Db, DocIndexPayload, DocumentDao, EntityDao, QueueTaskDao,
+        QueueTaskType, ReIndexOp,
     };
     use embedding::{EmbeddingError, EmbeddingProvider};
     use vectors::{VectorIndex, VectorsError};
@@ -346,11 +362,14 @@ mod tests {
     /// substring (per-document failure path). `probe` (task 1.5) is an
     /// optional observer invoked before every embedding batch — mid-pipeline
     /// queue-state checks run there (the embedding step holds no DB
-    /// connection).
+    /// connection). `embedded_texts` counts the total texts embedded across
+    /// all batches (the re-embed routing test asserts the provider saw
+    /// exactly the stored chunk count).
     struct MockEmbedding {
         dim: usize,
         fail_marker: Mutex<Option<String>>,
         probe: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+        embedded_texts: Mutex<usize>,
     }
 
     impl MockEmbedding {
@@ -359,7 +378,13 @@ mod tests {
                 dim,
                 fail_marker: Mutex::new(None),
                 probe: Mutex::new(None),
+                embedded_texts: Mutex::new(0),
             }
+        }
+
+        /// Total texts embedded so far (test helper).
+        fn embedded_texts(&self) -> usize {
+            *self.embedded_texts.lock().unwrap()
         }
     }
 
@@ -373,6 +398,7 @@ mod tests {
             {
                 return Err(EmbeddingError::Ort("simulated engine failure".to_owned()));
             }
+            *self.embedded_texts.lock().unwrap() += texts.len();
             Ok((0..texts.len())
                 .map(|i| vec![(i + 1) as f32; self.dim])
                 .collect())
@@ -414,6 +440,12 @@ mod tests {
         /// helper).
         fn set_fail_build_index(&self, fail: bool) {
             *self.fail_build_index.lock().unwrap() = fail;
+        }
+
+        /// Drops every recorded row (test helper: simulating a lost RAM
+        /// layer while the chunk rows remain).
+        fn clear(&self) {
+            self.rows.lock().unwrap().clear();
         }
     }
 
@@ -554,7 +586,8 @@ mod tests {
                 .unwrap()
         }
 
-        /// Enqueues a `doc:index` task for `path`.
+        /// Enqueues a `doc:index` task for `path` (the `Full` op: the full
+        /// per-document pipeline).
         fn enqueue_index(&self, path: &str, source: &str) {
             let now = 1_000;
             self.db
@@ -565,6 +598,29 @@ mod tests {
                         &DocIndexPayload {
                             source_path: source.to_owned(),
                             content_hash: None,
+                            ops: vec![ReIndexOp::Full],
+                        },
+                        now,
+                    )
+                })
+                .unwrap()
+                .unwrap();
+        }
+
+        /// Enqueues a `doc:index` task for `path` with the `ReEmbed` op
+        /// (vector-loss-self-heal D5: the targeted re-embed of the existing
+        /// chunk rows).
+        fn enqueue_reembed(&self, path: &str, source: &str) {
+            let now = 1_000;
+            self.db
+                .with_conn(|conn| {
+                    QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(
+                        QueueTaskType::DocIndex,
+                        path,
+                        &DocIndexPayload {
+                            source_path: source.to_owned(),
+                            content_hash: None,
+                            ops: vec![ReIndexOp::ReEmbed],
                         },
                         now,
                     )
@@ -971,6 +1027,74 @@ mod tests {
         assert_eq!(
             tasks[0].status, "done",
             "the task must still be done: {tasks:?}"
+        );
+    }
+
+    // A `doc:index` task with `ops: [ReEmbed]` routes to the targeted
+    // re-embed, not the full pipeline (vector-loss-self-heal D5): the
+    // document is unchanged on disk (the full pipeline's content-hash dedup
+    // would skip it and embed nothing), yet the re-embed restores the lost
+    // vectors from the stored chunk rows.
+    #[test]
+    fn run_once_routes_reembed_ops_to_the_reembed_path() {
+        let tree = TempTree::new();
+        tree.write("a.txt", "hello world\n");
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.with_source(&root);
+        let runner = harness.runner();
+        let worker = DocumentWorker::new(&harness.db, &runner);
+
+        // First, index the document through the full pipeline.
+        harness.enqueue_index(&format!("{root}/a.txt"), &root);
+        worker.run_once(2_000).unwrap();
+        assert_eq!(harness.list_documents().len(), 1);
+        let chunk_count: i64 = harness
+            .db
+            .with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).count())
+            .unwrap()
+            .unwrap();
+        assert!(chunk_count > 0, "the pipeline must have created chunks");
+        let chunk_ids = harness.sink.chunk_ids().unwrap();
+        assert_eq!(
+            chunk_ids.len(),
+            chunk_count as usize,
+            "every chunk has a vector"
+        );
+
+        // Simulate the lost RAM layer: the vectors are gone, the chunk rows
+        // and the file on disk are unchanged.
+        harness.sink.clear();
+        let embedded_before = harness.embed.embedded_texts();
+
+        // The re-embed task: the same identity, the ReEmbed op.
+        harness.enqueue_reembed(&format!("{root}/a.txt"), &root);
+        worker.run_once(3_000).unwrap();
+
+        // The task is done and the vectors are restored for exactly the
+        // stored chunk ids.
+        let tasks = harness.list_doc_tasks();
+        assert_eq!(tasks.len(), 1, "{tasks:?}");
+        assert_eq!(tasks[0].status, "done", "{tasks:?}");
+        let restored = harness.sink.chunk_ids().unwrap();
+        assert_eq!(
+            restored.len(),
+            chunk_count as usize,
+            "the lost vectors must be restored"
+        );
+        for id in &chunk_ids {
+            assert!(restored.contains(id), "chunk {id} must be re-embedded");
+        }
+
+        // The re-embed path ran (not the full pipeline): the provider saw
+        // exactly the stored chunk count in this cycle — the full pipeline's
+        // hash-dedup would have skipped the unchanged document and embedded
+        // nothing.
+        assert_eq!(
+            harness.embed.embedded_texts() - embedded_before,
+            chunk_count as usize,
+            "exactly the stored chunk count is re-embedded (no re-chunk)"
         );
     }
 

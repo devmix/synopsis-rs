@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use config::preset::GraphConfig;
 use config::{Config, GlobalConfig, OnnxConfig};
-use db::{ChunkDao, ConnectionOrTx, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType};
+use db::{
+    ChunkDao, ConnectionOrTx, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType, ReIndexOp,
+};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::GraphIndex;
 use search::Searcher;
@@ -362,6 +364,15 @@ fn one_markdown_source(src: &Path) -> GlobalConfig {
 /// the job rows flip to `done` (the delete job row is removed), and the
 /// GC sweep (now inside the worker) drops the chunk-less ghost row.
 /// `/health` still answers 200 and the stop is graceful.
+///
+/// The fixture's prior state also carries the vector-loss-self-heal D2
+/// shape: `same.md`'s chunk row has no vector (the engine is fresh — the
+/// RAM layer an unclean shutdown would lose), so the startup self-heal
+/// re-queues it as `doc:index` with the `ReEmbed` op; the startup drain
+/// routes it to the targeted re-embed (vector-loss-self-heal D5 — no
+/// re-parse / re-chunk, the pipeline's hash-dedup is never reached),
+/// restores the vector, and processes the row to `done`. After the drain,
+/// every live chunk row has a vector.
 #[test]
 fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
     let dir = TempDir::new("startup-worker");
@@ -380,8 +391,10 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
     let mut boot = test_bootstrap(&dir);
     boot.global = Some(one_markdown_source(&src));
     // Prior ingestion state: `changed.md` with a stale hash, `same.md`
-    // with its current hash and a live chunk (so the worker's GC keeps
-    // it), `gone.md` (no file on disk anymore), and a chunk-less ghost
+    // with its current hash and a live chunk WITHOUT a vector (the engine
+    // is fresh — the missing-vector state the startup self-heal detects
+    // and re-queues, and the chunk keeps `same.md` out of the orphan
+    // sweep), `gone.md` (no file on disk anymore), and a chunk-less ghost
     // document (a GC candidate).
     let changed_path = src.join("changed.md").to_string_lossy().into_owned();
     let same_path = src.join("same.md").to_string_lossy().into_owned();
@@ -454,7 +467,12 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
 
     // The worker processed the queued diff during serve startup: new.md
     // and changed.md are (re)indexed and their task rows flip to `done`;
-    // gone.md is deleted and its task row removed; same.md stays unqueued.
+    // gone.md is deleted and its task row removed; same.md is unchanged
+    // per the content-hash reconcile (the reconcile does not re-queue it)
+    // but its chunk row has no vector, so the startup self-heal
+    // (vector-loss-self-heal D2) re-queues it with the `ReEmbed` op and
+    // the startup drain routes it to the targeted re-embed (D5),
+    // restoring the vector and processing the row to `done`.
     let tasks = boot
         .db
         .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
@@ -467,8 +485,8 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
         .collect();
     assert_eq!(
         tasks_by_path.len(),
-        2,
-        "new + changed processed (done), gone's row removed, same untouched: {tasks:?}"
+        3,
+        "new + changed + same processed (done), gone's row removed: {tasks:?}"
     );
     let new_task = tasks_by_path
         .get(src.join("new.md").to_string_lossy().as_ref())
@@ -484,9 +502,58 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
         !tasks_by_path.contains_key(src.join("gone.md").to_string_lossy().as_ref()),
         "the gone.md delete task row must be gone: {tasks:?}"
     );
+    // The self-heal's re-queue of same.md: a `doc:index` row whose payload
+    // carries no content hash (the reconcile's rows carry one — the worker
+    // re-reads and re-hashes the file instead).
+    let same_task = tasks_by_path
+        .get(src.join("same.md").to_string_lossy().as_ref())
+        .expect("same.md must be re-queued by the startup self-heal");
+    assert_eq!(same_task.task_type, "doc:index");
+    assert_eq!(same_task.status, "done", "{same_task:?}");
+    let same_payload: DocIndexPayload =
+        serde_json::from_str(&same_task.event).expect("same.md payload parses");
+    assert_eq!(
+        same_payload.content_hash, None,
+        "the self-heal's payload carries no content hash: {same_task:?}"
+    );
+
+    // The self-heal's payload requested the targeted re-embed (design D5):
+    // the full pipeline's content-hash dedup would have skipped the
+    // unchanged document and left the vector missing.
+    assert_eq!(
+        same_payload.ops,
+        vec![ReIndexOp::ReEmbed],
+        "the self-heal's payload must carry the ReEmbed op: {same_task:?}"
+    );
+
+    // End-to-end (vector-loss-self-heal D5): after the startup drain every
+    // live chunk row has a vector in the engine — the fresh engine's RAM
+    // layer (the state an unclean shutdown would lose) holds the
+    // re-embedded same.md chunk alongside the fresh new.md / changed.md
+    // chunks.
+    let vectors = boot.vectors.as_deref().expect("engine opened");
+    let indexed: std::collections::HashSet<u32> = vectors
+        .chunk_ids()
+        .expect("chunk ids")
+        .into_iter()
+        .collect();
+    let chunk_rows = boot
+        .db
+        .with_conn(|conn| ChunkDao::new(ConnectionOrTx::Connection(conn)).list_id_doc_id())
+        .expect("with_conn chunks")
+        .expect("list chunk rows");
     assert!(
-        !tasks_by_path.contains_key(src.join("same.md").to_string_lossy().as_ref()),
-        "same.md must stay unqueued: {tasks:?}"
+        !chunk_rows.is_empty(),
+        "the live documents must have chunk rows"
+    );
+    let missing: Vec<u32> = chunk_rows
+        .iter()
+        .map(|(id, _)| *id as u32)
+        .filter(|id| !indexed.contains(id))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "every live chunk must have a vector after the startup drain: {missing:?}"
     );
 
     // The documents table reflects the processed diff: new.md created
@@ -569,6 +636,7 @@ fn serve_startup_recovers_a_stuck_processing_row() {
                 &DocIndexPayload {
                     source_path: src.to_string_lossy().into_owned(),
                     content_hash: None,
+                    ops: vec![ReIndexOp::Full],
                 },
                 1,
             )?;

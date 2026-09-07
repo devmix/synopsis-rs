@@ -141,6 +141,7 @@ fn seed(db: &Db) {
                 &db::DocIndexPayload {
                     source_path: "/docs".to_owned(),
                     content_hash: None,
+                    ops: vec![db::ReIndexOp::Full],
                 },
                 0,
             )
