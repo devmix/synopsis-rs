@@ -78,4 +78,6 @@ Dependency graph (fixed by design D1): `config, db, vectors, utils, llm → embe
 
 proposal → design → specs → tasks → apply → archive. Rules live in `openspec/config.yaml`; main contract specs are synced under `openspec/specs/` (`mcp-contract`, `cli-surface`, `data-schema`, `config-format`, plus per-module specs); completed changes are archived under `openspec/changes/archive/YYYY-MM-DD-<name>/`. Agent skills: `.opencode/skills/openspec-*`; commands: `opsx-propose`, `opsx-apply`, `opsx-sync`, `opsx-archive`, `opsx-update`, `opsx-explore`.
 
+**Documentation is part of the change.** If a change alters user-facing or observable functionality — behavior, the CLI surface, config keys, MCP tools, the data model, or resilience/recovery (e.g. how data survives a crash) — the documentation is updated **in the same change**, before it is archived: the site docs under `site/docs/` (concepts / guides / reference) and the project docs (`README.md`, and `docs/adr/` when an ADR's status changes). A behavior change that ships without a doc update is an incomplete change.
+
 Changing a frozen contract (MCP tools, CLI surface, data schema, config formats) is a **separate explicit decision** with justification; it never happens inside an implementation task.
