@@ -1,119 +1,166 @@
-# Release Pipeline — cross-build, package and publish on version tags (v*).
-# Single job (change make-ci-gitea-compatible, design D1): the Gitea runner has
-# no artifact service, so archives cannot be passed between jobs. One `release`
-# job cross-compiles the release binary for each of the 5 supported targets via
-# cargo-zigbuild (sequentially, on the same runner), strips each binary, and
-# packages a per-platform archive `synopsis_<version>_<name>.<ext>` bundling the
-# stripped binary, README.md, workspace/configs/** and
-# workspace/datasets/edtech/ontology/** (the ONNX runtime library and model
-# weights are gitignored runtime artifacts the binary downloads per onnx.yaml,
-# and the demo corpus is not shipped). After the loop it writes SHA256SUMS.txt
-# and publishes the Gitea Release (design D2). The 5-target build lives here
-# and only here — the dev CI (ci.yml) stays fast.
+# Release Pipeline — verify the tagged commit, cross-build and publish on version tags (v*).
+#
+# Three jobs (change rebuild-github-cicd-flow, design D3):
+#   gate    → fmt + clippy + test on the tagged commit (fast, no coverage).
+#   build   → 5-way parallel matrix, one cargo-zigbuild target per leg, each leg
+#             strips its binary and packages synopsis_<version>_<name>.<ext>.
+#   publish → merges the 5 archives, writes SHA256SUMS.txt, generates a categorized
+#             changelog from conventional commits, and publishes the GitHub Release.
+#
+# Why a gate: a tag push does not re-run the branch CI, and a tag can point at any
+# commit (one with failing CI, or one never pushed to main). The gate guarantees a
+# release is only built from verified code.
+#
+# GitHub has an artifact service, so the archives are passed from the build legs to
+# publish — the constraint that forced the earlier Gitea single-job design no longer
+# exists. That design (single sequential job, Gitea-fork actions) is superseded by
+# this change; the Gitea remote is a plain git mirror without CI.
 name: Release
 
-# Flow style keeps the block below at column 0 (see the single-job layout note
-# above): the tag trigger is `v*`.
 on: { push: { tags: ['v*'] } }
 
-# The release job creates the Gitea Release, which needs to write contents;
+# The publish job creates the GitHub Release, which needs to write contents;
 # everything else only reads the repository.
 permissions: { contents: write }
 
 jobs:
   # ------------------------------------------------------------------
-  # Release — one job does everything on a single runner (design D1):
-  # build all 5 targets, package each archive, write the checksum file,
-  # publish. No artifacts are passed between jobs because Gitea has no
-  # artifact service.
+  # Gate — verify the tagged commit before any target is built.
   # ------------------------------------------------------------------
-  release:
-    name: Build, package and publish
+  gate:
+    name: Gate (fmt + clippy + test)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          # Full history so the tag (and thus the version) is available.
-          fetch-depth: 0
 
-      # Same pinned toolchain as the dev CI (rust-toolchain.toml, 1.96.0).
-      # All five targets are installed up front because this single job
-      # cross-compiles for each of them in turn; no clippy/rustfmt
-      # components are needed — only the target stds.
+      # Same pinned toolchain as the dev CI (rust-toolchain.toml, 1.96.0); the
+      # @1.96.0 pin MUST match that file or every cargo command fails with
+      # "toolchain not installed".
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.0
         with:
-          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-gnu, aarch64-unknown-linux-musl, x86_64-pc-windows-gnu, aarch64-apple-darwin
+          components: clippy, rustfmt
 
-      # Caches ~/.cargo (registry, git deps) and ./target; keyed by the
-      # installed rustc version, so it must run after the toolchain step.
+      # Caches ~/.cargo (registry, git deps) and ./target; keyed by the installed
+      # rustc version, so it must run after the toolchain step.
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      # Install cargo-zigbuild from crates.io — the method documented in
-      # its README. The binary lands in CARGO_HOME, which the rust-cache
-      # step above already caches, so only a cold cache pays the compile;
-      # --locked pins the exact dependency set from its Cargo.lock for
-      # reproducibility.
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+  # ------------------------------------------------------------------
+  # Build — one leg per target, all in parallel (design D3/D7).
+  # ------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.name }}
+    needs: gate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, name: linux_amd64, ext: tar.gz }
+          - { target: aarch64-unknown-linux-gnu, name: linux_arm64, ext: tar.gz }
+          - { target: x86_64-pc-windows-msvc, name: windows_amd64, ext: zip }
+          - { target: aarch64-apple-darwin, name: darwin_arm64, ext: tar.gz }
+          - { target: x86_64-apple-darwin, name: darwin_amd64, ext: tar.gz }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Same pinned toolchain (rust-toolchain.toml, 1.96.0); each leg installs
+      # only its own target std (one target per leg).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.target }}
+
+      # Caches ~/.cargo and ./target; keyed by rustc version, so after toolchain.
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Install cargo-zigbuild from crates.io (its documented method). The binary
+      # lands in CARGO_HOME, which rust-cache already caches, so only a cold cache
+      # pays the compile; --locked pins the exact dependency set for reproducibility.
       - name: Install cargo-zigbuild
         run: cargo install --locked cargo-zigbuild
 
-      # Zig 0.16.0 is the current stable release (ziglang.org, verified
-      # 2026-08-18); the action caches the tarball by version.
+      # Zig 0.16.0 is the current stable release (ziglang.org); the action caches
+      # the tarball by version.
       - name: Install Zig 0.16.0
         uses: mlugg/setup-zig@v2
         with:
           version: "0.16.0"
 
-      # Build and package every target on this single runner (design D1).
-      # For each target the loop cross-compiles the release binary, strips
-      # it, and rebuilds a clean stage/ directory bundling the stripped
-      # binary, README.md, the config presets and the ontology data;
-      # everything else (notably the downloaded runtime library and model
-      # weights) is intentionally excluded (design D4 of rebuild-ci-cd).
-      # zig objcopy handles all three object formats (ELF, PE/COFF,
-      # Mach-O) with one command, unlike the host strip (ELF/PE only).
-      # The rows below are the target → archive name/extension mapping.
-      - name: Build and package all targets
+      # Cross-compile this leg's target, strip it, and package a clean archive
+      # bundling the stripped binary, README.md, the config presets and the
+      # ontology data; everything else (notably the downloaded runtime library and
+      # model weights) is intentionally excluded. zig objcopy handles all three
+      # object formats (ELF, PE/COFF, Mach-O) with one command, unlike the host
+      # strip (ELF/PE only).
+      - name: Build + strip + package
         run: |
           set -euo pipefail
-          # Each row: <target>:<archive name>:<archive extension>.
-          targets=(
-            "x86_64-unknown-linux-musl:linux_amd64:tar.gz"
-            "aarch64-unknown-linux-gnu:linux_arm64_gnu:tar.gz"
-            "aarch64-unknown-linux-musl:linux_arm64_musl:tar.gz"
-            "x86_64-pc-windows-gnu:windows_amd64:zip"
-            "aarch64-apple-darwin:darwin_arm64:tar.gz"
-          )
-          mkdir -p dist
-          for row in "${targets[@]}"; do
-            IFS=':' read -r target name ext <<< "${row}"
-            cargo zigbuild --release --target "${target}"
-            bin="target/${target}/release/synopsis"
-            case "${target}" in
-              *-pc-windows-*)
-                bin="${bin}.exe"
-                binname="synopsis.exe"
-                ;;
-              *)
-                binname="synopsis"
-                ;;
-            esac
-            zig objcopy --strip-all "${bin}"
-            rm -rf stage
-            mkdir -p stage/workspace/datasets/edtech
-            cp "${bin}" "stage/${binname}"
-            cp README.md stage/
-            cp -r workspace/configs stage/workspace/configs
-            cp -r workspace/datasets/edtech/ontology stage/workspace/datasets/edtech/ontology
-            archive="dist/synopsis_${GITHUB_REF_NAME#v}_${name}.${ext}"
-            if [ "${ext}" = "zip" ]; then
-              (cd stage && zip -qr "../${archive}" .)
-            else
-              tar czf "${archive}" -C stage .
-            fi
-          done
+          target="${{ matrix.target }}"; name="${{ matrix.name }}"; ext="${{ matrix.ext }}"
+          cargo zigbuild --release --target "${target}"
+          bin="target/${target}/release/synopsis"
+          case "${target}" in
+            *-pc-windows-*) bin="${bin}.exe"; binname="synopsis.exe" ;;
+            *) binname="synopsis" ;;
+          esac
+          # zig objcopy has no in-place mode: it needs an explicit output file
+          # (run 34092788497: "error: expected output parameter"). So strip to a
+          # temp file (bin.stripped), then rename it over the original (design D5).
+          zig objcopy --strip-all "${bin}" "${bin}.stripped"
+          mv "${bin}.stripped" "${bin}"
+          rm -rf stage
+          mkdir -p stage/workspace/datasets/edtech
+          cp "${bin}" "stage/${binname}"
+          cp README.md stage/
+          cp -r workspace/configs stage/workspace/configs
+          cp -r workspace/datasets/edtech/ontology stage/workspace/datasets/edtech/ontology
+          archive="dist/synopsis_${GITHUB_REF_NAME#v}_${name}.${ext}"
+          if [ "${ext}" = "zip" ]; then
+            (cd stage && zip -qr "../${archive}" .)
+          else
+            tar czf "${archive}" -C stage .
+          fi
+
+      # Pass this leg's archive to the publish job (GitHub has an artifact
+      # service, unlike the superseded Gitea design).
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: synopsis-${{ matrix.name }}
+          path: dist/synopsis_*_${{ matrix.name }}.${{ matrix.ext }}
+
+  # ------------------------------------------------------------------
+  # Publish — merge archives, checksum, changelog, GitHub Release.
+  # ------------------------------------------------------------------
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history so the changelog script can read tags + commit subjects.
+          fetch-depth: 0
+
+      # Merge all 5 leg archives into ./dist (design D3).
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
 
       # Top-level checksum file covering all archives (design D4).
       - name: Generate checksums
@@ -121,19 +168,90 @@ jobs:
           set -euo pipefail
           (cd dist && sha256sum synopsis_*.tar.gz synopsis_*.zip > SHA256SUMS.txt)
 
-      # Publish via the Gitea-compatible fork of the GitHub release action
-      # (design D2). The body is deliberately empty (manual release); the
-      # name defaults to the tag. A dash-suffixed tag (vX.Y.Z-rc*) is a
-      # prerelease. NODE_OPTIONS covers runners with Node < 18, where
-      # fetch is not built in; it is a harmless no-op on newer Node.
-      - name: Publish release
-        uses: akkuman/gitea-release-action@v1
+      # Categorized changelog from conventional commits (design D6): commits in
+      # <prev-tag>..HEAD grouped by type; empty body on the first release.
+      - name: Generate changelog body
         env:
-          NODE_OPTIONS: '--experimental-fetch'
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+
+          tag = os.environ["RELEASE_TAG"]
+
+          def git(*args):
+              return subprocess.run(
+                  ["git", *args], capture_output=True, text=True, check=True
+              ).stdout
+
+          # prev = highest v* tag by version sort (sort -V equivalent), excluding
+          # the current tag; none → empty (first release, empty body).
+          tags = [t for t in git("tag", "--list", "v*").split() if t != tag]
+
+          def vkey(t):
+              parts = re.findall(r"\d+", t)
+              return [int(p) for p in parts] if parts else []
+
+          prev = sorted(tags, key=vkey)[-1] if tags else ""
+
+          if not prev:
+              open("RELEASE_BODY.md", "w").write("")
+              raise SystemExit(0)
+
+          subjects = [
+              s
+              for s in git("log", "--no-merges", "--pretty=%s", prev + "..HEAD").splitlines()
+              if s.strip()
+          ]
+
+          sections = [
+              ("feat", "New features"),
+              ("fix", "Bug fixes"),
+              ("perf", "Performance"),
+              ("refactor", "Refactoring"),
+              ("docs", "Documentation"),
+              ("test", "Tests"),
+              ("build", "Build"),
+              ("ci", "CI"),
+              ("chore", "Chores"),
+          ]
+          groups = {name: [] for _, name in sections}
+          other = []
+
+          for subj in subjects:
+              m = re.match(r"^([a-zA-Z]+)(\([^)]*\))?!?:", subj)
+              ctype = m.group(1).lower() if m else None
+              for t, name in sections:
+                  if t == ctype:
+                      groups[name].append(subj)
+                      break
+              else:
+                  other.append(subj)
+
+          lines = []
+          for _, name in sections:
+              if groups[name]:
+                  lines.append("## " + name)
+                  lines.extend("- " + s for s in groups[name])
+                  lines.append("")
+          if other:
+              lines.append("## Other")
+              lines.extend("- " + s for s in other)
+              lines.append("")
+
+          body = "\n".join(lines).rstrip("\n")
+          if body:
+              body += "\n"
+          open("RELEASE_BODY.md", "w").write(body)
+          PY
+
+      # Publish the GitHub Release (design D4). A dash-suffixed tag (vX.Y.Z-rc*)
+      # is a prerelease; the computed boolean keeps the rule identical to the
+      # shipped behavior (softprops `prerelease: auto` is deliberately not used).
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          files: |
-            dist/synopsis_*.tar.gz
-            dist/synopsis_*.zip
-            dist/SHA256SUMS.txt
+          files: dist/*
+          body_path: RELEASE_BODY.md
           prerelease: ${{ contains(github.ref_name, '-') }}

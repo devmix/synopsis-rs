@@ -56,7 +56,7 @@ Dependency graph (fixed by design D1): `config, db, vectors, utils, llm → embe
 
 - Single crate: `cargo test -p <crate>` · single test: `cargo test -p <crate> -- <TestNameFilter>`
 - Run the server: `cargo run -p cli -- serve` (config auto-search: `<exeDir>/workspace/configs/` → parent dir → CWD; default preset `default`, port 8080). Subcommands: `serve`, `queue status|reset-retries`, `db stats|clear`, `model list|download|delete|info|benchmark`, `onnx-runtime install|status|uninstall`, `load-test`.
-- Cross-build targets (the CI cross-build matrix): `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`.
+- Cross-build targets (the CI cross-build matrix): `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`, `x86_64-apple-darwin`.
 
 ## Gotchas
 
@@ -68,9 +68,9 @@ Dependency graph (fixed by design D1): `config, db, vectors, utils, llm → embe
 - **`workspace/` is runtime state, mostly gitignored:** ONNX runtime `.so` (~24 MB) under `workspace/onnxruntime/`, model weights (~2.3 GB) under `workspace/models/`, per-dataset state (knowledge.db + vectors) under `workspace/datasets/<name>/state/`. Only `workspace/configs/` and the `edtech` demo dataset (ontology + content) are tracked. The runtime and models are downloaded by the binary per `onnx.yaml` (`onnx-runtime install` / `model download`).
 - **Shipped config presets deliberately deviate from the frozen default:** the local presets use `bge-small-en-v1.5` (384-dim) instead of the frozen `bge-m3-int8` (1024-dim) — documented in `workspace/configs/README.md`; do not "fix" it.
 - **Prompt templates are minijinja:** `workspace/configs/prompts/**` are byte-identical to the embedded defaults in `crates/graph`/`crates/ingestion`; a missing override file silently falls back to the embedded default.
-- **CI is Gitea-compatible on purpose:** the Gitea runner has no artifact service, so `release.yml` is a single job (5-target zigbuild loop → package → Gitea Release) and both workflows use Gitea-fork actions (`ChristopherHX/gitea-upload-artifact`, `akkuman/gitea-release-action`). Do not "upgrade" them to the standard GitHub actions. Dev CI (`ci.yml`) stays fast: fmt + clippy + test only; cross-builds run only on `v*` tags.
+- **CI is GitHub-native (change `rebuild-github-cicd-flow`, user decision 2026-09-07):** `ci.yml` is ONE job — fmt + clippy + test + `cargo llvm-cov` (coverage is `continue-on-error`, measure-first, no gates). `release.yml` on `v*` tags: `gate` (fmt+clippy+test on the tagged commit) → `build` (5-way parallel matrix, one zigbuild target per leg, `zig objcopy` strip with an explicit output file — `zig objcopy` has no in-place mode) → `publish` (standard `actions/*` + `softprops/action-gh-release@v3`, categorized changelog from conventional commits, `SHA256SUMS.txt`). The earlier Gitea compatibility (single job, Gitea-fork actions) is superseded — the Gitea remote (`origin`) is a plain git mirror without CI. Cross-builds run only on `v*` tags.
 - **`release.yml` copies the root `README.md` into every release archive** — the README doubles as end-user documentation shipped with the binary; keep it in sync with the CLI surface and config layout.
-- **Cross-builds:** windows-gnu instead of msvc (Zig cannot link MSVC ABI from a Linux host). The x86_64 musl artifact is fully static.
+- **Cross-builds:** windows-msvc (the standard Rust Windows target) is cross-built from the Linux host via cargo-zigbuild — zig's linker supports the MSVC ABI (the old "cannot link MSVC ABI" note is stale). The old fully-static targets are dropped: they are slow to compile and their only benefit (a binary with no glibc dependency) is irrelevant for end-user machines; glibc is present on every supported distro.
 - **No `make`:** plain cargo commands above are the whole build system.
 - **`.opencode/opencode.json`** wires an OpenCode session to this project's own running server (`http://localhost:8080/sse`) as the `synopsis` MCP — that is the legacy SSE transport of the binary under development.
 

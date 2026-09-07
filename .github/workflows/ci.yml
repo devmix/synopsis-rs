@@ -1,11 +1,15 @@
-# CI Pipeline — quality gates for the Rust workspace. Two independent jobs
-# run in parallel: `checks` is fmt + clippy + test on Linux x64 (task 2.1) —
-# the native build check, since the test gate compiles and links the whole
-# workspace; `coverage` measures workspace line coverage with cargo-llvm-cov
-# and uploads an lcov artifact (change coverage-rust-workspace, task 1.1) —
-# measure-first, no gates. The 5-target cross-build + packaging now happens
-# in `release.yml` at tag time ("Keeping
-# dev runs fast"); see the rebuild-ci-cd change (design D1).
+# CI Pipeline — quality gates for the Rust workspace, in a single
+# sequential job (change rebuild-github-cicd-flow, design D1). The old
+# two-job layout ran checkout, toolchain install, and cache restore
+# twice and compiled the workspace on two parallel runners; the merged
+# job does each exactly once — the workspace is compiled per profile
+# (clippy metadata, test codegen, llvm-cov instrumented) exactly once
+# each. Coverage stays measure-first, no gates (change
+# coverage-rust-workspace): the coverage step and its artifact upload
+# carry continue-on-error, so a coverage failure must not block the
+# core gate — merging the jobs would otherwise silently change that
+# semantic (design D2). The 5-target cross-build + packaging now
+# happens in release.yml at tag time.
 name: CI
 
 on:
@@ -25,13 +29,15 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------
-  # Checks — fmt, clippy and the test suite on Linux x64. One job runs
-  # all three gates sequentially: they share a single toolchain install
-  # and cargo cache, so splitting them would add runner time without
-  # saving any at this stage of the project.
+  # Checks + Coverage — fmt, clippy, and the test suite, followed by
+  # the cargo-llvm-cov measurement, all on one runner: they share a
+  # single checkout, toolchain install, and cargo cache, so the
+  # workspace is compiled per profile exactly once instead of on two
+  # parallel runners (design D1). Wall time grows (serial instead of
+  # parallel) — accepted; runner usage halves.
   # ------------------------------------------------------------------
-  checks:
-    name: Checks (ubuntu-latest)
+  ci:
+    name: Checks + Coverage (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -42,11 +48,13 @@ jobs:
       # resolves the directory override from the file, and a mismatching
       # install would make every cargo command fail with "toolchain not
       # installed". The action installs with --profile minimal, so
-      # clippy and rustfmt have to be requested explicitly.
+      # clippy and rustfmt have to be requested explicitly;
+      # llvm-tools-preview provides the LLVM coverage tooling that
+      # cargo-llvm-cov drives.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.0
         with:
-          components: clippy, rustfmt
+          components: clippy, rustfmt, llvm-tools-preview
 
       # Caches ~/.cargo (registry, git deps) and ./target; keyed by the
       # installed rustc version, so it must run after the toolchain step.
@@ -66,54 +74,34 @@ jobs:
       - name: Run tests
         run: cargo test
 
-  # ------------------------------------------------------------------
-  # Coverage — workspace line-coverage measurement via cargo-llvm-cov
-  # (change coverage-rust-workspace, task 1.1). Runs in parallel to
-  # `checks` (no `needs:`): coverage is measure-first,
-  # so a coverage failure must not block the core gate. The lcov trace
-  # file is kept as a run artifact; there is deliberately no
-  # --fail-under-* flag (gating is deferred to Phase 3).
-  # ------------------------------------------------------------------
-  coverage:
-    name: Coverage (ubuntu-latest)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # Same pinned toolchain as the other jobs (rust-toolchain.toml,
-      # 1.96.0); llvm-tools-preview provides the LLVM coverage tooling
-      # that cargo-llvm-cov drives.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
-        with:
-          components: llvm-tools-preview
-
-      # Caches ~/.cargo (registry, git deps) and ./target; keyed by the
-      # installed rustc version, so it must run after the toolchain step
-      # — same rule as in the other jobs.
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
-
-      # Install cargo-llvm-cov v0.9.0 (pinned, per design D1) from
-      # prebuilt GitHub release binaries. Dev-only tool: the binary
-      # lands in CARGO_HOME and never enters Cargo.toml/Cargo.lock
-      # (frozen stack).
+      # Install cargo-llvm-cov v0.9.0 (pinned) from prebuilt GitHub
+      # release binaries. Dev-only tool: the binary lands in CARGO_HOME
+      # and never enters Cargo.toml/Cargo.lock (frozen stack).
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.9.0
 
       # Measure workspace line coverage and write the lcov trace file.
+      # cargo-llvm-cov builds in its own target/llvm-cov-target
+      # directory, so it neither pollutes nor reuses ./target — no
+      # cache interference with the test step above. continue-on-error
+      # keeps coverage measure-first: a failure here must not block the
+      # core gate (design D2). There is deliberately no coverage
+      # threshold flag (gating is deferred).
       - name: Measure coverage
+        if: always()
+        continue-on-error: true
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
 
-      # Keep the lcov trace as a run artifact for inspection. The step
-      # uses the Gitea-compatible fork of the standard upload-artifact
-      # action: the standard action aborts on the self-hosted Gitea
-      # runner (no artifact service).
+      # Keep the lcov trace as a run artifact for inspection.
+      # continue-on-error so the upload still runs after a failed or
+      # skipped measurement (if: always() overrides the default
+      # skip-on-earlier-failure behavior).
       - name: Upload lcov artifact
-        uses: ChristopherHX/gitea-upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov
           path: lcov.info
