@@ -549,8 +549,14 @@ Changes:
 5. `grep -q 'x86_64-apple-darwin' README.md` AND
    `grep -q 'windows-case-shim' AGENTS.md`.
 6. `git status --porcelain` shows ONLY the five declared files.
-7. `cargo metadata --format-version 1 > /dev/null` exits 0 (Cargo.toml edits
-   broke nothing).
+ 7. `cargo metadata --format-version 1 > /dev/null` exits 0 (Cargo.toml edits
+    broke nothing).
+
+> **DONE 2026-09-07 (commit edd8a4e).** AC1 deviation: the mandated change #3
+> rationale ("Zig 0.16 has no libc/headers for the MSVC target … cannot compile
+> for msvc via zig cc") necessarily contains "msvc", so AC1's zero-occurrence
+> gate is unsatisfiable as written; the AC's intent (no stale msvc-pipeline
+> wording) is met — "msvc" appears only in the mandated negative rationale.
 
 ---
 
@@ -638,8 +644,10 @@ Final state the pages must describe:
    `grep -q 'matrix' site/docs/developer/ci-cd.mdx`.
 8. No broken internal links: `grep -rc 'developer/gitea-releases' site/docs
    --include='*.mdx' | grep -v ':0'` exits non-zero.
- 9. `git status --porcelain` shows ONLY files under `site/docs/` (including the
-    rename as `R` status).
+  9. `git status --porcelain` shows ONLY files under `site/docs/` (including the
+     rename as `R` status).
+
+> **DONE 2026-09-07 (commit 1948c41).**
 
 ---
 
