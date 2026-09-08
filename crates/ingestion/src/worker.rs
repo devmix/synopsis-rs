@@ -13,10 +13,22 @@
 //! [`DocumentWorker::run_once`] call per poll tick, interleaved with the
 //! shutdown signal via `tokio::select!`.
 //!
+//! Cooperative shutdown (fix-serve-signal-shutdown D1/D2): the worker
+//! optionally carries a [`ShutdownFlag`] — the minimal synchronous channel
+//! from the serve signal task into this `!Send` owner-thread cycle (the
+//! worker cannot await anything). When present,
+//! [`run_once`](Self::run_once) checks the flag before every claim
+//! (including the first); a set flag stops the claim loop and the cycle
+//! tail (GC sweep, per-cycle vector persistence, summary) runs uniformly,
+//! bounding the graceful-stop delay to the one in-flight task.
+//!
 //! Backoff schedule (design): `30 * 2^(attempts-1)` seconds, i.e. 30s /
 //! 60s / 120s for attempts 1→2→3, after which the task flips to `error`
 //! status (no further retries). The `max_attempts` column on the row is the
 //! cap (set at enqueue time; the DAO's `mark_failed` enforces it).
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use db::{ConnectionOrTx, Db, DocIndexPayload, QueueTask, QueueTaskDao, QueueTaskType, ReIndexOp};
 
@@ -28,6 +40,55 @@ use crate::runner::Runner;
 /// thread (no config knob in task 1.4).
 const WORKER_BATCH_SIZE: i64 = 100;
 
+/// Cooperative shutdown flag shared between the serve signal task and the
+/// inline document-queue worker cycles (fix-serve-signal-shutdown D1).
+///
+/// The worker runs synchronously on the owner thread (the [`Runner`] is
+/// `!Send`) and cannot await any cancellation channel; the flag is the
+/// minimal synchronous channel into it. The production signal task calls
+/// [`cancel`](Self::cancel) on the first SIGINT/SIGTERM (BEFORE sending on
+/// the stop broadcast, so the owner loop's stop arm still fires), and the
+/// worker checks [`cancelled`](Self::cancelled) before every claim.
+///
+/// Cloning is cheap (the [`Arc`] is cloned) and shares the same flag state.
+pub struct ShutdownFlag {
+    /// The shared atomic state (`true` once shutdown has been requested).
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ShutdownFlag {
+    /// Creates a new, uncancelled flag.
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Requests shutdown (sets the flag). Idempotent; safe from any thread.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether shutdown has been requested.
+    pub fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+impl Default for ShutdownFlag {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for ShutdownFlag {
+    fn clone(&self) -> Self {
+        Self {
+            cancelled: Arc::clone(&self.cancelled),
+        }
+    }
+}
+
 /// The background consumer of the `queue_tasks` queue (task 1.2).
 ///
 /// Holds references to the database and the runner; every poll cycle is one
@@ -38,17 +99,54 @@ pub struct DocumentWorker<'a> {
     db: &'a Db,
     /// The ingestion runner (the per-document pipeline executor).
     runner: &'a Runner<'a>,
+    /// The optional cooperative shutdown flag (fix-serve-signal-shutdown
+    /// D2): when present, `run_once` checks it before every claim and stops
+    /// claiming once it is set.
+    shutdown_flag: Option<ShutdownFlag>,
 }
 
 impl<'a> DocumentWorker<'a> {
     /// Wraps the shared database handle and runner reference.
+    ///
+    /// The worker carries no shutdown flag: `run_once` claims up to the
+    /// per-cycle cap without any cancellation check (the pre-change
+    /// behavior).
     pub fn new(db: &'a Db, runner: &'a Runner<'a>) -> Self {
-        Self { db, runner }
+        Self {
+            db,
+            runner,
+            shutdown_flag: None,
+        }
+    }
+
+    /// Wraps the shared database handle, runner reference, and shutdown
+    /// flag (fix-serve-signal-shutdown D2).
+    ///
+    /// `run_once` checks the flag before every claim (including the first):
+    /// once set, the claim loop stops and the cycle completes its tail as
+    /// usual (GC sweep, per-cycle vector persistence when work happened,
+    /// cycle summary). The flag is shared cheaply — the [`Arc`] inside is
+    /// cloned, not the state.
+    pub fn with_shutdown_flag(db: &'a Db, runner: &'a Runner<'a>, flag: &ShutdownFlag) -> Self {
+        Self {
+            db,
+            runner,
+            shutdown_flag: Some(flag.clone()),
+        }
     }
 
     /// One poll cycle: claim due tasks ONE AT A TIME (task 1.5 — at most
     /// one row in `processing` at any instant), process each one, then
     /// sweep orphaned data.
+    ///
+    /// Cancellation contract (fix-serve-signal-shutdown D2): when the
+    /// worker was built with a shutdown flag, the flag is checked at the
+    /// top of every claim-loop iteration (including before the first
+    /// claim); a set flag breaks the claim loop and the cycle tail runs
+    /// uniformly below. A task already in flight when the flag is set runs
+    /// to completion and is recorded exactly as usual (`done`, or
+    /// backoff/`error` on failure), bounding the shutdown delay to one
+    /// task. A worker without a flag checks nothing.
     ///
     /// `now` is the current Unix time in seconds (injected for testability).
     ///
@@ -63,6 +161,17 @@ impl<'a> DocumentWorker<'a> {
         // owner-thread starvation guard.
         let mut processed = 0;
         for _ in 0..WORKER_BATCH_SIZE {
+            // Cooperative shutdown (fix-serve-signal-shutdown D2): the flag
+            // is checked before every claim, including the first; a set
+            // flag stops the claim loop (the cycle tail runs uniformly
+            // below — no separate cancelled-tail path).
+            if self
+                .shutdown_flag
+                .as_ref()
+                .is_some_and(ShutdownFlag::cancelled)
+            {
+                break;
+            }
             let Some(task) = self.claim_one(now)? else {
                 break;
             };
@@ -1202,6 +1311,194 @@ mod tests {
         assert_eq!(tasks.len(), 1, "{tasks:?}");
         assert_eq!(tasks[0].status, "done", "{tasks:?}");
         assert_eq!(harness.list_documents().len(), 1, "the document is indexed");
+    }
+
+    // Cooperative shutdown (fix-serve-signal-shutdown 1.1): the flag is set
+    // before the cycle → no claims at all, every task stays pending, the
+    // cycle completes normally (the uniform tail with `processed == 0`
+    // performs no persistence).
+    #[test]
+    fn run_once_claims_nothing_when_cancelled_before_the_cycle() {
+        let tree = TempTree::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            tree.write(name, "hello\n");
+        }
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.with_source(&root);
+        let flag = ShutdownFlag::new();
+        let runner = harness.runner();
+        let worker = DocumentWorker::with_shutdown_flag(&harness.db, &runner, &flag);
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            harness.enqueue_index(&format!("{root}/{name}"), &root);
+        }
+
+        // The signal arrived before this cycle: cancel, then run.
+        flag.cancel();
+        worker.run_once(2_000).unwrap();
+
+        // Nothing was claimed or processed.
+        assert_eq!(
+            harness.list_documents().len(),
+            0,
+            "no task may be processed after the flag was set"
+        );
+        let tasks = harness.list_doc_tasks();
+        assert_eq!(tasks.len(), 3, "{tasks:?}");
+        assert!(
+            tasks.iter().all(|t| t.status == "pending"),
+            "all tasks stay pending: {tasks:?}"
+        );
+    }
+
+    // Cooperative shutdown (fix-serve-signal-shutdown 1.1, the field case):
+    // the flag is set during task 1's embedding (the probe hook, invoked
+    // before every embedding batch) → task 1 runs to completion and is
+    // marked done; the claim loop stops; tasks 2-3 stay pending.
+    #[test]
+    fn run_once_finishes_the_in_flight_task_and_stops_when_cancelled_mid_cycle() {
+        let tree = TempTree::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            tree.write(name, "hello\n");
+        }
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.with_source(&root);
+        let flag = ShutdownFlag::new();
+        // The probe runs before every embedding batch; cancelling there (the
+        // operation is idempotent) cancels during task 1's embedding, before
+        // any further claim.
+        let probe_flag = flag.clone();
+        *harness.embed.probe.lock().unwrap() = Some(Box::new(move || {
+            probe_flag.cancel();
+        }));
+        let runner = harness.runner();
+        let worker = DocumentWorker::with_shutdown_flag(&harness.db, &runner, &flag);
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            harness.enqueue_index(&format!("{root}/{name}"), &root);
+        }
+
+        worker.run_once(2_000).unwrap();
+
+        // The in-flight task ran to completion; nothing was claimed after it.
+        assert_eq!(
+            harness.list_documents().len(),
+            1,
+            "exactly the in-flight document is indexed"
+        );
+        let tasks = harness.list_doc_tasks();
+        assert_eq!(tasks.len(), 3, "{tasks:?}");
+        for t in &tasks {
+            if t.identity == format!("{root}/a.txt") {
+                assert_eq!(t.status, "done", "the in-flight task completes: {tasks:?}");
+            } else {
+                assert_eq!(t.status, "pending", "no further claims: {tasks:?}");
+            }
+        }
+    }
+
+    // Cooperative shutdown (fix-serve-signal-shutdown 1.1): an in-flight
+    // failure during shutdown is recorded with the usual backoff semantics
+    // (the flag changes claim behavior, not failure recording); no further
+    // claims.
+    #[test]
+    fn run_once_records_backoff_for_an_in_flight_failure_during_shutdown() {
+        let tree = TempTree::new();
+        // Task 1 carries the fail marker; tasks 2-3 would succeed if claimed.
+        tree.write("a.txt", "FAIL hello\n");
+        tree.write("b.txt", "hello\n");
+        tree.write("c.txt", "hello\n");
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.cfg.max_retries = 3;
+        harness.with_source(&root);
+        *harness.embed.fail_marker.lock().unwrap() = Some("FAIL".to_owned());
+        let flag = ShutdownFlag::new();
+        let probe_flag = flag.clone();
+        *harness.embed.probe.lock().unwrap() = Some(Box::new(move || {
+            probe_flag.cancel();
+        }));
+        let runner = harness.runner();
+        let worker = DocumentWorker::with_shutdown_flag(&harness.db, &runner, &flag);
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            harness.enqueue_index(&format!("{root}/{name}"), &root);
+        }
+
+        worker.run_once(2_000).unwrap();
+
+        // No document: task 1 failed, tasks 2-3 were never claimed.
+        assert_eq!(harness.list_documents().len(), 0, "no document is indexed");
+        let tasks = harness.list_doc_tasks();
+        assert_eq!(tasks.len(), 3, "{tasks:?}");
+        let by_name = |name: &str| -> &db::QueueTask {
+            tasks.iter().find(|t| t.identity.ends_with(name)).unwrap()
+        };
+        let first = by_name("a.txt");
+        assert_eq!(
+            first.attempts, 1,
+            "the in-flight failure is recorded: {tasks:?}"
+        );
+        assert_eq!(
+            first.status, "pending",
+            "below the cap: back to pending: {tasks:?}"
+        );
+        assert_eq!(
+            first.next_attempt_at, 2_030,
+            "the usual 30s backoff: {tasks:?}"
+        );
+        assert!(
+            first.last_error.is_some(),
+            "last_error must be set: {tasks:?}"
+        );
+        for name in ["b.txt", "c.txt"] {
+            let t = by_name(name);
+            assert_eq!(t.attempts, 0, "task {name} was never claimed: {tasks:?}");
+            assert_eq!(t.status, "pending", "task {name} stays pending: {tasks:?}");
+            assert_eq!(
+                t.next_attempt_at, 1_000,
+                "task {name} is untouched: {tasks:?}"
+            );
+        }
+    }
+
+    // Cooperative shutdown (fix-serve-signal-shutdown 1.1): a cancelled
+    // work cycle still runs the uniform tail — the per-cycle vector
+    // persistence (vector-loss-self-heal D1) saves the in-flight work,
+    // exactly once.
+    #[test]
+    fn run_once_persists_the_ram_layer_on_a_cancelled_work_cycle() {
+        let tree = TempTree::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            tree.write(name, "hello\n");
+        }
+        let root = tree.0.to_string_lossy().into_owned();
+
+        let mut harness = Harness::new();
+        harness.with_source(&root);
+        let flag = ShutdownFlag::new();
+        let probe_flag = flag.clone();
+        *harness.embed.probe.lock().unwrap() = Some(Box::new(move || {
+            probe_flag.cancel();
+        }));
+        let runner = harness.runner();
+        let worker = DocumentWorker::with_shutdown_flag(&harness.db, &runner, &flag);
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            harness.enqueue_index(&format!("{root}/{name}"), &root);
+        }
+
+        worker.run_once(2_000).unwrap();
+
+        // One task was processed → the uniform tail persists exactly once.
+        assert_eq!(
+            harness.sink.build_index_calls(),
+            1,
+            "the cancelled work cycle must run the per-cycle save exactly once"
+        );
+        let docs = harness.list_documents();
+        assert_eq!(docs.len(), 1, "the in-flight document is indexed: {docs:?}");
     }
 
     // Unit test for the backoff formula.

@@ -98,6 +98,7 @@ pub use sources::{
     JsonSource, MarkdownSource, MediawikiSource, Registry, UnstructuredSource, WebpageSource,
 };
 pub use types::{Chunker, Document, DocumentChunk, DocumentMetadata, ParseResult, Parser, Source};
+pub use worker::ShutdownFlag;
 
 #[cfg(test)]
 mod root_api {
