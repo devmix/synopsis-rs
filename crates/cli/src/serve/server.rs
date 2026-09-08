@@ -67,9 +67,14 @@
 //! broadcast send — so the inline worker cycles (the startup drain
 //! included) stop claiming after the in-flight task; axum stops accepting
 //! and drains in-flight requests; the serve task and the watcher debounce
-//! task stop under one 10 s bound. A second signal forces an immediate
-//! exit with code 130 (design D4). The document worker runs inline on the
-//! owner thread, so it stops with the loop — no separate abort.
+//! task stop under one 10 s bound. As part of the graceful stop the serve
+//! task ends the server's own long-lived legacy SSE sessions
+//! (`mcp::Server::close_all_sessions`, fix-serve-signal-shutdown D5) the
+//! moment the stop resolves — an open `GET /sse` stream is an in-flight
+//! request that would otherwise hold the axum drain open until the 10 s
+//! bound. A second signal forces an immediate exit with code 130
+//! (design D4). The document worker runs inline on the owner thread, so it
+//! stops with the loop — no separate abort.
 //!
 //! # Exit behavior
 //!
@@ -592,6 +597,11 @@ pub fn serve_with_stop(
             tracing::info!("searcher and MCP handles rebuilt after graph reload");
         }
     });
+    // The MCP server handle for the graceful-shutdown close
+    // (fix-serve-signal-shutdown D5): a cheap clone (the session map's
+    // `Arc` is shared by every clone), captured into the serve task below —
+    // `router()` consumes the original.
+    let serve_server = server.clone();
     let router = server.router();
 
     // D5: file watcher over every enabled source. `from_config` spawns the
@@ -638,10 +648,20 @@ pub fn serve_with_stop(
             // `SHUTDOWN_TIMEOUT` on a message that already went out. A
             // signal arriving after this check is still delivered via the
             // resubscribed receiver.
-            if serve_flag.cancelled() {
-                return;
+            if !serve_flag.cancelled() {
+                let _ = stop_for_serve.recv().await;
             }
-            let _ = stop_for_serve.recv().await;
+            // fix-serve-signal-shutdown D5: end the server's own
+            // long-lived legacy SSE streams the moment the stop resolves
+            // (both paths: the pre-set flag check and the resubscribed
+            // broadcast recv) — the exact moment axum transitions to
+            // draining. An open `GET /sse` stream is an in-flight request
+            // that would otherwise hold the axum drain open until the
+            // forced bound; the streams end via the map's single removal
+            // path (dropped senders end the streams, design D6), so the
+            // connected clients see a clean EOF and the drain completes
+            // promptly.
+            serve_server.close_all_sessions();
         };
         axum::serve(listener, router)
             .with_graceful_shutdown(shutdown)

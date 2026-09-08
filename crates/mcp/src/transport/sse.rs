@@ -29,10 +29,11 @@
 //!   reaps sessions idle beyond the threshold (300 s default) every tick
 //!   (30 s default) — a general-service hardening (a single local user
 //!   never leaves idle sessions behind).
-//! - D6 — no `CloseSessions` equivalent: the client disconnect drops the body,
-//!   which removes the session (the [`SessionGuard`]) — the same single
-//!   removal path the reaper's removal takes (it drops the sender, the stream
-//!   ends, the body drops).
+//! - D6 — one removal path: dropping the session's outbound sender ends the
+//!   SSE stream, the body drops, and the [`SessionGuard`] removes the
+//!   session. The client disconnect takes it for free; the idle reaper and
+//!   the graceful-shutdown close (fix-serve-signal-shutdown D5,
+//!   [`SseSessionMap::close_all`]) take it explicitly.
 //!
 //! `POST /message` ([`handle_message`]): session validation (400 + pinned
 //! JSON-RPC error body), `202 Accepted`, background dispatch through the
@@ -226,6 +227,25 @@ impl SseSessionMap {
     /// Remove a session by id; `true` if it was present.
     pub fn remove(&self, id: &str) -> bool {
         self.lock().remove(id).is_some()
+    }
+
+    /// Terminate every active session (fix-serve-signal-shutdown D5): the
+    /// graceful-shutdown path calls this the moment the stop resolves, so
+    /// axum's drain completes promptly — a long-lived `GET /sse` stream is
+    /// an in-flight request that would otherwise hold the drain open until
+    /// the forced bound.
+    ///
+    /// Removal takes the existing single path (design D6): dropping the
+    /// `SseSession` values drops the outbound senders, which ends each
+    /// session's `ReceiverStream`, which drops the response body, which
+    /// fires the [`SessionGuard`] removal. Synchronous (a `Mutex`-guarded
+    /// `HashMap` clear — microseconds), so it is safe to call from the
+    /// async shutdown future. Returns the number of sessions removed.
+    pub fn close_all(&self) -> usize {
+        let mut guard = self.lock();
+        let removed = guard.len();
+        guard.clear();
+        removed
     }
 
     /// Number of active sessions.
@@ -930,5 +950,31 @@ mod tests {
             .expect("no frame error");
         let frame = String::from_utf8(frame.to_vec()).unwrap();
         assert_eq!(frame, format!("event: message\ndata: {payload}\n\n"));
+    }
+
+    // --- graceful-shutdown close (fix-serve-signal-shutdown D5) ---
+
+    /// `close_all`: every session is removed from the registry (the return
+    /// value is the number removed, `len()` drops to 0 / `is_empty()`), and
+    /// each kept receiver end sees its stream end — the dropped senders end
+    /// the `ReceiverStream` (the design D6 removal path).
+    #[tokio::test]
+    async fn close_all_removes_every_session_and_ends_their_streams() {
+        let sessions = SseSessionMap::new();
+        let (_, rx_a) = sessions.create();
+        let (_, rx_b) = sessions.create();
+        assert_eq!(sessions.len(), 2);
+
+        let removed = sessions.close_all();
+
+        assert_eq!(removed, 2, "close_all returns the number removed");
+        assert_eq!(sessions.len(), 0);
+        assert!(sessions.is_empty());
+        // The kept receiver ends see the stream end (the senders were
+        // dropped with the sessions).
+        let mut stream_a = ReceiverStream::new(rx_a);
+        let mut stream_b = ReceiverStream::new(rx_b);
+        assert!(stream_a.next().await.is_none(), "stream a ended");
+        assert!(stream_b.next().await.is_none(), "stream b ended");
     }
 }

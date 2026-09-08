@@ -32,14 +32,18 @@ use crate::tools;
 use crate::transport;
 
 /// The MCP server: injected collaborators (design D1) + the frozen tool
-/// registry. Cloned per session by the rmcp service factory.
+/// registry + the legacy SSE session map (fix-serve-signal-shutdown D5).
+/// Cloned per session by the rmcp service factory.
 ///
 /// The search and graph handles are hot-swappable (the design D8 seam): the
 /// search crate's hybrid searcher is immutable by design, so the CLI
 /// rebuilds it after a knowledge-graph reload and swaps both handles in via
 /// [`Self::set_searcher`] / [`Self::set_graph`]. Every session clone shares
 /// the same lock pair, so a swap is visible to all in-flight and future
-/// sessions.
+/// sessions. The session map is created in [`Self::new`] and shared by
+/// every clone, so the graceful-shutdown close
+/// ([`Self::close_all_sessions`]) reaches the map the router serves from
+/// through any of them.
 #[derive(Clone)]
 pub struct Server {
     name: String,
@@ -48,12 +52,21 @@ pub struct Server {
     searcher: Arc<RwLock<Arc<dyn Searcher + Send + Sync>>>,
     graph: Arc<RwLock<Arc<graph::GraphIndex>>>,
     tools: Vec<Tool>,
+    /// The legacy SSE session map (fix-serve-signal-shutdown D5): created
+    /// in [`Self::new`] and shared by every clone (the `Arc` is cloned) —
+    /// [`Self::router`] mounts it into the axum state, and
+    /// [`Self::close_all_sessions`] (the graceful-shutdown seam) reaches
+    /// the live map through any clone.
+    sessions: transport::SseSessionMap,
 }
 
 impl Server {
     /// Build the server. `name`/`version` come from config `server.*`;
     /// `graph` carries the config-driven Ready/Unavailable state — the graph
-    /// crate's `GraphIndex` models config-driven optionality.
+    /// crate's `GraphIndex` models config-driven optionality. The legacy SSE
+    /// session map is created here (fix-serve-signal-shutdown D5) — no
+    /// constructor parameter: it takes no arguments and is shared by every
+    /// clone of the server.
     pub fn new(
         name: String,
         version: String,
@@ -68,6 +81,7 @@ impl Server {
             searcher: Arc::new(RwLock::new(searcher)),
             graph: Arc::new(RwLock::new(graph)),
             tools: tool_definitions(),
+            sessions: transport::SseSessionMap::new(),
         }
     }
 
@@ -79,8 +93,10 @@ impl Server {
     /// the rmcp Streamable HTTP service as the fallback for every other path
     /// (design D8; the legacy wire mounted its SSE server at "/"). The SSE
     /// routes are mounted BEFORE the fallback; both transports share one
-    /// `Arc<Server>` and one [`transport::SseSessionMap`], so a tool call
-    /// served over either leg runs the same `Server::dispatch` seam.
+    /// `Arc<Server>` and one [`transport::SseSessionMap`] (created in
+    /// [`Self::new`], shared by every clone — fix-serve-signal-shutdown
+    /// D5), so a tool call served over either leg runs the same
+    /// `Server::dispatch` seam.
     ///
     /// The legacy SSE leg was deliberately dropped by design D8 (2026-08-18)
     /// and restored by an explicit user decision (2026-08-31, D8 override):
@@ -99,6 +115,11 @@ impl Server {
         // One Arc<Server> shared by the Streamable HTTP factory and the SSE
         // routes (design D5: cheap clones per request).
         let server = Arc::new(self);
+        // The session map created in `Server::new` (fix-serve-signal-shutdown
+        // D5): every `Arc<Server>` clone shares it, so the graceful-shutdown
+        // close (`close_all_sessions`) reaches the map the router serves
+        // from — the map is cloned from the field, not newly constructed.
+        let sessions = server.sessions.clone();
         let service = StreamableHttpService::new(
             {
                 let server = server.clone();
@@ -110,7 +131,6 @@ impl Server {
             // server (design D8).
             StreamableHttpServerConfig::default().disable_allowed_hosts(),
         );
-        let sessions = transport::SseSessionMap::new();
         // Idle reaper (design D9, task 1.5): a detached process-lifetime task
         // that reaps sessions idle beyond the 300 s default every 30 s — a
         // general-service hardening (a single local user never leaves idle
@@ -161,6 +181,18 @@ impl Server {
     /// new state.
     pub fn set_graph(&self, graph: Arc<graph::GraphIndex>) {
         write_slot(&self.graph, graph);
+    }
+
+    /// Terminate every active legacy SSE session (fix-serve-signal-shutdown
+    /// D5): the graceful-shutdown path calls this the moment the stop
+    /// resolves, so the axum drain completes promptly — a long-lived
+    /// `GET /sse` stream is an in-flight request that would otherwise hold
+    /// the drain open until the forced bound. Delegates to the session map's
+    /// single removal path (dropped senders end the streams, design D6);
+    /// connected clients see a clean EOF and can reconnect. Returns the
+    /// number of sessions terminated.
+    pub fn close_all_sessions(&self) -> usize {
+        self.sessions.close_all()
     }
 
     /// The frozen tool registry (12 tools, `mcp-contract`).
@@ -743,4 +775,105 @@ pub fn tool_definitions() -> Vec<Tool> {
             &[],
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::sync::Arc;
+
+    use db::test_util;
+    use graph::GraphIndex;
+    use search::{SearchError, SearchResult, Searcher};
+
+    use super::Server;
+
+    /// A Searcher stub: the wiring test only needs an injectable handle
+    /// (the same scaffold shape as `transport::test_util::test_server`,
+    /// which stays private to the transport module tree).
+    struct StubSearcher;
+
+    impl Searcher for StubSearcher {
+        fn hybrid_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Err(SearchError::Lexical("stub".to_owned()))
+        }
+
+        fn lexical_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Err(SearchError::Lexical("stub".to_owned()))
+        }
+
+        fn semantic_search(
+            &self,
+            _query: &str,
+            _top_k: i32,
+            _domain: Option<&str>,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Err(SearchError::Semantic("stub".to_owned()))
+        }
+    }
+
+    /// A server over an empty in-memory KB with no graph.
+    fn test_server() -> Server {
+        Server::new(
+            "synopsis-close-all-test".to_owned(),
+            "0.1.0".to_owned(),
+            test_util::in_memory_db(),
+            Arc::new(StubSearcher),
+            Arc::new(GraphIndex::Unavailable),
+        )
+    }
+
+    /// `close_all_sessions` (fix-serve-signal-shutdown D5): the router and
+    /// the server share one session map — a session registered through the
+    /// router's `GET /sse` handler is terminated by `close_all_sessions` on
+    /// a clone of the same server (the map's `Arc` is shared by every
+    /// clone). `Server::new`'s signature is unchanged: the map is internal,
+    /// created in the constructor.
+    #[tokio::test]
+    async fn close_all_sessions_reaches_the_map_the_router_serves_from() {
+        use axum::body::Body;
+        use axum::http::header;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let server = test_server();
+        let handle = server.clone();
+        let router = server.router();
+
+        // The handler registers the session before answering 200.
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/sse")
+                    .header(header::HOST, "localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The clone's close reaches the same map the router serves from.
+        assert_eq!(
+            handle.close_all_sessions(),
+            1,
+            "the router's session is on the shared map"
+        );
+        assert_eq!(
+            handle.close_all_sessions(),
+            0,
+            "the map is empty after the close"
+        );
+    }
 }

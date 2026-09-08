@@ -50,11 +50,14 @@
 //!
 //! # Shutdown (design D6)
 //!
-//! There is no explicit session-close call: when a connection closes — the
-//! client disconnects, or server shutdown closes the TCP connections — axum
-//! fires the body-drop (`Request::abort`) in each `/sse` handler, which
-//! removes the session from the registry. The existing cli stop path
-//! (broadcast stop → axum graceful shutdown) is unchanged.
+//! Removal has one code path: dropping the session's outbound sender ends
+//! the SSE stream, the body drops, and the disconnect guard removes the
+//! session from the registry. The client disconnect takes it for free
+//! (axum's body-drop); the idle reaper (design D9) and the graceful-shutdown
+//! close (fix-serve-signal-shutdown D5, `Server::close_all_sessions`) take
+//! it explicitly — the cli stop path ends the sessions itself the moment
+//! the stop resolves, so the axum drain completes promptly instead of
+//! waiting out the forced bound on the never-ending streams.
 
 pub mod jsonrpc;
 pub mod sse;

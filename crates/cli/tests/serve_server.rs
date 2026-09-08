@@ -923,6 +923,115 @@ fn serve_stop_cancels_the_startup_drain_mid_task() {
     );
 }
 
+// --- serve_with_stop: graceful stop ends the SSE session (task 1.4) --------
+
+/// The field scenario (fix-serve-signal-shutdown 1.4 / design D5): a
+/// connected legacy SSE client must not hold the graceful stop open — the
+/// server ends its own SSE streams when the stop fires (the serve task's
+/// shutdown future calls `close_all_sessions`), so the axum drain completes
+/// promptly. `serve_with_stop` (temp db, fake embed, no sources) runs on a
+/// free port; a spawned task (a) waits for `/health` 200, (b) opens
+/// `GET /sse` (the handler registers the session before answering) and
+/// reads the `endpoint` frame from the body, (c) cancels the shutdown flag
+/// and sends the stop broadcast (the production signal task's order).
+/// The test asserts: `serve_with_stop` returns `Ok`, the stop took the
+/// graceful path (well under `SHUTDOWN_TIMEOUT` — a regression that left
+/// the stream open would wait out the full 10 s bound), and the SSE body
+/// ended (the client saw the endpoint frame and then a clean EOF).
+#[test]
+fn serve_graceful_stop_ends_the_sse_session() {
+    let dir = TempDir::new("sse-stop");
+    let port = free_port();
+    let mut boot = test_bootstrap(&dir);
+    let req = ServeRequest {
+        cfg_path: dir.as_ref().join("unused.yaml").to_path_buf(),
+        dataset: None,
+        no_initial_sync: true,
+        port,
+        auto_rebuild_vectors: false,
+    };
+
+    let shutdown_flag = ShutdownFlag::new();
+    let (stop_tx, mut stop_rx) = broadcast::channel::<()>(1);
+    let runtime = Runtime::new().expect("test runtime");
+    let client_flag = shutdown_flag.clone();
+    // The connected legacy SSE client: wait for `/health` 200, open
+    // `GET /sse`, then fire the stop in the production signal task's order
+    // (cancel the flag FIRST, then the broadcast — fix-serve-signal-shutdown
+    // D1). The body read runs to EOF: the server ends the stream on the
+    // graceful stop, so it completes with the endpoint frame in hand.
+    let client = runtime.spawn(async move {
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/health");
+        let mut healthy = false;
+        for _ in 0..200 {
+            if client
+                .get(&url)
+                .send()
+                .await
+                .is_ok_and(|res| res.status().as_u16() == 200)
+            {
+                healthy = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let response = client
+            .get(format!("http://127.0.0.1:{port}/sse"))
+            .send()
+            .await;
+        let sse_ok = response
+            .as_ref()
+            .is_ok_and(|res| res.status().as_u16() == 200);
+        // The production signal task's order: cancel the flag first, then
+        // the broadcast (fix-serve-signal-shutdown D1).
+        client_flag.cancel();
+        let _ = stop_tx.send(());
+        // The body read completes at EOF: the server ends the stream on
+        // the graceful stop (a regression that left it open would hold
+        // this read — and the axum drain — until the forced bound).
+        let body = match response {
+            Ok(response) => response.text().await.unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        (healthy, sse_ok, body)
+    });
+
+    let started = std::time::Instant::now();
+    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx, &shutdown_flag);
+    let stopped = started.elapsed();
+
+    assert!(
+        result.is_ok(),
+        "serve_with_stop must succeed: {:?}",
+        result.err()
+    );
+    // The graceful path (design D5): the server ended its own SSE stream
+    // when the stop resolved, so the axum drain completed promptly — a
+    // regression (stream left open) would wait out the full bound here.
+    assert!(
+        stopped < SHUTDOWN_TIMEOUT,
+        "stop must take the graceful path (well under the bound): {stopped:?}"
+    );
+
+    let (healthy, sse_ok, body) = runtime.block_on(client).expect("sse client task");
+    assert!(healthy, "/health must answer 200 before the stop signal");
+    assert!(
+        sse_ok,
+        "GET /sse must answer 200 (the session is registered)"
+    );
+    // The client saw the endpoint frame (confirming the session was
+    // registered) and then a clean EOF.
+    assert!(
+        body.contains("event: endpoint"),
+        "the endpoint frame must arrive before the EOF: {body}"
+    );
+    assert!(
+        body.contains("sessionId="),
+        "the endpoint frame carries the session URL: {body}"
+    );
+}
+
 // --- serve_with_stop: dimension-mismatch auto-rebuild ----------------------
 
 /// A stored index with a different dimension + `--auto-rebuild-vectors`:
