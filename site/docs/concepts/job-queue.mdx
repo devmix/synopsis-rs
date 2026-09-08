@@ -1,6 +1,6 @@
 ---
 title: Job Queue
-description: The queue_tasks event table — the single state machine shared by the startup reconcile, the file watcher, the pipeline, and the background worker; event types, upsert semantics, states, retries, and the queue CLI
+description: The queue_tasks event table — the single state machine shared by the startup reconcile, the file watcher, the pipeline, and the background worker; event types, upsert semantics, states, retries, restart recovery, shutdown, and the queue CLI
 sidebar_position: 7
 ---
 
@@ -69,6 +69,19 @@ Because every upsert sets `next_attempt_at = now`, a **re-enqueued event moves t
 A single background worker is the sole consumer: it polls the queue for due tasks (`pending` with `next_attempt_at` reached), claims a batch, and **dispatches each task by its `type`** — `doc:index` runs the per-document pipeline, `doc:delete` deletes the document (and cascades to its `entity:link` row), and `entity:link` runs the incremental linker. Tasks are processed sequentially on the serve owner thread; a single task's failure is counted and does not abort the rest of the queue.
 
 On failure the worker applies **exponential backoff**: `attempts` is incremented, `next_attempt_at` is pushed out by `30 × 2^(attempts−1)` seconds (30, 60, 120, …), and the task stays `pending`. Once `attempts` reaches `max_attempts` (default **3**, set by `ingestion.max_retries`), the row lands in `error` with `last_error` populated — the worker leaves it alone until someone resets it. After each batch the worker also sweeps orphaned data.
+
+## Restart recovery
+
+A row left in `processing` by an unclean shutdown (crash, `SIGKILL`, power loss) would never be claimed again — the worker claims only `pending` rows — and the startup reconcile skips it. At `serve` startup, **before** the startup reconcile runs, every stuck `processing` row is reset to `pending` with `attempts` and `last_error` preserved, and the worker processes it in a later cycle. This restart recovery is what makes an unclean exit safe to recover from.
+
+## Stopping the server
+
+`serve` shutdown is signal-driven and cooperative:
+
+- **First SIGINT (Ctrl+C) or SIGTERM — graceful stop.** The in-flight queue task (if any) runs to completion and is recorded, the worker stops claiming new tasks, the HTTP server drains in-flight requests, the vector RAM layer is saved, and the process exits with code **0**. This applies to every worker cycle — including the **startup drain**: the server is stoppable while the initial sync is still processing the queue.
+- **Second SIGINT or SIGTERM — force exit.** A second signal at any time (for example, while the graceful stop is still finishing a slow in-flight task) exits the process immediately with code **130** (128 + SIGINT), abandoning the in-flight work.
+
+Unclaimed tasks stay `pending` and are picked up on the next start: the [restart recovery](#restart-recovery) resets any row left in `processing` to `pending`, and the [startup vector self-heal](./vector-rebuild#unclean-shutdown-the-self-heal) re-embeds any chunks whose vectors were lost with the interrupted cycle — so even the forced exit is safe.
 
 ## The CLI
 

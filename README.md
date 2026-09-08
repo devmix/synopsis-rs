@@ -58,6 +58,10 @@ Without `--config`, the config is auto-searched:
 `--preset NAME` selects `config.{NAME}.yaml`; `--dataset NAME` overrides the
 configured dataset.
 
+Stop the server with Ctrl+C: the first press is a graceful stop (the
+in-flight document finishes and is recorded, the server drains and exits);
+press Ctrl+C again to force an immediate stop.
+
 ## CLI
 
 ```
