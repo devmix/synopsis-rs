@@ -81,6 +81,8 @@ A row left in `processing` by an unclean shutdown (crash, `SIGKILL`, power loss)
 - **First SIGINT (Ctrl+C) or SIGTERM — graceful stop.** The in-flight queue task (if any) runs to completion and is recorded, the worker stops claiming new tasks, the HTTP server drains in-flight requests, the vector RAM layer is saved, and the process exits with code **0**. This applies to every worker cycle — including the **startup drain**: the server is stoppable while the initial sync is still processing the queue.
 - **Second SIGINT or SIGTERM — force exit.** A second signal at any time (for example, while the graceful stop is still finishing a slow in-flight task) exits the process immediately with code **130** (128 + SIGINT), abandoning the in-flight work.
 
+As part of the graceful stop the server also ends its own long-lived legacy SSE client streams: connected MCP clients see the stream close (a clean EOF) and can reconnect. An open SSE stream is an in-flight request that would otherwise keep the HTTP drain open until the 10 s bound, so the stop completes promptly even with connected clients.
+
 Unclaimed tasks stay `pending` and are picked up on the next start: the [restart recovery](#restart-recovery) resets any row left in `processing` to `pending`, and the [startup vector self-heal](./vector-rebuild#unclean-shutdown-the-self-heal) re-embeds any chunks whose vectors were lost with the interrupted cycle — so even the forced exit is safe.
 
 ## The CLI
