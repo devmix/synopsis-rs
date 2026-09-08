@@ -62,10 +62,14 @@
 //!
 //! SIGINT/SIGTERM (design D7) are installed as a spawned task (the tokio
 //! signal API needs a runtime handle) and feed a broadcast the owner loop
-//! selects on. axum stops accepting and drains in-flight requests; the
-//! serve task and the watcher debounce task stop under one 10 s bound.
-//! The document worker runs inline on the owner thread, so it stops with
-//! the loop — no separate abort.
+//! selects on. The first signal is cooperative (fix-serve-signal-shutdown
+//! D1/D3): the task cancels the shared [`ShutdownFlag`] — BEFORE the
+//! broadcast send — so the inline worker cycles (the startup drain
+//! included) stop claiming after the in-flight task; axum stops accepting
+//! and drains in-flight requests; the serve task and the watcher debounce
+//! task stop under one 10 s bound. A second signal forces an immediate
+//! exit with code 130 (design D4). The document worker runs inline on the
+//! owner thread, so it stops with the loop — no separate abort.
 //!
 //! # Exit behavior
 //!
@@ -83,7 +87,7 @@ use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao, QueueTa
 use embedding::EmbeddingProvider;
 use graph::GraphIndex;
 use ingestion::worker::DocumentWorker;
-use ingestion::{DocumentJobQueue, Runner, RunnerParams};
+use ingestion::{DocumentJobQueue, Runner, RunnerParams, ShutdownFlag};
 use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
     Searcher, SemanticSearcher,
@@ -103,6 +107,13 @@ use crate::serve::watcher::{ChangeHandler, IngestChangeHandler, Watcher};
 /// can bound their shutdown-timing assertions against it (re-exported
 /// through [`crate::test_support`]).
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Forced-exit code for a second SIGINT/SIGTERM (fix-serve-signal-shutdown
+/// D4): 128 + SIGINT, the Unix "killed by SIGINT" convention — the
+/// guaranteed escape hatch when the graceful stop is still finishing the
+/// in-flight task (the restart recovery and the startup vector self-heal
+/// make the forced exit safe).
+const FORCED_EXIT_CODE: i32 = 130;
 
 /// One `serve` invocation: the effective config path plus the per-command
 /// flags (clap `serve` subcommand).
@@ -226,9 +237,13 @@ impl Searcher for PooledSearcher {
     }
 }
 
-/// Production shutdown trigger (design D7): resolves on the first SIGINT or
+/// Production shutdown trigger (design D7): resolves on the next SIGINT or
 /// SIGTERM (`ctrl_c` is the SIGINT receiver itself). If the SIGTERM handler
 /// cannot be installed, degrades to SIGINT only.
+///
+/// The `tokio::signal` futures are re-creatable, so the helper is called
+/// once per signal (fix-serve-signal-shutdown D3): the first call covers
+/// the graceful stop, the second the force-exit path.
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
     #[cfg(unix)]
@@ -276,23 +291,44 @@ pub fn run_serve(req: &ServeRequest) -> ExitCode {
 }
 
 /// Bootstrap + owner-thread serve flow with the production SIGINT/SIGTERM
-/// trigger. The signal is installed as a spawned task (the tokio signal
-/// API needs a runtime handle) and feeds the stop broadcast the owner loop
-/// selects on.
+/// trigger (fix-serve-signal-shutdown D3/D4): the first signal cancels the
+/// shared shutdown flag (the inline worker cycles stop claiming) and feeds
+/// the stop broadcast the owner loop selects on; a second signal
+/// force-exits the process with code 130. The signal is installed as a
+/// spawned task (the tokio signal API needs a runtime handle).
 pub fn serve(runtime: &Runtime, req: &ServeRequest) -> Result<(), CliError> {
     let mut boot = bootstrap::bootstrap(&req.cfg_path, req.dataset.as_deref())?;
     let (signal_tx, mut stop) = broadcast::channel::<()>(1);
+    let shutdown_flag = ShutdownFlag::new();
+    let signal_flag = shutdown_flag.clone();
     runtime.spawn(async move {
+        // First signal: cooperative graceful stop. The flag is cancelled
+        // BEFORE the broadcast send (design D1): the inline worker cycles
+        // (the startup drain included) stop claiming after the in-flight
+        // task, and the owner loop's stop arm still fires (the flag does
+        // not consume the broadcast message).
         shutdown_signal().await;
+        signal_flag.cancel();
         let _ = signal_tx.send(());
+        // Second signal: force exit (design D4) — the guaranteed escape
+        // hatch, no matter how slow the in-flight task is.
+        shutdown_signal().await;
+        tracing::warn!("second shutdown signal received, forcing immediate exit");
+        std::process::exit(FORCED_EXIT_CODE);
     });
-    serve_with_stop(runtime, &mut boot, req, &mut stop)
+    serve_with_stop(runtime, &mut boot, req, &mut stop, &shutdown_flag)
 }
 
 /// The serve flow (design D4) over an already-bootstrapped application
 /// state, with the stop trigger injected — the seam the integration tests
 /// drive with stubs (temp db, fake embed provider, no real sources) and a
 /// broadcast sent from a killer task instead of SIGINT/SIGTERM.
+///
+/// `shutdown_flag` is the cooperative-cancel channel into the inline
+/// worker cycles (fix-serve-signal-shutdown D3): the document worker is
+/// built with it, so the startup drain and every owner-loop cycle stop
+/// claiming once it is set (the production signal task cancels it before
+/// the broadcast send; the tests mirror that order).
 ///
 /// Synchronous by design (module docs): port override → health check →
 /// runner + dimension-mismatch handling → initial sync → worker startup
@@ -303,6 +339,7 @@ pub fn serve_with_stop(
     boot: &mut Bootstrap,
     req: &ServeRequest,
     stop: &mut broadcast::Receiver<()>,
+    shutdown_flag: &ShutdownFlag,
 ) -> Result<(), CliError> {
     // D4: port override (CLI flag > config).
     if req.port > 0 {
@@ -472,8 +509,11 @@ pub fn serve_with_stop(
     // runs on this owner thread: one immediate drain right here (the startup
     // reconcile's diff is processed before the index serves traffic), then
     // the owner-loop select! keeps it ticking — the periodic sweep (below)
-    // and an on-demand cycle after a watcher batch enqueues new work.
-    let worker = DocumentWorker::new(&db, &runner);
+    // and an on-demand cycle after a watcher batch enqueues new work. The
+    // shutdown flag makes the startup drain and every owner-loop cycle
+    // cancellable (fix-serve-signal-shutdown D2/D3): the claim loop stops
+    // once the flag is set, after the in-flight task.
+    let worker = DocumentWorker::with_shutdown_flag(&db, &runner, shutdown_flag);
     if let Err(err) = worker.run_once(now_unix_seconds()) {
         tracing::warn!(error = %err, "worker startup cycle failed");
     }
@@ -585,8 +625,22 @@ pub fn serve_with_stop(
     let bound = listener.local_addr()?;
     tracing::info!(%bound, "MCP server listening (Streamable HTTP)");
     let mut stop_for_serve = stop.resubscribe();
+    let serve_flag = shutdown_flag.clone();
     let mut serve_handle = runtime.spawn(async move {
         let shutdown = async move {
+            // A stop broadcast sent before this receiver resubscribed (a
+            // signal during the startup drain) is invisible to it — a
+            // broadcast receiver only sees messages sent after it
+            // subscribed. The flag (cancelled before the broadcast send by
+            // the production signal task) closes that window: resolve
+            // immediately when it is already set, so the axum drain starts
+            // instead of the bounded shutdown waiting out the full
+            // `SHUTDOWN_TIMEOUT` on a message that already went out. A
+            // signal arriving after this check is still delivered via the
+            // resubscribed receiver.
+            if serve_flag.cancelled() {
+                return;
+            }
             let _ = stop_for_serve.recv().await;
         };
         axum::serve(listener, router)
@@ -809,4 +863,33 @@ pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliErr
     boot.vectors = Some(engine);
     boot.dimension_mismatch = None;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FORCED_EXIT_CODE;
+
+    /// The forced-exit code is 128 + SIGINT (fix-serve-signal-shutdown D4):
+    /// the Unix "killed by SIGINT" convention.
+    #[test]
+    fn forced_exit_code_is_128_plus_sigint() {
+        assert_eq!(FORCED_EXIT_CODE, 130);
+    }
+
+    /// Type-level pin (fix-serve-signal-shutdown 1.1 review): the
+    /// [`ingestion::ShutdownFlag`] re-exported from the ingestion crate
+    /// root is the cooperative-cancel channel the serve wiring consumes —
+    /// `Clone` is cheap (the `Arc` is cloned, the state shared) and the
+    /// type is `Send + Sync` (shared across the signal task and the owner
+    /// thread).
+    #[test]
+    fn shutdown_flag_reexport_is_the_cooperative_cancel_channel() {
+        fn assert_flag<T: Clone + Default + Send + Sync>() {}
+        assert_flag::<ingestion::ShutdownFlag>();
+        let flag = ingestion::ShutdownFlag::new();
+        assert!(!flag.cancelled(), "a fresh flag is uncancelled");
+        let clone = flag.clone();
+        flag.cancel();
+        assert!(clone.cancelled(), "the clone shares the flag state");
+    }
 }

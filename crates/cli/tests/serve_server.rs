@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use config::preset::GraphConfig;
@@ -20,6 +20,7 @@ use db::{
 };
 use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::GraphIndex;
+use ingestion::ShutdownFlag;
 use search::Searcher;
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
@@ -76,6 +77,57 @@ impl EmbeddingProvider for FakeEmbed {
 
     fn name(&self) -> &'static str {
         "fake"
+    }
+}
+
+/// A 4-dim embedding provider that simulates the field case
+/// (fix-serve-signal-shutdown 1.2): on the first embedding batch only
+/// (guarded by `first`) it (a) sends the "entered" oneshot token,
+/// (b) cancels the shutdown flag and sends the stop broadcast — the
+/// production signal task's order — and (c) blocks on the release channel
+/// (simulating the slow LLM call) before returning the fixed vectors.
+struct GateEmbed {
+    /// The cooperative shutdown flag (cancelled on the first batch, before
+    /// the broadcast send).
+    flag: ShutdownFlag,
+    /// The stop broadcast sender (fed on the first batch).
+    stop_tx: broadcast::Sender<()>,
+    /// The "entered" token: the test's release task awaits the receiving
+    /// end. `Option` because `oneshot::Sender::send` consumes the sender
+    /// (it is taken on the first batch); the `Mutex` keeps the provider
+    /// `Sync`.
+    entered_tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// The release channel: the first batch blocks here (the slow LLM call)
+    /// until the test sends the token.
+    release_rx: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    /// First-batch guard (atomic: the provider is `Sync`).
+    first: AtomicBool,
+}
+
+impl EmbeddingProvider for GateEmbed {
+    fn generate_embeddings(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        // First embedding batch only (the guard is an atomic swap).
+        if self.first.swap(false, Ordering::SeqCst) {
+            // (a) the in-flight task has entered the embedding step
+            // (synchronous send — fine from the owner thread).
+            let entered_tx = self.entered_tx.lock().unwrap().take().unwrap();
+            let _ = entered_tx.send(());
+            // (b) the production signal task's order: cancel the flag
+            // FIRST, then the broadcast (fix-serve-signal-shutdown D1).
+            self.flag.cancel();
+            let _ = self.stop_tx.send(());
+            // (c) the slow LLM call: block until the test releases.
+            self.release_rx.lock().unwrap().recv().unwrap();
+        }
+        Ok(texts.iter().map(|_| vec![0.5f32; 4]).collect())
+    }
+
+    fn vector_dim(&self) -> usize {
+        4
+    }
+
+    fn name(&self) -> &'static str {
+        "gate"
     }
 }
 
@@ -168,10 +220,10 @@ fn dataset_vectors_path(dir: &TempDir) -> PathBuf {
         .join("vectors")
 }
 
-/// A Bootstrap with a fake provider and a temp-file db; no sources
+/// A Bootstrap with `embed` as the provider and a temp-file db; no sources
 /// (global `None`) — the task's "no real sources" shape. The dataset is
 /// active (design D2): named `edtech` with the directory present.
-fn test_bootstrap(dir: &TempDir) -> Bootstrap {
+fn test_bootstrap_with_embed(dir: &TempDir, embed: Arc<dyn EmbeddingProvider>) -> Bootstrap {
     let mut config = test_config(&dir.as_ref().join("workspace"));
     config.dataset.name = "edtech".to_string();
     std::fs::create_dir_all(config.dataset.state_path(&config.paths.workspace_dir))
@@ -186,13 +238,19 @@ fn test_bootstrap(dir: &TempDir) -> Bootstrap {
         domains: std::collections::HashMap::new(),
         db,
         cache: None,
-        embed: Arc::new(FakeEmbed { dim: 4 }),
+        embed,
         onnx: OnnxConfig::default(),
         registry: None,
         prompts: None,
         vectors: None,
         dimension_mismatch: None,
     }
+}
+
+/// A Bootstrap with a fake 4-dim provider and a temp-file db (the default
+/// [`test_bootstrap_with_embed`] shape).
+fn test_bootstrap(dir: &TempDir) -> Bootstrap {
+    test_bootstrap_with_embed(dir, Arc::new(FakeEmbed { dim: 4 }))
 }
 
 /// A free localhost port (bind :0, read, drop).
@@ -284,8 +342,10 @@ fn serve_starts_serves_health_and_stops() {
         auto_rebuild_vectors: false,
     };
 
+    let shutdown_flag = ShutdownFlag::new();
     let (stop_tx, mut stop_rx) = broadcast::channel::<()>(1);
     let runtime = Runtime::new().expect("test runtime");
+    let killer_flag = shutdown_flag.clone();
     let killer = runtime.spawn(async move {
         let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/health");
@@ -302,12 +362,15 @@ fn serve_starts_serves_health_and_stops() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // The production signal task's order: cancel the flag first, then
+        // the broadcast (fix-serve-signal-shutdown D1).
+        killer_flag.cancel();
         let _ = stop_tx.send(());
         healthy
     });
 
     let started = std::time::Instant::now();
-    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx);
+    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx, &shutdown_flag);
     let stopped = started.elapsed();
     let healthy = runtime.block_on(killer).expect("killer task");
 
@@ -433,8 +496,10 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
         auto_rebuild_vectors: false,
     };
 
+    let shutdown_flag = ShutdownFlag::new();
     let (stop_tx, mut stop_rx) = broadcast::channel::<()>(1);
     let runtime = Runtime::new().expect("test runtime");
+    let killer_flag = shutdown_flag.clone();
     let killer = runtime.spawn(async move {
         let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/health");
@@ -451,11 +516,14 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // The production signal task's order: cancel the flag first, then
+        // the broadcast (fix-serve-signal-shutdown D1).
+        killer_flag.cancel();
         let _ = stop_tx.send(());
         healthy
     });
 
-    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx);
+    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx, &shutdown_flag);
     let healthy = runtime.block_on(killer).expect("killer task");
 
     assert!(
@@ -658,8 +726,10 @@ fn serve_startup_recovers_a_stuck_processing_row() {
         auto_rebuild_vectors: false,
     };
 
+    let shutdown_flag = ShutdownFlag::new();
     let (stop_tx, mut stop_rx) = broadcast::channel::<()>(1);
     let runtime = Runtime::new().expect("test runtime");
+    let killer_flag = shutdown_flag.clone();
     let killer = runtime.spawn(async move {
         let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/health");
@@ -676,11 +746,14 @@ fn serve_startup_recovers_a_stuck_processing_row() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // The production signal task's order: cancel the flag first, then
+        // the broadcast (fix-serve-signal-shutdown D1).
+        killer_flag.cancel();
         let _ = stop_tx.send(());
         healthy
     });
 
-    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx);
+    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx, &shutdown_flag);
     let healthy = runtime.block_on(killer).expect("killer task");
 
     assert!(
@@ -724,6 +797,132 @@ fn serve_startup_recovers_a_stuck_processing_row() {
     assert_eq!(live.status, "done", "{live:?}");
 }
 
+// --- serve_with_stop: stop during the startup drain (task 1.2) -------------
+
+/// The field bug's exact scenario (fix-serve-signal-shutdown 1.2): SIGINT
+/// arrives DURING the startup drain — while the worker is processing the
+/// in-flight task (the embedding step, here a slow LLM call). The
+/// production signal task's behavior is mirrored inside the embedding
+/// provider ([`GateEmbed`]): the shutdown flag is cancelled, then the stop
+/// broadcast is sent. The drain must stop after the in-flight task (it
+/// completes and is recorded `done`), the two unclaimed tasks stay
+/// `pending` (they survive to the next startup), and the serve flow
+/// proceeds to the bounded shutdown and returns `Ok` (no hang).
+///
+/// Note on timing (Rev 1): the stop broadcast is sent BEFORE the axum
+/// serve task's receiver resubscribes (the resubscribe happens after the
+/// drain), and a broadcast receiver only sees messages sent after it
+/// subscribed — so the resubscribed receiver never sees the stop message.
+/// The serve task's shutdown future therefore checks the flag first: the
+/// flag was cancelled before the broadcast send, so it resolves immediately
+/// and axum drains at once (the owner loop's ORIGINAL receiver, subscribed
+/// at channel creation, still gets the buffered message on its first
+/// `recv()`). The whole shutdown takes the graceful path — well under
+/// `SHUTDOWN_TIMEOUT` — and the assertion below pins that fast path (a
+/// regression to the forced path would wait the full bound here).
+#[test]
+fn serve_stop_cancels_the_startup_drain_mid_task() {
+    let dir = TempDir::new("drain-stop");
+    let port = free_port();
+    // One markdown source with three files: the startup reconcile enqueues
+    // three `doc:index` rows for the startup drain.
+    let src = dir.as_ref().join("src");
+    std::fs::create_dir_all(&src).expect("create source dir");
+    for (i, name) in ["one.md", "two.md", "three.md"].iter().enumerate() {
+        std::fs::write(src.join(name), format!("# Doc {i}\n\nBody {i}.\n")).expect("write md");
+    }
+
+    let shutdown_flag = ShutdownFlag::new();
+    let (stop_tx, mut stop_rx) = broadcast::channel::<()>(1);
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let mut boot = test_bootstrap_with_embed(
+        &dir,
+        Arc::new(GateEmbed {
+            flag: shutdown_flag.clone(),
+            stop_tx,
+            entered_tx: std::sync::Mutex::new(Some(entered_tx)),
+            release_rx: std::sync::Mutex::new(release_rx),
+            first: AtomicBool::new(true),
+        }),
+    );
+    boot.global = Some(one_markdown_source(&src));
+    let req = ServeRequest {
+        cfg_path: dir.as_ref().join("unused.yaml").to_path_buf(),
+        dataset: None,
+        no_initial_sync: false,
+        port,
+        auto_rebuild_vectors: false,
+    };
+
+    let runtime = Runtime::new().expect("test runtime");
+    // The "slow LLM" release: once the in-flight task has entered the
+    // embedding step (and fired the stop, as the production signal task
+    // would), let it finish.
+    let releaser = runtime.spawn(async move {
+        let _ = entered_rx.await;
+        let _ = release_tx.send(());
+    });
+
+    // The test thread is the owner thread (no runtime context — the
+    // vector-engine facade is safe here, mirroring `run_serve`'s main
+    // thread).
+    let started = std::time::Instant::now();
+    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx, &shutdown_flag);
+    let stopped = started.elapsed();
+    runtime.block_on(releaser).expect("releaser task");
+
+    assert!(
+        result.is_ok(),
+        "serve_with_stop must succeed: {:?}",
+        result.err()
+    );
+    // The graceful fast path (Rev 1): the serve task's shutdown future
+    // resolves via the flag check (its resubscribed receiver never sees
+    // the pre-subscription broadcast), so axum drains at once and the
+    // whole shutdown lands well under the forced bound — a regression to
+    // the forced path would wait the full `SHUTDOWN_TIMEOUT` here.
+    assert!(
+        stopped < SHUTDOWN_TIMEOUT,
+        "stop must take the graceful path (well under the bound): {stopped:?}"
+    );
+
+    // The drain stopped after the in-flight task: exactly one task is
+    // `done`, the other two rows are still `pending` (unclaimed — they
+    // survive to the next startup).
+    let tasks = boot
+        .db
+        .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
+        .expect("with_conn tasks")
+        .map_err(|e| panic!("list tasks: {e}"))
+        .expect("list tasks");
+    assert_eq!(tasks.len(), 3, "the three enqueued rows: {tasks:?}");
+    let done: Vec<_> = tasks.iter().filter(|t| t.status == "done").collect();
+    let pending: Vec<_> = tasks.iter().filter(|t| t.status == "pending").collect();
+    assert_eq!(
+        done.len(),
+        1,
+        "exactly the in-flight task is done: {tasks:?}"
+    );
+    assert_eq!(
+        pending.len(),
+        2,
+        "the unclaimed tasks stay pending: {tasks:?}"
+    );
+
+    // Exactly one document is indexed — the in-flight task's.
+    let docs = boot
+        .db
+        .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
+        .expect("with_conn documents")
+        .expect("list documents");
+    assert_eq!(docs.len(), 1, "exactly one document is indexed: {docs:?}");
+    assert_eq!(
+        docs[0].original_path, done[0].identity,
+        "the indexed document is the in-flight task's: {docs:?}"
+    );
+}
+
 // --- serve_with_stop: dimension-mismatch auto-rebuild ----------------------
 
 /// A stored index with a different dimension + `--auto-rebuild-vectors`:
@@ -749,8 +948,10 @@ fn serve_rebuilds_vectors_on_dimension_mismatch() {
         auto_rebuild_vectors: true,
     };
 
+    let shutdown_flag = ShutdownFlag::new();
     let (stop_tx, mut stop_rx) = broadcast::channel::<()>(1);
     let runtime = Runtime::new().expect("test runtime");
+    let killer_flag = shutdown_flag.clone();
     let killer = runtime.spawn(async move {
         let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/health");
@@ -765,10 +966,13 @@ fn serve_rebuilds_vectors_on_dimension_mismatch() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // The production signal task's order: cancel the flag first, then
+        // the broadcast (fix-serve-signal-shutdown D1).
+        killer_flag.cancel();
         let _ = stop_tx.send(());
     });
 
-    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx);
+    let result = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx, &shutdown_flag);
     runtime.block_on(killer).expect("killer task");
 
     assert!(
@@ -831,10 +1035,11 @@ fn serve_mismatch_without_auto_rebuild_is_fatal() {
         port: free_port(),
         auto_rebuild_vectors: false,
     };
+    let shutdown_flag = ShutdownFlag::new();
     let (_tx, mut stop_rx) = broadcast::channel::<()>(1);
     let runtime = Runtime::new().expect("test runtime");
 
-    let err = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx)
+    let err = serve_with_stop(&runtime, &mut boot, &req, &mut stop_rx, &shutdown_flag)
         .expect_err("the mismatch must be fatal without auto-rebuild");
     assert!(
         matches!(
