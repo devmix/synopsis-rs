@@ -533,17 +533,17 @@ mod tests {
         for line in stdout.lines() {
             assert!(line.chars().count() <= 120, "line fits 120: {line:?}");
         }
-        // The 300-char error is fully present (wrapped, not truncated): it is
-        // the only 'z' content in the table, so joining the wrapped cell
-        // fragments reproduces the original text.
+        // The 300-char error is fully present (wrapped, not truncated): it
+        // is the only 'z' content in the table, so joining the wrapped
+        // LAST_ERROR cell fragments (split index 5) reproduces the original
+        // text. Extraction is column-aware: after the widest-column-wraps-
+        // first fix the short columns keep their content-fit width, so the
+        // wrapped row's first line also carries their values.
         let fragments: Vec<&str> = stdout
             .lines()
             .filter(|line| line.starts_with('│') && line.contains('z'))
-            .flat_map(|line| {
-                line.split('│')
-                    .map(str::trim)
-                    .filter(|cell| !cell.is_empty())
-            })
+            .map(|line| line.split('│').nth(5).unwrap_or("").trim())
+            .filter(|cell| !cell.is_empty())
             .collect();
         assert_eq!(
             fragments.concat(),

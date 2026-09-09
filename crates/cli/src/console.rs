@@ -16,6 +16,7 @@ use std::io::IsTerminal;
 use owo_colors::{AnsiColors, Effect, OwoColorize, Style as OwoStyle};
 use tabled::builder::Builder;
 use tabled::settings::object::Columns;
+use tabled::settings::peaker::Priority;
 use tabled::settings::{Alignment, Padding, Style, Width};
 
 /// Fallback max width when stdout is not a TTY or the size query fails (D3).
@@ -101,10 +102,15 @@ impl Console {
     ///
     /// `Style::modern()` borders, a header row, `right_aligned` columns
     /// (e.g. numeric DIM/ATTEMPTS) right-aligned, and a whole-table
-    /// `Width::wrap(max_width)`: content-fit when narrower, wrapped when
-    /// wider — no line exceeds `max_width` display columns. Cells may be
-    /// pre-styled with [`Console::style`]; the `ansi` feature measures
-    /// through the escapes, so alignment stays correct.
+    /// `Width::wrap(max_width)` with `Priority::max(false)`: content-fit
+    /// when narrower, wrapped when wider — no line exceeds `max_width`
+    /// display columns. When the table is wider than the budget, the
+    /// currently widest column absorbs the excess first (it wraps), so the
+    /// other columns keep their content-fit width instead of collapsing to
+    /// minimal width (tabled `peaker::PriorityMax`; the `false` side
+    /// prefers the left column on equal widths). Cells may be pre-styled
+    /// with [`Console::style`]; the `ansi` feature measures through the
+    /// escapes, so alignment stays correct.
     pub fn table(&self, headers: &[&str], rows: &[Vec<String>], right_aligned: &[usize]) -> String {
         let mut builder = Builder::with_capacity(rows.len() + 1, headers.len());
         builder.push_record(headers.to_vec());
@@ -116,14 +122,16 @@ impl Console {
         for &column in right_aligned {
             table.modify(Columns::one(column), Alignment::right());
         }
-        table.with(Width::wrap(self.max_width));
+        table.with(Width::wrap(self.max_width).priority(Priority::max(false)));
         table.to_string()
     }
 
     /// Render a borderless key-value block (design D5): `Label:   value`
     /// rows, label column auto-width, values left-aligned; a whole-table
-    /// `Width::wrap(max_width)` keeps long values wrapped instead of
-    /// overflowing.
+    /// `Width::wrap(max_width)` with `Priority::max(false)` keeps long
+    /// values wrapped instead of overflowing — the value column is the wide
+    /// one, so it absorbs the excess while the label column keeps its
+    /// auto-width (see [`Self::table`] for the peaker semantics).
     pub fn kv(&self, pairs: &[(&str, &str)]) -> String {
         let mut builder = Builder::with_capacity(pairs.len(), 2);
         for (label, value) in pairs {
@@ -132,7 +140,7 @@ impl Console {
         let mut table = builder.build();
         table.with(Style::empty());
         table.with(Padding::new(0, 0, 0, 0));
-        table.with(Width::wrap(self.max_width));
+        table.with(Width::wrap(self.max_width).priority(Priority::max(false)));
         table.to_string()
     }
 
@@ -404,5 +412,67 @@ mod tests {
         let console = Console::plain(30);
         let out = console.table(&["TEXT"], &[vec!["word ".repeat(60)]], &[]);
         assert!(out.lines().all(|line| display_width(line) <= 30));
+    }
+
+    #[test]
+    fn table_widest_column_wraps_first_others_keep_width() {
+        // The `queue status` shape: five short columns plus one 300-char
+        // LAST_ERROR-style cell. The wide cell must absorb the whole width
+        // budget (wrap) while the short columns keep their content-fit
+        // width instead of collapsing to empty.
+        let console = Console::plain(120);
+        let long = "x".repeat(300);
+        let row = vec![
+            "doc:index".to_string(),
+            "/docs/a.md".to_string(),
+            "error".to_string(),
+            "3".to_string(),
+            long.clone(),
+            "1757000000".to_string(),
+        ];
+        let out = console.table(
+            &[
+                "TYPE",
+                "IDENTITY",
+                "STATUS",
+                "ATTEMPTS",
+                "LAST_ERROR",
+                "NEXT_ATTEMPT_AT",
+            ],
+            &[row],
+            &[3, 5],
+        );
+        // (a) every line fits the width bound.
+        assert!(
+            out.lines().all(|line| display_width(line) <= 120),
+            "every line must fit 120 display columns:\n{out}"
+        );
+        // Body lines (`│ c0 │ ... │ c5 │`) yield six trimmed cells each;
+        // the first body line is the header row.
+        let body: Vec<Vec<&str>> = out
+            .lines()
+            .filter(|line| line.starts_with('│'))
+            .map(|line| line.split('│').skip(1).take(6).map(str::trim).collect())
+            .collect();
+        // (b) the 300-char text is fully present (wrapped, not truncated):
+        // joining the LAST_ERROR column fragments reproduces it.
+        let fragments: Vec<&str> = body[1..]
+            .iter()
+            .map(|cells| cells[4])
+            .filter(|cell| !cell.is_empty())
+            .collect();
+        assert_eq!(
+            fragments.concat(),
+            long,
+            "wrapped cell must be intact:\n{out}"
+        );
+        // (c) the short columns are not collapsed: the row's first line
+        // shows every short value in full.
+        let first = &body[1];
+        assert_eq!(first[0], "doc:index");
+        assert_eq!(first[1], "/docs/a.md");
+        assert_eq!(first[2], "error");
+        assert_eq!(first[3], "3");
+        assert_eq!(first[5], "1757000000");
     }
 }
