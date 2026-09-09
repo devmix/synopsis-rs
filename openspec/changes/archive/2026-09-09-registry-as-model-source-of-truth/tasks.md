@@ -6,7 +6,7 @@ The code change is staged so every task leaves the workspace green and each
 task's reading scope stays small (function-level pointers below are the
 reading list — do not read whole files beyond them).
 
-## 1.1 config: add the registry dimension resolver (additive)
+## 1.1 config: add the registry dimension resolver (additive) — done (c3dc3cb)
 
 **Goal.** Add `Config::resolved_vector_dim(&self, onnx: &OnnxConfig) ->
 Result<i32, ConfigError>` to the `config` crate. It resolves the embedding
@@ -50,7 +50,7 @@ stay.
 - The old `vector_dim()` accessor and the struct fields are untouched
   (`git diff` in `crates/config/src/preset.rs` is additive only).
 
-## 1.2 cli: ANN index dimension from the registry resolver
+## 1.2 cli: ANN index dimension from the registry resolver — done (c3dc3cb)
 
 **Goal.** `vectors_index_config` derives the index dimension from
 `Config::resolved_vector_dim(config, onnx)` instead of `config.vector_dim()`.
@@ -103,7 +103,7 @@ entry.
 - The index dimension in the loadtest and the serve-bootstrap tests equals
   the registry fixture entry's `vector_dim`.
 
-## 1.3 embedding: provider dimension from the registry entry
+## 1.3 embedding: provider dimension from the registry entry — done (c3dc3cb)
 
 **Goal.** In the registry flow, the provider's vector dimension comes from
 the registry entry's `vector_dim` (a non-positive value is an
@@ -145,7 +145,7 @@ explicit-`model_path` flow is untouched in this task.
 - `resolve_explicit_path` and `positive_dim` are untouched
   (`git diff --stat` shows `crates/embedding/src/lib.rs` only).
 
-## 1.4 cli: drop all uses of the removed config fields
+## 1.4 cli: drop all uses of the removed config fields — done (c3dc3cb)
 
 **Goal.** Remove every use of `vector_dim` / `model_path` / `tokenizer_path`
 from the `cli` crate. The fields still exist in the `config` crate (removed
@@ -209,7 +209,7 @@ already the registry dim, so the benchmark's registry flow works).
 - `model benchmark` still errors for a non-installed model (the
   `is_installed` gate is untouched).
 
-## 1.5 config + embedding: remove the fields and the legacy flow
+## 1.5 config + embedding: remove the fields and the legacy flow — done (c3dc3cb)
 
 **Goal.** Final removal: the config schema fields, their validation, the old
 accessor, and the embedding crate's explicit-`model_path` flow with its
@@ -290,7 +290,7 @@ change.
 - The `write_config` fixture in `crates/cli/tests/serve_bootstrap.rs`
   contains no `vector_dim` key.
 
-## 1.6 Presets and documentation
+## 1.6 Presets and documentation — done (c3dc3cb)
 
 **Goal.** Update the shipped presets and all documentation to the new
 config shape: `embeddings.local` carries only `model_name`; dimension and
@@ -353,7 +353,7 @@ delta of this change (the "Removed keys ignored" scenario).
 - The default preset still names `bge-small-en-v1.5` and the registry
   (`workspace/configs/onnx.yaml`) entry for it declares `vector_dim: 384`.
 
-## 1.7 config: drop the pre-registry model-name fallback from apply_defaults
+## 1.7 config: drop the pre-registry model-name fallback from apply_defaults — done (c3dc3cb)
 
 **Goal.** `apply_defaults` still fills an empty `embeddings.local.model_name`
 with the hardcoded `"bge-m3-int8"` (a pre-registry leftover), which shadows
@@ -418,7 +418,7 @@ the docs describing "empty → `models.default`" already exist).
   `apply_defaults` + registry `models.default` → the default entry's
   `vector_dim`.
 
-## 1.8 cli: drop the pre-registry model-name fallback from the ensure_model wrapper
+## 1.8 cli: drop the pre-registry model-name fallback from the ensure_model wrapper — done (c3dc3cb)
 
 **Goal.** `crates/cli/src/serve/bootstrap.rs` keeps
 `const DEFAULT_MODEL_NAME: &str = "bge-m3-int8"`, and the cli-side
