@@ -33,6 +33,10 @@ context: |
   - tracing 0.1.44 + tracing-subscriber 0.3.23 — structured logging in `cli`
     (serve/sync/load-test); the libraries remain logger-less (user-approved stack
     extension 2026-08-27)
+  - tabled 0.22 (feature `ansi`, default features off) + owo-colors 4.4 +
+    terminal_size 0.4 — CLI presentation layer: box-drawing tables/kv blocks,
+    TTY-gated color, terminal-width adaptation (change `unify-cli-console-output`,
+    user-approved stack extension 2026-09-09)
 
   ## Hard constraints
   - Target: laptop (16 GB RAM), personal use, NOT a server. At N=1M × 1024-dim
