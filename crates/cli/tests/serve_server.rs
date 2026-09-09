@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use config::onnx::{ModelInfo, OnnxModelsConfig};
 use config::preset::GraphConfig;
 use config::{Config, GlobalConfig, OnnxConfig};
 use db::{
@@ -192,9 +193,6 @@ fn test_config(workspace_dir: &Path) -> Config {
             mode: config::preset::EmbeddingsMode::Local,
             local: config::preset::LocalEmbedding {
                 model_name: "bge-m3-int8".to_string(),
-                model_path: String::new(),
-                tokenizer_path: String::new(),
-                vector_dim: 4,
             },
             api: Default::default(),
             auto_rebuild_vectors: false,
@@ -220,6 +218,23 @@ fn dataset_vectors_path(dir: &TempDir) -> PathBuf {
         .join("vectors")
 }
 
+/// The `onnx.yaml` registry fixture for the 4-dim fake provider
+/// (registry-as-model-source-of-truth D4): `models.default` selects the
+/// entry, whose `vector_dim` is the index dimension.
+fn test_onnx() -> OnnxConfig {
+    OnnxConfig {
+        runtime: Default::default(),
+        models: OnnxModelsConfig {
+            default: "bge-m3-int8".to_string(),
+            entries: vec![ModelInfo {
+                name: "bge-m3-int8".to_string(),
+                vector_dim: 4,
+                ..Default::default()
+            }],
+        },
+    }
+}
+
 /// A Bootstrap with `embed` as the provider and a temp-file db; no sources
 /// (global `None`) — the task's "no real sources" shape. The dataset is
 /// active (design D2): named `edtech` with the directory present.
@@ -239,7 +254,7 @@ fn test_bootstrap_with_embed(dir: &TempDir, embed: Arc<dyn EmbeddingProvider>) -
         db,
         cache: None,
         embed,
-        onnx: OnnxConfig::default(),
+        onnx: test_onnx(),
         registry: None,
         prompts: None,
         vectors: None,

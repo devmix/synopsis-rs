@@ -51,7 +51,7 @@ The full resolution order and every key it loads is in [Configuration](./configu
 
 **Symptom** — `serve` fails at startup with a dimension mismatch error: the stored vector index was created at one dimensionality, but the configured embedding model declares another.
 
-**Cause** — you switched models or changed `embeddings.local.vector_dim` without touching the dataset. The [usearch index](../concepts/vector-rebuild) is created for a fixed dimension and is never silently converted.
+**Cause** — you switched models without touching the dataset: the dimension no longer comes from the main config, it is the `onnx.yaml` registry entry's `vector_dim` for the selected model, and it now differs from the stored index. The [usearch index](../concepts/vector-rebuild) is created for a fixed dimension and is never silently converted.
 
 **Fix** — two options, same recovery shape:
 
@@ -70,7 +70,7 @@ The full resolution order and every key it loads is in [Configuration](./configu
    synopsis serve         # startup reconcile re-enqueues everything
    ```
 
-Remember to update `embeddings.local.vector_dim` (and the model) to a matching pair before re-running. The full recovery model is on the [Vector Rebuild](../concepts/vector-rebuild) page.
+There is no dimension to update in the config — the dimension follows the selected model's registry entry, so the rebuild above is the whole fix. The full recovery model is on the [Vector Rebuild](../concepts/vector-rebuild) page.
 
 ## Semantic search returns nothing after an unclean shutdown
 

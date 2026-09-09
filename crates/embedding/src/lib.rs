@@ -37,10 +37,6 @@ use std::sync::Arc;
 use config::onnx::OnnxConfig;
 use config::preset::LocalEmbedding;
 
-/// Vector dimension used when the config declares none (fallback: 1024, the
-/// BGE-M3 default).
-const DEFAULT_VECTOR_DIM: usize = 1024;
-
 /// Tokenizer file name shipped alongside model files.
 const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 
@@ -55,32 +51,26 @@ const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 /// 1. [`LibraryManager::ensure_library`] — ensure the ONNX Runtime shared
 ///    library is installed under `workspace_dir` (downloaded on first use);
 /// 2. [`init_runtime`] — load the library into this process;
-/// 3. resolve the model (registry download on first use, or an explicit
-///    `model_path` override), its `tokenizer.json`, and the vector dimension;
+/// 3. resolve the model from the `onnx.yaml` registry by `cfg.model_name`
+///    (empty name → the registry default), its `tokenizer.json`, and the
+///    vector dimension (the registry entry's `vector_dim`);
 /// 4. [`build_session`] — create the inference session (design D7 options);
 /// 5. [`Tokenizer::from_file`] + [`EmbeddingCache`] + [`OnnxProvider::new`] —
 ///    assemble the shareable provider.
 ///
-/// `cfg.model_path` (when non-empty) overrides registry resolution: the file
-/// is used as-is and the tokenizer is looked for next to it unless
-/// `cfg.tokenizer_path` is set. Otherwise the model is resolved from
-/// the `onnx.yaml` registry by `cfg.model_name` (empty name → the registry
-/// default) and downloaded through [`ModelManager::ensure_model`] when not
-/// installed yet.
-///
-/// The provider's vector dimension comes from `cfg.vector_dim` (the config
-/// validation guarantees it is positive in local mode; a non-positive value
-/// falls back to the BGE-M3 default, 1024). In the registry flow a mismatch with
-/// the dimension declared in `onnx.yaml` is a [`EmbeddingError::Config`] — a
-/// wrong dimension would silently truncate every vector.
+/// The model is resolved from the `onnx.yaml` registry by `cfg.model_name`
+/// (empty name → the registry default) and downloaded through
+/// [`ModelManager::ensure_model`] when not installed yet. The provider's
+/// vector dimension comes from the registry entry's `vector_dim` (a
+/// non-positive value is a [`EmbeddingError::Config`] naming the model).
 ///
 /// Synchronous: async callers dispatch this onto `spawn_blocking`.
 ///
 /// # Errors
 ///
 /// [`EmbeddingError::Config`] for an unsupported platform or a
-/// config/registry dimension mismatch; [`EmbeddingError::Download`] /
-/// [`EmbeddingError::Io`] when a library or model download fails;
+/// non-positive `vector_dim` in a registry entry; [`EmbeddingError::Download`]
+/// / [`EmbeddingError::Io`] when a library or model download fails;
 /// [`EmbeddingError::Ort`] when the runtime library cannot be loaded or the
 /// session cannot be built; [`EmbeddingError::Model`] for an unknown model
 /// name or a missing model/tokenizer file; [`EmbeddingError::Tokenizer`] when
@@ -97,8 +87,6 @@ const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 ///
 /// let cfg = LocalEmbedding {
 ///     model_name: "bge-m3-int8".to_string(),
-///     vector_dim: 1024,
-///     ..Default::default()
 /// };
 /// let onnx = OnnxConfig::default();
 /// let provider: Arc<dyn EmbeddingProvider> =
@@ -137,54 +125,13 @@ struct ResolvedModel {
 
 /// Resolves the model, tokenizer, and dimension for the factory (step 3 of
 /// [`new_onnx_provider`]). Kept separate from the factory so the
-/// config-driven decisions are unit-testable without the ONNX Runtime.
+/// registry-driven decisions are unit-testable without the ONNX Runtime.
+///
+/// Resolves the name (`cfg.model_name`, empty → the `onnx.yaml`
+/// default), takes the dimension from the registry entry (a non-positive
+/// value is a [`EmbeddingError::Config`] naming the model), ensures the
+/// model files are installed, and locates the tokenizer.
 fn resolve_model(
-    cfg: &LocalEmbedding,
-    workspace_dir: &Path,
-    onnx_cfg: &OnnxConfig,
-) -> Result<ResolvedModel, EmbeddingError> {
-    if cfg.model_path.is_empty() {
-        resolve_from_registry(cfg, workspace_dir, onnx_cfg)
-    } else {
-        resolve_explicit_path(cfg)
-    }
-}
-
-/// Explicit `model_path` override: the file is used as-is — no registry
-/// lookup, no download — and the tokenizer
-/// is looked for next to it unless `cfg.tokenizer_path` is set.
-fn resolve_explicit_path(cfg: &LocalEmbedding) -> Result<ResolvedModel, EmbeddingError> {
-    let path = PathBuf::from(&cfg.model_path);
-    let name = if cfg.model_name.is_empty() {
-        // Label fallback: an unnamed explicit model is just
-        // "default" for the cache key.
-        "default".to_string()
-    } else {
-        cfg.model_name.clone()
-    };
-    let tokenizer_path = if cfg.tokenizer_path.is_empty() {
-        let dir = path.parent().ok_or_else(|| {
-            EmbeddingError::Config(format!(
-                "cannot derive a tokenizer directory from model path {}",
-                path.display()
-            ))
-        })?;
-        dir.join(TOKENIZER_FILE_NAME)
-    } else {
-        PathBuf::from(&cfg.tokenizer_path)
-    };
-    Ok(ResolvedModel {
-        path,
-        name,
-        tokenizer_path,
-        vector_dim: positive_dim(cfg.vector_dim),
-    })
-}
-
-/// Registry flow: resolve the name (`cfg.model_name`, empty → the
-/// `onnx.yaml` default), validate the dimension against the registry entry,
-/// ensure the model files are installed, and locate the tokenizer.
-fn resolve_from_registry(
     cfg: &LocalEmbedding,
     workspace_dir: &Path,
     onnx_cfg: &OnnxConfig,
@@ -203,42 +150,28 @@ fn resolve_from_registry(
     let info = manager.model(&name).ok_or_else(|| {
         EmbeddingError::Model(format!("model {name:?} not found in onnx.yaml registry"))
     })?;
-    let vector_dim = positive_dim(cfg.vector_dim);
-    if info.vector_dim > 0 && info.vector_dim as usize != vector_dim {
+    if info.vector_dim <= 0 {
         return Err(EmbeddingError::Config(format!(
-            "vector_dim {vector_dim} in the main config does not match the {} declared by model {name:?} in onnx.yaml",
+            "model {name:?} in onnx.yaml declares a non-positive vector_dim {}",
             info.vector_dim
         )));
     }
+    let vector_dim = info.vector_dim as usize;
     let path = manager.ensure_model(&name)?;
-    let tokenizer_path = if cfg.tokenizer_path.is_empty() {
-        manager
-            .path_for_file(&name, TOKENIZER_FILE_NAME)
-            .ok_or_else(|| {
-                EmbeddingError::Model(format!(
-                    "{TOKENIZER_FILE_NAME} not found in model directory {}",
-                    manager.model_dir(&name).display()
-                ))
-            })?
-    } else {
-        PathBuf::from(&cfg.tokenizer_path)
-    };
+    let tokenizer_path = manager
+        .path_for_file(&name, TOKENIZER_FILE_NAME)
+        .ok_or_else(|| {
+            EmbeddingError::Model(format!(
+                "{TOKENIZER_FILE_NAME} not found in model directory {}",
+                manager.model_dir(&name).display()
+            ))
+        })?;
     Ok(ResolvedModel {
         path,
         name,
         tokenizer_path,
         vector_dim,
     })
-}
-
-/// The provider's vector dimension from the config; a non-positive value
-/// falls back to the BGE-M3 default (1024).
-fn positive_dim(cfg_dim: i32) -> usize {
-    if cfg_dim > 0 {
-        cfg_dim as usize
-    } else {
-        DEFAULT_VECTOR_DIM
-    }
 }
 
 /// Generates vector embeddings for batches of texts.
@@ -368,11 +301,9 @@ mod tests {
         }
     }
 
-    fn local_cfg(model_name: &str, vector_dim: i32) -> LocalEmbedding {
+    fn local_cfg(model_name: &str) -> LocalEmbedding {
         LocalEmbedding {
             model_name: model_name.to_string(),
-            vector_dim,
-            ..Default::default()
         }
     }
 
@@ -441,7 +372,7 @@ mod tests {
     #[test]
     fn factory_unsupported_platform_is_config_error() {
         let dir = temp_dir("no-platform");
-        let cfg = local_cfg("bge-m3-int8", 1024);
+        let cfg = local_cfg("bge-m3-int8");
         let mut onnx = test_config("http://127.0.0.1:1", true);
         onnx.runtime.platforms[0].key = "solaris-sparc".to_string();
 
@@ -458,7 +389,7 @@ mod tests {
     #[test]
     fn factory_missing_library_is_download_error() {
         let dir = temp_dir("no-lib");
-        let cfg = local_cfg("bge-m3-int8", 1024);
+        let cfg = local_cfg("bge-m3-int8");
         let onnx = test_config("http://127.0.0.1:1", true);
 
         let err = factory_error(&cfg, &dir, &onnx);
@@ -491,7 +422,7 @@ mod tests {
         let dir = temp_dir("bad-lib");
         preinstall_library(&dir);
         let onnx = test_config("http://127.0.0.1:1", true);
-        let cfg = local_cfg("bge-m3-int8", 1024);
+        let cfg = local_cfg("bge-m3-int8");
 
         let err = factory_error(&cfg, &dir, &onnx);
 
@@ -522,7 +453,7 @@ mod tests {
     #[test]
     fn resolve_model_unknown_name_is_model_error() {
         let dir = temp_dir("unknown-model");
-        let cfg = local_cfg("does-not-exist", 1024);
+        let cfg = local_cfg("does-not-exist");
         let onnx = test_config("http://127.0.0.1:1", true);
 
         let err = resolve_model(&cfg, &dir, &onnx).unwrap_err();
@@ -537,7 +468,7 @@ mod tests {
     fn resolve_model_empty_name_uses_registry_default() {
         let dir = temp_dir("default-name");
         preinstall_model(&dir, true);
-        let cfg = local_cfg("", 1024);
+        let cfg = local_cfg("");
         let onnx = test_config("http://127.0.0.1:1", true);
 
         let resolved = resolve_model(&cfg, &dir, &onnx).unwrap();
@@ -557,7 +488,7 @@ mod tests {
     fn resolve_model_missing_tokenizer_is_model_error() {
         let dir = temp_dir("no-tokenizer");
         preinstall_model(&dir, false);
-        let cfg = local_cfg("bge-m3-int8", 1024);
+        let cfg = local_cfg("bge-m3-int8");
         let onnx = test_config("http://127.0.0.1:1", false);
 
         let err = resolve_model(&cfg, &dir, &onnx).unwrap_err();
@@ -566,62 +497,21 @@ mod tests {
         assert!(err.to_string().contains(TOKENIZER_FILE_NAME), "got: {err}");
     }
 
-    /// A dimension the main config declares that the registry entry
-    /// contradicts is a `Config` error (a wrong dimension would silently
-    /// truncate every vector).
+    /// A registry entry with a non-positive `vector_dim` is a `Config` error
+    /// naming the model and the declared value.
     #[test]
-    fn resolve_model_dim_mismatch_is_config_error() {
-        let dir = temp_dir("dim-mismatch");
-        let cfg = local_cfg("bge-m3-int8", 384); // registry says 1024
-        let onnx = test_config("http://127.0.0.1:1", true);
+    fn resolve_model_non_positive_registry_dim_is_config_error() {
+        let dir = temp_dir("bad-registry-dim");
+        let cfg = local_cfg("bge-m3-int8");
+        let mut onnx = test_config("http://127.0.0.1:1", true);
+        onnx.models.entries[0].vector_dim = 0;
 
         let err = resolve_model(&cfg, &dir, &onnx).unwrap_err();
 
         assert!(matches!(err, EmbeddingError::Config(_)), "got: {err}");
-        assert!(err.to_string().contains("384"), "got: {err}");
-    }
-
-    /// An explicit `model_path` overrides the registry: the file is used
-    /// as-is, the tokenizer is derived from its directory, and the config
-    /// dimension wins.
-    #[test]
-    fn resolve_model_explicit_path_overrides_registry() {
-        let cfg = LocalEmbedding {
-            model_name: "m".to_string(),
-            model_path: "/models/m/model.onnx".to_string(),
-            vector_dim: 768,
-            ..Default::default()
-        };
-        let onnx = test_config("http://127.0.0.1:1", true);
-
-        let resolved = resolve_model(&cfg, Path::new("/unused"), &onnx).unwrap();
-
-        assert_eq!(resolved.path, Path::new("/models/m/model.onnx"));
-        assert_eq!(resolved.name, "m");
-        assert_eq!(
-            resolved.tokenizer_path,
-            Path::new("/models/m/tokenizer.json")
-        );
-        assert_eq!(resolved.vector_dim, 768);
-    }
-
-    /// An explicit path with no name and no dimension falls back to the
-    /// defaults: label "default", BGE-M3 dimension 1024, and an explicit
-    /// tokenizer path when given.
-    #[test]
-    fn resolve_model_explicit_path_defaults() {
-        let cfg = LocalEmbedding {
-            model_path: "/models/m/model.onnx".to_string(),
-            tokenizer_path: "/tok/custom.json".to_string(),
-            ..Default::default()
-        };
-        let onnx = test_config("http://127.0.0.1:1", true);
-
-        let resolved = resolve_model(&cfg, Path::new("/unused"), &onnx).unwrap();
-
-        assert_eq!(resolved.name, "default");
-        assert_eq!(resolved.vector_dim, DEFAULT_VECTOR_DIM);
-        assert_eq!(resolved.tokenizer_path, Path::new("/tok/custom.json"));
+        let msg = err.to_string();
+        assert!(msg.contains("bge-m3-int8"), "got: {msg}");
+        assert!(msg.contains("0"), "got: {msg}");
     }
 
     /// End-to-end with the real ONNX Runtime library and model.
@@ -633,8 +523,7 @@ mod tests {
     ///  EMBEDDING_TEST_DIM=1024 cargo test -p embedding -- --ignored`
     ///
     /// The runtime library and model are pre-installed through the cache
-    /// manifests (no download), and the model is used via the explicit
-    /// `model_path` override.
+    /// manifests (no download); the model is resolved via the registry flow.
     #[test]
     #[ignore]
     fn factory_builds_real_provider_end_to_end() {
@@ -664,14 +553,25 @@ mod tests {
         )
         .unwrap();
 
-        let cfg = LocalEmbedding {
-            model_name: "test".to_string(),
-            model_path: model,
-            tokenizer_path: tokenizer,
-            vector_dim: dim as i32,
-        };
-        let onnx = test_config("http://127.0.0.1:1", false);
+        // Pre-install the model files in the registry model directory.
+        let model_dir = dir.join("models").join("bge-m3-int8");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::copy(&model, model_dir.join("model.onnx")).unwrap();
+        std::fs::copy(&tokenizer, model_dir.join(TOKENIZER_FILE_NAME)).unwrap();
+        ModelCache::new(dir.join("models"))
+            .mark_installed(InstalledModel {
+                name: "bge-m3-int8".to_string(),
+                version: "1.0.0".to_string(),
+                vector_dim: dim as i32,
+                installed_at: "2026-08-21T00:00:00Z".to_string(),
+            })
+            .unwrap();
 
+        // Set the registry entry's vector_dim to match the model.
+        let mut onnx = test_config("http://127.0.0.1:1", true);
+        onnx.models.entries[0].vector_dim = dim as i32;
+
+        let cfg = local_cfg("bge-m3-int8");
         let provider = new_onnx_provider(&cfg, &dir, &onnx).unwrap();
 
         assert_eq!(provider.vector_dim(), dim);

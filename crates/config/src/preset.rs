@@ -1,8 +1,9 @@
 //! Main YAML preset: typed [`Config`] structures plus load / validate / defaults.
 //!
 //! [`Config`] structures, [`load`], [`Config::validate`] and
-//! [`Config::apply_defaults`] with the derived helpers [`Config::vector_dim`]
-//! / [`Config::cache_db_path`]. The knowledge-DB path is NOT a config field:
+//! [`Config::apply_defaults`] with the derived helpers
+//! [`Config::resolved_vector_dim`] / [`Config::cache_db_path`]. The
+//! knowledge-DB path is NOT a config field:
 //! it is derived from `workspace_dir` + `dataset.name` via
 //! [`DatasetConfig::db_path`]. Defaulting follows design D12/D13 (revision of
 //! task 1.2):
@@ -15,9 +16,12 @@
 //!   ever sees an empty artifact.
 //! * **Semantic rules live in [`Config::apply_defaults`]**: numeric `<= 0`
 //!   fallbacks (`overlap_size`: `< 0`, so a configured `0` survives), conditional
-//!   pairs (both search legs off → both on; no local model set → `"bge-m3-int8"`),
-//!   maps/lists (`text_fields`, `authority_boost`, scheduler jobs) and the
-//!   `auto_update:` section-presence rule (design D8).
+//!   pairs (both search legs off → both on), maps/lists (`text_fields`,
+//!   `authority_boost`, scheduler jobs) and the `auto_update:`
+//!   section-presence rule (design D8). An empty `embeddings.local.model_name`
+//!   is deliberately left untouched: the registry default (`models.default`
+//!   from onnx.yaml) is selected at resolution time, not at defaulting time
+//!   (registry-as-model-source-of-truth).
 //! * **Buggy bool defaults are fixed** (D13, BREAKING): `enable_graph`,
 //!   `load_on_startup` and `watch_sources` use presence semantics — absent →
 //!   true, an explicit `false` is respected.
@@ -35,6 +39,7 @@ use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::ConfigError;
+use crate::onnx::OnnxConfig;
 
 // ── Tolerant-enum machinery (defined before first use) ────────────────────
 
@@ -233,17 +238,11 @@ impl Config {
         // The mode itself is checked here, not at parse time: an unrecognized
         // value yields a Validation error rather than a YAML/parse failure.
         match &self.embeddings.mode {
-            EmbeddingsMode::Local => {
-                let local = &self.embeddings.local;
-                if local.model_path.is_empty() && local.model_name.is_empty() {
-                    return Err(validation(
-                        "embeddings.local.model_path or model_name is required in local mode",
-                    ));
-                }
-                if local.vector_dim <= 0 {
-                    return Err(validation("embeddings.local.vector_dim must be positive"));
-                }
-            }
+            // Local mode has no per-field rules: an empty `model_name`
+            // selects the registry default (`models.default` from onnx.yaml)
+            // at resolution time, and the dimension comes from the registry
+            // entry (`resolved_vector_dim`).
+            EmbeddingsMode::Local => {}
             EmbeddingsMode::Api => {
                 let api = &self.embeddings.api;
                 if api.base_url.is_empty() {
@@ -255,9 +254,6 @@ impl Config {
                     return Err(validation(
                         "embeddings.api.model_name is required in api mode",
                     ));
-                }
-                if api.vector_dim <= 0 {
-                    return Err(validation("embeddings.api.vector_dim must be positive"));
                 }
             }
             EmbeddingsMode::Unknown(mode) => {
@@ -279,9 +275,7 @@ impl Config {
     /// * Numeric `<= 0` fallbacks — except `markdown.overlap_size`, which is checked
     ///   with `< 0`, so a configured `0` survives.
     /// * Conditional pairs: both search legs force-enabled only when **both** are
-    ///   disabled (an explicit single-leg disable is respected); and the local model
-    ///   fallback — `embeddings.local.model_name` becomes `"bge-m3-int8"` in **both**
-    ///   modes, applied regardless of `mode`.
+    ///   disabled (an explicit single-leg disable is respected).
     /// * Maps / lists: an empty `json.text_fields` gains the four default fields; an
     ///   empty `authority_boost` map gains `"default": 1.0`; the scheduler always
     ///   gains an `orphan_cleanup` job — **disabled** with a 3600 s interval unless
@@ -407,11 +401,10 @@ impl Config {
             self.ingestion.resolver.similarity_threshold = 0.8;
         }
 
-        // Local embedding (this fallback applies in both modes) -------------------------------------
-        let local = &mut self.embeddings.local;
-        if local.model_name.is_empty() && local.model_path.is_empty() {
-            local.model_name = "bge-m3-int8".to_string();
-        }
+        // Local embedding: an empty model name is deliberately NOT filled here
+        // (registry-as-model-source-of-truth) — it survives defaulting and the
+        // registry default (`models.default` from onnx.yaml) is selected at
+        // resolution time.
 
         // Server (name/version/host are normalized at deserialization time, D12) ------
         if self.server.port <= 0 {
@@ -440,13 +433,51 @@ impl Config {
         }
     }
 
-    /// Returns the configured embedding vector dimension for the active mode:
-    /// local → `local.vector_dim`, api → `api.vector_dim`, any unrecognized mode → 0.
-    pub fn vector_dim(&self) -> i32 {
+    /// Resolves the embedding vector dimension from the `onnx.yaml` registry
+    /// (registry-as-model-source-of-truth D4): the registry is the single
+    /// source of model metadata, so the dimension is the registry entry's
+    /// `vector_dim` for the selected model, not a config field.
+    ///
+    /// Local mode: the model name is `embeddings.local.model_name`, or
+    /// `onnx.models.default` when that field is empty; the matching entry's
+    /// `vector_dim` is returned. Api mode: `Ok(0)` (api mode is unsupported
+    /// by the build; the dimension is not resolvable without the removed
+    /// config field). Unrecognized mode: `Ok(0)`.
+    ///
+    /// Fails with [`ConfigError::Validation`] naming the model when the
+    /// model is unknown, when the name is empty with no registry default,
+    /// or when the entry's `vector_dim <= 0`.
+    pub fn resolved_vector_dim(&self, onnx: &OnnxConfig) -> Result<i32, ConfigError> {
         match self.embeddings.mode {
-            EmbeddingsMode::Local => self.embeddings.local.vector_dim,
-            EmbeddingsMode::Api => self.embeddings.api.vector_dim,
-            EmbeddingsMode::Unknown(_) => 0,
+            EmbeddingsMode::Local => {
+                // An empty model name selects the registry's default model.
+                let model_name: &str = if self.embeddings.local.model_name.is_empty() {
+                    &onnx.models.default
+                } else {
+                    &self.embeddings.local.model_name
+                };
+                if model_name.is_empty() {
+                    return Err(validation(
+                        "no embedding model selected: embeddings.local.model_name is empty and the onnx.yaml registry has no models.default",
+                    ));
+                }
+                let entry = onnx.model_for_name(model_name).ok_or_else(|| {
+                    validation(&format!(
+                        "embedding model \"{model_name}\" not found in the onnx.yaml registry"
+                    ))
+                })?;
+                if entry.vector_dim <= 0 {
+                    return Err(validation(&format!(
+                        "embedding model \"{model_name}\" has a non-positive vector_dim ({}) in the onnx.yaml registry",
+                        entry.vector_dim
+                    )));
+                }
+                Ok(entry.vector_dim)
+            }
+            // Api mode is unsupported by the build; the dimension is not
+            // resolvable without the removed config field.
+            EmbeddingsMode::Api => Ok(0),
+            EmbeddingsMode::Unknown(_) => Ok(0),
         }
     }
 
@@ -523,17 +554,16 @@ pub struct EmbeddingsConfig {
 }
 
 /// Settings for the local ONNX embedding provider.
+///
+/// The model dimension and file locations come from the `onnx.yaml`
+/// registry entry (registry-as-model-source-of-truth D3), not from this
+/// struct.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LocalEmbedding {
-    /// Model name from the registry (e.g. `"bge-m3-int8"`).
+    /// Model name from the registry (e.g. `"bge-m3-int8"`). An empty name
+    /// selects the registry's `models.default`.
     pub model_name: String,
-    /// Explicit path that overrides `model_name` resolution.
-    pub model_path: String,
-    /// Optional tokenizer path override.
-    pub tokenizer_path: String,
-    /// Embedding vector dimension; must be positive in local mode.
-    pub vector_dim: i32,
 }
 
 /// Settings for the remote API embedding provider.
@@ -546,8 +576,6 @@ pub struct ApiEmbedding {
     pub api_key: String,
     /// Model name to request from the API.
     pub model_name: String,
-    /// Embedding vector dimension; must be positive in api mode.
-    pub vector_dim: i32,
     /// Max retry attempts after an initial failure.
     pub max_retries: i32,
     /// HTTP request timeout in milliseconds.

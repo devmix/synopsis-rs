@@ -30,9 +30,6 @@ use vectors::{VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine
 
 use crate::error::CliError;
 
-/// Default local embedding model name (fallback).
-const DEFAULT_MODEL_NAME: &str = "bge-m3-int8";
-
 /// Vector dimension mismatch between the configuration and the stored index.
 ///
 /// `expected` is what the configuration declares (what new vectors will
@@ -234,10 +231,12 @@ pub fn open_db(path: &Path) -> Result<Db, CliError> {
 /// Provisions the configured local embedding model, auto-downloading it on
 /// first use.
 ///
-/// No-op in api mode; skips the download when an explicit `model_path` is
-/// set (explicit-path mode). Deliberately does NOT mutate the config: the provider
+/// No-op in api mode. Deliberately does NOT mutate the config: the provider
 /// factory resolves the registry model itself (with the dimension
-/// cross-check against `onnx.yaml`).
+/// cross-check against `onnx.yaml`). An empty (or whitespace-only)
+/// `model_name` is passed through empty and the manager resolves the
+/// registry `models.default` — the registry is the single source of truth
+/// for the default model (no hardcoded fallback).
 ///
 /// # Errors
 ///
@@ -248,18 +247,19 @@ pub fn ensure_model(config: &Config, onnx: &OnnxConfig) -> Result<(), CliError> 
         return Ok(());
     }
     let local = &config.embeddings.local;
-    if !local.model_path.is_empty() {
-        tracing::info!(path = %local.model_path, "using explicit model path (skipping auto-download)");
-        return Ok(());
-    }
-    let model_name = if local.model_name.trim().is_empty() {
-        DEFAULT_MODEL_NAME
-    } else {
-        local.model_name.as_str()
-    };
+    // Trimmed so a whitespace-only name is treated as empty: the manager
+    // then resolves the registry `models.default` itself.
+    let model_name = local.model_name.trim();
     let manager = ModelManager::new(&config.paths.workspace_dir, onnx);
     let model_path = manager.ensure_model(model_name)?;
-    tracing::info!(name = model_name, path = %model_path.display(), "model ensured");
+    // Log the name actually used: an empty config name resolves to the
+    // registry default.
+    let used_name = if model_name.is_empty() {
+        manager.default_model()
+    } else {
+        model_name
+    };
+    tracing::info!(name = used_name, path = %model_path.display(), "model ensured");
     Ok(())
 }
 
@@ -413,15 +413,25 @@ pub fn build_registry(chunking: &ChunkingConfig) -> Result<Registry, IngestionEr
 }
 
 /// Maps the effective config to the ANN index configuration (design D5):
-/// the embedding dimension is authoritative (the engine stores the model's
-/// vectors, so a `vectors.dim` that disagreed would only fail at insert
-/// time), the ANN tuning fields come from the `vectors:` section.
+/// the embedding dimension comes from the `onnx.yaml` registry entry of the
+/// selected model (registry-as-model-source-of-truth D4 — the same entry
+/// the provider resolves), the ANN tuning fields come from the `vectors:`
+/// section.
 ///
 /// Shared with the serve wiring (task 1.6), which recreates the engine with
 /// this config on a dimension-mismatch auto-rebuild.
-pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, VectorsError> {
+pub fn vectors_index_config(
+    config: &Config,
+    onnx: &OnnxConfig,
+) -> Result<VectorIndexConfig, VectorsError> {
     let tuning = config.vectors_config();
-    let dim = i32::max(config.vector_dim(), 0) as usize;
+    // The dimension is the registry entry's `vector_dim` for the selected
+    // model (registry-as-model-source-of-truth D4); a resolver failure
+    // (unknown model, no registry default, non-positive dim) is an invalid
+    // argument for the engine factory.
+    let dim = config
+        .resolved_vector_dim(onnx)
+        .map_err(|err| VectorsError::InvalidArgument(err.to_string()))? as usize;
     let mut index_config =
         VectorIndexConfig::new(dim, tuning.m, tuning.ef_construction, tuning.ef_search)?;
     // The scalar quantization is a usearch-engine parameter; the config
@@ -461,7 +471,7 @@ pub fn vectors_index_config(config: &Config) -> Result<VectorIndexConfig, Vector
 /// an unknown `vectors.engine` value) or its stored dimension disagrees
 /// with the configuration.
 pub fn open_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
-    let index_config = vectors_index_config(&boot.config)?;
+    let index_config = vectors_index_config(&boot.config, &boot.onnx)?;
     // The ANN index is per-dataset and per-engine:
     // <workspace_dir>/datasets/<name>/state/vectors/<engine> (task 1.5).
     // The factory resolves the engine subdirectory from the name.

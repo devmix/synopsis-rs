@@ -78,13 +78,10 @@ embeddings:
   mode: "local"
   local:
     model_name: "bge-small-en-v1.5"  # auto-download
-    # model_path: ""                 # explicit path override
-    vector_dim: 384
   api:
     base_url: "http://localhost:1234/v1"
     api_key: ""
     model_name: "text-embedding-3-large"
-    vector_dim: 3072
     max_retries: 3
     timeout_ms: 30000
 ```
@@ -92,21 +89,17 @@ embeddings:
 | Key | Type | Default | Behavior |
 | --- | --- | --- | --- |
 | `embeddings.mode` | string | — | `"local"` (in-process ONNX Runtime) or `"api"` (OpenAI-compatible HTTP endpoint). Any other value is rejected at validation. |
-| `embeddings.local.model_name` | string | `"bge-m3-int8"` | Model name from the `onnx.yaml` registry; **downloaded automatically on first use** into `workspace/models/`. If both `model_name` and `model_path` are empty, `"bge-m3-int8"` is the fallback. |
-| `embeddings.local.model_path` | string | `""` | Explicit path to an ONNX file; setting it skips registry resolution. |
-| `embeddings.local.tokenizer_path` | string | `""` | Optional tokenizer path override. |
-| `embeddings.local.vector_dim` | integer | must be > 0 | Embedding dimension; must match the model actually in use. |
+| `embeddings.local.model_name` | string | `""` (empty → `models.default` in `onnx.yaml`) | Model name from the `onnx.yaml` registry; **downloaded automatically on first use** into `workspace/models/`. An empty name selects `models.default` from the registry; the model's dimension and file locations come from the registry entry. |
 | `embeddings.api.base_url` | string | required in api mode | Base URL of the embeddings endpoint. |
 | `embeddings.api.api_key` | string | `""` | Bearer token; empty if not required. |
 | `embeddings.api.model_name` | string | required in api mode | Model to request from the API. |
-| `embeddings.api.vector_dim` | integer | must be > 0 | Embedding dimension. |
 | `embeddings.api.max_retries` | integer | 3 | Retries after an initial failure. |
 | `embeddings.api.timeout_ms` | integer | 30000 | HTTP request timeout in milliseconds. |
 | `embeddings.auto_rebuild_vectors` | boolean | `false` | Config-file equivalent of the `--auto-rebuild-vectors` CLI flag: on a detected dimension mismatch the vectors are rebuilt automatically instead of failing. |
 
-**Shipped-preset deviation (not a bug):** `config.default.yaml` deliberately pairs `bge-small-en-v1.5` (384-dim) instead of the frozen `bge-m3-int8` (1024-dim) — faster local testing on the small model. The frozen default is `bge-m3-int8` with `vector_dim: 1024`; the preset file and `workspace/configs/README.md` document the pairing.
+**Shipped-preset deviation (not a bug):** `config.default.yaml` deliberately names `bge-small-en-v1.5` instead of the frozen `bge-m3-int8` — faster local testing on the small model. The dimension (384 vs 1024) comes from the `onnx.yaml` registry entry, not the preset; the preset file and `workspace/configs/README.md` document the choice.
 
-Switching to a model with a different `vector_dim` requires rebuilding the vectors — see [Troubleshooting](./troubleshooting).
+Switching to a model with a different dimension — the registry entry's `vector_dim` in `onnx.yaml` — requires rebuilding the vectors — see [Troubleshooting](./troubleshooting).
 
 ### `ingestion`
 

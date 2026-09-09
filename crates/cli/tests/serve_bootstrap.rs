@@ -69,7 +69,8 @@ fn platform_key() -> (&'static str, &'static str) {
 /// Writes a valid local-mode config into `dir` and returns its path.
 /// `workspace_dir` / `onnx` point inside `dir`; the dataset directory
 /// `<workspace_dir>/datasets/edtech` is absent here, so the no-data gate
-/// (design D2) skips the ontology load.
+/// (design D2) skips the ontology load. The model dimension comes from the
+/// registry entry in `write_onnx`.
 fn write_config(dir: &TempDir, mode: &str) -> PathBuf {
     let dir = dir.as_ref();
     let yaml = format!(
@@ -78,17 +79,15 @@ embeddings:
   mode: {mode}
   local:
     model_name: bge-m3-int8
-    vector_dim: 1024
   api:
     base_url: http://127.0.0.1:9999/v1
     model_name: test-model
-    vector_dim: 1024
 paths:
   workspace_dir: {workspace_dir}
   onnx_config: {onnx}
 dataset:
   name: edtech
- "#,
+  "#,
         workspace_dir = dir.join("workspace").display(),
         onnx = dir.join("onnx.yaml").display(),
     );
@@ -123,8 +122,9 @@ models:
     std::fs::write(dir.as_ref().join("onnx.yaml"), yaml).expect("write onnx.yaml");
 }
 
-/// An in-code [`OnnxConfig`] with the bge-m3-int8 registry entry.
-fn test_onnx() -> OnnxConfig {
+/// An in-code [`OnnxConfig`] with the bge-m3-int8 registry entry
+/// (`vector_dim` = `dim`).
+fn test_onnx(dim: i32) -> OnnxConfig {
     OnnxConfig {
         runtime: OnnxRuntimeConfig {
             version: "1.28.0".to_string(),
@@ -145,7 +145,7 @@ fn test_onnx() -> OnnxConfig {
                 display_name: String::new(),
                 description: String::new(),
                 version: String::new(),
-                vector_dim: 1024,
+                vector_dim: dim,
                 files: vec![ModelFile {
                     name: "model.onnx".to_string(),
                     url: "http://127.0.0.1:1/model.onnx".to_string(),
@@ -165,9 +165,6 @@ fn local_config(workspace_dir: &Path) -> Config {
             mode: EmbeddingsMode::Local,
             local: LocalEmbedding {
                 model_name: "bge-m3-int8".to_string(),
-                model_path: String::new(),
-                tokenizer_path: String::new(),
-                vector_dim: 1024,
             },
             api: Default::default(),
             auto_rebuild_vectors: false,
@@ -222,25 +219,11 @@ fn open_cache_invalid_path_returns_none() {
 // --- ensure_model ------------------------------------------------------
 
 #[test]
-fn ensure_model_skips_with_explicit_model_path() {
-    let dir = TempDir::new("ensure-skip");
-    let mut config = local_config(dir.as_ref());
-    config.embeddings.local.model_path = dir
-        .as_ref()
-        .join("model.onnx")
-        .to_string_lossy()
-        .into_owned();
-    ensure_model(&config, &test_onnx()).expect("explicit path is a no-op");
-    // No download was attempted: the models directory was never created.
-    assert!(!dir.as_ref().join("models").exists());
-}
-
-#[test]
 fn ensure_model_noop_in_api_mode() {
     let dir = TempDir::new("ensure-api");
     let mut config = local_config(dir.as_ref());
     config.embeddings.mode = EmbeddingsMode::Api;
-    ensure_model(&config, &test_onnx()).expect("api mode is a no-op");
+    ensure_model(&config, &test_onnx(1024)).expect("api mode is a no-op");
     assert!(!dir.as_ref().join("models").exists());
 }
 
@@ -249,7 +232,7 @@ fn ensure_model_unknown_model_is_an_error() {
     let dir = TempDir::new("ensure-unknown");
     let mut config = local_config(dir.as_ref());
     config.embeddings.local.model_name = "no-such-model".to_string();
-    let err = ensure_model(&config, &test_onnx()).expect_err("unknown model must fail");
+    let err = ensure_model(&config, &test_onnx(1024)).expect_err("unknown model must fail");
     match err {
         CliError::Embedding(EmbeddingError::Model(msg)) => {
             assert!(
@@ -268,9 +251,64 @@ fn ensure_model_download_failure_is_an_error() {
     let dir = TempDir::new("ensure-download");
     let config = local_config(dir.as_ref());
     assert!(
-        ensure_model(&config, &test_onnx()).is_err(),
+        ensure_model(&config, &test_onnx(1024)).is_err(),
         "unroutable model URL must fail"
     );
+}
+
+/// An in-code [`OnnxConfig`] whose `models.default` and sole entry are
+/// `name` (unroutable URL — a test that reaches it has a bug).
+fn onnx_with_default(name: &str, dim: i32) -> OnnxConfig {
+    OnnxConfig {
+        runtime: OnnxRuntimeConfig {
+            version: "1.28.0".to_string(),
+            platforms: vec![OnnxPlatformConfig {
+                key: "linux-amd64".to_string(),
+                os: "linux".to_string(),
+                arch: "amd64".to_string(),
+                archive_url: "http://127.0.0.1:1/onnxruntime.tgz".to_string(),
+                archive_format: Default::default(),
+                library_name: "libonnxruntime.so.1.28.0".to_string(),
+                library_path: "onnxruntime-pkg/lib/libonnxruntime.so.1.28.0".to_string(),
+            }],
+        },
+        models: OnnxModelsConfig {
+            default: name.to_string(),
+            entries: vec![ModelInfo {
+                name: name.to_string(),
+                display_name: String::new(),
+                description: String::new(),
+                version: String::new(),
+                vector_dim: dim,
+                files: vec![ModelFile {
+                    name: "model.onnx".to_string(),
+                    url: "http://127.0.0.1:1/model.onnx".to_string(),
+                    size_bytes: 0,
+                    checksum: None,
+                }],
+                source: String::new(),
+                repo: String::new(),
+            }],
+        },
+    }
+}
+
+#[test]
+fn ensure_model_empty_name_resolves_registry_default() {
+    // An empty config name resolves against the registry `models.default`
+    // (no hardcoded fallback). The fixture's default differs from the
+    // legacy hardcoded "bge-m3-int8": a `Download` error proves the
+    // registry entry was selected (a `Model` error would mean a name that
+    // is not in the registry was tried).
+    let dir = TempDir::new("ensure-empty-name");
+    let mut config = local_config(dir.as_ref());
+    config.embeddings.local.model_name = "".to_string();
+    let onnx = onnx_with_default("registry-default", 1024);
+    let err = ensure_model(&config, &onnx).expect_err("unroutable URL must fail");
+    match err {
+        CliError::Embedding(EmbeddingError::Download(_)) => {}
+        other => panic!("expected the registry default's download to fail, got: {other:?}"),
+    }
 }
 
 // --- discover_domains --------------------------------------------------
@@ -506,11 +544,11 @@ impl EmbeddingProvider for MockEmbed {
     }
 }
 
-/// A local-mode config with a 4-dim embedding (matching [`MockEmbed`]),
-/// NER disabled, chunker parameters normalized.
+/// A local-mode config for the 4-dim mock provider (the registry fixture
+/// carries the dimension, matching [`MockEmbed`]), NER disabled, chunker
+/// parameters normalized.
 fn sync_config(workspace_dir: &Path) -> Config {
     let mut config = local_config(workspace_dir);
-    config.embeddings.local.vector_dim = 4;
     config.ingestion.ner.disabled = true;
     config.apply_defaults();
     config
@@ -556,7 +594,7 @@ fn test_bootstrap(config: Config, global: Option<GlobalConfig>, db: Db) -> Boots
         db,
         cache: None,
         embed: Arc::new(MockEmbed { dim: 4 }),
-        onnx: test_onnx(),
+        onnx: test_onnx(4),
         registry: None,
         prompts: None,
         vectors: None,
@@ -648,7 +686,11 @@ fn vectors_index_config_maps_the_usearch_section() {
         ..Default::default()
     });
 
-    let index_config = vectors_index_config(&config).expect("mapping succeeds");
+    let index_config = vectors_index_config(&config, &test_onnx(1024)).expect("mapping succeeds");
+    assert_eq!(
+        index_config.dim, 1024,
+        "the dim is the registry entry's vector_dim"
+    );
     let usearch = index_config
         .usearch
         .expect("the usearch section must be mapped");
@@ -679,7 +721,7 @@ fn open_vectors_engine_wires_the_wal_db_end_to_end() {
     // Restart: a fresh engine on the same db + dir (the open cascade)
     // sees the saved row.
     drop(engine);
-    let index_config = vectors_index_config(&boot.config).expect("index config");
+    let index_config = vectors_index_config(&boot.config, &boot.onnx).expect("index config");
     let path = boot
         .config
         .dataset
@@ -722,13 +764,11 @@ fn bootstrap_api_mode_is_unsupported() {
 
 #[test]
 fn bootstrap_invalid_config_is_an_error() {
-    // local mode without vector_dim fails `Config::validate`.
+    // An unknown embeddings mode fails `Config::validate`.
     let dir = TempDir::new("boot-invalid");
     let yaml = r#"
 embeddings:
-  mode: local
-  local:
-    model_name: bge-m3-int8
+  mode: bogus
 "#;
     let cfg_path = dir.as_ref().join("config.yaml");
     std::fs::write(&cfg_path, yaml).expect("write config");
@@ -808,7 +848,7 @@ fn has_active_dataset_requires_name_and_directory() {
 #[test]
 #[ignore = "requires a real onnxruntime library + bge-m3 model (see test docs)"]
 fn bootstrap_full_with_pre_installed_model() {
-    use embedding::LibraryCache;
+    use embedding::{InstalledModel, LibraryCache, ModelCache};
 
     let lib = std::env::var("CLI_TEST_ONNXRUNTIME_LIB")
         .expect("set CLI_TEST_ONNXRUNTIME_LIB to a real onnxruntime .so/.dylib");
@@ -845,12 +885,21 @@ fn bootstrap_full_with_pre_installed_model() {
     )
     .expect("write manifest");
 
-    // Pre-install the model + tokenizer next to each other (explicit
-    // model_path flow: the tokenizer is derived from the model's dir).
+    // Pre-install the model + tokenizer (registry flow: the manifest marks
+    // the model installed, so no download; the tokenizer is located next to
+    // the model files).
     let model_dir = workspace_dir.join("models").join("bge-m3-int8");
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::copy(&model, model_dir.join("model.onnx")).expect("copy model");
     std::fs::copy(&tokenizer, model_dir.join("tokenizer.json")).expect("copy tokenizer");
+    ModelCache::new(workspace_dir.join("models"))
+        .mark_installed(InstalledModel {
+            name: "bge-m3-int8".to_string(),
+            version: "1.0.0".to_string(),
+            vector_dim: dim as i32,
+            installed_at: "2026-08-21T00:00:00Z".to_string(),
+        })
+        .expect("mark model installed");
 
     // onnx.yaml registry matching the pre-installed library name.
     let onnx_yaml = format!(
@@ -878,17 +927,15 @@ models:
     );
     std::fs::write(dir.as_ref().join("onnx.yaml"), onnx_yaml).expect("write onnx.yaml");
 
-    // Config with the explicit model path (skips the auto-download). The
-    // database path is derived inside the temp workspace dir (dataset
-    // edtech), so this (ignored) e2e run stays inside the temp dir.
+    // Config for the registry flow. The database path is derived inside the
+    // temp workspace dir (dataset edtech), so this (ignored) e2e run stays
+    // inside the temp dir.
     let yaml = format!(
         r#"
 embeddings:
   mode: local
   local:
     model_name: bge-m3-int8
-    model_path: {model_path}
-    vector_dim: {dim}
 paths:
   workspace_dir: {workspace_dir}
   onnx_config: {onnx}
@@ -896,7 +943,6 @@ dataset:
   name: edtech
 "#,
         workspace_dir = workspace_dir.display(),
-        model_path = model_dir.join("model.onnx").display(),
         onnx = dir.as_ref().join("onnx.yaml").display(),
     );
     let cfg_path = dir.as_ref().join("config.yaml");

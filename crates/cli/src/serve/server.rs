@@ -848,7 +848,7 @@ fn now_unix_seconds() -> i64 {
 /// Drops the stored ANN table and recreates the engine with the configured
 /// dimension.
 pub(crate) fn recreate_vectors_engine(boot: &mut Bootstrap) -> Result<(), CliError> {
-    let index_config = bootstrap::vectors_index_config(&boot.config)?;
+    let index_config = bootstrap::vectors_index_config(&boot.config, &boot.onnx)?;
     // The ANN index is per-dataset and per-engine:
     // <workspace_dir>/datasets/<name>/state/vectors/<engine> (task 1.5).
     // Only the active engine's subdirectory is dropped.

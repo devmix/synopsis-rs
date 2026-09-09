@@ -195,6 +195,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use config::onnx::{ModelInfo, OnnxModelsConfig};
     use config::{Config, OnnxConfig};
     use db::test_util::in_memory_db;
     use embedding::EmbeddingProvider;
@@ -234,13 +235,29 @@ mod tests {
         }
     }
 
+    /// The `onnx.yaml` registry fixture for the 4-dim fake provider
+    /// (registry-as-model-source-of-truth D4): `models.default` selects the
+    /// entry, whose `vector_dim` is the index dimension.
+    fn test_onnx() -> OnnxConfig {
+        OnnxConfig {
+            runtime: Default::default(),
+            models: OnnxModelsConfig {
+                default: "bge-m3-int8".to_string(),
+                entries: vec![ModelInfo {
+                    name: "bge-m3-int8".to_string(),
+                    vector_dim: 4,
+                    ..Default::default()
+                }],
+            },
+        }
+    }
+
     /// A 4-dim Bootstrap with a temp-file DB (matching [`FakeEmbed`]). The
     /// dataset is active (design D2): named `edtech` with the directory
     /// present.
     fn test_bootstrap(workspace_dir: &Path) -> Bootstrap {
         let mut config = Config::default();
         config.embeddings.local.model_name = "bge-m3-int8".to_string();
-        config.embeddings.local.vector_dim = 4;
         config.paths.workspace_dir = workspace_dir.to_string_lossy().into_owned();
         config.dataset.name = "edtech".to_string();
         config.apply_defaults();
@@ -257,7 +274,7 @@ mod tests {
             db,
             cache: None,
             embed: Arc::new(FakeEmbed::new(4)),
-            onnx: OnnxConfig::default(),
+            onnx: test_onnx(),
             registry: None,
             prompts: None,
             vectors: None,

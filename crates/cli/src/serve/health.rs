@@ -4,10 +4,13 @@
 //! never fatal. The database ping is the single hard probe (an error is
 //! returned); the document count and the embedding probe are logged inline.
 //!
-//! Design decision: the probe verifies the provider instance already built
-//! by the bootstrap (name + dimension against the config) instead of
-//! building a fresh one — a second ONNX session for a probe would be pure
-//! waste.
+//! Design decision: the probe logs the provider instance already built by
+//! the bootstrap (name + live dimension) instead of building a fresh one —
+//! a second ONNX session for a probe would be pure waste. The dimension is
+//! not compared against the config: the provider and the ANN index both
+//! derive it from the same `onnx.yaml` registry entry
+//! (registry-as-model-source-of-truth D5), so there is nothing left to
+//! check here.
 
 use config::Config;
 use db::{ConnectionOrTx, Db, DocumentDao, DocumentFilter};
@@ -78,27 +81,19 @@ pub fn run_health_check(
         }
     }
 
-    // 3. Embedding provider probe: verify the live instance built by the
-    //    bootstrap (a bootstrap failure is already fatal upstream).
-    let dim = embed.vector_dim();
-    if config.vector_dim() as usize != dim {
-        tracing::warn!(
-            component = "embedding_provider",
-            status = "warn",
-            provider = embed.name(),
-            expected_dim = config.vector_dim(),
-            actual_dim = dim,
-            "startup health check: provider dimension differs from the config"
-        );
-    } else {
-        tracing::info!(
-            component = "embedding_provider",
-            status = "ok",
-            provider = embed.name(),
-            vector_dim = dim,
-            "startup health check"
-        );
-    }
+    // 3. Embedding provider probe: log the live instance built by the
+    //    bootstrap (a bootstrap failure is already fatal upstream). No
+    //    dimension comparison: the provider and the ANN index both derive
+    //    their dimension from the same onnx.yaml registry entry
+    //    (registry-as-model-source-of-truth D5).
+    tracing::info!(
+        component = "embedding_provider",
+        status = "ok",
+        provider = embed.name(),
+        model = %config.embeddings.local.model_name,
+        vector_dim = embed.vector_dim(),
+        "startup health check"
+    );
 
     Ok(())
 }
@@ -135,15 +130,12 @@ mod tests {
         }
     }
 
-    fn local_config(dim: i32) -> Config {
+    fn local_config() -> Config {
         Config {
             embeddings: config::preset::EmbeddingsConfig {
                 mode: EmbeddingsMode::Local,
                 local: LocalEmbedding {
                     model_name: "test".to_string(),
-                    model_path: String::new(),
-                    tokenizer_path: String::new(),
-                    vector_dim: dim,
                 },
                 api: Default::default(),
                 auto_rebuild_vectors: false,
@@ -159,7 +151,7 @@ mod tests {
             dim: 1024,
             name: "const",
         });
-        let config = local_config(1024);
+        let config = local_config();
 
         run_health_check(&db, provider.as_ref(), &config)
             .expect("health check passes on a fresh migrated db");
@@ -182,21 +174,21 @@ mod tests {
             dim: 4,
             name: "const",
         });
-        let config = local_config(4);
+        let config = local_config();
         run_health_check(&db, provider.as_ref(), &config)
             .expect("health check passes with documents present");
     }
 
     #[test]
-    fn health_check_warns_on_dimension_drift_but_succeeds() {
+    fn health_check_succeeds_when_provider_dim_differs_from_config() {
         let db = in_memory_db();
         let provider = Arc::new(ConstProvider {
             dim: 384,
             name: "const",
         });
-        let config = local_config(1024);
+        let config = local_config();
 
         run_health_check(&db, provider.as_ref(), &config)
-            .expect("dimension drift is a warning, not a failure");
+            .expect("the embedding probe is log-only: a differing dimension is not a failure");
     }
 }

@@ -16,7 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
-use config::{Config, ConfigError, load};
+use config::onnx::ModelInfo;
+use config::{Config, ConfigError, OnnxConfig, load};
 // Pull in the enum variants and nested struct names used by the assertions below.
 use config::preset::*;
 
@@ -60,11 +61,8 @@ fn fixture_parses_all_sections_with_expected_values() {
     assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Local);
     assert!(!cfg.embeddings.auto_rebuild_vectors);
     assert_eq!(cfg.embeddings.local.model_name, "bge-small-en-v1.5");
-    assert!(cfg.embeddings.local.model_path.is_empty());
-    assert_eq!(cfg.embeddings.local.vector_dim, 384);
     assert_eq!(cfg.embeddings.api.base_url, "http://localhost:1234/v1");
     assert_eq!(cfg.embeddings.api.model_name, "text-embedding-3-large");
-    assert_eq!(cfg.embeddings.api.vector_dim, 3072);
     assert_eq!(cfg.embeddings.api.max_retries, 3);
     assert_eq!(cfg.embeddings.api.timeout_ms, 30_000);
 
@@ -219,7 +217,7 @@ fn apply_defaults_does_not_change_explicit_fixture_values() {
     assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Local);
     assert_eq!(
         cfg.embeddings.local.model_name,
-        "bge-small-en-v1.5" // not replaced by bge-m3-int8
+        "bge-small-en-v1.5" // explicit fixture value survives defaulting
     );
     let md = &cfg.ingestion.chunking.markdown;
     assert_eq!(md.strategy, ChunkingStrategy::Hybrid);
@@ -337,28 +335,40 @@ fn validate_rejects_unknown_embeddings_mode() {
 }
 
 #[test]
-fn validate_local_requires_model_and_dim() {
-    // model_name/model_path empty and vector_dim == 0 -> error (criterion e).
-    let cfg = Config::default();
-    assert!(cfg.validate().is_err());
-}
-
-#[test]
-fn validate_local_ok_with_model_name_and_dim() {
-    let mut cfg = Config::default();
-    cfg.embeddings.mode = EmbeddingsMode::Local;
-    cfg.embeddings.local.model_name = "bge-m3-int8".into();
-    cfg.embeddings.local.vector_dim = 1024;
+fn validate_local_mode_has_no_field_rules() {
+    // Local mode has no per-field validation rules: an empty model_name
+    // selects the registry default (models.default from onnx.yaml, resolved
+    // at resolution time — not filled by apply_defaults), and the dimension
+    // comes from the registry entry (resolved_vector_dim).
+    let cfg = Config::default(); // mode == Local, empty model_name
     assert!(cfg.validate().is_ok());
 }
 
 #[test]
-fn validate_local_rejects_zero_vector_dim() {
-    let mut cfg = Config::default();
-    cfg.embeddings.mode = EmbeddingsMode::Local;
-    cfg.embeddings.local.model_name = "bge-m3-int8".into();
-    cfg.embeddings.local.vector_dim = 0;
-    assert!(cfg.validate().is_err());
+fn removed_embedding_keys_are_ignored_on_parse() {
+    // A YAML preset that still sets the removed keys (vector_dim,
+    // model_path, tokenizer_path) under embeddings.local parses
+    // successfully — unknown keys are ignored (the "Removed keys ignored"
+    // scenario from the config-format spec delta).
+    let cfg = parse(
+        r#"
+embeddings:
+  mode: local
+  local:
+    model_name: bge-m3-int8
+    model_path: /old/path/model.onnx
+    tokenizer_path: /old/path/tokenizer.json
+    vector_dim: 1024
+  api:
+    base_url: http://localhost:11434/v1
+    model_name: text-embedding-3-large
+    vector_dim: 3072
+"#,
+    );
+    assert_eq!(cfg.embeddings.mode, EmbeddingsMode::Local);
+    assert_eq!(cfg.embeddings.local.model_name, "bge-m3-int8");
+    assert_eq!(cfg.embeddings.api.base_url, "http://localhost:11434/v1");
+    assert!(cfg.validate().is_ok());
 }
 
 #[test]
@@ -375,7 +385,6 @@ fn validate_api_ok_with_all_fields() {
     cfg.embeddings.mode = EmbeddingsMode::Api;
     cfg.embeddings.api.base_url = "http://localhost:11434/v1".into();
     cfg.embeddings.api.model_name = "text-embedding-3-large".into();
-    cfg.embeddings.api.vector_dim = 3072;
     assert!(cfg.validate().is_ok());
 }
 
@@ -384,7 +393,6 @@ fn validate_api_rejects_missing_model_name() {
     let mut cfg = Config::default();
     cfg.embeddings.mode = EmbeddingsMode::Api;
     cfg.embeddings.api.base_url = "http://localhost:11434/v1".into();
-    cfg.embeddings.api.vector_dim = 3072;
     assert!(cfg.validate().is_err());
 }
 
@@ -534,9 +542,12 @@ fn empty_config_gets_all_defaults() {
     assert_eq!(cfg.linker.llm.timeout_ms, 0); // not defaulted
     assert_eq!(cfg.linker.llm.max_retries, 0);
 
-    // Resolver + local embedding fallback model (applies in both modes).
+    // Resolver threshold.
     assert_eq!(cfg.ingestion.resolver.similarity_threshold, 0.8);
-    assert_eq!(cfg.embeddings.local.model_name, "bge-m3-int8");
+    // An empty model_name stays empty after apply_defaults: the registry
+    // models.default is applied at resolution time, not at defaulting time
+    // (registry-as-model-source-of-truth).
+    assert_eq!(cfg.embeddings.local.model_name, "");
 
     // Server.
     let sv = &cfg.server;
@@ -632,7 +643,7 @@ server:
     assert_eq!(cfg.paths.workspace_dir, "/var/synopsis");
     assert_eq!(cfg.dataset.name, "custom"); // explicit dataset name preserved
 
-    assert_eq!(cfg.embeddings.local.model_name, "custom-model"); // not bge-m3-int8
+    assert_eq!(cfg.embeddings.local.model_name, "custom-model"); // explicit value preserved
 
     assert_eq!(cfg.server.port, 9090);
 }
@@ -832,20 +843,153 @@ fn dataset_helpers_resolve_under_workspace_dir() {
     );
 }
 
+// (The old `vector_dim()` accessor was removed in task 1.5; the registry
+// resolver `resolved_vector_dim` is tested below.)
+
+// ── resolved_vector_dim (registry-as-model-source-of-truth task 1.1) ─────
+
+/// Builds an in-memory `onnx.yaml` registry fixture: the given
+/// `(name, vector_dim)` entries plus the given `models.default`.
+fn onnx_registry(default: &str, entries: &[(&str, i32)]) -> OnnxConfig {
+    let mut onnx = OnnxConfig::default();
+    onnx.models.default = default.to_string();
+    onnx.models.entries = entries
+        .iter()
+        .map(|(name, dim)| ModelInfo {
+            name: (*name).to_string(),
+            vector_dim: *dim,
+            ..Default::default()
+        })
+        .collect();
+    onnx
+}
+
 #[test]
-fn vector_dim_follows_embeddings_mode() {
-    // Criterion (e).
+fn resolved_vector_dim_uses_registry_entry_for_named_model() {
+    // The named model's registry entry is the dimension source.
     let mut cfg = Config::default(); // mode == Local by the enum default
-    cfg.embeddings.local.vector_dim = 1024;
-    assert_eq!(cfg.vector_dim(), 1024);
+    cfg.embeddings.local.model_name = "bge-small-en-v1.5".into();
+    let onnx = onnx_registry(
+        "bge-m3-int8",
+        &[("bge-m3-int8", 1024), ("bge-small-en-v1.5", 384)],
+    );
+    assert_eq!(
+        cfg.resolved_vector_dim(&onnx)
+            .expect("registry entry exists"),
+        384
+    );
+}
 
+#[test]
+fn resolved_vector_dim_empty_name_uses_registry_default() {
+    // An empty model_name selects the registry's models.default entry.
+    let cfg = Config::default(); // local mode, empty model_name
+    let onnx = onnx_registry("bge-m3-int8", &[("bge-m3-int8", 1024), ("other", 384)]);
+    assert_eq!(
+        cfg.resolved_vector_dim(&onnx)
+            .expect("default entry exists"),
+        1024
+    );
+}
+
+#[test]
+fn resolved_vector_dim_empty_name_after_apply_defaults_uses_registry_default() {
+    // End to end (defaulting + resolver, no ONNX runtime): an empty
+    // model_name survives apply_defaults and resolves to the registry
+    // models.default entry's vector_dim — the shipped default (bge-small-
+    // en-v1.5) comes from the registry, not a hardcoded fallback
+    // (registry-as-model-source-of-truth).
+    let mut cfg = Config::default(); // local mode, empty model_name
+    cfg.apply_defaults();
+    assert!(
+        cfg.embeddings.local.model_name.is_empty(),
+        "apply_defaults must not fill the model name"
+    );
+    let onnx = onnx_registry(
+        "bge-small-en-v1.5",
+        &[("bge-m3-int8", 1024), ("bge-small-en-v1.5", 384)],
+    );
+    assert_eq!(
+        cfg.resolved_vector_dim(&onnx)
+            .expect("default entry exists"),
+        384
+    );
+}
+
+#[test]
+fn resolved_vector_dim_unknown_model_is_validation_error() {
+    let mut cfg = Config::default();
+    cfg.embeddings.local.model_name = "not-in-registry".into();
+    let onnx = onnx_registry("bge-m3-int8", &[("bge-m3-int8", 1024)]);
+    match cfg.resolved_vector_dim(&onnx) {
+        Err(ConfigError::Validation { message }) => {
+            assert!(
+                message.contains("not-in-registry"),
+                "the error must name the model: {message}"
+            );
+        }
+        other => panic!("expected a Validation error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn resolved_vector_dim_non_positive_entry_dim_is_validation_error() {
+    for dim in [0, -1] {
+        let mut cfg = Config::default();
+        cfg.embeddings.local.model_name = "bad-dim".into();
+        let onnx = onnx_registry("bad-dim", &[("bad-dim", dim)]);
+        match cfg.resolved_vector_dim(&onnx) {
+            Err(ConfigError::Validation { message }) => {
+                assert!(
+                    message.contains("bad-dim"),
+                    "the error must name the model: {message}"
+                );
+            }
+            other => {
+                panic!("expected a Validation error for vector_dim {dim}, got: {other:?}")
+            }
+        }
+    }
+}
+
+#[test]
+fn resolved_vector_dim_empty_name_without_registry_default_is_validation_error() {
+    // Empty model_name + empty models.default: nothing to resolve.
+    let cfg = Config::default(); // local mode, empty model_name
+    let onnx = onnx_registry("", &[]);
+    match cfg.resolved_vector_dim(&onnx) {
+        Err(ConfigError::Validation { message }) => {
+            assert!(
+                message.contains("model_name"),
+                "the error must name the missing field: {message}"
+            );
+        }
+        other => panic!("expected a Validation error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn resolved_vector_dim_api_mode_returns_zero() {
+    // Api mode is unsupported by the build; the dimension is not resolvable
+    // without the removed config field, so the resolver returns Ok(0).
+    let mut cfg = Config::default();
     cfg.embeddings.mode = EmbeddingsMode::Api;
-    cfg.embeddings.api.vector_dim = 3072;
-    assert_eq!(cfg.vector_dim(), 3072);
+    let onnx = onnx_registry("", &[]);
+    assert_eq!(
+        cfg.resolved_vector_dim(&onnx).expect("api mode -> Ok(0)"),
+        0
+    );
+}
 
-    // Unrecognized mode -> 0 (default branch).
-    let bogus = parse("embeddings:\n  mode: bogus\n");
-    assert_eq!(bogus.vector_dim(), 0);
+#[test]
+fn resolved_vector_dim_unrecognized_mode_is_zero() {
+    // As the legacy vector_dim() accessor does.
+    let cfg = parse("embeddings:\n  mode: bogus\n");
+    assert_eq!(
+        cfg.resolved_vector_dim(&OnnxConfig::default())
+            .expect("unknown mode -> Ok(0)"),
+        0
+    );
 }
 
 #[test]

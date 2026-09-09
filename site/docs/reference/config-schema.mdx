@@ -55,10 +55,7 @@ Embedding provider. Exactly one of the `local`/`api` blocks is used, selected by
 
 | Key | Type | Default | Behavior |
 |---|---|---|---|
-| `embeddings.local.model_name` | string | `bge-m3-int8` (when both `model_name` and `model_path` are empty) | Model name from the registry in `onnx.yaml`. Downloaded automatically on first use into `workspace/models/`. Shipped config: `bge-small-en-v1.5`. |
-| `embeddings.local.model_path` | string | `""` | Explicit path to an ONNX model file. Skips registry resolution and auto-download. |
-| `embeddings.local.tokenizer_path` | string | `""` | Optional explicit tokenizer path. |
-| `embeddings.local.vector_dim` | integer | — (**required**, must be > 0) | Embedding dimension. Must match the model in use; a mismatch fails at startup (or triggers auto-rebuild, see above). Shipped config: `384`. |
+| `embeddings.local.model_name` | string | `""` (empty → the registry's `models.default`) | Model name from the registry in `onnx.yaml`. Downloaded automatically on first use into `workspace/models/`. An empty name selects `models.default` from the registry; the model's dimension and file locations come from the registry entry — there is no path override. Shipped config: `bge-small-en-v1.5`. |
 
 ### `embeddings.api`
 
@@ -67,7 +64,6 @@ Embedding provider. Exactly one of the `local`/`api` blocks is used, selected by
 | `embeddings.api.base_url` | string | — (**required**) | OpenAI-compatible endpoint, e.g. `http://localhost:1234/v1`. |
 | `embeddings.api.api_key` | string | `""` | Bearer token; empty if the endpoint does not require one. |
 | `embeddings.api.model_name` | string | — (**required**) | Embedding model name at the endpoint. |
-| `embeddings.api.vector_dim` | integer | — (**required**, must be > 0) | Dimension of the API's vectors. Shipped config: `3072`. |
 | `embeddings.api.max_retries` | integer | `3` | Retries for transient API errors. |
 | `embeddings.api.timeout_ms` | integer | `30000` | Per-request HTTP timeout in milliseconds. |
 
@@ -323,8 +319,8 @@ Every group of repeating elements is wrapped in a plural wrapper (`<entities>`, 
 The configuration is validated after defaults are applied; violations are fatal at startup:
 
 - `embeddings.mode` must be `local` or `api`.
-- **Local mode:** `embeddings.local.vector_dim` must be positive; `model_name` falls back to `bge-m3-int8` when both `model_name` and `model_path` are empty.
-- **API mode:** `embeddings.api.base_url` and `embeddings.api.model_name` must be set, and `embeddings.api.vector_dim` must be positive.
+- **Local mode:** no per-field rules — an empty `model_name` selects the registry's `models.default`, and the dimension is the selected entry's `vector_dim` (a non-positive registry `vector_dim` fails at startup naming the model).
+- **API mode:** `embeddings.api.base_url` and `embeddings.api.model_name` must be set.
 - `vectors.engine` must be absent or `"usearch"` (`"lance"` is rejected with an explicit removal error; any other value fails the parse).
 - `vectors.usearch`: `max_segment_vectors > 0`, `compaction_stale_threshold` in 1–100, `search_threads > 0`.
 - `vectors`: `dim > 0`, `m > 0`, `ef_construction >= m`, `ef_search > 0`, `quantization` one of `u8`/`i8`/`f16`/`bf16`/`f32`.

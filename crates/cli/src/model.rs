@@ -25,7 +25,7 @@
 //!   yet.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -345,8 +345,7 @@ fn benchmark(
                 model.name, model.name
             )));
         }
-        let model_path = manager.model_dir(&model.name).join("model.onnx");
-        let stats = run_production_benchmark(model, &model_path, data_dir, onnx)?;
+        let stats = run_production_benchmark(model, data_dir, onnx)?;
         writeln!(
             out,
             "{}",
@@ -460,9 +459,10 @@ struct BenchStats {
 }
 
 /// Measures the production embedding path of one installed model: the real
-/// `new_onnx_provider` (explicit model path, no auto-download) with warmup +
-/// measured runs of unique sample texts (unique suffixes bypass the
-/// embedding cache).
+/// `new_onnx_provider` (registry flow, installed models only — the caller's
+/// `is_installed` gate runs first, so `ensure_model` performs no download)
+/// with warmup + measured runs of unique sample texts (unique suffixes
+/// bypass the embedding cache).
 ///
 /// # Errors
 ///
@@ -470,15 +470,13 @@ struct BenchStats {
 /// tokenizer, or an inference run fails.
 fn run_production_benchmark(
     model: &ModelInfo,
-    model_path: &Path,
     data_dir: &str,
     onnx: &OnnxConfig,
 ) -> Result<BenchStats, CliError> {
+    // Registry flow by name (registry-as-model-source-of-truth D3): the
+    // dimension and file locations come from the registry entry.
     let local = LocalEmbedding {
         model_name: model.name.clone(),
-        model_path: model_path.to_string_lossy().into_owned(),
-        tokenizer_path: String::new(),
-        vector_dim: model.vector_dim,
     };
     let provider = new_onnx_provider(&local, data_dir, onnx)?;
     let mut samples = Vec::with_capacity(BENCH_WARMUP + BENCH_RUNS);
