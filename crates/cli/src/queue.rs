@@ -24,6 +24,7 @@ use config::{Config, ConfigError, load};
 use db::{ConnectionOrTx, Db, QueueTask, QueueTaskDao};
 
 use crate::cli::QueueAction;
+use crate::console::{Color, Console};
 use crate::error::CliError;
 use crate::serve::bootstrap::open_db;
 
@@ -73,14 +74,17 @@ pub fn queue_flow(req: &QueueRequest, out: &mut dyn Write) -> Result<(), CliErro
     // ingestion config).
     let config = load_config(&req.cfg_path, req.dataset.as_deref())?;
     let db = open_db(&config.dataset.db_path(&config.paths.workspace_dir))?;
+    // One console per flow: TTY/NO_COLOR/width gating lives in the
+    // constructor (design D2/D3), the handlers only render strings.
+    let console = Console::stdout();
 
     match &req.action {
         QueueAction::Status { source, status } => {
             let tasks = list_tasks(&db, status.as_deref(), source.as_deref())?;
-            print_status(out, &tasks)
+            print_status(out, &tasks, &console)
         }
         QueueAction::ResetRetries { source, identity } => {
-            reset_retries(&db, source.as_deref(), identity.as_deref(), out)
+            reset_retries(&db, source.as_deref(), identity.as_deref(), out, &console)
         }
     }
 }
@@ -123,37 +127,67 @@ fn list_tasks(
 /// Renders the `queue status` table (columns per the cli-surface spec:
 /// type, identity, status, attempts, last_error, next_attempt_at).
 ///
-/// `last_error` is the free-form column (never truncated; `-` when absent);
-/// `next_attempt_at` is Unix seconds.
+/// A box-drawing table (console layer, design D5): the numeric ATTEMPTS and
+/// NEXT_ATTEMPT_AT columns are right-aligned, the STATUS cell is colored
+/// (`pending` yellow, `processing` blue, `error` red, `done` green), and the
+/// free-form IDENTITY / LAST_ERROR columns wrap to additional lines instead
+/// of overflowing (whole-table width bound). `last_error` is never truncated
+/// (`-` when absent); `next_attempt_at` is Unix seconds. The `N tasks`
+/// footer line is kept.
 ///
 /// # Errors
 ///
 /// [`CliError::Io`] when `out` cannot be written.
-fn print_status(out: &mut dyn Write, tasks: &[QueueTask]) -> Result<(), CliError> {
-    writeln!(out, "Event Queue:")?;
-    writeln!(out, "{}", "-".repeat(90))?;
+fn print_status(
+    out: &mut dyn Write,
+    tasks: &[QueueTask],
+    console: &Console,
+) -> Result<(), CliError> {
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        rows.push(vec![
+            task.task_type.clone(),
+            task.identity.clone(),
+            status_cell(console, &task.status),
+            task.attempts.to_string(),
+            task.last_error.clone().unwrap_or_else(|| "-".to_string()),
+            task.next_attempt_at.to_string(),
+        ]);
+    }
+    writeln!(out, "{}", console.header("Event Queue:"))?;
     writeln!(
         out,
-        "{:<12} {:<40} {:<10} {:<8} {:<40} NEXT_ATTEMPT_AT",
-        "TYPE", "IDENTITY", "STATUS", "ATTEMPTS", "LAST_ERROR"
+        "{}",
+        console.table(
+            &[
+                "TYPE",
+                "IDENTITY",
+                "STATUS",
+                "ATTEMPTS",
+                "LAST_ERROR",
+                "NEXT_ATTEMPT_AT"
+            ],
+            &rows,
+            &[3, 5],
+        )
     )?;
-    writeln!(out, "{}", "-".repeat(90))?;
-    for task in tasks {
-        writeln!(
-            out,
-            "{:<12} {:<40} {:<10} {:<8} {:<40} {}",
-            task.task_type,
-            task.identity,
-            task.status,
-            task.attempts,
-            task.last_error.as_deref().unwrap_or("-"),
-            task.next_attempt_at,
-        )?;
-    }
-    writeln!(out, "{}", "-".repeat(90))?;
-    writeln!(out, "{} tasks", tasks.len())?;
+    writeln!(out, "{}", console.line(&format!("{} tasks", tasks.len())))?;
     writeln!(out)?;
     Ok(())
+}
+
+/// The STATUS cell of the queue table (design D5): `pending` yellow,
+/// `processing` blue, `error` red, `done` green; any other status value is
+/// rendered unstyled.
+fn status_cell(console: &Console, status: &str) -> String {
+    let color = match status {
+        "pending" => Color::Yellow,
+        "processing" => Color::Blue,
+        "error" => Color::Red,
+        "done" => Color::Green,
+        _ => return status.to_string(),
+    };
+    console.style(status, color)
 }
 
 /// The `queue reset-retries` action: re-queue `error` tasks (status ->
@@ -173,6 +207,7 @@ fn reset_retries(
     source: Option<&str>,
     identity: Option<&str>,
     out: &mut dyn Write,
+    console: &Console,
 ) -> Result<(), CliError> {
     let reset = db
         .with_conn(|conn| {
@@ -187,7 +222,10 @@ fn reset_retries(
     }
     writeln!(
         out,
-        "{reset} task(s) re-queued (error -> pending, attempts -> 0)"
+        "{}",
+        console.success(&format!(
+            "{reset} task(s) re-queued (error -> pending, attempts -> 0)"
+        ))
     )?;
     Ok(())
 }
@@ -326,13 +364,16 @@ mod tests {
         (String::from_utf8_lossy(&out).into_owned(), result)
     }
 
-    /// The whitespace-separated columns of the status row for `identity`.
+    /// The `│`-separated cell values of the status row for `identity`
+    /// (type, identity, status, attempts, last_error, next_attempt_at).
     fn row_fields<'a>(stdout: &'a str, identity: &str) -> Vec<&'a str> {
         stdout
             .lines()
             .find(|line| line.contains(identity))
             .unwrap_or_else(|| panic!("no table row for {identity}:\n{stdout}"))
-            .split_whitespace()
+            .split('│')
+            .map(str::trim)
+            .filter(|cell| !cell.is_empty())
             .collect()
     }
 
@@ -361,6 +402,16 @@ mod tests {
         );
         result.expect("status must succeed");
         assert!(stdout.starts_with("Event Queue:\n"), "{stdout:?}");
+        // Non-TTY rendering: no ANSI escapes, every line within 120 columns.
+        assert!(!stdout.contains('\x1b'), "{stdout:?}");
+        for line in stdout.lines() {
+            assert!(line.chars().count() <= 120, "line fits 120: {line:?}");
+        }
+        // Box-drawing table with the six column headers (set + order per the
+        // cli-surface spec).
+        assert!(stdout.contains('┌'), "box border: {stdout:?}");
+        assert!(stdout.contains('┬'), "box border: {stdout:?}");
+        assert!(stdout.contains('┐'), "box border: {stdout:?}");
         for column in [
             "TYPE",
             "IDENTITY",
@@ -379,7 +430,10 @@ mod tests {
             vec!["doc:index", "/docs/a.md", "error", "3"],
             "a.md row: {fields:?}"
         );
-        assert!(fields.contains(&"parse"), "a.md last_error: {fields:?}");
+        assert!(
+            fields.iter().any(|cell| cell.contains("parse")),
+            "a.md last_error: {fields:?}"
+        );
         let fields = row_fields(&stdout, "/docs/b.md");
         assert_eq!(
             fields.iter().take(4).copied().collect::<Vec<_>>(),
@@ -458,6 +512,44 @@ mod tests {
         result.expect("status must succeed");
         assert!(stdout.contains("Event Queue:"), "{stdout:?}");
         assert!(stdout.contains("0 tasks"), "{stdout:?}");
+    }
+
+    #[test]
+    fn status_long_last_error_wraps_within_width() {
+        let f = QueueFixture::new("status-long-error");
+        let long_error = "z".repeat(300);
+        seed_task(&f.db, "/docs/a.md", "/docs", "error", 3, Some(&long_error));
+
+        let (stdout, result) = run_flow(
+            &f,
+            QueueAction::Status {
+                source: None,
+                status: None,
+            },
+        );
+        result.expect("status must succeed");
+        assert!(!stdout.contains('\x1b'), "no ANSI: {stdout:?}");
+        // Every rendered line stays within the non-TTY max width (120 columns).
+        for line in stdout.lines() {
+            assert!(line.chars().count() <= 120, "line fits 120: {line:?}");
+        }
+        // The 300-char error is fully present (wrapped, not truncated): it is
+        // the only 'z' content in the table, so joining the wrapped cell
+        // fragments reproduces the original text.
+        let fragments: Vec<&str> = stdout
+            .lines()
+            .filter(|line| line.starts_with('│') && line.contains('z'))
+            .flat_map(|line| {
+                line.split('│')
+                    .map(str::trim)
+                    .filter(|cell| !cell.is_empty())
+            })
+            .collect();
+        assert_eq!(
+            fragments.concat(),
+            long_error,
+            "wrapped last_error must be intact:\n{stdout}"
+        );
     }
 
     // --- queue reset-retries -----------------------------------------------

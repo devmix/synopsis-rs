@@ -29,6 +29,7 @@ use db::{
 };
 
 use crate::cli::DbAction;
+use crate::console::Console;
 use crate::error::CliError;
 use crate::serve::bootstrap::open_db;
 
@@ -81,20 +82,30 @@ pub fn db_flow(
     let config = load_config(&req.cfg_path, req.dataset.as_deref())?;
     let db = open_db(&config.dataset.db_path(&config.paths.workspace_dir))?;
     let stats = collect_stats(&db)?;
-    print_stats(out, &stats)?;
+    // One console per flow: TTY/NO_COLOR/width gating lives in the
+    // constructor (design D2/D3), the handlers only render strings.
+    let console = Console::stdout();
+    print_stats(out, &stats, &console)?;
 
     match &req.action {
         DbAction::Stats => Ok(()),
         DbAction::Clear => {
             if !confirm_deletion(out, input)? {
-                writeln!(out, "aborted: dataset unchanged")?;
+                writeln!(out, "{}", console.line("aborted: dataset unchanged"))?;
                 return Ok(());
             }
             // Close the connection BEFORE removing the directory it lives in.
             drop(db);
             let state_path = config.dataset.state_path(&config.paths.workspace_dir);
             clear_dataset(&state_path)?;
-            writeln!(out, "cleared dataset state at {}", state_path.display())?;
+            writeln!(
+                out,
+                "{}",
+                console.line(&format!(
+                    "cleared dataset state at {}",
+                    state_path.display()
+                ))
+            )?;
             Ok(())
         }
     }
@@ -170,21 +181,32 @@ fn collect_stats(db: &Db) -> Result<Stats, CliError> {
     })
 }
 
-/// Renders the statistics block to `out`.
+/// Renders the statistics block to `out`: a section header plus a
+/// borderless kv block (label column auto-width, design D5).
 ///
 /// # Errors
 ///
 /// [`CliError::Io`] when `out` cannot be written.
-fn print_stats(out: &mut dyn Write, stats: &Stats) -> Result<(), CliError> {
-    writeln!(out, "Dataset Statistics:")?;
-    writeln!(out, "{}", "-".repeat(60))?;
-    writeln!(out, "Documents:    {}", stats.documents)?;
-    writeln!(out, "Chunks:       {}", stats.chunks)?;
-    writeln!(out, "Entities:     {}", stats.entities)?;
-    writeln!(out, "Entity links: {}", stats.entity_links)?;
-    writeln!(out, "Facts:        {}", stats.facts)?;
-    writeln!(out, "Queue tasks:  {}", stats.queue_tasks)?;
-    writeln!(out, "{}", "-".repeat(60))?;
+fn print_stats(out: &mut dyn Write, stats: &Stats, console: &Console) -> Result<(), CliError> {
+    let documents = stats.documents.to_string();
+    let chunks = stats.chunks.to_string();
+    let entities = stats.entities.to_string();
+    let entity_links = stats.entity_links.to_string();
+    let facts = stats.facts.to_string();
+    let queue_tasks = stats.queue_tasks.to_string();
+    writeln!(out, "{}", console.header("Dataset Statistics:"))?;
+    writeln!(
+        out,
+        "{}",
+        console.kv(&[
+            ("Documents", &documents),
+            ("Chunks", &chunks),
+            ("Entities", &entities),
+            ("Entity links", &entity_links),
+            ("Facts", &facts),
+            ("Queue tasks", &queue_tasks),
+        ])
+    )?;
     Ok(())
 }
 
@@ -450,6 +472,11 @@ mod tests {
         let (stdout, result) = run_flow(&f, DbAction::Stats, "");
         result.expect("stats must succeed");
         assert!(stdout.starts_with("Dataset Statistics:\n"), "{stdout:?}");
+        // Non-TTY rendering: no ANSI escapes, every line within 120 columns.
+        assert!(!stdout.contains('\x1b'), "{stdout:?}");
+        for line in stdout.lines() {
+            assert!(line.chars().count() <= 120, "line fits 120: {line:?}");
+        }
         assert!(stdout.contains("Documents:    1"), "{stdout:?}");
         assert!(stdout.contains("Chunks:       2"), "{stdout:?}");
         assert!(stdout.contains("Entities:     3"), "{stdout:?}");

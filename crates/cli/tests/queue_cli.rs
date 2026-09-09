@@ -165,17 +165,20 @@ fn seed_entity_link(
     .expect("seed task");
 }
 
-/// The whitespace-separated columns of the status row for `path` (path,
-/// source, status, attempts, then the free-form last_error, then
-/// next_attempt_at). The identity is matched as a WHOLE field: the binary
-/// also prints tracing log lines to stdout, and a substring match would
-/// collide with the temp-dir timestamps they carry.
+/// The `│`-separated cell values of the status row for `path` (type,
+/// identity, status, attempts, then the free-form last_error, then
+/// next_attempt_at). The row is the first box-drawing line (leading `│`)
+/// where the identity appears as a WHOLE whitespace field: the binary also
+/// prints tracing log lines to stdout, and a substring match would collide
+/// with the temp-dir timestamps they carry.
 fn row_fields<'a>(stdout: &'a str, path: &str) -> Vec<&'a str> {
     stdout
         .lines()
-        .find(|line| line.split_whitespace().any(|field| field == path))
+        .find(|line| line.starts_with('│') && line.split_whitespace().any(|field| field == path))
         .unwrap_or_else(|| panic!("no table row for {path}:\n{stdout}"))
-        .split_whitespace()
+        .split('│')
+        .map(str::trim)
+        .filter(|cell| !cell.is_empty())
         .collect()
 }
 
@@ -191,6 +194,12 @@ fn queue_status_prints_seeded_queue_table_and_exits_zero() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Event Queue:"), "{stdout:?}");
+    // Every console-rendered table line stays within 120 display columns
+    // (whole-table `Width::wrap`). (Tracing log lines on the same stdout are
+    // the binary's own logging, not the console output.)
+    for line in stdout.lines().filter(|line| line.starts_with('│')) {
+        assert!(line.chars().count() <= 120, "line fits 120: {line:?}");
+    }
     for column in [
         "TYPE",
         "IDENTITY",
@@ -362,7 +371,10 @@ fn queue_status_shows_entity_link_tasks_and_reset_requeues_them() {
         vec!["entity:link", "42", "error", "3"],
         "{fields:?}"
     );
-    assert!(fields.contains(&"linker"), "last_error column: {fields:?}");
+    assert!(
+        fields.iter().any(|cell| cell.contains("linker")),
+        "last_error column: {fields:?}"
+    );
 
     // `queue reset-retries --identity <doc_id>` resets the entity:link task.
     let out = run(&[
