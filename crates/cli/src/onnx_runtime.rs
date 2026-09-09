@@ -15,8 +15,9 @@
 //! - the `LibraryManager` is constructed before the "Installing..." line,
 //!   so an unsupported platform reports the error without a misleading
 //!   progress line;
-//! - the "Supported Platforms" table is rendered with tabwriter-style column
-//!   geometry (longest key + 2 spaces) without a tabwriter dependency.
+//! - `status` renders a kv block (console layer, design D5) plus the
+//!   "Supported Platforms" list with tabwriter-style column geometry
+//!   (longest key + 2 spaces) without a tabwriter dependency.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -27,6 +28,7 @@ use config::{OnnxConfig, load, load_onnx_config};
 use embedding::LibraryManager;
 
 use crate::cli::OnnxRuntimeAction;
+use crate::console::{Color, Console};
 use crate::error::CliError;
 
 /// One `onnx-runtime` invocation: the resolved config path plus the clap
@@ -70,77 +72,115 @@ pub fn onnx_runtime_flow(req: &OnnxRuntimeRequest, out: &mut dyn Write) -> Resul
     config.apply_defaults();
     let onnx = load_onnx_config(&config.paths.onnx_config)?;
     let manager = LibraryManager::new(&config.paths.workspace_dir, &onnx)?;
+    // One console per flow: TTY/NO_COLOR/width gating lives in the
+    // constructor (design D2/D3), the handlers only render strings.
+    let console = Console::stdout();
 
     match req.action {
-        OnnxRuntimeAction::Install => install(&manager, out),
-        OnnxRuntimeAction::Status => status(&manager, &onnx, out),
-        OnnxRuntimeAction::Uninstall => uninstall(&manager, out),
+        OnnxRuntimeAction::Install => install(&manager, out, &console),
+        OnnxRuntimeAction::Status => status(&manager, &onnx, out, &console),
+        OnnxRuntimeAction::Uninstall => uninstall(&manager, out, &console),
     }
 }
 
 /// `onnx-runtime install`: ensure the runtime library is installed.
-fn install(manager: &LibraryManager, out: &mut dyn Write) -> Result<(), CliError> {
+fn install(
+    manager: &LibraryManager,
+    out: &mut dyn Write,
+    console: &Console,
+) -> Result<(), CliError> {
     // This line is printed before the already-installed check, so both
     // branches keep the same prefix.
-    writeln!(out, "Installing ONNX Runtime library...")?;
+    writeln!(
+        out,
+        "{}",
+        console.line("Installing ONNX Runtime library...")
+    )?;
     if let Some(path) = manager.library_path() {
         writeln!(
             out,
-            "ONNX Runtime {} is already installed at: {}",
-            manager.version(),
-            path.display()
+            "{}",
+            console.line(&format!(
+                "ONNX Runtime {} is already installed at: {}",
+                manager.version(),
+                path.display()
+            ))
         )?;
         return Ok(());
     }
     let path = manager.ensure_library()?;
     writeln!(
         out,
-        "✓ ONNX Runtime {} installed successfully",
-        manager.version()
+        "{}",
+        console.success(&format!(
+            "ONNX Runtime {} installed successfully",
+            manager.version()
+        ))
     )?;
-    writeln!(out, "  Library: {}", path.display())?;
-    writeln!(out, "  Cache: {}", manager.cache_dir().display())?;
+    writeln!(
+        out,
+        "{}",
+        console.line(&format!("  Library: {}", path.display()))
+    )?;
+    writeln!(
+        out,
+        "{}",
+        console.line(&format!("  Cache: {}", manager.cache_dir().display()))
+    )?;
     Ok(())
 }
 
-/// `onnx-runtime status`: installation status plus the supported-platforms
-/// table.
+/// `onnx-runtime status`: a kv block (version, installation state, library
+/// path, cache directory, install hint) plus the supported-platforms list.
 fn status(
     manager: &LibraryManager,
     onnx: &OnnxConfig,
     out: &mut dyn Write,
+    console: &Console,
 ) -> Result<(), CliError> {
-    writeln!(out, "ONNX Runtime Status")?;
-    writeln!(out, "===================")?;
-    writeln!(out, "Version:     {}", manager.version())?;
+    writeln!(out, "{}", console.header("ONNX Runtime Status"))?;
+    let mut pairs: Vec<(&str, String)> = vec![("Version", manager.version().to_string())];
     match manager.library_path() {
         Some(path) => {
-            writeln!(out, "Status:      Installed")?;
-            writeln!(out, "Library:     {}", path.display())?;
-            writeln!(out, "Cache:       {}", manager.cache_dir().display())?;
+            pairs.push(("Status", console.style("Installed", Color::Green)));
+            pairs.push(("Library", path.display().to_string()));
+            pairs.push(("Cache", manager.cache_dir().display().to_string()));
         }
         None => {
-            writeln!(out, "Status:      Not installed")?;
-            writeln!(out, "Cache:       {}", manager.cache_dir().display())?;
-            writeln!(out, "Run:         synopsis onnx-runtime install")?;
+            pairs.push(("Status", console.style("Not installed", Color::Dim)));
+            pairs.push(("Cache", manager.cache_dir().display().to_string()));
+            pairs.push(("Run", "synopsis onnx-runtime install".to_string()));
         }
     }
+    let rows: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(label, value)| (*label, value.as_str()))
+        .collect();
+    writeln!(out, "{}", console.kv(&rows))?;
     print_platforms(out, &onnx.runtime.platforms)
 }
 
 /// `onnx-runtime uninstall`: remove the installed library. A no-installation
 /// is not an error (exit 0 with a message).
-fn uninstall(manager: &LibraryManager, out: &mut dyn Write) -> Result<(), CliError> {
+fn uninstall(
+    manager: &LibraryManager,
+    out: &mut dyn Write,
+    console: &Console,
+) -> Result<(), CliError> {
     if manager.library_path().is_none() {
-        writeln!(out, "ONNX Runtime is not installed")?;
+        writeln!(out, "{}", console.line("ONNX Runtime is not installed"))?;
         return Ok(());
     }
     manager.uninstall()?;
-    writeln!(out, "✓ ONNX Runtime uninstalled successfully")?;
+    writeln!(
+        out,
+        "{}",
+        console.success("ONNX Runtime uninstalled successfully")
+    )?;
     Ok(())
 }
 
-/// Renders the "Supported Platforms" table (tabwriter-style: 2-space
+/// Renders the "Supported Platforms" list (tabwriter-style: 2-space
 /// padding — each key is padded to the longest key, then two spaces before
 /// the library name).
 fn print_platforms(out: &mut dyn Write, platforms: &[OnnxPlatformConfig]) -> Result<(), CliError> {
@@ -293,26 +333,53 @@ mod tests {
         let stdout = stdout_of(&out);
 
         result.expect("status must succeed");
+        assert!(stdout.starts_with("ONNX Runtime Status\n"), "{stdout:?}");
+        // Non-TTY rendering: no ANSI escapes, every line within 120 columns.
+        assert!(!stdout.contains('\x1b'), "{stdout:?}");
+        for line in stdout.lines() {
+            assert!(line.chars().count() <= 120, "line fits 120: {line:?}");
+        }
         assert!(
-            stdout.starts_with("ONNX Runtime Status\n===================\n"),
-            "{stdout:?}"
-        );
-        assert!(stdout.contains("Version:     1.28.0"), "{stdout:?}");
-        assert!(stdout.contains("Status:      Not installed"), "{stdout:?}");
-        assert!(
-            stdout.contains(&format!(
-                "Cache:       {}",
-                dir.as_ref().join("data").join("onnxruntime").display()
-            )),
+            stdout.contains("Version:") && stdout.contains("1.28.0"),
             "{stdout:?}"
         );
         assert!(
-            stdout.contains("Run:         synopsis onnx-runtime install"),
+            stdout.contains("Status:") && stdout.contains("Not installed"),
+            "{stdout:?}"
+        );
+        assert!(
+            stdout.contains("Cache:")
+                && stdout.contains(
+                    &dir.as_ref()
+                        .join("data")
+                        .join("onnxruntime")
+                        .display()
+                        .to_string()
+                ),
+            "{stdout:?}"
+        );
+        assert!(
+            stdout.contains("Run:") && stdout.contains("synopsis onnx-runtime install"),
             "{stdout:?}"
         );
         assert!(stdout.contains("\nSupported Platforms:"), "{stdout:?}");
 
-        // tabwriter geometry: each key padded to the longest key + 2 spaces.
+        // kv block: the value column is aligned across rows.
+        let version_line = stdout
+            .lines()
+            .find(|line| line.starts_with("Version:"))
+            .expect("version row: {stdout:?}");
+        let status_line = stdout
+            .lines()
+            .find(|line| line.starts_with("Status:"))
+            .expect("status row: {stdout:?}");
+        assert_eq!(
+            version_line.find("1.28.0").expect("value present"),
+            status_line.find("Not installed").expect("value present"),
+            "value column aligned: {stdout:?}"
+        );
+
+        // platforms list: each key padded to the longest key + 2 spaces.
         let rows = onnx_platform_rows();
         let width = rows.iter().map(|(key, _)| key.len()).max().expect("rows");
         for (key, library_name) in &rows {
@@ -332,20 +399,27 @@ mod tests {
         let stdout = stdout_of(&out);
 
         result.expect("status must succeed");
-        assert!(stdout.contains("Status:      Installed"), "{stdout:?}");
         assert!(
-            stdout.contains(&format!(
-                "Library:     {}",
-                dir.as_ref()
-                    .join("data")
-                    .join("onnxruntime")
-                    .join(LIB_NAME)
-                    .display()
-            )),
+            stdout.contains("Status:") && stdout.contains("Installed"),
+            "{stdout:?}"
+        );
+        assert!(
+            stdout.contains("Library:")
+                && stdout.contains(
+                    &dir.as_ref()
+                        .join("data")
+                        .join("onnxruntime")
+                        .join(LIB_NAME)
+                        .display()
+                        .to_string()
+                ),
             "{stdout:?}"
         );
         assert!(!stdout.contains("Not installed"), "{stdout:?}");
-        assert!(!stdout.contains("Run:         synopsis"), "{stdout:?}");
+        assert!(
+            !stdout.contains("Run:"),
+            "no install hint when installed: {stdout:?}"
+        );
     }
 
     #[test]

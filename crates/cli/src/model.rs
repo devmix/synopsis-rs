@@ -35,6 +35,7 @@ use config::{OnnxConfig, load, load_onnx_config};
 use embedding::{LibraryManager, ModelCache, ModelManager, new_onnx_provider};
 
 use crate::cli::ModelAction;
+use crate::console::{Color, Console};
 use crate::error::CliError;
 
 /// Warmup iterations before measuring (`BenchOptions` default).
@@ -93,27 +94,35 @@ pub fn model_flow(req: &ModelRequest, out: &mut dyn Write) -> Result<(), CliErro
     config.apply_defaults();
     let onnx = load_onnx_config(&config.paths.onnx_config)?;
     let manager = ModelManager::new(&config.paths.workspace_dir, &onnx);
+    // One console per flow: TTY/NO_COLOR/width gating lives in the
+    // constructor (design D2/D3), the handlers only render strings.
+    let console = Console::stdout();
 
     match req.action {
-        ModelAction::List => list_models(&manager, &onnx, out),
-        ModelAction::Download => download_model(&manager, req.name.as_deref(), out),
-        ModelAction::Delete => delete_model(&manager, req.name.as_deref(), out),
-        ModelAction::Info => model_info(&manager, req.name.as_deref(), out),
+        ModelAction::List => list_models(&manager, &onnx, out, &console),
+        ModelAction::Download => download_model(&manager, req.name.as_deref(), out, &console),
+        ModelAction::Delete => delete_model(&manager, req.name.as_deref(), out, &console),
+        ModelAction::Info => model_info(&manager, req.name.as_deref(), out, &console),
         ModelAction::Benchmark => benchmark(
             &manager,
             &onnx,
             &config.paths.workspace_dir,
             req.name.as_deref(),
             out,
+            &console,
         ),
     }
 }
 
-/// `model list`: the registry table with installation status.
+/// `model list`: the registry table with installation status (design D5):
+/// NAME (registry identifier), DISPLAY (display name), DIM, STATUS — a
+/// box-drawing table; the STATUS cell is styled (`installed ✓` green,
+/// `not installed` dim).
 fn list_models(
     manager: &ModelManager,
     onnx: &OnnxConfig,
     out: &mut dyn Write,
+    console: &Console,
 ) -> Result<(), CliError> {
     let models: Vec<&ModelInfo> = onnx
         .models
@@ -122,23 +131,27 @@ fn list_models(
         .filter(|model| !model.name.trim().is_empty())
         .collect();
 
-    writeln!(out, "Available Models:")?;
-    writeln!(out, "{}", "-".repeat(90))?;
-    writeln!(out, "{:<25} {:<10} {:<8} STATUS", "NAME", "VERSION", "DIM")?;
-    writeln!(out, "{}", "-".repeat(90))?;
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(models.len());
     for model in &models {
-        let installed = manager.is_installed(&model.name);
-        let status = if installed {
-            "installed ✓"
+        let status = if manager.is_installed(&model.name) {
+            console.style("installed ✓", Color::Green)
         } else {
-            "not installed"
+            console.style("not installed", Color::Dim)
         };
-        writeln!(
-            out,
-            "{:<25} {:<10} {:<8} {}",
-            model.display_name, model.version, model.vector_dim, status
-        )?;
+        rows.push(vec![
+            model.name.clone(),
+            model.display_name.clone(),
+            model.vector_dim.to_string(),
+            status,
+        ]);
     }
+
+    writeln!(out, "{}", console.header("Available Models:"))?;
+    writeln!(
+        out,
+        "{}",
+        console.table(&["NAME", "DISPLAY", "DIM", "STATUS"], &rows, &[2])
+    )?;
     writeln!(out)?;
     Ok(())
 }
@@ -148,12 +161,17 @@ fn download_model(
     manager: &ModelManager,
     name: Option<&str>,
     out: &mut dyn Write,
+    console: &Console,
 ) -> Result<(), CliError> {
     let name = match name {
         Some(name) if !name.is_empty() => name.to_string(),
         _ => {
             let default = manager.default_model().to_string();
-            writeln!(out, "No model specified, using default: {default}")?;
+            writeln!(
+                out,
+                "{}",
+                console.line(&format!("No model specified, using default: {default}"))
+            )?;
             writeln!(out)?;
             default
         }
@@ -161,14 +179,24 @@ fn download_model(
     let info = manager
         .model(&name)
         .ok_or_else(|| CliError::Unsupported(format!("model {name:?} not found in registry")))?;
-    writeln!(out, "Downloading {} ({})...", info.display_name, info.name)?;
+    writeln!(
+        out,
+        "{}",
+        console.line(&format!(
+            "Downloading {} ({})...",
+            info.display_name, info.name
+        ))
+    )?;
     writeln!(out)?;
 
     manager.ensure_model(&name)?;
     writeln!(
         out,
-        "\n✓ Model installed at: {}",
-        manager.model_dir(&name).display()
+        "\n{}",
+        console.success(&format!(
+            "Model installed at: {}",
+            manager.model_dir(&name).display()
+        ))
     )?;
     Ok(())
 }
@@ -178,6 +206,7 @@ fn delete_model(
     manager: &ModelManager,
     name: Option<&str>,
     out: &mut dyn Write,
+    console: &Console,
 ) -> Result<(), CliError> {
     let name = name
         .filter(|name| !name.is_empty())
@@ -186,7 +215,7 @@ fn delete_model(
         .model(name)
         .ok_or_else(|| CliError::Unsupported(format!("model {name:?} not found in registry")))?;
     manager.delete_model(name)?;
-    writeln!(out, "✓ Model {name} deleted")?;
+    writeln!(out, "{}", console.success(&format!("Model {name} deleted")))?;
     Ok(())
 }
 
@@ -195,6 +224,7 @@ fn model_info(
     manager: &ModelManager,
     name: Option<&str>,
     out: &mut dyn Write,
+    console: &Console,
 ) -> Result<(), CliError> {
     let name = match name {
         Some(name) if !name.is_empty() => name.to_string(),
@@ -203,38 +233,46 @@ fn model_info(
     let info = manager
         .model(&name)
         .ok_or_else(|| CliError::Unsupported(format!("model {name:?} not found in registry")))?;
-    print_model_info(out, info, manager)
+    print_model_info(out, info, manager, console)
 }
 
-/// Renders the `model info` block.
+/// Renders the `model info` block (design D5): a borderless kv block
+/// (label column auto-width) plus the plain indented `Files:` list.
 fn print_model_info(
     out: &mut dyn Write,
     info: &ModelInfo,
     manager: &ModelManager,
+    console: &Console,
 ) -> Result<(), CliError> {
     let installed = manager.is_installed(&info.name);
-    writeln!(out, "Name:         {}", info.name)?;
-    writeln!(out, "Display Name: {}", info.display_name)?;
-    writeln!(out, "Description:  {}", info.description)?;
-    writeln!(out, "Version:      {}", info.version)?;
-    writeln!(out, "Vector Dim:   {}", info.vector_dim)?;
-    writeln!(out, "Source:       {}", info.source)?;
+    let mut pairs: Vec<(&str, String)> = vec![
+        ("Name", info.name.clone()),
+        ("Display Name", info.display_name.clone()),
+        ("Description", info.description.clone()),
+        ("Version", info.version.clone()),
+        ("Vector Dim", info.vector_dim.to_string()),
+        ("Source", info.source.clone()),
+    ];
     if !info.repo.is_empty() {
-        writeln!(out, "Repository:   {}", info.repo)?;
+        pairs.push(("Repository", info.repo.clone()));
     }
     if installed && let Some(cache_info) = ModelCache::new(manager.models_dir()).info(&info.name) {
-        writeln!(
-            out,
-            "Installed At: {}",
-            format_installed_at(&cache_info.installed_at)
-        )?;
+        pairs.push((
+            "Installed At",
+            format_installed_at(&cache_info.installed_at),
+        ));
     }
     let status = if installed {
-        "Installed ✓"
+        console.style("Installed ✓", Color::Green)
     } else {
-        "Not installed"
+        console.style("Not installed", Color::Dim)
     };
-    writeln!(out, "Status:       {status}")?;
+    pairs.push(("Status", status));
+    let rows: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(label, value)| (*label, value.as_str()))
+        .collect();
+    writeln!(out, "{}", console.kv(&rows))?;
 
     if !info.files.is_empty() {
         writeln!(out, "\nFiles:")?;
@@ -249,7 +287,11 @@ fn print_model_info(
             } else {
                 ""
             };
-            writeln!(out, "  - {:<25} {}{}", file.name, size, checksum)?;
+            writeln!(
+                out,
+                "{}",
+                console.line(&format!("  - {:<25} {}{}", file.name, size, checksum))
+            )?;
         }
     }
     writeln!(out)?;
@@ -264,11 +306,11 @@ fn benchmark(
     data_dir: &str,
     requested: Option<&str>,
     out: &mut dyn Write,
+    console: &Console,
 ) -> Result<(), CliError> {
     let targets = select_targets(manager, onnx, requested)?;
 
-    writeln!(out, "Embedding Benchmark")?;
-    writeln!(out, "{}", "-".repeat(70))?;
+    writeln!(out, "{}", console.header("Embedding Benchmark"))?;
     let runtime = detect_runtime(data_dir, onnx);
     let cpu = if runtime.cpu_model.is_empty() {
         "unknown CPU"
@@ -282,11 +324,18 @@ fn benchmark(
     };
     writeln!(
         out,
-        "Hardware: {cpu}, {} logical CPUs{ram}",
-        runtime.num_cpu
+        "{}",
+        console.line(&format!(
+            "Hardware: {cpu}, {} logical CPUs{ram}",
+            runtime.num_cpu
+        ))
     )?;
     if !runtime.onnx_version.is_empty() {
-        writeln!(out, "ONNX Runtime: {}", runtime.onnx_version)?;
+        writeln!(
+            out,
+            "{}",
+            console.line(&format!("ONNX Runtime: {}", runtime.onnx_version))
+        )?;
     }
 
     for model in &targets {
@@ -298,8 +347,19 @@ fn benchmark(
         }
         let model_path = manager.model_dir(&model.name).join("model.onnx");
         let stats = run_production_benchmark(model, &model_path, data_dir, onnx)?;
-        writeln!(out, "\n{} (dim={})", model.display_name, model.vector_dim)?;
-        writeln!(out, "  production: {}", format_stats(&stats))?;
+        writeln!(
+            out,
+            "{}",
+            console.line(&format!(
+                "\n{} (dim={})",
+                model.display_name, model.vector_dim
+            ))
+        )?;
+        writeln!(
+            out,
+            "{}",
+            console.line(&format!("  production: {}", format_stats(&stats)))
+        )?;
     }
     writeln!(out)?;
     Ok(())
@@ -584,6 +644,14 @@ models:
       files:
         - name: model.onnx
           url: http://127.0.0.1:1/other-model.onnx
+    - name: paraphrase-multilingual-MiniLM-L12-v2
+      display_name: Paraphrase Multilingual MiniLM
+      description: A third registry entry with a 30-char display name
+      version: 2.0.0
+      vector_dim: 384
+      files:
+        - name: model.onnx
+          url: http://127.0.0.1:1/paraphrase-model.onnx
 "#;
         std::fs::write(dir.as_ref().join("onnx.yaml"), yaml).expect("write onnx.yaml");
     }
@@ -639,14 +707,20 @@ models:
 
         result.expect("list must succeed");
         assert!(stdout.starts_with("Available Models:\n"), "{stdout:?}");
-        assert!(
-            stdout.contains(&"-".repeat(90)),
-            "90-dash separator: {stdout:?}"
-        );
-        assert!(stdout.contains("NAME"), "{stdout:?}");
-        assert!(stdout.contains("VERSION"), "{stdout:?}");
-        assert!(stdout.contains("DIM"), "{stdout:?}");
-        assert!(stdout.contains("STATUS"), "{stdout:?}");
+        // Non-TTY rendering: no ANSI escapes, every line within 120 columns.
+        assert!(!stdout.contains('\x1b'), "{stdout:?}");
+        for line in stdout.lines() {
+            assert!(line.chars().count() <= 120, "line fits 120: {line:?}");
+        }
+        // Box-drawing table with the four column headers.
+        assert!(stdout.contains('┌'), "box border: {stdout:?}");
+        assert!(stdout.contains('┬'), "box border: {stdout:?}");
+        assert!(stdout.contains('┐'), "box border: {stdout:?}");
+        for header in ["NAME", "DISPLAY", "DIM", "STATUS"] {
+            assert!(stdout.contains(header), "header {header}: {stdout:?}");
+        }
+        // NAME column: registry identifiers; DISPLAY column: display names.
+        assert!(stdout.contains("bge-m3-int8"), "{stdout:?}");
         assert!(stdout.contains("BGE-M3 int8"), "{stdout:?}");
         assert!(
             stdout.contains("installed ✓"),
@@ -657,10 +731,20 @@ models:
             stdout.contains("not installed"),
             "uninstalled model: {stdout:?}"
         );
-        // The version column is the registry version.
-        assert!(stdout.contains("1.0.0"), "{stdout:?}");
+        // The former VERSION column is gone (four columns only).
+        assert!(!stdout.contains("1.0.0"), "no version column: {stdout:?}");
         assert!(stdout.contains("1024"), "{stdout:?}");
         assert!(stdout.contains("384"), "{stdout:?}");
+        // The 30-char display name: NAME and DISPLAY stay on the same row
+        // (the table is content-fit below 120), alignment intact.
+        let long_row = stdout
+            .lines()
+            .find(|line| line.contains("Paraphrase Multilingual MiniLM"))
+            .expect("long display name row: {stdout:?}");
+        assert!(
+            long_row.contains("paraphrase-multilingual-MiniLM-L12-v2"),
+            "NAME and DISPLAY on the same row: {long_row:?}"
+        );
     }
 
     #[test]
@@ -683,6 +767,8 @@ models:
 
         let stdout = stdout_of(&out);
         assert!(stdout.starts_with("Available Models:\n"), "{stdout:?}");
+        assert!(stdout.contains('┌'), "header-only box table: {stdout:?}");
+        assert!(stdout.contains("STATUS"), "{stdout:?}");
         assert!(!stdout.contains("bge-m3"), "no rows: {stdout:?}");
     }
 
@@ -697,6 +783,13 @@ models:
         let stdout = stdout_of(&out);
 
         result.expect("info must succeed");
+        // Non-TTY rendering: no ANSI escapes, every line within 120 columns.
+        assert!(!stdout.contains('\x1b'), "{stdout:?}");
+        for line in stdout.lines() {
+            assert!(line.chars().count() <= 120, "line fits 120: {line:?}");
+        }
+        // kv block: the value column is aligned across rows (the label set's
+        // longest label, "Display Name"/"Installed At", fixes the padding).
         assert!(stdout.contains("Name:         bge-m3-int8"), "{stdout:?}");
         assert!(stdout.contains("Display Name: BGE-M3 int8"), "{stdout:?}");
         assert!(

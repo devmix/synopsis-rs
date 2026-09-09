@@ -16,16 +16,19 @@ Synopsis computes embeddings **locally**: an ONNX model is downloaded on demand 
 synopsis model list
 ```
 
-Prints every model in the `onnx.yaml` registry with its version, vector dimension, and installation status:
+Prints every model in the `onnx.yaml` registry as a table: `NAME` (the registry identifier used by `download`/`delete`/`info`), `DISPLAY` (display name), `DIM` (vector dimension), and `STATUS` (installation state):
 
 ```
 Available Models:
-------------------------------------------------------------------------------------------
-NAME                      VERSION    DIM      STATUS
-------------------------------------------------------------------------------------------
-BGE-M3 INT8 Quantized     1.0.0      1024     not installed
-BGE Small English v1.5    1.5.0      384      installed ✓
-Paraphrase Multilingual MiniLM  2.0.0 384     not installed
+┌───────────────────────────────────────┬────────────────────────────────┬──────┬───────────────┐
+│ NAME                                  │ DISPLAY                        │  DIM │ STATUS        │
+├───────────────────────────────────────┼────────────────────────────────┼──────┼───────────────┤
+│ bge-m3-int8                           │ BGE-M3 INT8 Quantized          │ 1024 │ installed ✓   │
+├───────────────────────────────────────┼────────────────────────────────┼──────┼───────────────┤
+│ bge-small-en-v1.5                     │ BGE Small English v1.5         │  384 │ installed ✓   │
+├───────────────────────────────────────┼────────────────────────────────┼──────┼───────────────┤
+│ paraphrase-multilingual-MiniLM-L12-v2 │ Paraphrase Multilingual MiniLM │  384 │ not installed │
+└───────────────────────────────────────┴────────────────────────────────┴──────┴───────────────┘
 ```
 
 ### `model download [NAME]`

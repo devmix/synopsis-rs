@@ -166,7 +166,8 @@ fn global_flags_precede_subcommand() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("ONNX Runtime Status"), "{stdout:?}");
-    assert!(stdout.contains("Status:      Not installed"), "{stdout:?}");
+    assert!(stdout.contains("Status:"), "{stdout:?}");
+    assert!(stdout.contains("Not installed"), "{stdout:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
