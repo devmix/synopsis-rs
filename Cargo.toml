@@ -148,6 +148,22 @@ clap = "4.6.6"
 # format (design D2).
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+# CLI presentation layer (unify-cli-console-output, design D1-D5; user-approved
+# stack extension 2026-09-09): box-drawing tables, kv blocks, TTY-gated color,
+# terminal-width adaptation.
+# tabled 0.22.0 (MIT, actively developed, published 2026-09-05, pure Rust text
+# processing, no known CVEs, MSRV not declared — targets recent stable, below
+# pinned Rust 1.96.0; verified 2026-09-09). Default features OFF: derive/
+# macros/assert pull a proc-macro and a test-only crate we do not use (we pass
+# string rows, not #[derive(Tabled)] structs); `std` + `ansi` (ANSI-aware width
+# measurement for pre-styled cells).
+tabled = { version = "0.22", default-features = false, features = ["std", "ansi"] }
+# owo-colors 4.4.0 (MIT, zero dependencies, zero-allocation, published
+# 2026-08-27).
+owo-colors = "4.4"
+# terminal_size 0.4.4 (MIT OR Apache-2.0, minimal libc/windows-sys, published
+# 2026-03-23).
+terminal_size = "0.4"
 
 # Serialization and config (config crate)
 serde = { version = "1", features = ["derive"] }

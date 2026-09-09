@@ -29,6 +29,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 notify = { workspace = true }
+# Presentation layer for one-shot CLI output (unify-cli-console-output,
+# design D1-D5): box-drawing tables, kv blocks, TTY-gated color, width.
+owo-colors = { workspace = true }
+tabled = { workspace = true }
+terminal_size = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod config_resolver;
+pub mod console;
 pub mod db;
 pub mod error;
 pub mod loadtest;
