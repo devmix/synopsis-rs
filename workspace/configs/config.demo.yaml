@@ -64,6 +64,8 @@ ingestion:
       timeout_ms: 240000
       # Max retry attempts after initial failure for transient errors (429, 5xx); default 3
       max_retries: 3
+      # Reasoning effort sent to the model ("low"/"medium"/"high"); empty = not set
+      reasoning_effort: low
   batch_size: 100
   # Max automatic re-index attempts for a problematic document before the
   # background worker marks it `error` in the document_jobs queue (default 3).
@@ -89,6 +91,8 @@ linker:
     #   "json_object" — default; sends {"type": "json_object"} and includes JSON example in system prompt
     #   "json_schema" — sends full JSON Schema in request body, omits example from prompt (requires API support)
     response_format: "json_schema"
+    # Reasoning effort sent to the model ("low"/"medium"/"high"); empty = not set
+    reasoning_effort: low
 
 search:
   rrf_k: 20
