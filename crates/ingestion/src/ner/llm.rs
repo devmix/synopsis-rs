@@ -335,6 +335,7 @@ mod tests {
             }],
             extraction: ExtractionDef::default(),
             confidence: ConfidencePolicy::default(),
+            aliases: Vec::new(),
         }
     }
 

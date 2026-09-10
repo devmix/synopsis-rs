@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use config::{ConfigError, load_domain_config};
+use config::{AliasDef, ConfigError, load_domain_config};
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/domains")
@@ -376,5 +376,102 @@ fn out_of_range_confidence_thresholds_fail_with_expected_messages() {
         "negative_reject",
         &document("0.7", "-0.1"),
         "reject_threshold must be between 0 and 1",
+    );
+}
+
+// ── <aliases> block (multilingual-entity-resolution task 4.3) ──────────────
+
+#[test]
+fn aliases_block_parses_to_flat_list() {
+    // <alias> items sit inside an <aliases> wrapper, in file order; the loader validates the
+    // block on the way.
+    let cfg = TempDomain::new(
+        "aliases",
+        r#"<domain name="alpha" version="1.0">
+            <aliases>
+                <alias name="alias-a" canonical="canonical-a"/>
+                <alias name="alias-b" canonical="canonical-b"/>
+            </aliases>
+        </domain>"#,
+    )
+    .load()
+    .expect("a valid aliases block must load");
+    assert_eq!(
+        cfg.aliases,
+        vec![
+            AliasDef {
+                name: "alias-a".to_string(),
+                canonical: "canonical-a".to_string(),
+            },
+            AliasDef {
+                name: "alias-b".to_string(),
+                canonical: "canonical-b".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn alias_block_is_optional_and_absent_is_empty() {
+    let cfg = TempDomain::new(
+        "aliases-absent",
+        r#"<domain name="alpha" version="1.0"></domain>"#,
+    )
+    .load()
+    .expect("an absent aliases block must not be an error");
+    assert!(cfg.aliases.is_empty());
+}
+
+#[test]
+fn alias_missing_attributes_are_rejected() {
+    // Load-time validation: absent or empty `name` / `canonical` are configuration errors.
+    assert_validation_error(
+        "alias-no-name",
+        "<domain name=\"d\" version=\"1.0\"><aliases><alias canonical=\"canonical-a\"/></aliases></domain>",
+        "alias 1: name is required",
+    );
+    assert_validation_error(
+        "alias-no-canonical",
+        "<domain name=\"d\" version=\"1.0\"><aliases><alias name=\"alias-a\"/></aliases></domain>",
+        "alias 1: canonical is required",
+    );
+}
+
+#[test]
+fn duplicate_alias_name_in_domain_is_rejected() {
+    assert_validation_error(
+        "alias-duplicate",
+        "<domain name=\"d\" version=\"1.0\"><aliases>\
+         <alias name=\"alias-a\" canonical=\"canonical-a\"/>\
+         <alias name=\"alias-a\" canonical=\"canonical-b\"/>\
+         </aliases></domain>",
+        "duplicate alias name: alias-a",
+    );
+}
+
+#[test]
+fn effective_domain_keeps_only_the_domains_own_aliases() {
+    // The alias block is dataset-wide data, not a shadowable definition: the effective domain
+    // carries its own block only — the pool's block is unioned by
+    // `aliases::dataset_alias_map`, not merged in here (task 4.3).
+    let domain: config::DomainConfig = quick_xml::de::from_str(
+        r#"<domain name="alpha" version="1.0">
+            <aliases><alias name="alias-a" canonical="canonical-a"/></aliases>
+        </domain>"#,
+    )
+    .unwrap();
+    let pool: config::GlobalConfig = quick_xml::de::from_str(
+        r#"<global version="1.0">
+            <aliases><alias name="alias-p" canonical="canonical-p"/></aliases>
+        </global>"#,
+    )
+    .unwrap();
+    let merged = config::domain::effective_domain(&domain, &pool);
+    assert_eq!(
+        merged.aliases,
+        vec![AliasDef {
+            name: "alias-a".to_string(),
+            canonical: "canonical-a".to_string(),
+        }]
     );
 }

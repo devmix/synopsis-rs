@@ -129,6 +129,11 @@ pub struct RunnerParams<'a> {
     /// Global ontology config (sources, NER stage list); `None` when the
     /// pipeline runs without a `global.xml` (no configured sources).
     pub global: Option<&'a GlobalConfig>,
+    /// Dataset alias map (the ontology `<aliases>` blocks, design D4 of
+    /// `multilingual-entity-resolution`): alias surface form → canonical
+    /// name, loaded by the CLI at bootstrap; an empty map disables the
+    /// tier (behavior identical to the pre-alias-map resolution).
+    pub aliases: &'a HashMap<String, String>,
     /// Domain configs by domain name (resolved by the CLI from the
     /// `<domain>` references); NER assembly looks names up here.
     pub domains: &'a HashMap<String, DomainConfig>,
@@ -164,6 +169,7 @@ pub struct Runner<'a> {
     db: &'a Db,
     ingest_cfg: &'a IngestionConfig,
     global: Option<&'a GlobalConfig>,
+    aliases: &'a HashMap<String, String>,
     domains: &'a HashMap<String, DomainConfig>,
     registry: &'a Registry,
     embed: &'a dyn EmbeddingProvider,
@@ -195,6 +201,7 @@ impl<'a> Runner<'a> {
             db,
             ingest_cfg,
             global,
+            aliases,
             domains,
             registry,
             embed,
@@ -223,6 +230,7 @@ impl<'a> Runner<'a> {
             db,
             ingest_cfg,
             global,
+            aliases,
             domains,
             registry,
             embed,
@@ -533,7 +541,10 @@ impl<'a> Runner<'a> {
         // (document-jobs-queue design Correction).
         let doc = enriched.parse_file(Path::new(path), Path::new(&src.path))?;
         let ner = self.build_ner_provider(src);
-        let resolver = Resolver::new(self.ingest_cfg.resolver.similarity_threshold);
+        // The dataset alias map (design D4): tier 3 of the resolver's
+        // `find_best_candidate` + creation under the canonical name.
+        let resolver =
+            Resolver::with_aliases(self.ingest_cfg.resolver.similarity_threshold, self.aliases);
         let sink = SinkAdapter {
             index: self.vectors,
         };
@@ -1050,6 +1061,7 @@ mod tests {
         pub(super) cache: Db,
         pub(super) cfg: IngestionConfig,
         pub(super) global: GlobalConfig,
+        pub(super) aliases: HashMap<String, String>,
         pub(super) domains: HashMap<String, DomainConfig>,
         pub(super) registry: Registry,
         pub(super) embed: MockEmbedding,
@@ -1077,7 +1089,9 @@ mod tests {
                     entities: Vec::new(),
                     relations: Vec::new(),
                     extraction: Default::default(),
+                    aliases: Vec::new(),
                 },
+                aliases: HashMap::new(),
                 domains: HashMap::new(),
                 registry,
                 embed: MockEmbedding::new(),
@@ -1092,6 +1106,7 @@ mod tests {
                 db: &self.db,
                 ingest_cfg: &self.cfg,
                 global: Some(&self.global),
+                aliases: &self.aliases,
                 domains: &self.domains,
                 registry: &self.registry,
                 embed: &self.embed,

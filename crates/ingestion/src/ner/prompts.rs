@@ -485,6 +485,7 @@ mod tests {
             }],
             extraction: ExtractionDef::default(),
             confidence: ConfidencePolicy::default(),
+            aliases: Vec::new(),
         }
     }
 
@@ -812,6 +813,7 @@ mod tests {
                 attributes: vec![],
             }],
             extraction: ExtractionDef::default(),
+            aliases: Vec::new(),
         };
         let merged = effective_domain(&sample_domain(), &pool);
 

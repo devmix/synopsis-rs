@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use config::ConfigError;
 use config::ontology::{
-    AttributeType, GlobalConfig, LinkMethod, NerMethod, SourceType, load_global_config,
+    AliasDef, AttributeType, GlobalConfig, LinkMethod, NerMethod, SourceType, load_global_config,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -474,6 +474,7 @@ fn minimal_document_parses_to_empty_structure() {
     assert!(cfg.entities.is_empty());
     assert!(cfg.relations.is_empty());
     assert!(cfg.extraction.regex_rules.is_empty());
+    assert!(cfg.aliases.is_empty(), "absent <aliases> block stays empty");
 
     // D15 revision 4: <expression> sits inside an <expressions> wrapper, which in turn is a
     // direct child of <cross-domain-links>.
@@ -700,4 +701,60 @@ fn attribute_types_match_known_words_and_tolerate_others() {
     assert_eq!(attributes[1].attr_type, AttributeType::Ref);
     assert!(!attributes[1].target.is_empty());
     assert_eq!(attributes[2].attr_type, AttributeType::Unknown);
+}
+
+// ── <aliases> block (multilingual-entity-resolution task 4.3) ──────────────
+
+#[test]
+fn aliases_block_parses_to_flat_list() {
+    // Parse-only: <alias> items sit inside an <aliases> wrapper, in file order.
+    let cfg = parse(
+        r#"<global version="1.0">
+            <aliases>
+                <alias name="alias-a" canonical="canonical-a"/>
+                <alias name="alias-b" canonical="canonical-b"/>
+            </aliases>
+        </global>"#,
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.aliases,
+        vec![
+            AliasDef {
+                name: "alias-a".to_string(),
+                canonical: "canonical-a".to_string(),
+            },
+            AliasDef {
+                name: "alias-b".to_string(),
+                canonical: "canonical-b".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn alias_missing_attributes_are_rejected() {
+    // Load-time validation: absent or empty `name` / `canonical` are configuration errors.
+    assert_validation_error(
+        "alias-no-name",
+        "<global version=\"1.0\"><aliases><alias canonical=\"canonical-a\"/></aliases></global>",
+        "alias 1: name is required",
+    );
+    assert_validation_error(
+        "alias-no-canonical",
+        "<global version=\"1.0\"><aliases><alias name=\"alias-a\"/></aliases></global>",
+        "alias 1: canonical is required",
+    );
+}
+
+#[test]
+fn duplicate_alias_name_in_global_is_rejected() {
+    assert_validation_error(
+        "alias-duplicate",
+        "<global version=\"1.0\"><aliases>\
+         <alias name=\"alias-a\" canonical=\"canonical-a\"/>\
+         <alias name=\"alias-a\" canonical=\"canonical-b\"/>\
+         </aliases></global>",
+        "duplicate alias name: alias-a",
+    );
 }

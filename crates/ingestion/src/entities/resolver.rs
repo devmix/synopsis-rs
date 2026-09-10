@@ -46,10 +46,13 @@
 //! 2. **Stem equality** — `(domain, type, stem_key)` hit, score 1.0. Several
 //!    pre-existing rows can share a stem key; the lowest id is the
 //!    deterministic pick.
-//! 3. **Alias memory** — the normalized surface form → id map hydrated from
-//!    the `entity_aliases` table (design D3). The map is global (an alias
-//!    names exactly one entity), so the hit is additionally gated by
-//!    domain+type. Score 1.0.
+//! 3. **Alias** — first the dataset alias map (design D4): the normalized
+//!    surface form → canonical name, then the canonical's tier-1 key
+//!    `(domain, type, match_key)` lookup (the map keys on name only, so the
+//!    domain+type gate comes from the names map); then the alias memory
+//!    (design D3): the normalized surface form → id map hydrated from the
+//!    `entity_aliases` table, additionally gated by domain+type (a stale id
+//!    fails the gate and falls through to the JW tier). Score 1.0.
 //! 4. **Jaro-Winkler** — the best JW over the shared bigram blocks
 //!    (`(domain, type, bigram)`), scored by the similarity.
 //!
@@ -57,7 +60,9 @@
 //! threshold; only tier 4 competes against it. Every non-creating
 //! resolution (tiers 1–4 in the creating APIs) records the surface form in
 //! `entity_aliases` (design D3), so repeated surface forms resolve by
-//! lookup on later runs — resolution is monotone.
+//! lookup on later runs — resolution is monotone. A dataset-alias surface
+//! form that matches NO tier creates the entity under the canonical name
+//! (design D4), with the surface form recorded in the alias memory.
 //!
 //! Block keys are `(normalized domain, entity type, bigram)` tuples and the
 //! tier keys are `(domain, type, key)` tuples, so cross-domain and
@@ -85,17 +90,43 @@ use crate::ner::{NerEntity, normalize};
 /// long-lived state (see the module docs for the locking strategy).
 pub struct Resolver {
     threshold: f64,
+    /// Dataset alias map (design D4 of `multilingual-entity-resolution`):
+    /// normalized alias surface form → canonical name. Consulted as tier 3
+    /// (before the alias memory) and on the creation path (a surface form
+    /// that matches no tier creates the entity under the canonical name).
+    aliases: HashMap<String, String>,
     state: Mutex<BlockingIndex>,
 }
 
 impl Resolver {
-    /// Creates a resolver with the given Jaro-Winkler merge threshold
-    /// (the config preset loader applies the 0.8 default; see
-    /// [`ResolverConfig`]).
+    /// Creates a resolver with the given Jaro-Winkler merge threshold and
+    /// an empty dataset alias map (the config preset loader applies the
+    /// 0.8 default; see [`ResolverConfig`]).
     #[must_use]
     pub fn new(similarity_threshold: f64) -> Self {
+        Self::with_aliases(similarity_threshold, &HashMap::new())
+    }
+
+    /// Creates a resolver with the given Jaro-Winkler merge threshold and
+    /// the dataset alias map (design D4, revised): alias surface form →
+    /// canonical name, as loaded from the ontology `<aliases>` blocks. The
+    /// map keys are
+    /// normalized (trim + lowercase + whitespace collapse) so they match
+    /// the lookup side, which normalizes the extracted name the same way;
+    /// empty keys are dropped. An empty map behaves exactly like
+    /// [`Self::new`].
+    #[must_use]
+    pub fn with_aliases(similarity_threshold: f64, aliases: &HashMap<String, String>) -> Self {
+        let mut map = HashMap::with_capacity(aliases.len());
+        for (alias, canonical) in aliases {
+            let key = normalize_name(alias);
+            if !key.is_empty() {
+                map.entry(key).or_insert(canonical.clone());
+            }
+        }
         Self {
             threshold: similarity_threshold,
+            aliases: map,
             state: Mutex::new(BlockingIndex::new()),
         }
     }
@@ -126,7 +157,7 @@ impl Resolver {
             .iter()
             .map(|entity| {
                 state
-                    .find_best_candidate(entity)
+                    .find_best_candidate(entity, &self.aliases)
                     .filter(|candidate| candidate.score >= self.threshold)
                     .map(|candidate| candidate.id)
             })
@@ -174,7 +205,7 @@ impl Resolver {
         let mut linked = Vec::new();
         let mut changes = EntityChanges::default();
         for entity in entities {
-            match state.find_best_candidate(entity) {
+            match state.find_best_candidate(entity, &self.aliases) {
                 Some(candidate) if candidate.score >= self.threshold => {
                     // Alias memory (design D3): a non-creating resolution
                     // records the surface form.
@@ -277,9 +308,23 @@ impl Resolver {
         let mut rehydrated = false;
         loop {
             let Some(candidate) = state
-                .find_best_candidate(entity)
+                .find_best_candidate(entity, &self.aliases)
                 .filter(|candidate| candidate.score >= self.threshold)
             else {
+                // Dataset alias (design D4): no entity exists yet for the
+                // alias or its canonical — create the entity UNDER THE
+                // CANONICAL NAME, and record the alias surface form in the
+                // alias memory (design D3) so the next run of the alias
+                // skips every tier (skipped when the surface form is the
+                // canonical's stored name).
+                let normalized = normalize_name(&entity.name);
+                if let Some(canonical) = self.aliases.get(&normalized) {
+                    let mut named = entity.clone();
+                    named.name = canonical.clone();
+                    let e = self.create_entity(state, dao, &named)?;
+                    self.record_alias(state, alias_dao, e.id, &entity.name, canonical)?;
+                    return Ok(Resolved::Created(e));
+                }
                 let e = self.create_entity(state, dao, entity)?;
                 return Ok(Resolved::Created(e));
             };
@@ -632,13 +677,20 @@ impl BlockingIndex {
     }
 
     /// The best persisted candidate, in tier order (design D1):
-    /// article-stripped exact → stem equality → alias memory → the best
-    /// Jaro-Winkler over the shared bigram blocks. Tiers 1–3 score 1.0.
-    /// The candidate's canonical name is NOT carried: the merge path reads
-    /// it from the database row (hydration and promotion keep the index's
-    /// canonical names and the `entities` table in sync).
-    fn find_best_candidate(&self, entity: &NerEntity) -> Option<Candidate> {
+    /// article-stripped exact → stem equality → alias (dataset map, then
+    /// alias memory) → the best Jaro-Winkler over the shared bigram blocks.
+    /// Tiers 1–3 score 1.0. `aliases` is the dataset alias map (design D4):
+    /// normalized alias surface form → canonical name. The candidate's
+    /// canonical name is NOT carried: the merge path reads it from the
+    /// database row (hydration and promotion keep the index's canonical
+    /// names and the `entities` table in sync).
+    fn find_best_candidate(
+        &self,
+        entity: &NerEntity,
+        aliases: &HashMap<String, String>,
+    ) -> Option<Candidate> {
         let domain = normalize(&entity.domain);
+        let normalized = normalize_name(&entity.name);
 
         // Tier 1: article-stripped exact — same (domain, type, match_key).
         if let Some(id) = self
@@ -668,11 +720,28 @@ impl BlockingIndex {
             return Some(Candidate { id, score: 1.0 });
         }
 
-        // Tier 3: alias memory (design D3). The map is global (an alias
+        // Tier 3a: dataset alias map (design D4). The normalized surface
+        // form maps to a canonical name; the canonical's tier-1 key is then
+        // looked up — the names map keys on (domain, type, match_key), so
+        // the domain+type gate applies (the map keys on name only).
+        if let Some(canonical) = aliases.get(&normalized)
+            && let Some(id) = self
+                .names
+                .get(&(
+                    domain.clone(),
+                    entity.entity_type.clone(),
+                    match_key(canonical),
+                ))
+                .copied()
+        {
+            return Some(Candidate { id, score: 1.0 });
+        }
+
+        // Tier 3b: alias memory (design D3). The map is global (an alias
         // names exactly one entity), so the hit is additionally gated by
         // domain+type; a stale id (entity gone, alias not yet cascaded)
         // fails the gate and falls through to the JW tier.
-        if let Some(id) = self.aliases.get(&normalize_name(&entity.name)).copied() {
+        if let Some(id) = self.aliases.get(&normalized).copied() {
             let domain_match = self.domains.get(&id).is_some_and(|d| *d == domain);
             let type_match = self
                 .types

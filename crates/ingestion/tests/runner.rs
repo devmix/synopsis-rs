@@ -224,6 +224,7 @@ struct Harness {
     cache: Db,
     cfg: IngestionConfig,
     global: GlobalConfig,
+    aliases: HashMap<String, String>,
     domains: HashMap<String, DomainConfig>,
     registry: Registry,
     embed: MockEmbedding,
@@ -251,7 +252,9 @@ impl Harness {
                 entities: Vec::new(),
                 relations: Vec::new(),
                 extraction: Default::default(),
+                aliases: Vec::new(),
             },
+            aliases: HashMap::new(),
             domains: HashMap::new(),
             registry,
             embed: MockEmbedding { dim: 4 },
@@ -266,6 +269,7 @@ impl Harness {
             db: &self.db,
             ingest_cfg: &self.cfg,
             global: Some(&self.global),
+            aliases: &self.aliases,
             domains: &self.domains,
             registry: &self.registry,
             embed: &self.embed,
@@ -330,6 +334,7 @@ fn domain_config(name: &str) -> DomainConfig {
         relations: Vec::new(),
         extraction: Default::default(),
         confidence: Default::default(),
+        aliases: Vec::new(),
     }
 }
 

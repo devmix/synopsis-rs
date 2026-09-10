@@ -1,95 +1,96 @@
-//! Dataset alias map (`ontology/aliases.yaml`) loading (multilingual-entity-resolution, task 4.1).
+//! Dataset alias map (the ontology `<aliases>` blocks, multilingual-entity-resolution task 4.3).
 //!
-//! Each dataset MAY provide an optional `aliases.yaml` in its ontology directory: a YAML mapping
-//! of an alias surface name (string) to a canonical name (string). The file is optional — a
-//! missing file, an empty file, or an explicit `null` document all load as an empty map (the
-//! feature behaves as if it were disabled). A document that is not a mapping, or a canonical
-//! value that is not a string, is a configuration error. A duplicate alias key (one alias mapped
-//! to two canonicals) is rejected **explicitly** through
-//! [`noyalib::DuplicateKeyPolicy::Error`] — never by the YAML 1.2 silent last-wins default — and
-//! surfaces as a parse error carrying the file path.
+//! Both `global.xml` and each `domains/*.xml` MAY carry an optional top-level `<aliases>` block
+//! of `<alias name="..." canonical="..."/>` entries (design D4, revised 2026-09-10): an alias
+//! surface name → the canonical name of the same real-world entity. The blocks are parsed by
+//! the ontology loaders ([`crate::ontology`], [`crate::domain`]) into the config structs and
+//! validated per file (non-empty `name`/`canonical`, unique `name` within the file). This
+//! module derives the effective dataset map — the flat union of the global block and all
+//! domain blocks — and enforces the one invariant that spans files: a duplicate `name` across
+//! the dataset is a configuration error (one alias maps to exactly one canonical name).
+//!
+//! The original `ontology/aliases.yaml` loader (task 4.1) was reverted by this task: the alias
+//! map lives in the ontology files themselves, and the bootstrap derives it from the
+//! already-parsed ontology configs — no separate file read.
 
 use std::collections::HashMap;
-use std::path::Path;
 
-use noyalib::Value;
-
+use crate::domain::DomainConfig;
 use crate::error::ConfigError;
+use crate::ontology::GlobalConfig;
 
-/// File name of the dataset alias map inside the ontology directory.
-pub const ALIASES_YAML_FILE: &str = "aliases.yaml";
+/// Builds a [`ConfigError::Validation`] from a message (same per-module helper as
+/// [`crate::ontology`] and [`crate::domain`]).
+fn validation(message: impl Into<String>) -> ConfigError {
+    ConfigError::Validation {
+        message: message.into(),
+    }
+}
 
-/// Loads the dataset alias map from `ontology_dir/aliases.yaml`.
+/// Derives the effective dataset alias map: the flat union of the global `<aliases>` block and
+/// every domain `<aliases>` block (alias surface name → canonical name).
 ///
-/// File-presence semantics mirror [`crate::ontology::load_global_config`]: a missing file yields
-/// an empty map (no error), as do an empty file and an explicit `null` document. A structurally
-/// valid mapping is returned as-is (as a [`HashMap`] — no order guarantee). A non-mapping
-/// document, or a canonical value that is not a string, is a [`ConfigError::Validation`]; a
-/// duplicate alias key (rejected explicitly, see the module docs) and any other read/parse
-/// failure are a [`ConfigError::Io`] / [`ConfigError::Yaml`] carrying the file path.
-pub fn load_aliases(
-    ontology_dir: impl AsRef<Path>,
+/// Expects configs returned by [`crate::load_global_config`] / [`crate::load_domain_config`]:
+/// the per-file invariants (non-empty `name`/`canonical`, unique `name` within a file) are
+/// already enforced there. This function enforces the cross-file invariant — the same `name`
+/// in more than one file is a [`ConfigError::Validation`] naming both sources. Domains are
+/// merged in sorted name order so the error is deterministic.
+///
+/// An absent global config and/or an empty domain set yields an empty map (no aliases): the
+/// feature behaves as if disabled.
+pub fn dataset_alias_map(
+    global: Option<&GlobalConfig>,
+    domains: &HashMap<String, DomainConfig>,
 ) -> Result<HashMap<String, String>, ConfigError> {
-    let dir = ontology_dir.as_ref();
-    let path = dir.join(ALIASES_YAML_FILE);
-    let value = match std::fs::metadata(&path) {
-        // Existence established; the read/parse pair and its error decoration live in `io_util`.
-        Ok(_) => {
-            let config = noyalib::ParserConfig::new()
-                .duplicate_key_policy(noyalib::DuplicateKeyPolicy::Error);
-            crate::io_util::read_yaml_file_with_config::<Value>(&path, "alias map", &config)?
+    let mut map: HashMap<String, String> = HashMap::new();
+    // Where each alias name was first seen — named in the cross-file duplicate error.
+    let mut sources: HashMap<String, String> = HashMap::new();
+
+    if let Some(cfg) = global {
+        for alias in &cfg.aliases {
+            insert_alias(
+                &mut map,
+                &mut sources,
+                &alias.name,
+                &alias.canonical,
+                "global.xml",
+            )?;
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(source) => {
-            return Err(ConfigError::Io {
-                path: crate::io_util::display_path(&path),
-                source,
-            });
+    }
+
+    // Sorted domain order: a cross-file duplicate names both sources deterministically.
+    let mut names: Vec<&String> = domains.keys().collect();
+    names.sort();
+    for name in names {
+        let source = format!("domain {name}");
+        for alias in &domains[name].aliases {
+            insert_alias(
+                &mut map,
+                &mut sources,
+                &alias.name,
+                &alias.canonical,
+                &source,
+            )?;
         }
-    };
-    alias_map_from_value(&path, value)
+    }
+    Ok(map)
 }
 
-/// Maps a parsed document to the alias map: `null` → empty map, mapping → extracted string
-/// pairs, anything else → a [`ConfigError::Validation`] naming the file and the shape found.
-fn alias_map_from_value(path: &Path, value: Value) -> Result<HashMap<String, String>, ConfigError> {
-    // An empty file and an explicit `null` document both parse to `Value::Null` → no aliases.
-    let Value::Mapping(mapping) = value else {
-        if value.is_null() {
-            return Ok(HashMap::new());
-        }
-        return Err(ConfigError::Validation {
-            message: format!(
-                "alias map file {} must be a mapping of alias to canonical name, found {}",
-                crate::io_util::display_path(path),
-                describe(&value),
-            ),
-        });
-    };
-    let mut aliases = HashMap::with_capacity(mapping.len());
-    for (alias, canonical) in mapping.iter() {
-        let Some(canonical) = canonical.as_str() else {
-            return Err(ConfigError::Validation {
-                message: format!(
-                    "alias map file {}: alias {alias:?} must map to a string canonical name",
-                    crate::io_util::display_path(path),
-                ),
-            });
-        };
-        aliases.insert(alias.clone(), canonical.to_string());
+/// Inserts one alias into the union map, rejecting a duplicate `name` with the sources of both
+/// occurrences named.
+fn insert_alias(
+    map: &mut HashMap<String, String>,
+    sources: &mut HashMap<String, String>,
+    name: &str,
+    canonical: &str,
+    source: &str,
+) -> Result<(), ConfigError> {
+    if let Some(existing) = sources.get(name) {
+        return Err(validation(format!(
+            "duplicate alias name: {name} ({existing} and {source})"
+        )));
     }
-    Ok(aliases)
-}
-
-/// Short human-readable name of a [`Value`]'s shape for validation messages.
-fn describe(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "a null document",
-        Value::Bool(_) => "a boolean",
-        Value::Number(_) => "a number",
-        Value::String(_) => "a string",
-        Value::Sequence(_) => "a sequence",
-        Value::Mapping(_) => "a mapping",
-        Value::Tagged(_) => "a tagged value",
-    }
+    sources.insert(name.to_string(), source.to_string());
+    map.insert(name.to_string(), canonical.to_string());
+    Ok(())
 }

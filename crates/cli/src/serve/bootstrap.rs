@@ -16,8 +16,8 @@ use std::sync::Arc;
 use config::domain::effective_domain;
 use config::preset::{ChunkingConfig, EmbeddingsMode};
 use config::{
-    Config, ConfigError, DomainConfig, GlobalConfig, OnnxConfig, load, load_domain_config,
-    load_global_config, load_onnx_config,
+    Config, ConfigError, DomainConfig, GlobalConfig, OnnxConfig, dataset_alias_map, load,
+    load_domain_config, load_global_config, load_onnx_config,
 };
 use db::Db;
 use embedding::{EmbeddingProvider, ModelManager, new_onnx_provider};
@@ -70,6 +70,11 @@ pub struct Bootstrap {
     pub global: Option<GlobalConfig>,
     /// Domain ontologies by name (discovered from `domains/*.xml`).
     pub domains: HashMap<String, DomainConfig>,
+    /// Dataset alias map (the ontology `<aliases>` blocks, task 4.3 of
+    /// `multilingual-entity-resolution`): alias surface form → canonical
+    /// name; empty when no ontology file carries the block or there is no
+    /// active dataset.
+    pub aliases: HashMap<String, String>,
     /// Main SQLite database (migrated; `PRAGMA user_version` is the sole
     /// schema authority).
     pub db: Db,
@@ -163,14 +168,21 @@ pub fn bootstrap(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Boot
     //    <workspace_dir>/datasets/<name>/ontology. Without an active dataset
     //    there is no ontology to load and nothing to ingest: run with no
     //    data (a warning, never an error).
-    let (global, domains) = if has_active_dataset(&config) {
-        discover_domains(config.dataset.ontology_path(&config.paths.workspace_dir))?
+    let (global, domains, aliases) = if has_active_dataset(&config) {
+        let ontology_dir = config.dataset.ontology_path(&config.paths.workspace_dir);
+        let (global, domains) = discover_domains(&ontology_dir)?;
+        // The dataset alias map (task 4.3 of `multilingual-entity-resolution`):
+        // the flat union of the `<aliases>` blocks in `global.xml` and
+        // `domains/*.xml`; a duplicate alias name across files is a
+        // configuration error (fail fast, like the ontology).
+        let aliases = dataset_alias_map(global.as_ref(), &domains)?;
+        (global, domains, aliases)
     } else {
         tracing::warn!(
             dataset = %config.dataset.name,
             "no dataset configured, running with no data"
         );
-        (None, HashMap::new())
+        (None, HashMap::new(), HashMap::new())
     };
 
     // 4. External ONNX registry.
@@ -199,6 +211,7 @@ pub fn bootstrap(cfg_path: &Path, dataset_override: Option<&str>) -> Result<Boot
         config,
         global,
         domains,
+        aliases,
         db,
         cache,
         embed,
@@ -580,6 +593,7 @@ pub fn build_runner(boot: &mut Bootstrap) -> Result<Runner<'_>, CliError> {
         db: &boot.db,
         ingest_cfg: &config.ingestion,
         global: boot.global.as_ref(),
+        aliases: &boot.aliases,
         domains: &boot.domains,
         registry,
         embed: boot.embed.as_ref(),
@@ -599,6 +613,7 @@ impl std::fmt::Debug for Bootstrap {
             .field("config", &self.config)
             .field("global", &self.global)
             .field("domains", &self.domains)
+            .field("aliases", &self.aliases.len())
             .field("db", &"<Db>")
             .field("cache", &self.cache.as_ref().is_some())
             .field("embed", &self.embed.name())

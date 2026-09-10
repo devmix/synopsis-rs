@@ -5,8 +5,9 @@
 //! follows design D15 revision 4 — the same wrapper scheme as `global.xml`: `<domain name=
 //! version= description=>` with `<entities><entity/>` (each entity carrying `<attributes>` and
 //! `<synonyms>`), `<relations><relation/>` (each relation carrying `<attributes>`),
-//! `<extraction><regex-rules><regex id= entity= pattern= confidence=>`, and one
-//! `<confidence auto_publish_threshold= review_threshold= reject_threshold=>`.
+//! `<extraction><regex-rules><regex id= entity= pattern= confidence=>`, one
+//! `<confidence auto_publish_threshold= review_threshold= reject_threshold=>` and an optional
+//! `<aliases><alias name= canonical=/></aliases>` block (dataset alias map, task 4.3).
 //!
 //! [`load_domain_config`] is the single entry point: read → parse → per-file validation + regex
 //! compilation (design D5) in one pass — the load + validate startup sequence as one call. A
@@ -36,7 +37,9 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::error::ConfigError;
-use crate::ontology::{AttributeType, EntityDef, ExtractionDef, GlobalConfig, RelationDef};
+use crate::ontology::{
+    AliasDef, AttributeType, EntityDef, ExtractionDef, GlobalConfig, RelationDef,
+};
 
 /// Default for `auto_publish_threshold` when the attribute is absent (zero value). Applied by
 /// [`DomainConfig::effective_confidence`].
@@ -88,6 +91,12 @@ pub struct DomainConfig {
     /// here.
     #[serde(default)]
     pub confidence: ConfidencePolicy,
+    /// Dataset alias map (`<aliases><alias name= canonical=/></aliases>`); a loaded config has
+    /// non-empty `name`/`canonical` values and unique `name`s (checked at load time). Empty when
+    /// the block is absent. Instance-name aliases (see [`AliasDef`]) — not the type-level
+    /// `<synonyms>` of an entity.
+    #[serde(default, deserialize_with = "crate::ontology::de_aliases")]
+    pub aliases: Vec<AliasDef>,
 }
 
 /// Raw `<confidence>` element of a domain file (`auto_publish_threshold`, `review_threshold`,
@@ -256,6 +265,9 @@ impl DomainConfig {
             }
         }
 
+        // The <aliases> block (task 4.3): the same per-file invariants as the global pool.
+        AliasDef::validate_file(&self.aliases)?;
+
         for rule in &mut self.extraction.regex_rules {
             rule.validate_and_compile(file)?;
         }
@@ -339,6 +351,11 @@ pub fn effective_domain(domain: &DomainConfig, pool: &GlobalConfig) -> DomainCon
             ),
         },
         confidence: domain.confidence,
+        // The alias block is dataset-wide data, not a shadowable definition: the effective
+        // domain keeps its own block only. The pool's block is unioned by
+        // `aliases::dataset_alias_map` — copying it in here would double-count it in the union
+        // (task 4.3).
+        aliases: domain.aliases.clone(),
     }
 }
 

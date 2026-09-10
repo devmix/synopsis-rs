@@ -12,8 +12,10 @@
 //! (`global.xml`) through [`load_global_config`](ontology::load_global_config)
 //! and each per-domain ontology (`domains/*.xml`) through
 //! [`load_domain_config`](domain::load_domain_config). The optional per-dataset
-//! alias map (`ontology/aliases.yaml`) loads through
-//! [`load_aliases`](aliases::load_aliases). The SQLite batch-size
+//! alias map lives in the ontology files themselves (the `<aliases>` blocks
+//! of `global.xml` / `domains/*.xml`, parsed into the ontology configs) and is
+//! derived as a flat name→canonical map through
+//! [`dataset_alias_map`](aliases::dataset_alias_map). The SQLite batch-size
 //! constants of the `db` crate live in [`db`] (single source of truth,
 //! db-module task 1.18).
 
@@ -29,10 +31,10 @@ pub mod preset;
 mod io_util;
 
 // Public re-exports so consumers can write `config::Config`, `config::load`, …
-pub use aliases::{ALIASES_YAML_FILE, load_aliases};
+pub use aliases::dataset_alias_map;
 pub use db::{ID_BATCH_SIZE, LINK_BATCH_SIZE};
 pub use domain::{ConfidencePolicy, DomainConfig, EffectiveConfidence, load_domain_config};
 pub use error::ConfigError;
 pub use onnx::{OnnxConfig, load_onnx_config};
-pub use ontology::{GlobalConfig, load_global_config};
+pub use ontology::{AliasDef, GlobalConfig, load_global_config};
 pub use preset::{Config, load};

@@ -656,6 +656,7 @@ mod tests {
         db: db::Db,
         cfg: IngestionConfig,
         global: GlobalConfig,
+        aliases: HashMap<String, String>,
         domains: HashMap<String, DomainConfig>,
         registry: Registry,
         embed: Arc<FakeEmbed>,
@@ -680,6 +681,7 @@ mod tests {
                 db: in_memory_db(),
                 cfg: IngestionConfig::default(),
                 global,
+                aliases: HashMap::new(),
                 domains: HashMap::new(),
                 registry,
                 embed: Arc::new(FakeEmbed { dim: 4 }),
@@ -696,6 +698,7 @@ mod tests {
                 db: &self.db,
                 ingest_cfg: &self.cfg,
                 global: Some(&self.global),
+                aliases: &self.aliases,
                 domains: &self.domains,
                 registry: &self.registry,
                 embed: self.embed.as_ref(),
@@ -729,6 +732,7 @@ mod tests {
             entities: Vec::new(),
             relations: Vec::new(),
             extraction: Default::default(),
+            aliases: Vec::new(),
         }
     }
 

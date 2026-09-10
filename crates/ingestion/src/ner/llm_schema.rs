@@ -221,6 +221,7 @@ mod tests {
             relations,
             extraction: ExtractionDef::default(),
             confidence: ConfidencePolicy::default(),
+            aliases: Vec::new(),
         }
     }
 

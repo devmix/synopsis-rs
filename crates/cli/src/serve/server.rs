@@ -369,6 +369,7 @@ pub fn serve_with_stop(
     let embed = boot.embed.clone();
     let config = boot.config.clone();
     let global = boot.global.clone();
+    let aliases = boot.aliases.clone();
     let domains = boot.domains.clone();
 
     // Runner assembly + vector dimension-mismatch handling (D4). The
@@ -418,6 +419,7 @@ pub fn serve_with_stop(
         db: &db,
         ingest_cfg: &config.ingestion,
         global: global.as_ref(),
+        aliases: &aliases,
         domains: &domains,
         registry: &registry,
         embed: embed.as_ref(),

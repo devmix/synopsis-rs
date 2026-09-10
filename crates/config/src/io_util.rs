@@ -17,27 +17,11 @@ pub(crate) fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// Reads and parses a YAML config file at `path` into `T` with the default parser configuration.
+/// Reads and parses a YAML config file at `path` into `T`.
 ///
 /// `hint` names the file kind in the UTF-8 failure message (`"config"` for the main preset,
 /// `"onnx config"` for the model registry), preserving each loader's historical wording.
 pub(crate) fn read_yaml_file<T>(path: &Path, hint: &str) -> Result<T, ConfigError>
-where
-    T: DeserializeOwned + 'static,
-{
-    read_yaml_file_with_config(path, hint, &noyalib::ParserConfig::default())
-}
-
-/// Reads and parses a YAML config file at `path` into `T` with an explicit parser `config`.
-///
-/// Most loaders go through [`read_yaml_file`] (default config). The alias-map loader (task 4.1)
-/// passes a config with [`noyalib::DuplicateKeyPolicy::Error`] so a duplicate alias key is a
-/// parse error instead of the YAML 1.2 silent last-wins default.
-pub(crate) fn read_yaml_file_with_config<T>(
-    path: &Path,
-    hint: &str,
-    config: &noyalib::ParserConfig,
-) -> Result<T, ConfigError>
 where
     T: DeserializeOwned + 'static,
 {
@@ -49,7 +33,7 @@ where
         path: display_path(path),
         source: noyalib::Error::Custom(format!("{hint} file is not valid UTF-8: {e}")),
     })?;
-    noyalib::from_str_with_config(&text, config).map_err(|source| ConfigError::Yaml {
+    noyalib::from_str(&text).map_err(|source| ConfigError::Yaml {
         path: display_path(path),
         source,
     })

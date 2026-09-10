@@ -185,6 +185,7 @@ mod root_api {
             relations: Vec::new(),
             extraction: Default::default(),
             confidence: Default::default(),
+            aliases: Vec::new(),
         };
         let _schema = generate_json_schema(&domain);
 

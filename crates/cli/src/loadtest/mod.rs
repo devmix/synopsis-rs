@@ -270,6 +270,7 @@ mod tests {
         Bootstrap {
             config,
             global: None,
+            aliases: std::collections::HashMap::new(),
             domains: std::collections::HashMap::new(),
             db,
             cache: None,

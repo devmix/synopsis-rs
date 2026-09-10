@@ -10,8 +10,9 @@
 //! Document format (design D15, revision 4): every group of repeated elements sits inside a
 //! plural wrapper element: `<entities><entity/>`, `<relations><relation/>`, `<sources><source/>`,
 //! `<domains><domain/>`, `<expressions><expression/>`, `<attributes><attribute/>`,
-//! `<synonyms><synonym/>`, `<methods><method/>` (inside `<cross-domain-links>` and `<ner>`) and
-//! `<regex-rules><regex/>` (inside `<extraction>`). Sub-structure containers: `<global>`,
+//! `<synonyms><synonym/>`, `<aliases><alias/>`, `<methods><method/>` (inside
+//! `<cross-domain-links>` and `<ner>`) and `<regex-rules><regex/>` (inside `<extraction>`).
+//! Sub-structure containers: `<global>`,
 //! `<cross-domain-links>`, `<equals>`, `<ner>`, `<extraction>`. XML attributes map through
 //! `#[serde(rename = "@name")]`; scalar element children are plain fields.
 //!
@@ -258,6 +259,12 @@ pub struct GlobalConfig {
     /// (design D5).
     #[serde(default)]
     pub extraction: ExtractionDef,
+    /// Dataset alias map (`<aliases><alias name= canonical=/></aliases>`); a loaded config has
+    /// non-empty `name`/`canonical` values and unique `name`s (checked at load time). Empty when
+    /// the block is absent. Instance-name aliases — deliberately distinct from the type-level
+    /// `<synonyms>` of an [`EntityDef`].
+    #[serde(default, deserialize_with = "de_aliases")]
+    pub aliases: Vec<AliasDef>,
 }
 
 /// One ingestion data source (`<source>` element): scalar data in attributes plus a
@@ -433,6 +440,48 @@ pub struct ExtractionDef {
     /// wrapper element `<regex-rules>` by name.
     #[serde(default, rename = "regex-rules", deserialize_with = "de_regex_rules")]
     pub regex_rules: Vec<RegexRuleDef>,
+}
+
+/// An instance-name alias (`<alias>` element inside the top-level `<aliases>` block): one
+/// surface form that resolves to the canonical name of the same real-world entity
+/// (multilingual-entity-resolution design D4, revised 2026-09-10). Both attributes are required
+/// — enforced at load time. Deliberately distinct from the type-level `<synonyms>` of an
+/// [`EntityDef`]: those are surface forms of the entity *type*, while an alias maps one
+/// *entity name* to another.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AliasDef {
+    /// Alias surface name; required — enforced at load time.
+    #[serde(default, rename = "@name")]
+    pub name: String,
+    /// Canonical name the alias resolves to; required — enforced at load time. The canonical
+    /// need not pre-exist as an entity: the first extraction of either side creates it.
+    #[serde(default, rename = "@canonical")]
+    pub canonical: String,
+}
+
+impl AliasDef {
+    /// Validates one file's `<aliases>` block (shared by the global and domain loaders): every
+    /// `name` and `canonical` is non-empty and every `name` is unique within the file. The
+    /// cross-file invariant (one alias maps to exactly one canonical name across the dataset)
+    /// is enforced by [`crate::aliases::dataset_alias_map`].
+    pub(crate) fn validate_file(aliases: &[AliasDef]) -> Result<(), ConfigError> {
+        let mut names = HashSet::new();
+        for (index, alias) in aliases.iter().enumerate() {
+            let position = index + 1; // aliases are numbered from 1
+            if alias.name.is_empty() {
+                return Err(validation(format!("alias {position}: name is required")));
+            }
+            if alias.canonical.is_empty() {
+                return Err(validation(format!(
+                    "alias {position}: canonical is required"
+                )));
+            }
+            if !names.insert(alias.name.as_str()) {
+                return Err(validation(format!("duplicate alias name: {}", alias.name)));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A compiled extraction pattern (design D5): wraps [`regex::Regex`] behind serde glue, because
@@ -793,6 +842,23 @@ where
     Ok(RegexRuleList::deserialize(deserializer)?.items)
 }
 
+/// `<aliases>` wrapper: one `<alias>` item field.
+#[derive(Deserialize)]
+struct AliasList {
+    /// Items inside `<aliases>`.
+    #[serde(default, rename = "alias")]
+    items: Vec<AliasDef>,
+}
+
+/// Unwraps `<aliases><alias/></aliases>` to the flat [`GlobalConfig::aliases`] field.
+/// `pub(crate)` because the domain loader reuses it for its own wrapper element (task 4.3).
+pub(crate) fn de_aliases<'de, D>(deserializer: D) -> Result<Vec<AliasDef>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(AliasList::deserialize(deserializer)?.items)
+}
+
 // ── Defaults + validation ─────────────────────────────────────────────────
 
 impl GlobalConfig {
@@ -881,6 +947,10 @@ impl GlobalConfig {
                 return Err(validation(format!("source {position}: type is required")));
             }
         }
+
+        // The <aliases> block (task 4.3): non-empty name/canonical, unique name within the
+        // file; the cross-file invariant is checked by `aliases::dataset_alias_map`.
+        AliasDef::validate_file(&self.aliases)?;
 
         let mut entity_ids = HashSet::new();
         for entity in &self.entities {

@@ -572,6 +572,7 @@ fn one_markdown_source(src: &Path) -> GlobalConfig {
         entities: Vec::new(),
         relations: Vec::new(),
         extraction: Default::default(),
+        aliases: Vec::new(),
     }
 }
 
@@ -590,6 +591,7 @@ fn test_bootstrap(config: Config, global: Option<GlobalConfig>, db: Db) -> Boots
     Bootstrap {
         config,
         global,
+        aliases: HashMap::new(),
         domains: HashMap::new(),
         db,
         cache: None,

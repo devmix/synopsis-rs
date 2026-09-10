@@ -250,6 +250,7 @@ fn test_bootstrap_with_embed(dir: &TempDir, embed: Arc<dyn EmbeddingProvider>) -
     Bootstrap {
         config,
         global: None,
+        aliases: std::collections::HashMap::new(),
         domains: std::collections::HashMap::new(),
         db,
         cache: None,
@@ -429,6 +430,7 @@ fn one_markdown_source(src: &Path) -> GlobalConfig {
         entities: Vec::new(),
         relations: Vec::new(),
         extraction: Default::default(),
+        aliases: Vec::new(),
     }
 }
 
