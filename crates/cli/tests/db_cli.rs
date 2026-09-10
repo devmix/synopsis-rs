@@ -1,8 +1,12 @@
 //! Binary-level tests for the `db` subcommand (remove-direct-ingest task
-//! 1.1): `db stats` prints the dataset counts and changes nothing;
-//! `db clear` prints the same stats, then deletes the dataset's entire
-//! state directory on a piped `y` and aborts (state directory + DB
-//! unchanged) on a piped `n` or no answer.
+//! 1.1; `merge-entities` added by multilingual-entity-resolution task 6.1):
+//! `db stats` prints the dataset counts and changes nothing; `db clear`
+//! prints the same stats, then deletes the dataset's entire state directory
+//! on a piped `y` and aborts (state directory + DB unchanged) on a piped `n`
+//! or no answer; `db merge-entities <id> --into <id>` merges one entity into
+//! another on a piped `y` (duplicate row gone, both names aliased) and aborts
+//! (DB unchanged) on a piped `n`, a nonexistent id, or a type / domain
+//! mismatch.
 
 // Test code: unwrap/expect are intentional (asserting on well-defined outcomes).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -12,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use db::{
-    ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, EntityLink, EntityLinkDao, FactDao,
-    QueueTaskDao, QueueTaskType,
+    ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityAliasDao, EntityDao, EntityLink,
+    EntityLinkDao, FactDao, QueueTaskDao, QueueTaskType,
 };
 
 fn synopsis() -> Command {
@@ -185,6 +189,84 @@ fn assert_seeded(dir: &Path) {
     assert_eq!(table_count(dir, "entity_sources"), 1);
 }
 
+/// The dataset knowledge database path for a fixture directory.
+fn db_path(dir: &Path) -> PathBuf {
+    dir.join("workspace")
+        .join("datasets")
+        .join("edtech")
+        .join("state")
+        .join("db")
+        .join("knowledge.db")
+}
+
+/// Opens the fixture knowledge database (a fresh handle).
+fn open_db(dir: &Path) -> Db {
+    Db::open_knowledge(db_path(dir)).expect("open knowledge db")
+}
+
+/// The entity id of the row with the given (type, name, domain); panics if
+/// absent.
+fn entity_id(dir: &Path, etype: &str, name: &str, domain: &str) -> i64 {
+    let db = open_db(dir);
+    let id = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT id FROM entities WHERE type = ?1 AND name = ?2 AND domain = ?3",
+                rusqlite::params![etype, name, domain],
+                |r| r.get(0),
+            )
+        })
+        .expect("with_conn")
+        .expect("entity exists");
+    drop(db);
+    id
+}
+
+/// Whether an entity with the given (type, name, domain) exists.
+fn entity_exists(dir: &Path, etype: &str, name: &str, domain: &str) -> bool {
+    let db = open_db(dir);
+    let found = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT 1 FROM entities WHERE type = ?1 AND name = ?2 AND domain = ?3",
+                rusqlite::params![etype, name, domain],
+                |_| Ok(()),
+            )
+        })
+        .expect("with_conn")
+        .is_ok();
+    drop(db);
+    found
+}
+
+/// Adds an entity to the fixture DB (the domain-mismatch merge test); returns
+/// its id.
+fn add_entity(dir: &Path, etype: &str, name: &str, domain: &str) -> i64 {
+    let db = open_db(dir);
+    let id = db
+        .with_conn(|conn| {
+            EntityDao::new(ConnectionOrTx::Connection(conn))
+                .create(etype, name, domain, None, None, None)
+        })
+        .expect("with_conn")
+        .expect("create entity");
+    drop(db);
+    id
+}
+
+/// The aliases recorded for an entity (ordered by alias).
+fn aliases_of(dir: &Path, entity_id: i64) -> Vec<String> {
+    let db = open_db(dir);
+    let aliases = db
+        .with_conn(|conn| {
+            EntityAliasDao::new(ConnectionOrTx::Connection(conn)).aliases_of(entity_id)
+        })
+        .expect("with_conn")
+        .expect("aliases");
+    drop(db);
+    aliases
+}
+
 #[test]
 fn db_stats_prints_counts_and_changes_nothing() {
     let f = fixture("stats");
@@ -268,5 +350,203 @@ fn db_clear_without_answer_aborts_unchanged() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("aborted"), "{stdout:?}");
     assert_seeded(&f.dir);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+// --- db merge-entities (multilingual-entity-resolution task 6.1) -------------
+
+/// The `db merge-entities <from> --into <into>` argument list.
+fn merge_args(f: &Fixture, from: i64, into: i64) -> Vec<String> {
+    vec![
+        "--config".to_string(),
+        f.cfg.to_str().unwrap().to_string(),
+        "db".to_string(),
+        "merge-entities".to_string(),
+        from.to_string(),
+        "--into".to_string(),
+        into.to_string(),
+    ]
+}
+
+/// Runs `db merge-entities` with the given ids and stdin text.
+fn run_merge(f: &Fixture, from: i64, into: i64, stdin_text: &str) -> Output {
+    let owned = merge_args(f, from, into);
+    let args: Vec<&str> = owned.iter().map(String::as_str).collect();
+    run_stdin(&args, stdin_text)
+}
+
+#[test]
+fn db_help_lists_merge_entities() {
+    let out = run(&["db", "--help"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("merge-entities"),
+        "db --help lists the action: {stdout:?}"
+    );
+}
+
+#[test]
+fn db_merge_entities_help_shows_into_flag() {
+    let out = run(&["db", "merge-entities", "--help"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--into"), "shows --into: {stdout:?}");
+    assert!(stdout.contains("ID"), "shows the ID positional: {stdout:?}");
+}
+
+#[test]
+fn db_merge_entities_piped_y_merges_and_records_aliases() {
+    let f = fixture("merge-y");
+    let survivor = entity_id(&f.dir, "system", "CRM", "hr");
+    let dup = entity_id(&f.dir, "system", "ERP", "hr");
+    let out = run_merge(&f, dup, survivor, "y\n");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The stats block, then the prompt, then the summary.
+    assert!(stdout.contains("Dataset Statistics:"), "{stdout:?}");
+    assert!(stdout.contains("Confirm merge? [y/N]"), "{stdout:?}");
+    assert!(stdout.contains("Merge Summary:"), "{stdout:?}");
+    assert!(stdout.contains("CRM"), "surviving name: {stdout:?}");
+    assert!(stdout.contains("ERP"), "merged name: {stdout:?}");
+    // The duplicate row is gone; the survivor remains.
+    assert_eq!(table_count(&f.dir, "entities"), 2, "one entity deleted");
+    assert!(
+        entity_exists(&f.dir, "system", "CRM", "hr"),
+        "survivor remains"
+    );
+    assert!(
+        !entity_exists(&f.dir, "system", "ERP", "hr"),
+        "duplicate gone"
+    );
+    // Both names are recorded as aliases of the survivor (ordered).
+    let aliases = aliases_of(&f.dir, survivor);
+    assert_eq!(
+        aliases,
+        vec!["CRM".to_string(), "ERP".to_string()],
+        "both names aliased: {aliases:?}"
+    );
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[test]
+fn db_merge_entities_uppercase_y_merges() {
+    let f = fixture("merge-Y");
+    let survivor = entity_id(&f.dir, "system", "CRM", "hr");
+    let dup = entity_id(&f.dir, "system", "ERP", "hr");
+    let out = run_merge(&f, dup, survivor, "Y\n");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(table_count(&f.dir, "entities"), 2, "one entity deleted");
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[test]
+fn db_merge_entities_piped_n_aborts_unchanged() {
+    let f = fixture("merge-n");
+    let survivor = entity_id(&f.dir, "system", "CRM", "hr");
+    let dup = entity_id(&f.dir, "system", "ERP", "hr");
+    let out = run_merge(&f, dup, survivor, "n\n");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an aborted merge exits 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Confirm merge? [y/N]"), "{stdout:?}");
+    assert!(stdout.contains("aborted"), "{stdout:?}");
+    assert!(
+        !stdout.contains("Merge Summary"),
+        "no merge must be reported: {stdout:?}"
+    );
+    assert_seeded(&f.dir);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[test]
+fn db_merge_entities_without_answer_aborts_unchanged() {
+    // `output()` closes stdin immediately: EOF is not a confirmation.
+    let f = fixture("merge-eof");
+    let survivor = entity_id(&f.dir, "system", "CRM", "hr");
+    let dup = entity_id(&f.dir, "system", "ERP", "hr");
+    let args = merge_args(&f, dup, survivor);
+    let out = synopsis().args(&args).output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an aborted merge exits 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("aborted"), "{stdout:?}");
+    assert_seeded(&f.dir);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[test]
+fn db_merge_entities_nonexistent_id_errors_unchanged() {
+    let f = fixture("merge-badid");
+    let survivor = entity_id(&f.dir, "system", "CRM", "hr");
+    // 999999 does not exist.
+    let out = run_merge(&f, 999999, survivor, "y\n");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a nonexistent id exits 1; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("does not exist"), "clear error: {stderr:?}");
+    assert_seeded(&f.dir);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[test]
+fn db_merge_entities_different_type_errors_unchanged() {
+    let f = fixture("merge-type");
+    let crm = entity_id(&f.dir, "system", "CRM", "hr");
+    let alice = entity_id(&f.dir, "person", "Alice", "hr");
+    // CRM (system) and Alice (person) differ in type.
+    let out = run_merge(&f, alice, crm, "y\n");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a type mismatch exits 1; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("type mismatch"), "clear error: {stderr:?}");
+    assert_seeded(&f.dir);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[test]
+fn db_merge_entities_different_domain_errors_unchanged() {
+    let f = fixture("merge-domain");
+    let crm_hr = entity_id(&f.dir, "system", "CRM", "hr");
+    // A same-type, different-domain entity (added to the fixture DB).
+    let crm_finance = add_entity(&f.dir, "system", "CRM", "finance");
+    let out = run_merge(&f, crm_finance, crm_hr, "y\n");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a domain mismatch exits 1; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("domain mismatch"),
+        "clear error: {stderr:?}"
+    );
+    // No modification: the merge did not run (the added entity remains).
+    assert_eq!(table_count(&f.dir, "entities"), 4, "no entity deleted");
     let _ = std::fs::remove_dir_all(&f.dir);
 }

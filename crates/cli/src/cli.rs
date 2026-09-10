@@ -119,14 +119,23 @@ pub enum QueueAction {
     },
 }
 
-/// `db` sub-actions (remove-direct-ingest task 1.1; new operational
-/// command).
+/// `db` sub-actions (remove-direct-ingest task 1.1; `merge-entities` added by
+/// multilingual-entity-resolution task 6.1; new operational command).
 pub enum DbAction {
     /// `stats`: print the dataset statistics (read-only).
     Stats,
     /// `clear`: confirm and delete the entire dataset state directory
     /// (`knowledge.db` + `vectors/`) after confirmation.
     Clear,
+    /// `merge-entities <id> --into <id>`: merge entity `<id>` (the duplicate
+    /// row) into entity `--into <id>` (the survivor) after confirmation. Both
+    /// must exist and share the same `type` and `domain`.
+    Merge {
+        /// The entity id to merge away (the duplicate row, deleted after the merge).
+        from: i64,
+        /// The surviving entity id.
+        into: i64,
+    },
 }
 
 /// `onnx-runtime` sub-actions.
@@ -288,11 +297,12 @@ fn build_queue_command() -> ClapCommand {
         )
 }
 
-/// Builds the `db` subcommand: `stats|clear` (remove-direct-ingest task
-/// 1.1; new operational command).
+/// Builds the `db` subcommand: `stats|clear|merge-entities` (remove-direct-
+/// ingest task 1.1; `merge-entities` added by multilingual-entity-resolution
+/// task 6.1; new operational command).
 fn build_db_command() -> ClapCommand {
     ClapCommand::new("db")
-        .about("inspect and clear the dataset knowledge database")
+        .about("inspect, clear and merge the dataset knowledge database")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(
@@ -303,6 +313,29 @@ fn build_db_command() -> ClapCommand {
             ClapCommand::new("clear").about(
                 "delete all rows from the dataset knowledge database (asks for confirmation; \
                  restart serve afterwards so the startup reconcile re-enqueues the sources)",
+            ),
+        )
+        .subcommand(
+            ClapCommand::new("merge-entities").about(
+                "merge one entity into another: re-point facts, chunk links, sources and links, \
+                 record both names as aliases of the survivor and delete the duplicate row \
+                 (both ids must exist and share the same type + domain; asks for confirmation)",
+            )
+            .arg(
+                Arg::new("from_id")
+                    .value_name("ID")
+                    .action(ArgAction::Set)
+                    .value_parser(clap::value_parser!(i64))
+                    .help("the entity id to merge away (the duplicate row, deleted after the merge)"),
+            )
+            .arg(
+                Arg::new("into")
+                    .long("into")
+                    .value_name("ID")
+                    .action(ArgAction::Set)
+                    .value_parser(clap::value_parser!(i64))
+                    .required(true)
+                    .help("the surviving entity id"),
             ),
         )
 }
@@ -407,13 +440,25 @@ impl Cli {
                 Subcommand::Queue { action }
             }
             "db" => {
-                let (action_name, _) = match sub.subcommand() {
+                let (action_name, action_matches) = match sub.subcommand() {
                     Some(pair) => pair,
                     None => unreachable!("clap rejected the command: db sub-action required"),
                 };
                 let action = match action_name {
                     "stats" => DbAction::Stats,
                     "clear" => DbAction::Clear,
+                    "merge-entities" => {
+                        let (from, into) = match (
+                            action_matches.get_one::<i64>("from_id").copied(),
+                            action_matches.get_one::<i64>("into").copied(),
+                        ) {
+                            (Some(from), Some(into)) => (from, into),
+                            _ => unreachable!(
+                                "clap enforces the required ID positional and --into flag"
+                            ),
+                        };
+                        DbAction::Merge { from, into }
+                    }
                     other => unreachable!("clap only accepts the declared sub-actions: {other}"),
                 };
                 Subcommand::Db { action }

@@ -1,8 +1,9 @@
-//! `db` subcommand body: dataset statistics and full dataset clear
-//! (remove-direct-ingest task 1.1).
+//! `db` subcommand body: dataset statistics, full dataset clear
+//! (remove-direct-ingest task 1.1) and the manual entity merge
+//! (`db merge-entities`, multilingual-entity-resolution task 6.1).
 //!
-//! New Rust operational command: dataset statistics and clear are first-class
-//! operations, not a side effect of another subcommand.
+//! New Rust operational command: dataset statistics, clear and merge are
+//! first-class operations, not a side effect of another subcommand.
 //!
 //! - `db stats` opens the dataset-bound knowledge database and prints row
 //!   counts gathered through the existing DAOs (documents, chunks, entities,
@@ -13,10 +14,20 @@
 //!   [`clear_dataset`], which deletes the dataset's ENTIRE state directory
 //!   (`<workspace_dir>/datasets/<name>/state`: the knowledge DB plus the
 //!   vector index) from disk in one shot.
+//! - `db merge-entities <id> --into <id>` loads both entities, checks the
+//!   same `type` + `domain` precondition up front (a clear error, no
+//!   modification), prints the statistics, prompts `Confirm merge? [y/N]` on
+//!   stdin; only `y`/`Y` proceeds to the transactional
+//!   [`db::merge_entities`], which re-points the dependent rows, records
+//!   both names as aliases of the survivor and deletes the duplicate row. A
+//!   summary (re-pointed counts, surviving name, recorded aliases) is
+//!   printed.
 //!
 //! Like the `queue` command the command re-loads the config from the
 //! resolved path; it needs only `paths` + `dataset` (the knowledge DB is
-//! dataset-bound), so no embedding model or ONNX runtime is touched.
+//! dataset-bound), so no embedding model or ONNX runtime is touched — the
+//! `clear` and `merge-entities` actions are one-shot and open only the
+//! dataset-bound DB.
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -24,8 +35,8 @@ use std::process::ExitCode;
 
 use config::{Config, ConfigError, load};
 use db::{
-    ChunkDao, ConnectionOrTx, Db, DbError, DocumentDao, DocumentFilter, EntityDao, EntityFilter,
-    EntityLinkDao, FactDao, QueueTaskDao,
+    ChunkDao, ConnectionOrTx, Db, DbError, DocumentDao, DocumentFilter, Entity, EntityDao,
+    EntityFilter, EntityLinkDao, FactDao, MergeSummary, QueueTaskDao, merge_entities,
 };
 
 use crate::cli::DbAction;
@@ -81,15 +92,18 @@ pub fn db_flow(
 ) -> Result<(), CliError> {
     let config = load_config(&req.cfg_path, req.dataset.as_deref())?;
     let db = open_db(&config.dataset.db_path(&config.paths.workspace_dir))?;
-    let stats = collect_stats(&db)?;
     // One console per flow: TTY/NO_COLOR/width gating lives in the
     // constructor (design D2/D3), the handlers only render strings.
     let console = Console::stdout();
-    print_stats(out, &stats, &console)?;
 
     match &req.action {
-        DbAction::Stats => Ok(()),
+        DbAction::Stats => {
+            let stats = collect_stats(&db)?;
+            print_stats(out, &stats, &console)
+        }
         DbAction::Clear => {
+            let stats = collect_stats(&db)?;
+            print_stats(out, &stats, &console)?;
             if !confirm_deletion(out, input)? {
                 writeln!(out, "{}", console.line("aborted: dataset unchanged"))?;
                 return Ok(());
@@ -108,7 +122,151 @@ pub fn db_flow(
             )?;
             Ok(())
         }
+        DbAction::Merge { from, into } => merge_flow(&db, *from, *into, out, input, &console),
     }
+}
+
+/// The `merge-entities` flow (multilingual-entity-resolution task 6.1):
+/// validate the preconditions up front (a clear error, no modification),
+/// print the dataset statistics, confirm on stdin, and on `y`/`Y` run the
+/// transactional [`merge_entities`] and print the summary (re-pointed counts,
+/// surviving name, recorded aliases).
+///
+/// One-shot: the command opens only the dataset-bound DB (no model / ONNX
+/// load); the pooled handle is dropped when the flow returns.
+///
+/// # Errors
+///
+/// [`CliError::Db`] when a precondition is violated or the merge fails,
+/// [`CliError::Io`] when `out` or `input` cannot be written to / read from.
+fn merge_flow(
+    db: &Db,
+    from: i64,
+    into: i64,
+    out: &mut dyn Write,
+    input: &mut dyn BufRead,
+    console: &Console,
+) -> Result<(), CliError> {
+    load_merge_pair(db, from, into)?;
+    let stats = collect_stats(db)?;
+    print_stats(out, &stats, console)?;
+    if !confirm_merge(out, input)? {
+        writeln!(out, "{}", console.line("aborted: merge not applied"))?;
+        return Ok(());
+    }
+    let summary = db
+        .exec_tx(|tx| merge_entities(ConnectionOrTx::Transaction(tx), into, from))
+        .map_err(CliError::Db)?;
+    print_merge_summary(out, &summary, console)?;
+    Ok(())
+}
+
+/// Loads both entities for a `merge-entities` invocation and validates the
+/// merge preconditions UP FRONT (both exist, `from != into`, same `type` and
+/// `domain`) so a violation is a clear error before the statistics block and
+/// the confirmation prompt — the database is not modified. The transactional
+/// [`merge_entities`] re-checks the same preconditions atomically.
+///
+/// # Errors
+///
+/// [`CliError::Db`] with a [`DbError::MergePrecondition`] reason when a
+/// precondition is violated.
+fn load_merge_pair(db: &Db, from: i64, into: i64) -> Result<(), CliError> {
+    let (into_entity, from_entity) = db
+        .with_conn(|conn| -> Result<(Entity, Entity), DbError> {
+            let dao = EntityDao::new(ConnectionOrTx::Connection(conn));
+            let into_entity = dao
+                .get_by_id(into)?
+                .ok_or_else(|| DbError::MergePrecondition {
+                    reason: format!("entity {into} does not exist"),
+                })?;
+            let from_entity = dao
+                .get_by_id(from)?
+                .ok_or_else(|| DbError::MergePrecondition {
+                    reason: format!("entity {from} does not exist"),
+                })?;
+            Ok((into_entity, from_entity))
+        })
+        .and_then(|r| r)
+        .map_err(CliError::Db)?;
+    if from == into {
+        return Err(precondition_error(
+            "into_id and from_id must differ".to_string(),
+        ));
+    }
+    if into_entity.entity_type != from_entity.entity_type {
+        return Err(precondition_error(format!(
+            "type mismatch: entity {into} is {:?}, entity {from} is {:?}",
+            into_entity.entity_type, from_entity.entity_type
+        )));
+    }
+    if into_entity.domain != from_entity.domain {
+        return Err(precondition_error(format!(
+            "domain mismatch: entity {into} is {:?}, entity {from} is {:?}",
+            into_entity.domain, from_entity.domain
+        )));
+    }
+    Ok(())
+}
+
+/// Wraps a precondition reason into the [`CliError::Db`] variant that
+/// [`merge_entities`] uses for the same violations (consistent messages).
+fn precondition_error(reason: String) -> CliError {
+    CliError::Db(DbError::MergePrecondition { reason })
+}
+
+/// The `merge-entities` confirmation: prints `Confirm merge? [y/N]` to `out`
+/// and reads one answer line from `input`. Proceeds only on `y` or `Y`; every
+/// other answer (including EOF) aborts.
+///
+/// # Errors
+///
+/// [`CliError::Io`] when the prompt cannot be written or the answer line
+/// cannot be read.
+fn confirm_merge(out: &mut dyn Write, input: &mut dyn BufRead) -> Result<bool, CliError> {
+    write!(out, "Confirm merge? [y/N] ")?;
+    out.flush()?;
+    let mut line = String::new();
+    input.read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y"))
+}
+
+/// Renders the merge summary to `out`: a section header plus a borderless kv
+/// block (the re-pointed row counts, the surviving / merged names, and the
+/// recorded aliases).
+///
+/// # Errors
+///
+/// [`CliError::Io`] when `out` cannot be written.
+fn print_merge_summary(
+    out: &mut dyn Write,
+    summary: &MergeSummary,
+    console: &Console,
+) -> Result<(), CliError> {
+    let surviving = format!("{} (id {})", summary.surviving_name, summary.into_id);
+    let merged = format!("{} (id {})", summary.merged_name, summary.from_id);
+    let facts = summary.facts_repointed.to_string();
+    let facts_dropped = summary.facts_dropped.to_string();
+    let chunk_links = summary.chunk_entities_repointed.to_string();
+    let sources = summary.entity_sources_repointed.to_string();
+    let entity_links = summary.entity_links_repointed.to_string();
+    let aliases = summary.aliases.join(", ");
+    writeln!(out, "{}", console.header("Merge Summary:"))?;
+    writeln!(
+        out,
+        "{}",
+        console.kv(&[
+            ("Surviving entity", &surviving),
+            ("Merged entity", &merged),
+            ("Facts re-pointed", &facts),
+            ("Facts dropped", &facts_dropped),
+            ("Chunk links re-pointed", &chunk_links),
+            ("Sources re-pointed", &sources),
+            ("Entity links re-pointed", &entity_links),
+            ("Recorded aliases", &aliases),
+        ])
+    )?;
+    Ok(())
 }
 
 /// The dataset statistics block (the `db stats` lines).
