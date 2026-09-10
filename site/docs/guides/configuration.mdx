@@ -156,7 +156,7 @@ ingestion:
 | `ingestion.max_retries` | integer | 3 | Maximum automatic re-processing attempts for a problematic task by the background worker; after exhaustion the task gets `error` status in the `queue_tasks` queue. |
 | `ingestion.resolver.similarity_threshold` | float | 0.8 | Jaro-Winkler similarity threshold for merging duplicate entity names. |
 
-**Low reasoning effort (shipped default).** The shipped presets set `reasoning_effort: low` on both the NER and the linker LLM: `gpt-oss` is a reasoning model, and `low` bounds the long-reasoning hang (a full-effort call can run for minutes on a dense chunk). NER's `max_tokens` is set to **8192** as a safety bound — well above the observed `low`-effort output (~1355 tokens) but hard-capping the worst case; the linker keeps its existing `max_tokens` (2048). Extraction stays complete at `low` because the NER system prompt carries a soft exhaustiveness directive (see [Ingestion](./ingestion#entity-extraction-ner)).
+**Low reasoning effort (shipped default).** The shipped presets set `reasoning_effort: low` on both the NER and the linker LLM. Extraction stays complete at `low` because the NER system prompt carries a soft exhaustiveness directive (see [Ingestion](./ingestion#entity-extraction-ner)).
 
 See [Ingestion](./ingestion) for how the chunking and NER settings drive the pipeline.
 
