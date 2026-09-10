@@ -51,6 +51,15 @@ pub enum DbError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// A `merge_entities` precondition was violated (design D2): the two
+    /// entity ids are equal, one of the entities does not exist, or the two
+    /// entities differ in `type` or `domain`. No write has been performed;
+    /// the database is byte-identical.
+    #[error("merge precondition violated: {reason}")]
+    MergePrecondition {
+        /// Human-readable description of the violated precondition.
+        reason: String,
+    },
 }
 
 impl From<rusqlite::Error> for DbError {

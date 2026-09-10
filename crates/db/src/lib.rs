@@ -18,6 +18,8 @@
 //!   `DbError::NestedTransaction`;
 //! - [`DbExecutor`] — the command surface DAOs use over a connection or a
 //!   transaction (`ConnectionOrTx` unifies both);
+//! - [`merge_entities`] — transactional entity merge (re-points all
+//!   dependent rows, records aliases, deletes the merged-away entity);
 //! - [`DbError`] — the crate's error type.
 //!
 //! Test support: [`test_util`] (in-memory and read-only fixture databases).
@@ -36,6 +38,7 @@ pub mod executor;
 pub mod fact;
 pub mod fact_source;
 pub mod gc;
+pub mod merge;
 pub mod queue_task;
 pub mod test_util;
 pub mod utils;
@@ -54,6 +57,7 @@ pub use executor::{ConnectionOrTx, DbExecutor};
 pub use fact::{Fact, FactDao, FactFilter};
 pub use fact_source::{FactSource, FactSourceDao};
 pub use gc::GcDao;
+pub use merge::{MergeSummary, merge_entities};
 pub use queue_task::{
     DocDeletePayload, DocIndexPayload, EntityLinkPayload, QueueTask, QueueTaskDao, QueueTaskError,
     QueueTaskType, ReIndexOp, UnknownTaskType,
