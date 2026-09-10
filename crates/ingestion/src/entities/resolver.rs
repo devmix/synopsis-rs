@@ -37,18 +37,40 @@
 //!   from the database listing itself, so a second miss is the defensive
 //!   [`IngestionError::EntityCandidateGone`] error, not another retry.
 //!
-//! Block keys are `(normalized domain, entity type, bigram)` tuples and name
-//! keys are `"domain:normalized_name"` strings, so cross-domain and
+//! # Resolution tiers (design D1 of `multilingual-entity-resolution`)
+//!
+//! [`BlockingIndex::find_best_candidate`] evaluates, in order:
+//!
+//! 1. **Article-stripped exact** — `(domain, type, match_key)` hit, score
+//!    1.0 (the `match_key` key: `strip_articles(normalize(name))`).
+//! 2. **Stem equality** — `(domain, type, stem_key)` hit, score 1.0. Several
+//!    pre-existing rows can share a stem key; the lowest id is the
+//!    deterministic pick.
+//! 3. **Alias memory** — the normalized surface form → id map hydrated from
+//!    the `entity_aliases` table (design D3). The map is global (an alias
+//!    names exactly one entity), so the hit is additionally gated by
+//!    domain+type. Score 1.0.
+//! 4. **Jaro-Winkler** — the best JW over the shared bigram blocks
+//!    (`(domain, type, bigram)`), scored by the similarity.
+//!
+//! Tiers 1–3 are deterministic and score 1.0 regardless of the configured
+//! threshold; only tier 4 competes against it. Every non-creating
+//! resolution (tiers 1–4 in the creating APIs) records the surface form in
+//! `entity_aliases` (design D3), so repeated surface forms resolve by
+//! lookup on later runs — resolution is monotone.
+//!
+//! Block keys are `(normalized domain, entity type, bigram)` tuples and the
+//! tier keys are `(domain, type, key)` tuples, so cross-domain and
 //! cross-type entities never merge.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use config::preset::ResolverConfig;
-use db::{ConnectionOrTx, EntityDao, EntitySourceDao};
+use db::{ConnectionOrTx, EntityAliasDao, EntityDao, EntitySourceDao};
 
 use super::cluster::{canonical_proto, cluster_batch, scope_entity_metadata};
-use super::similarity::{bigrams, jaro_winkler, normalize_name};
+use super::similarity::{bigrams, jaro_winkler, match_key, normalize_name, stem_key};
 use crate::error::IngestionError;
 use crate::ner::{NerEntity, normalize};
 
@@ -85,8 +107,9 @@ impl Resolver {
     }
 
     /// Resolves each entity against the hydrated index WITHOUT creating
-    /// anything. Returns ids aligned with the input; `None` means no
-    /// candidate at or above the threshold.
+    /// anything (and without recording aliases — the alias write-through
+    /// belongs to the creating APIs). Returns ids aligned with the input;
+    /// `None` means no candidate at or above the threshold.
     pub fn lookup(
         &self,
         exec: ConnectionOrTx<'_>,
@@ -96,8 +119,9 @@ impl Resolver {
             return Ok(Vec::new());
         }
         let dao = EntityDao::new(exec);
+        let alias_dao = EntityAliasDao::new(exec);
         let mut state = lock(&self.state);
-        state.hydrate(&dao)?;
+        state.hydrate(&dao, &alias_dao)?;
         Ok(entities
             .iter()
             .map(|entity| {
@@ -142,8 +166,9 @@ impl Resolver {
 
         let dao = EntityDao::new(exec);
         let sources = EntitySourceDao::new(exec);
+        let alias_dao = EntityAliasDao::new(exec);
         let mut state = lock(&self.state);
-        state.hydrate(&dao)?;
+        state.hydrate(&dao, &alias_dao)?;
 
         let mut ids = Vec::with_capacity(entities.len());
         let mut linked = Vec::new();
@@ -151,10 +176,21 @@ impl Resolver {
         for entity in entities {
             match state.find_best_candidate(entity) {
                 Some(candidate) if candidate.score >= self.threshold => {
+                    // Alias memory (design D3): a non-creating resolution
+                    // records the surface form.
+                    if let Some(canonical) = state.canonical.get(&candidate.id).cloned() {
+                        self.record_alias(
+                            &mut state,
+                            &alias_dao,
+                            candidate.id,
+                            &entity.name,
+                            &canonical,
+                        )?;
+                    }
                     ids.push(candidate.id);
                 }
                 _ => {
-                    let resolved = self.resolve_one(&mut state, &dao, entity)?;
+                    let resolved = self.resolve_one(&mut state, &dao, &alias_dao, entity)?;
                     let (e, is_created, is_updated) = resolved.into_parts();
                     let id = e.id;
                     ids.push(id);
@@ -173,9 +209,11 @@ impl Resolver {
 
     /// Normalizes, deduplicates and persists the batch: clusters similar
     /// names first (one canonical per cluster), resolves each canonical
-    /// against the database, and links every resolved entity to `doc_id`
-    /// for provenance. Returns the resolved entities in cluster order
-    /// (deduplicated by id) and the change report (created/updated ids).
+    /// against the database, records every cluster member's surface form in
+    /// the alias memory (design D3), and links every resolved entity to
+    /// `doc_id` for provenance. Returns the resolved entities in cluster
+    /// order (deduplicated by id) and the change report (created/updated
+    /// ids).
     pub fn add_entities(
         &self,
         exec: ConnectionOrTx<'_>,
@@ -191,17 +229,26 @@ impl Resolver {
 
         let dao = EntityDao::new(exec);
         let sources = EntitySourceDao::new(exec);
+        let alias_dao = EntityAliasDao::new(exec);
         let mut state = lock(&self.state);
-        state.hydrate(&dao)?;
+        state.hydrate(&dao, &alias_dao)?;
 
         let mut resolved = Vec::new();
         let mut ids = Vec::new();
         let mut changes = EntityChanges::default();
         for cluster in cluster_batch(entities, self.threshold) {
             let canonical = canonical_proto(&cluster);
-            let resolved_entity = self.resolve_one(&mut state, &dao, canonical)?;
+            let resolved_entity = self.resolve_one(&mut state, &dao, &alias_dao, canonical)?;
             let (entity, is_created, is_updated) = resolved_entity.into_parts();
             let id = entity.id;
+            // Alias memory (design D3): every cluster member's surface form
+            // resolves to the canonical — record them all, so a later run
+            // of a dropped member (e.g. the shorter variant of a merged
+            // pair) skips the similarity tiers and lands on the same
+            // entity.
+            for member in &cluster {
+                self.record_alias(&mut state, &alias_dao, id, &member.name, &entity.name)?;
+            }
             if !ids.contains(&id) {
                 ids.push(id);
                 resolved.push(entity);
@@ -224,6 +271,7 @@ impl Resolver {
         &self,
         state: &mut BlockingIndex,
         dao: &EntityDao<'_>,
+        alias_dao: &EntityAliasDao<'_>,
         entity: &NerEntity,
     ) -> Result<Resolved, IngestionError> {
         let mut rehydrated = false;
@@ -248,24 +296,57 @@ impl Resolver {
                     let mut updated = false;
                     if entity.name.chars().count() > existing.name.chars().count() {
                         dao.update_name(candidate_id, &entity.name)?;
-                        let domain = state.domains[&candidate_id].clone();
-                        state
-                            .names
-                            .insert(name_key(&domain, &existing.name), candidate_id);
-                        state
-                            .names
-                            .insert(name_key(&domain, &entity.name), candidate_id);
+                        let domain = state
+                            .domains
+                            .get(&candidate_id)
+                            .cloned()
+                            .unwrap_or_else(|| panic!("stale index entry: entity {candidate_id} missing from domains/types index"));
+                        let entity_type = state
+                            .types
+                            .get(&candidate_id)
+                            .cloned()
+                            .unwrap_or_else(|| panic!("stale index entry: entity {candidate_id} missing from domains/types index"));
+                        state.names.insert(
+                            (
+                                domain.clone(),
+                                entity_type.clone(),
+                                match_key(&existing.name),
+                            ),
+                            candidate_id,
+                        );
+                        state.names.insert(
+                            (domain.clone(), entity_type.clone(), match_key(&entity.name)),
+                            candidate_id,
+                        );
                         state.canonical.insert(candidate_id, entity.name.clone());
                         for bigram in bigrams(&entity.name) {
                             state
                                 .blocks
-                                .entry((domain.clone(), entity.entity_type.clone(), bigram))
+                                .entry((domain.clone(), entity_type.clone(), bigram))
                                 .or_default()
                                 .push(candidate_id);
                         }
+                        // The promoted name joins the stem tier too (the
+                        // old name's stem key stays: it still resolves to
+                        // this entity, keeping resolution monotone).
+                        state
+                            .stems
+                            .entry((domain, entity_type, stem_key(&entity.name)))
+                            .or_default()
+                            .push(candidate_id);
                         existing.name = entity.name.clone();
                         updated = true;
                     }
+                    // Alias memory (design D3): a non-creating resolution
+                    // records the surface form (skipped when it is the
+                    // canonical's stored name).
+                    self.record_alias(
+                        &mut *state,
+                        alias_dao,
+                        existing.id,
+                        &entity.name,
+                        &existing.name,
+                    )?;
                     let resolved = ResolvedEntity {
                         id: existing.id,
                         entity_type: existing.entity_type,
@@ -287,10 +368,34 @@ impl Resolver {
                         return Err(IngestionError::EntityCandidateGone(candidate.id));
                     }
                     rehydrated = true;
-                    state.rehydrate(dao)?;
+                    state.rehydrate(dao, alias_dao)?;
                 }
             }
         }
+    }
+
+    /// Records `surface` as an alias of `id` in BOTH the in-memory alias
+    /// map and the `entity_aliases` table (design D3: every non-creating
+    /// resolution records the surface form, so repeated surface forms
+    /// resolve by lookup on later runs). Skipped when the surface form is
+    /// empty or equals the canonical's stored name (case/whitespace-
+    /// insensitive). The table insert is `INSERT OR IGNORE` — idempotent
+    /// against both uniqueness rules of the `entity_aliases` schema.
+    fn record_alias(
+        &self,
+        state: &mut BlockingIndex,
+        alias_dao: &EntityAliasDao<'_>,
+        id: i64,
+        surface: &str,
+        canonical_name: &str,
+    ) -> Result<(), IngestionError> {
+        let normalized = normalize_name(surface);
+        if normalized.is_empty() || normalized == normalize_name(canonical_name) {
+            return Ok(());
+        }
+        state.aliases.insert(normalized, id);
+        alias_dao.insert_or_ignore(id, surface)?;
+        Ok(())
     }
 
     /// Persists a new entity: scoped metadata JSON + description through the
@@ -423,17 +528,26 @@ impl EntityChanges {
     }
 }
 
-/// The in-memory blocking index (design D9 state): name keys, canonical
-/// names, bigram blocks and per-id domains, plus the hydrated flag.
+/// The in-memory blocking index (design D9 state): the tier-1 name keys,
+/// the tier-2 stem keys, the tier-3 alias map, canonical names, the tier-4
+/// bigram blocks, and per-id domains/types, plus the hydrated flag.
 struct BlockingIndex {
-    /// `"domain:normalized_name"` → entity id.
-    names: HashMap<String, i64>,
+    /// `(normalized domain, entity type, match_key)` → entity id (tier 1).
+    names: HashMap<(String, String, String), i64>,
     /// entity id → canonical name.
     canonical: HashMap<i64, String>,
-    /// `(normalized domain, entity type, bigram)` → entity ids.
+    /// `(normalized domain, entity type, bigram)` → entity ids (tier 4).
     blocks: HashMap<(String, String, String), Vec<i64>>,
+    /// `(normalized domain, entity type, stem_key)` → entity ids (tier 2).
+    stems: HashMap<(String, String, String), Vec<i64>>,
+    /// normalized surface form → entity id (tier 3, alias memory — design
+    /// D3; hydrated from `entity_aliases` and written through on every
+    /// non-creating resolution).
+    aliases: HashMap<String, i64>,
     /// entity id → normalized domain.
     domains: HashMap<i64, String>,
+    /// entity id → entity type (the tier-3 gate: the alias map is global).
+    types: HashMap<i64, String>,
     /// Whether the index has been loaded from the database.
     hydrated: bool,
 }
@@ -444,34 +558,56 @@ impl BlockingIndex {
             names: HashMap::new(),
             canonical: HashMap::new(),
             blocks: HashMap::new(),
+            stems: HashMap::new(),
+            aliases: HashMap::new(),
             domains: HashMap::new(),
+            types: HashMap::new(),
             hydrated: false,
         }
     }
 
-    /// Registers one entity in the index.
+    /// Registers one entity in every tier of the index.
     fn index_entity(&mut self, id: i64, entity_type: &str, name: &str, domain: &str) {
         let domain = normalize(domain);
-        self.names.insert(name_key(&domain, name), id);
+        let entity_type = entity_type.to_string();
+        self.names
+            .insert((domain.clone(), entity_type.clone(), match_key(name)), id);
         self.canonical.insert(id, name.to_string());
         self.domains.insert(id, domain.clone());
+        self.types.insert(id, entity_type.clone());
         for bigram in bigrams(name) {
             self.blocks
-                .entry((domain.clone(), entity_type.to_string(), bigram))
+                .entry((domain.clone(), entity_type.clone(), bigram))
                 .or_default()
                 .push(id);
         }
+        self.stems
+            .entry((domain, entity_type, stem_key(name)))
+            .or_default()
+            .push(id);
     }
 
-    /// Lazily loads the whole `entities` table into the index on the first
-    /// call; later calls are a no-op — updates arrive incrementally through
-    /// [`Self::index_entity`] and name promotion.
-    fn hydrate(&mut self, dao: &EntityDao<'_>) -> Result<(), IngestionError> {
+    /// Lazily loads the whole `entities` table AND the `entity_aliases`
+    /// table into the index on the first call; later calls are a no-op —
+    /// updates arrive incrementally through [`Self::index_entity`], name
+    /// promotion and the alias write-through.
+    fn hydrate(
+        &mut self,
+        dao: &EntityDao<'_>,
+        alias_dao: &EntityAliasDao<'_>,
+    ) -> Result<(), IngestionError> {
         if self.hydrated {
             return Ok(());
         }
         for entity in dao.list()? {
             self.index_entity(entity.id, &entity.entity_type, &entity.name, &entity.domain);
+        }
+        // Alias memory (design D3): the recorded surface forms resolve by
+        // lookup — a repeated form skips all similarity tiers. The map keys
+        // on the NORMALIZED form (the lookup side normalizes the same way);
+        // the table keeps the raw surface form for display.
+        for (alias, id) in alias_dao.alias_map()? {
+            self.aliases.insert(normalize_name(&alias), id);
         }
         self.hydrated = true;
         Ok(())
@@ -479,27 +615,75 @@ impl BlockingIndex {
 
     /// Discards the index and loads it from the database again: recovery
     /// from entities deleted mid-run by GC.
-    fn rehydrate(&mut self, dao: &EntityDao<'_>) -> Result<(), IngestionError> {
+    fn rehydrate(
+        &mut self,
+        dao: &EntityDao<'_>,
+        alias_dao: &EntityAliasDao<'_>,
+    ) -> Result<(), IngestionError> {
         self.names.clear();
         self.canonical.clear();
         self.blocks.clear();
+        self.stems.clear();
+        self.aliases.clear();
         self.domains.clear();
+        self.types.clear();
         self.hydrated = false;
-        self.hydrate(dao)
+        self.hydrate(dao, alias_dao)
     }
 
-    /// The most similar persisted entity of the same type AND domain: an
-    /// exact normalized-name hit scores 1.0, otherwise the best
-    /// Jaro-Winkler over the shared bigram blocks.
+    /// The best persisted candidate, in tier order (design D1):
+    /// article-stripped exact → stem equality → alias memory → the best
+    /// Jaro-Winkler over the shared bigram blocks. Tiers 1–3 score 1.0.
     /// The candidate's canonical name is NOT carried: the merge path reads
     /// it from the database row (hydration and promotion keep the index's
     /// canonical names and the `entities` table in sync).
     fn find_best_candidate(&self, entity: &NerEntity) -> Option<Candidate> {
         let domain = normalize(&entity.domain);
-        if let Some(&id) = self.names.get(&name_key(&domain, &entity.name)) {
+
+        // Tier 1: article-stripped exact — same (domain, type, match_key).
+        if let Some(id) = self
+            .names
+            .get(&(
+                domain.clone(),
+                entity.entity_type.clone(),
+                match_key(&entity.name),
+            ))
+            .copied()
+        {
             return Some(Candidate { id, score: 1.0 });
         }
 
+        // Tier 2: stem equality — same (domain, type, stem_key). Several
+        // pre-existing rows can share a stem key; the lowest id is the
+        // deterministic pick.
+        if let Some(id) = self
+            .stems
+            .get(&(
+                domain.clone(),
+                entity.entity_type.clone(),
+                stem_key(&entity.name),
+            ))
+            .and_then(|candidates| candidates.iter().copied().min())
+        {
+            return Some(Candidate { id, score: 1.0 });
+        }
+
+        // Tier 3: alias memory (design D3). The map is global (an alias
+        // names exactly one entity), so the hit is additionally gated by
+        // domain+type; a stale id (entity gone, alias not yet cascaded)
+        // fails the gate and falls through to the JW tier.
+        if let Some(id) = self.aliases.get(&normalize_name(&entity.name)).copied() {
+            let domain_match = self.domains.get(&id).is_some_and(|d| *d == domain);
+            let type_match = self
+                .types
+                .get(&id)
+                .is_some_and(|t| *t == entity.entity_type);
+            if domain_match && type_match {
+                return Some(Candidate { id, score: 1.0 });
+            }
+        }
+
+        // Tier 4: Jaro-Winkler over the shared bigram blocks.
         let mut best: Option<(i64, f64)> = None;
         for bigram in bigrams(&entity.name) {
             let Some(ids) = self
@@ -523,17 +707,12 @@ impl BlockingIndex {
     }
 }
 
-/// The best persisted candidate for one entity: id and Jaro-Winkler score
-/// (1.0 on an exact normalized-name hit).
+/// The best persisted candidate for one entity: id and score (1.0 on a
+/// tier-1/2/3 hit, otherwise the Jaro-Winkler similarity).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Candidate {
     id: i64,
     score: f64,
-}
-
-/// `"domain:normalized_name"` — the exact-match key.
-fn name_key(domain: &str, name: &str) -> String {
-    format!("{domain}:{}", normalize_name(name))
 }
 
 /// Locks the index mutex. On poisoning (a previous holder panicked) the

@@ -11,6 +11,14 @@
 //! - [`canonical_proto`] ranks names by rune count rather than UTF-8 byte
 //!   length (byte length is an encoding artifact that misorders mixed-script
 //!   names of equal rune count).
+//! - [`cluster_batch`] mirrors the resolution tiers of
+//!   [`crate::entities::resolver`] (design D1): it unions entities that share
+//!   a tier-1 key `(domain, type, match_key)` or a tier-2 key
+//!   `(domain, type, stem_key)` (deterministic, score 1.0, independent of the
+//!   Jaro-Winkler threshold), on top of the tier-4 JW union over shared
+//!   bigram blocks (threshold-gated). The tier-3 alias tier is not applied
+//!   here — it is a database-backed lookup that the pure clustering primitive
+//!   deliberately does not touch.
 //!
 //! Domain keys are normalized with the same rule the NER providers tag with
 //! (`crate::ner::normalize`), so `"HR"` and `" hr "` block together.
@@ -19,16 +27,25 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
-use super::similarity::{bigrams, jaro_winkler};
+use super::similarity::{bigrams, jaro_winkler, match_key, stem_key};
 use crate::ner::{NerEntity, normalize};
 
 /// Groups entities into clusters of similar names.
 ///
-/// Bigram blocking: two entities are compared only when they share a
-/// `(normalized domain, type, bigram)` block — cross-domain or cross-type
-/// pairs are never merged. Shared pairs with Jaro-Winkler similarity at or
-/// above `threshold` are unioned, so chains of transitively similar names
-/// land in one cluster. Clusters keep first-seen order; members keep input
+/// Mirrors the resolution tiers of the blocking-index resolver (design D1):
+///
+/// - **Tier 1** — entities sharing a `(normalized domain, type, match_key)`
+///   key are unioned (article-stripped exact match, score 1.0).
+/// - **Tier 2** — entities sharing a `(normalized domain, type, stem_key)`
+///   key are unioned (stem equality, score 1.0).
+/// - **Tier 4** — bigram blocking: two entities are compared only when they
+///   share a `(normalized domain, type, bigram)` block — cross-domain or
+///   cross-type pairs are never merged. Shared pairs with Jaro-Winkler
+///   similarity at or above `threshold` are unioned, so chains of
+///   transitively similar names land in one cluster.
+///
+/// Tiers 1–2 are deterministic and independent of `threshold`; only tier 4
+/// competes against it. Clusters keep first-seen order; members keep input
 /// order within a cluster.
 pub fn cluster_batch(entities: &[NerEntity], threshold: f64) -> Vec<Vec<NerEntity>> {
     let n = entities.len();
@@ -37,6 +54,8 @@ pub fn cluster_batch(entities: &[NerEntity], threshold: f64) -> Vec<Vec<NerEntit
     }
 
     let mut blocks: HashMap<(String, String, String), Vec<usize>> = HashMap::new();
+    let mut tier1: HashMap<(String, String, String), Vec<usize>> = HashMap::new();
+    let mut tier2: HashMap<(String, String, String), Vec<usize>> = HashMap::new();
     for (i, entity) in entities.iter().enumerate() {
         let domain = normalize(&entity.domain);
         for bigram in bigrams(&entity.name) {
@@ -45,9 +64,23 @@ pub fn cluster_batch(entities: &[NerEntity], threshold: f64) -> Vec<Vec<NerEntit
                 .or_default()
                 .push(i);
         }
+        tier1
+            .entry((
+                domain.clone(),
+                entity.entity_type.clone(),
+                match_key(&entity.name),
+            ))
+            .or_default()
+            .push(i);
+        tier2
+            .entry((domain, entity.entity_type.clone(), stem_key(&entity.name)))
+            .or_default()
+            .push(i);
     }
 
     let mut uf = UnionFind::new(n);
+
+    // Tier 4: Jaro-Winkler over shared bigram blocks (threshold-gated).
     let mut checked: HashSet<(usize, usize)> = HashSet::new();
     for indices in blocks.values() {
         if indices.len() < 2 {
@@ -65,6 +98,10 @@ pub fn cluster_batch(entities: &[NerEntity], threshold: f64) -> Vec<Vec<NerEntit
             }
         }
     }
+
+    // Tiers 1+2: deterministic (score 1.0), independent of the threshold.
+    union_equal_keys(&tier1, &mut uf);
+    union_equal_keys(&tier2, &mut uf);
 
     // Group by root, keeping first-seen cluster order.
     let mut groups: HashMap<usize, Vec<NerEntity>> = HashMap::new();
@@ -85,6 +122,23 @@ pub fn cluster_batch(entities: &[NerEntity], threshold: f64) -> Vec<Vec<NerEntit
         }
     }
     clusters
+}
+
+/// Unions every member of each group in `groups` into a single cluster.
+///
+/// Used by the deterministic tiers (1–2): all entities that share a key are
+/// the same entity (score 1.0), so the whole group is unioned regardless of
+/// the Jaro-Winkler threshold.
+fn union_equal_keys(groups: &HashMap<(String, String, String), Vec<usize>>, uf: &mut UnionFind) {
+    for indices in groups.values() {
+        if indices.len() < 2 {
+            continue;
+        }
+        let first = indices[0];
+        for &other in &indices[1..] {
+            uf.union(first, other);
+        }
+    }
 }
 
 /// The cluster member with the longest name; ties resolve to the
