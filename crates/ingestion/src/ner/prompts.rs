@@ -678,6 +678,62 @@ mod tests {
         assert!(system.contains(DIRECTIVE), "{system}");
     }
 
+    /// The canonical-form directive (multilingual-entity-resolution D5) is
+    /// present in the rendered system prompt on both load paths: the embedded
+    /// fallback and the workspace override.
+    #[test]
+    fn system_prompt_carries_canonical_form_directive() {
+        const DIRECTIVE: &str = "Report each entity name in dictionary form: the bare \
+                                 nominative (uninflected) form in inflected languages, \
+                                 and the bare proper name without a leading article in \
+                                 English.";
+
+        // Embedded fallback.
+        let embedded = embedded_prompts();
+        assert!(embedded.notes().is_empty());
+        let system = embedded.render_system(&sample_domain(), false).unwrap();
+        assert!(system.contains(DIRECTIVE), "{system}");
+
+        // Workspace override: the tracked override under workspace/configs.
+        let override_root = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../workspace/configs/prompts"
+        );
+        let prompts = load_ner_prompts(override_root).unwrap();
+        assert!(
+            prompts
+                .notes()
+                .iter()
+                .any(|note| note.ends_with("system.tmpl")),
+            "the workspace system override should have loaded: {:?}",
+            prompts.notes()
+        );
+        let system = prompts.render_system(&sample_domain(), false).unwrap();
+        assert!(system.contains(DIRECTIVE), "{system}");
+    }
+
+    /// The canonical-form directive changed the system template, so the D4
+    /// cache key (template SHA-256) differs from the pre-change value:
+    /// previously cached NER extractions are invalidated and re-extracted
+    /// through the LLM.
+    #[test]
+    fn system_template_hash_differs_from_pre_directive_value() {
+        // The SHA-256 of the system template source before the
+        // canonical-form directive was added (task 5.1).
+        const PRE_DIRECTIVE_SYSTEM_HASH: &str =
+            "d71c2e1a11145b5425851df2b96bb4e28bd421fdad04f28ff048a7b48263d425";
+
+        let hashes = embedded_prompts().template_hashes();
+        assert_ne!(
+            hashes.system, PRE_DIRECTIVE_SYSTEM_HASH,
+            "the canonical-form directive must change the system template hash"
+        );
+        // The hash is still the sha256 of the (updated) embedded source.
+        assert_eq!(hashes.system, sha256_hex(EMBEDDED_SYSTEM.as_bytes()));
+        // The user template is untouched and keeps its hash semantics.
+        assert_eq!(hashes.user, sha256_hex(EMBEDDED_USER.as_bytes()));
+    }
+
     /// The tracked workspace override and the embedded fallback stay
     /// byte-identical (the override is the runtime prompt; the embedded copy
     /// is the fallback and must not drift apart — D6).
