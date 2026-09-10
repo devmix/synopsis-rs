@@ -25,6 +25,10 @@
 //! - `temperature` / `seed` / `max_tokens` are always serialized (zero values
 //!   are not omitted); explicit values are deterministic and every
 //!   OpenAI-compatible API accepts them;
+//! - `reasoning_effort` is serialized only when non-empty: an unset effort
+//!   omits the field entirely, keeping the wire body byte-identical to the
+//!   pre-change shape; the value is passed through verbatim (no
+//!   client-side validation);
 //! - silent config defaults are replaced by fail-fast validation in
 //!   [`LlmClient::new`] (a zero timeout / retry count / token budget is a
 //!   configuration bug, not a value to paper over);
@@ -421,6 +425,7 @@ impl LlmClient {
             seed: self.config.seed,
             max_tokens: self.config.max_tokens,
             response_format: self.build_response_format(schema, schema_name)?,
+            reasoning_effort: self.config.reasoning_effort.clone(),
         })
     }
 
@@ -535,6 +540,9 @@ struct RequestBody {
     max_tokens: i32,
     /// Structured-output mode.
     response_format: ResponseFormatBody,
+    /// Reasoning effort; omitted when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    reasoning_effort: String,
 }
 
 /// One message in the conversation.
@@ -708,6 +716,53 @@ mod tests {
                 assert_eq!(*max_tokens, 1024, "got: {err}");
             }
             other => panic!("expected Truncated, got: {other:?}"),
+        }
+    }
+
+    // ── Reasoning effort wire shape (add-llm-reasoning-effort 1.2) ───────────
+
+    /// The compact JSON the client would send for `config` — the `call`
+    /// path's body, serialized exactly as it goes over the wire.
+    fn serialized_body(config: &LlmConfig) -> String {
+        let client = LlmClient::new(config).unwrap();
+        let body = client
+            .build_request_body("system prompt", "user prompt", None, None)
+            .unwrap();
+        serde_json::to_string(&body).unwrap()
+    }
+
+    #[test]
+    fn build_request_body_includes_reasoning_effort_when_set() {
+        let config = config_with("http://127.0.0.1:9999", |c| {
+            c.reasoning_effort = "low".to_string()
+        });
+        let json = serialized_body(&config);
+        assert!(
+            json.contains("\"reasoning_effort\":\"low\""),
+            "the effort value must be sent verbatim at the top level: {json}"
+        );
+    }
+
+    #[test]
+    fn build_request_body_omits_reasoning_effort_when_empty() {
+        let json = serialized_body(&valid_config("http://127.0.0.1:9999"));
+        assert!(
+            !json.contains("reasoning_effort"),
+            "an empty effort must be omitted entirely: {json}"
+        );
+        // The pre-change wire shape, exactly: the same top-level keys, no more.
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 6, "exactly the pre-change field set: {json}");
+        for key in [
+            "model",
+            "messages",
+            "temperature",
+            "seed",
+            "max_tokens",
+            "response_format",
+        ] {
+            assert!(object.contains_key(key), "missing {key:?} in: {json}");
         }
     }
 }
