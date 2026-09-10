@@ -113,6 +113,7 @@ OpenAI-compatible endpoint used for LLM-based entity extraction.
 | `ingestion.ner.llm.response_format` | string | `json_object` | `"json_object"` (sends `{"type": "json_object"}` + JSON example in the system prompt) or `"json_schema"` (sends the full JSON schema in the request body; requires API support). Tolerant. Shipped config: `json_schema`. |
 | `ingestion.ner.llm.timeout_ms` | integer | `60000` | Per-request HTTP timeout in milliseconds. |
 | `ingestion.ner.llm.max_retries` | integer | `3` | Retry attempts for transient errors (429, 5xx). |
+| `ingestion.ner.llm.reasoning_effort` | string | `""` (not sent) | Reasoning effort sent to the model (`"low"`/`"medium"`/`"high"`); empty = not set — the field is omitted from the request body. Not validated at parse time (an unrecognized value is passed through verbatim). Shipped config: `low`. |
 
 ### `ingestion.batch_size`
 
@@ -142,7 +143,7 @@ Cross-domain entity linking (see [Cross-Domain Linking](../concepts/cross-domain
 
 ### `linker.llm`
 
-Same field set as [`ingestion.ner.llm`](#ingestionnerllm): `api_base_url`, `api_key`, `model_name`, `temperature`, `seed`, `max_tokens`, `response_format`, `timeout_ms`, `max_retries`. Shipped config: `max_tokens: 2048`, `response_format: json_schema`.
+Same field set as [`ingestion.ner.llm`](#ingestionnerllm): `api_base_url`, `api_key`, `model_name`, `temperature`, `seed`, `max_tokens`, `response_format`, `timeout_ms`, `max_retries`, `reasoning_effort`. Shipped config: `max_tokens: 2048`, `response_format: json_schema`, `reasoning_effort: low`.
 
 ## `search`
 
