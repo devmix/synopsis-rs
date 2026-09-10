@@ -692,6 +692,9 @@ pub struct LlmConfig {
     pub timeout_ms: i64,
     /// Max retry attempts after an initial failure.
     pub max_retries: i32,
+    /// Reasoning effort sent to the model (`"low"`/`"medium"`/`"high"`);
+    /// empty = not set (the field is not sent).
+    pub reasoning_effort: String,
 }
 
 tolerant_enum! {

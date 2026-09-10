@@ -32,6 +32,7 @@ fn valid_config(base_url: &str) -> LlmConfig {
         response_format: ResponseFormat::JsonObject,
         timeout_ms: 5000,
         max_retries: 2,
+        reasoning_effort: String::new(),
     }
 }
 

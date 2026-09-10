@@ -160,6 +160,7 @@ fn llm_linker_config(base_url: &str) -> LinkerConfig {
             response_format: ResponseFormat::JsonObject,
             timeout_ms: 5000,
             max_retries: 0,
+            reasoning_effort: String::new(),
         },
     }
 }

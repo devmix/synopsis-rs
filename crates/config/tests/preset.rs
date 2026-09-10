@@ -1530,3 +1530,35 @@ fn loads_default_config() {
     assert_workspace_shape(&cfg);
     assert_eq!(cfg.dataset.name, "");
 }
+
+// ── reasoning_effort (add-llm-reasoning-effort task 1.1) ───────────────
+
+#[test]
+fn reasoning_effort_parses_when_set() {
+    // Key set: the value is carried per consumer (ner.llm and linker.llm).
+    // An unrecognized value is NOT rejected at parse time (pass-through: the
+    // server owns the allowed set — config-format spec "Unrecognized effort
+    // value").
+    let cfg = parse(
+        r#"
+ingestion:
+  ner:
+    llm:
+      reasoning_effort: low
+linker:
+  llm:
+    reasoning_effort: extreme
+"#,
+    );
+    assert_eq!(cfg.ingestion.ner.llm.reasoning_effort, "low");
+    assert_eq!(cfg.linker.llm.reasoning_effort, "extreme");
+}
+
+#[test]
+fn reasoning_effort_defaults_to_empty_when_absent() {
+    // Key absent (presets written before the field): the config parses
+    // successfully and the effective value is empty (not sent to the LLM).
+    let cfg = parse("server:\n  name: x\n");
+    assert_eq!(cfg.ingestion.ner.llm.reasoning_effort, "");
+    assert_eq!(cfg.linker.llm.reasoning_effort, "");
+}

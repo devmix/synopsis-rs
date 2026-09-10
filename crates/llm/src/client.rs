@@ -618,6 +618,7 @@ mod tests {
             response_format: ResponseFormat::JsonObject,
             timeout_ms: 5000,
             max_retries: 2,
+            reasoning_effort: String::new(),
         }
     }
 
