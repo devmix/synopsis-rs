@@ -10,5 +10,8 @@ workspace = true
 # several crates; depends on nothing internal. jiff (design D2) is the single
 # date/time engine — default features OFF: the tz-system/tzdb features bundle
 # the IANA timezone database this project never uses (everything is UTC).
+# rust-stemmers (change multilingual-entity-resolution, design D1) provides
+# the Snowball stemmers behind `utils::text` (English Porter + Russian).
 [dependencies]
 jiff = { workspace = true }
+rust-stemmers = { workspace = true }

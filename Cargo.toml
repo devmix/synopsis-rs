@@ -296,3 +296,14 @@ cxx = "1"
 # never built on the Linux/macOS targets and never accessed by this UTC-only
 # code.
 jiff = { version = "0.2", default-features = false, features = ["std"] }
+
+# Script-based word stemming for entity resolution (change
+# multilingual-entity-resolution, task 1.1, design D1): Snowball algorithms
+# (English Porter + Russian) shared by ingestion and graph via `utils::text`.
+# Verified against the crates.io index + registry source (2026-09-10):
+# 1.2.0 is the current release (published 2019-11-17, ~31M downloads),
+# MIT/BSD-3-Clause, pure Rust with only serde/serde_derive as dependencies —
+# no I/O, no unsafe, no native code. The algorithms are frozen upstream
+# (Snowball), so the crate's age is a non-issue; all usage is isolated behind
+# `utils::text`, so a swap touches one module.
+rust-stemmers = "1.2.0"
