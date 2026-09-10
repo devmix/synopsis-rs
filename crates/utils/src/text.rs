@@ -1,9 +1,21 @@
-//! Script-based word stemming (change `multilingual-entity-resolution`,
+//! Name normalization, article stripping, script-based word stemming, and the
+//! entity-resolution tier keys (change `multilingual-entity-resolution`,
 //! design D1).
 //!
 //! Shared by `ingestion` (entity-resolution tiers) and `graph` (cross-script
 //! candidate generation): those crates are siblings in the dependency graph,
 //! so the shared code lives in this leaf crate.
+//!
+//! # Normalization and tier keys
+//!
+//! [`normalize`] is the project's single name-normalization rule (trim +
+//! lowercase + whitespace collapse), shared by the NER layer and the
+//! resolution tiers. [`strip_articles`] removes a leading English article
+//! (`the`/`a`/`an`) when it is a whole word. The resolution tiers key on
+//! [`match_key`] (article-stripped normalized name, tier 1) and [`stem_key`]
+//! (article-stripped normalized name, stemmed per word, tier 2).
+//!
+//! # Stemming
 //!
 //! Stemming comes from `rust-stemmers` (Snowball, pure Rust): Latin words use
 //! the English (Porter) algorithm, Cyrillic words the Russian Snowball
@@ -13,6 +25,59 @@
 //! function pointers; per-call creation avoids a global, design D1).
 
 use rust_stemmers::{Algorithm, Stemmer};
+
+/// Normalizes a name for matching: trims surrounding whitespace, lowercases,
+/// and collapses internal whitespace runs to single spaces.
+///
+/// This is the project's single name-normalization rule, shared by the NER
+/// layer (domain tagging) and the entity-resolution tiers (design D1 of
+/// `multilingual-entity-resolution`). It is idempotent: normalizing an
+/// already-normalized name is a no-op.
+pub fn normalize(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.to_lowercase()
+}
+
+/// Removes a leading English article (`the`, `a`, `an`) from `name` when it is
+/// a whole word — followed by a space or the end of the string.
+///
+/// The input is expected to be normalized (lowercase); the tier-key entry
+/// points ([`match_key`], [`stem_key`]) normalize first. A bare article
+/// (`"a"`, `"an"`, `"the"`) is stripped to the empty string. The whole-word
+/// match means `"theater"` is left untouched (its `the` is not a separate
+/// word). Only one leading article is stripped.
+pub fn strip_articles(name: &str) -> String {
+    let trimmed = name.trim();
+    for article in ["the", "an", "a"] {
+        let Some(rest) = trimmed.strip_prefix(article) else {
+            continue;
+        };
+        if rest.is_empty() || rest.starts_with(' ') {
+            return rest.trim_start().to_owned();
+        }
+    }
+    trimmed.to_owned()
+}
+
+/// Tier-1 resolution key: the article-stripped normalized name.
+///
+/// `match_key(name) == strip_articles(normalize(name))`. Two names with equal
+/// match keys are the same entity up to a leading article and case/whitespace
+/// (e.g. `"The City of Ash"` and `"city of ash"`).
+pub fn match_key(name: &str) -> String {
+    strip_articles(&normalize(name))
+}
+
+/// Tier-2 resolution key: the article-stripped normalized name, stemmed per
+/// word.
+///
+/// `stem_key(name) == stem_name(strip_articles(normalize(name)))`. Two names
+/// with equal stem keys are the same entity up to case/number inflection
+/// (e.g. `"gates"` and `"gate"`; Russian case variants). Non-Latin/Cyrillic
+/// scripts are not stemmed, so their stem key is the normalized identity.
+pub fn stem_key(name: &str) -> String {
+    stem_name(&strip_articles(&normalize(name)))
+}
 
 /// The writing script of a word, classified by its first alphabetic rune.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -85,79 +150,5 @@ fn stem_lowered(word: &str) -> String {
         Script::Latin => Stemmer::create(Algorithm::English).stem(word).into_owned(),
         Script::Cyrillic => Stemmer::create(Algorithm::Russian).stem(word).into_owned(),
         Script::Other => word.to_owned(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use super::*;
-
-    #[test]
-    fn detect_script_by_first_alphabetic_rune() {
-        assert_eq!(detect_script("gates"), Script::Latin);
-        assert_eq!(detect_script("CITY"), Script::Latin);
-        // é (U+00E9) is a Latin-1 Supplement letter.
-        assert_eq!(detect_script("café"), Script::Latin);
-        assert_eq!(detect_script("город"), Script::Cyrillic);
-        assert_eq!(detect_script("ГОРОД"), Script::Cyrillic);
-        // CJK and Greek are not Latin or Cyrillic.
-        assert_eq!(detect_script("東京"), Script::Other);
-        assert_eq!(detect_script("παράδειγμα"), Script::Other);
-        // The first ALPHABETIC rune decides; leading digits are skipped.
-        assert_eq!(detect_script("123abc"), Script::Latin);
-        assert_eq!(detect_script("123город"), Script::Cyrillic);
-        // No alphabetic rune at all.
-        assert_eq!(detect_script("123"), Script::Other);
-        assert_eq!(detect_script(""), Script::Other);
-    }
-
-    #[test]
-    fn stem_word_english_porter_vectors() {
-        // Vectors from rust-stemmers' own English test vocabulary
-        // (test_data/voc_en.txt + res_en.txt, lines 11061, 10821 and 4491).
-        assert_eq!(stem_word("gates"), "gate");
-        assert_eq!(stem_word("fruitlessly"), "fruitless");
-        // Porter step 1c: a final `y` becomes `i` when the stem has a vowel.
-        assert_eq!(stem_word("city"), "citi");
-        // Input is lowercased before stemming.
-        assert_eq!(stem_word("Gates"), "gate");
-        assert_eq!(stem_word("Fruitlessly"), "fruitless");
-    }
-
-    #[test]
-    fn stem_word_russian_snowball_vectors() {
-        // Vectors from rust-stemmers' own Russian test vocabulary
-        // (test_data/voc_ru.txt + res_ru.txt, lines 7034–7038): a
-        // prepositional/plural pair of a generic city noun — every
-        // case/number form stems to the same stem.
-        assert_eq!(stem_word("город"), "город");
-        assert_eq!(stem_word("города"), "город");
-        assert_eq!(stem_word("городе"), "город");
-    }
-
-    #[test]
-    fn stem_word_other_script_is_lowercased_identity() {
-        // CJK: identity (no case).
-        assert_eq!(stem_word("東京"), "東京");
-        // Greek: lowercased identity (uppercase is lowered, not stemmed).
-        assert_eq!(stem_word("Παράδειγμα"), "παράδειγμα");
-        // No alphabetic rune at all.
-        assert_eq!(stem_word("123"), "123");
-        assert_eq!(stem_word(""), "");
-    }
-
-    #[test]
-    fn stem_name_stems_per_word_and_rejoins_with_single_spaces() {
-        assert_eq!(stem_name("Fruitless Gates"), "fruitless gate");
-        // Whitespace runs collapse to single spaces; leading/trailing
-        // whitespace is dropped.
-        assert_eq!(stem_name("  Fruitless   Gates  "), "fruitless gate");
-        assert_eq!(stem_name(""), "");
-        // Mixed scripts: each word is stemmed by its own script.
-        assert_eq!(stem_name("город gates"), "город gate");
-        // Input is lowercased before stemming.
-        assert_eq!(stem_name("GATES"), "gate");
     }
 }

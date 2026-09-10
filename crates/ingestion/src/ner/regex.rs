@@ -148,9 +148,12 @@ impl NerProvider for RegexNer {
 /// Trims, lowercases and collapses internal whitespace runs to single
 /// spaces. Crate-private: `LlmNer` reuses it for domain tagging
 /// (ingestion-ner task 2.5) instead of re-implementing the rule.
+///
+/// Delegates to the shared normalization rule `utils::text::normalize`
+/// (design D1 of `multilingual-entity-resolution`): one canonical
+/// implementation, reused by the NER providers and the resolution tiers.
 pub(crate) fn normalize(text: &str) -> String {
-    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed.to_lowercase()
+    utils::text::normalize(text)
 }
 
 #[cfg(test)]

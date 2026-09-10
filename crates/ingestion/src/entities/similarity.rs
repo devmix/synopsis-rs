@@ -5,9 +5,14 @@
 //!
 //! # Design decisions
 //!
-//! - [`normalize_name`] delegates to the NER layer's `normalize`
-//!   (`crate::ner::normalize`) instead of re-implementing the rule: the
-//!   providers already tag domains with it (DRY).
+//! - [`normalize_name`] delegates to the shared normalization rule
+//!   (`utils::text::normalize`) instead of re-implementing it: the NER
+//!   providers and the resolution tiers all use the same rule (DRY, design D1
+//!   of `multilingual-entity-resolution`).
+//! - The tier keys ([`match_key`], [`stem_key`]) live in `utils::text`
+//!   (shared by `ingestion` and `graph`, which are siblings) and are
+//!   re-exported here; [`jaro_winkler`] and [`bigrams`] stay in this module
+//!   (the JW home).
 //! - [`bigrams`] represents names shorter than two runes by their
 //!   *normalized* form rather than the raw (untrimmed) input, which could
 //!   leak stray whitespace into block keys.
@@ -15,14 +20,17 @@
 //!   rather than an unordered collection: `HashMap` iteration order is
 //!   random, the ordered slice makes blocking deterministic.
 
-use crate::ner::normalize;
+/// The resolution tier keys, shared with the cross-script linker via
+/// `utils::text` (design D1): re-exported here so the resolution code imports
+/// them alongside [`jaro_winkler`]/[`bigrams`].
+pub use utils::text::{match_key, stem_key};
 
 /// Normalizes an entity name for matching: trims surrounding whitespace,
 /// lowercases, and collapses internal whitespace runs to single spaces.
 ///
-/// Reused from the NER layer's `normalize` (`crate::ner::normalize`).
+/// Delegates to the shared rule `utils::text::normalize`.
 pub fn normalize_name(name: &str) -> String {
-    normalize(name)
+    utils::text::normalize(name)
 }
 
 /// Rune-aware character bigrams of a normalized name, deduplicated and in

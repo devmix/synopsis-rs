@@ -77,7 +77,7 @@ pub use chunkers::markdown::MarkdownChunker;
 pub use chunkers::mediawiki::MediawikiChunker;
 pub use entities::{
     EntityChanges, ResolvedEntity, Resolver, bigrams, canonical_proto, cluster_batch, jaro_winkler,
-    normalize_name, scope_entity_metadata,
+    match_key, normalize_name, scope_entity_metadata, stem_key,
 };
 pub use error::IngestionError;
 pub use ingester::{Ingester, VectorSink};
@@ -190,6 +190,8 @@ mod root_api {
 
         // The entity-resolution primitives.
         let _normalized = normalize_name("  Foo   bar ");
+        let _match_key = match_key("The Foo Bar");
+        let _stem_key = stem_key("The Foo Bars");
         let _grams = bigrams("foobar");
         let _similarity = jaro_winkler("foo", "foobar");
         let entity = NerEntity {
