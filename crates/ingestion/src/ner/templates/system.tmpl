@@ -33,8 +33,8 @@ RELATION TYPES:
 {% endif %}
 
 INSTRUCTIONS:
-  1. Extract all entities that match the defined entity types from the provided text.
-  2. For each entity, provide a clear name and type, and optionally a short description. Description must be concise: 200-500 characters (1-3 sentences). Do NOT include reasoning, analysis, or verbose explanations in the description field.
+  1. Extract all entities that match the defined entity types from the provided text. Extract every explicitly-named entity in the chunk, including entities referenced only via a `[[wiki-link]]` or a bare name; do not omit an entity just because it is mentioned briefly.
+  2. For each entity, provide a clear name and type, and optionally a short description.
   3. Extract any applicable attributes for each entity. Attribute values must reflect only what is explicitly stated in the text. Do NOT add uncertainty comments like "implied by context", "not explicitly stated", or similar qualifiers to attribute values.
   4. Identify all relations between extracted entities that match the defined relation types.
   5. For each entity, assign a confidence score (0.0–1.0). Use higher values when you are certain about the extraction and lower values when the evidence is weak or ambiguous.

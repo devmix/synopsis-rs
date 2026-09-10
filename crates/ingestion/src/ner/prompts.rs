@@ -639,6 +639,60 @@ mod tests {
         );
     }
 
+    /// The soft exhaustiveness directive (add-llm-reasoning-effort D5) is
+    /// present in the rendered system prompt on both load paths: the embedded
+    /// fallback and the workspace override.
+    #[test]
+    fn system_prompt_carries_exhaustiveness_directive() {
+        const DIRECTIVE: &str = "Extract every explicitly-named entity in the chunk, \
+                                 including entities referenced only via a `[[wiki-link]]` \
+                                 or a bare name; do not omit an entity just because it is \
+                                 mentioned briefly.";
+
+        // Embedded fallback: no override files present, so no notes.
+        let embedded = embedded_prompts();
+        assert!(embedded.notes().is_empty());
+        let system = embedded.render_system(&sample_domain(), false).unwrap();
+        assert!(system.contains(DIRECTIVE), "{system}");
+        // The reconciled divergence (D6): the "200-500 characters"
+        // description-length rule is gone from the fallback copy.
+        assert!(!system.contains("200-500 characters"), "{system}");
+
+        // Workspace override: the tracked override under workspace/configs
+        // (the same repo-root pattern as crates/config's preset tests).
+        let override_root = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../workspace/configs/prompts"
+        );
+        let prompts = load_ner_prompts(override_root).unwrap();
+        assert!(
+            prompts
+                .notes()
+                .iter()
+                .any(|note| note.ends_with("system.tmpl")),
+            "the workspace system override should have loaded: {:?}",
+            prompts.notes()
+        );
+        let system = prompts.render_system(&sample_domain(), false).unwrap();
+        assert!(system.contains(DIRECTIVE), "{system}");
+    }
+
+    /// The tracked workspace override and the embedded fallback stay
+    /// byte-identical (the override is the runtime prompt; the embedded copy
+    /// is the fallback and must not drift apart — D6).
+    #[test]
+    fn workspace_override_stays_in_sync_with_embedded_fallback() {
+        let override_src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../workspace/configs/prompts/ner/system.tmpl"
+        ))
+        .unwrap();
+        assert_eq!(
+            override_src, EMBEDDED_SYSTEM,
+            "the two system prompt copies must stay in sync"
+        );
+    }
+
     #[test]
     fn override_files_win_and_are_noted() {
         // Both overrides present: both win, both are recorded.
