@@ -336,7 +336,8 @@ mod tests {
 
     // (a, 1.1) open a nonexistent file → the full schema in one squashed init
     //     migration (base tables + queue_tasks + usearch_vectors_log +
-    //     chunks.search_text), user_version = 1, no _schema_migrations table.
+    //     chunks.search_text) plus migration 2-entity-aliases, user_version = 2,
+    //     no _schema_migrations table.
     #[test]
     fn open_creates_fresh_v5_schema() {
         let (db, _temp) = open_temp_db();
@@ -346,8 +347,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 1,
-            "PRAGMA user_version must be 1 after the single squashed init migration"
+            user_version, 2,
+            "PRAGMA user_version must be 2 after the init + 2-entity-aliases migrations"
         );
 
         let tracking_rows: i64 = db
@@ -388,6 +389,7 @@ mod tests {
             "chunks_fts_docsize",
             "chunks_fts_idx",
             "documents",
+            "entity_aliases",
             "entity_links",
             "entity_sources",
             "entities",
@@ -730,7 +732,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 1);
+        assert_eq!(user_version, 2);
         let hash: String = db
             .with_conn(|conn| {
                 conn.query_row(
@@ -933,7 +935,7 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 1);
+        assert_eq!(user_version, 2);
 
         db.exec_tx(|tx| {
             tx.execute(

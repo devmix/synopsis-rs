@@ -472,7 +472,7 @@ mod tests {
     }
 
     // (criterion 1) the squashed init migration gives `chunks` a nullable
-    // `metadata_json` column; `user_version` stays 1.
+    // `metadata_json` column; `user_version` is 2 (init + 2-entity-aliases).
     #[test]
     fn schema_has_nullable_metadata_json_column() {
         let db = in_memory_db();
@@ -480,7 +480,10 @@ mod tests {
             .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |r| r.get(0)))
             .unwrap()
             .unwrap();
-        assert_eq!(user_version, 1, "user_version must stay 1");
+        assert_eq!(
+            user_version, 2,
+            "user_version must be 2 (init + 2-entity-aliases)"
+        );
         // PRAGMA table_info columns: (name, notnull).
         let columns: Vec<(String, i64)> = db
             .with_conn(|conn| {

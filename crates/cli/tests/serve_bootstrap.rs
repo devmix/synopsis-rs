@@ -190,8 +190,8 @@ fn open_db_applies_migrations() {
         .expect("query user_version")
         .expect("user_version row");
     assert_eq!(
-        user_version, 1,
-        "temp db must be migrated (the squashed init migration sets user_version 1)"
+        user_version, 2,
+        "temp db must be migrated (init + 2-entity-aliases set user_version 2)"
     );
 }
 
@@ -957,8 +957,8 @@ dataset:
         .expect("query user_version")
         .expect("user_version row");
     assert_eq!(
-        user_version, 1,
-        "migrated (the squashed init migration sets user_version 1)"
+        user_version, 2,
+        "migrated (init + 2-entity-aliases set user_version 2)"
     );
 
     // Cache DB opened (valid path).

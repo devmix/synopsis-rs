@@ -125,8 +125,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            user_version, 1,
-            "temp db must be migrated (the single squashed init migration)"
+            user_version, 2,
+            "temp db must be migrated (init + 2-entity-aliases)"
         );
 
         // A clone (a plain Db, no cleanup) writes through the same file.
