@@ -21,9 +21,13 @@
 //! contract (`mcp-contract`) for both tools. `description` is omitted when
 //! absent OR empty; `metadata` is the parsed `metadata_json`, the raw string
 //! when it is not valid JSON, and omitted for absent/empty/JSON-`null`
-//! metadata.
+//! metadata. `aliases` is an additive field (multilingual-entity-resolution
+//! D8): the recorded surface names, own name excluded, always present (empty
+//! array when there are none), appended after the last frozen field.
 
-use db::{ConnectionOrTx, Entity, EntityDao, EntityFilter};
+use std::collections::HashMap;
+
+use db::{ConnectionOrTx, DbError, Entity, EntityAliasDao, EntityDao, EntityFilter};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -61,6 +65,11 @@ struct EntityEntry {
     /// absent when there is no metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<Value>,
+    /// The recorded surface names that resolved to this entity (the entity's
+    /// own name excluded); always present, empty when there are none
+    /// (additive field, multilingual-entity-resolution D8 — appended after
+    /// the last frozen field, existing field order untouched).
+    aliases: Vec<String>,
 }
 
 /// The entity-listing response, shared by both tools (identical shapes).
@@ -75,8 +84,10 @@ struct EntitiesResponse {
     next_cursor: Option<String>,
 }
 
-/// Map a stored entity to the wire entry.
-fn entity_entry(entity: &Entity) -> EntityEntry {
+/// Map a stored entity to the wire entry. `aliases` is the entity's recorded
+/// surface names with the own name removed (fetched by the list core,
+/// batched per response).
+fn entity_entry(entity: &Entity, aliases: Vec<String>) -> EntityEntry {
     EntityEntry {
         id: entity.id,
         name: entity.name.clone(),
@@ -89,7 +100,32 @@ fn entity_entry(entity: &Entity) -> EntityEntry {
             .map(str::to_owned),
         confidence: entity.confidence,
         metadata: metadata_field(entity.metadata_json.as_deref()),
+        aliases,
     }
+}
+
+/// The recorded aliases of a page of entities (multilingual-entity-resolution
+/// D8): one PK lookup per entity (the `entity_aliases` table's PK covers the
+/// per-id query), all inside the caller's single pool checkout (batched per
+/// response). The entity's own name is excluded from its list — a merge
+/// records the surviving name as an alias of itself.
+fn alias_map_for(
+    exec: ConnectionOrTx<'_>,
+    entities: &[Entity],
+) -> Result<HashMap<i64, Vec<String>>, DbError> {
+    let dao = EntityAliasDao::new(exec);
+    let mut map = HashMap::with_capacity(entities.len());
+    for entity in entities {
+        let aliases = dao.aliases_of(entity.id)?;
+        map.insert(
+            entity.id,
+            aliases
+                .into_iter()
+                .filter(|alias| alias != &entity.name)
+                .collect(),
+        );
+    }
+    Ok(map)
 }
 
 /// The parsed `metadata_json` for the wire: absent/empty → no field; valid
@@ -128,15 +164,25 @@ fn list_entities(
         })?
     };
 
-    let (entities, total_count) = db
+    let (entities, total_count, mut alias_map) = db
         .with_conn(|conn| {
-            let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
-            entities.list_paginated(page.offset, page.limit, filter)
+            let exec = ConnectionOrTx::Connection(conn);
+            let entities = EntityDao::new(exec);
+            let (entities, total_count) =
+                entities.list_paginated(page.offset, page.limit, filter)?;
+            // Recorded aliases for the page (multilingual-entity-resolution
+            // D8): one PK lookup per entity, batched into this response's
+            // single pool checkout.
+            let alias_map = alias_map_for(exec, &entities)?;
+            Ok((entities, total_count, alias_map))
         })
         .and_then(|result| result)?;
 
     let response = EntitiesResponse {
-        entities: entities.iter().map(entity_entry).collect(),
+        entities: entities
+            .iter()
+            .map(|entity| entity_entry(entity, alias_map.remove(&entity.id).unwrap_or_default()))
+            .collect(),
         total_count,
         next_cursor: page.next_cursor(total_count),
     };
@@ -568,6 +614,48 @@ mod tests {
         assert_eq!(alice["domain"], "hr");
         assert_eq!(alice["description"], "Senior engineer");
         assert_eq!(alice["metadata"]["role"], "senior_engineer");
+        // Additive aliases field: no recorded aliases → present and empty.
+        assert_eq!(alice["aliases"], serde_json::json!([]));
+    }
+
+    /// The entity entry carries the recorded aliases (additive field,
+    /// multilingual-entity-resolution D8): the entity's own name is excluded
+    /// from the list (a merge records the surviving name as an alias of
+    /// itself), and an entity without aliases gets an empty array that is
+    /// still present.
+    #[test]
+    fn entities_aliases_field_mapping() {
+        let db = test_util::in_memory_db();
+        db.exec_tx(|tx| -> Result<(), db::DbError> {
+            let exec = ConnectionOrTx::Transaction(&*tx);
+            let entities = EntityDao::new(exec);
+            let aliases = EntityAliasDao::new(exec);
+            let alice = entities.create("employee", "Alice", "hr", None, None, None)?;
+            aliases.insert_or_ignore(alice, "Alicia")?;
+            aliases.insert_or_ignore(alice, "Alice")?; // own name — must be excluded
+            entities.create("employee", "Bob", "hr", None, None, None)?;
+            Ok(())
+        })
+        .expect("seed transaction commits");
+
+        let response = catalog(&db, None).unwrap();
+        let by_name: std::collections::HashMap<String, Value> = response["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (e["name"].as_str().unwrap().to_owned(), e.clone()))
+            .collect();
+
+        assert_eq!(
+            by_name["Alice"]["aliases"],
+            serde_json::json!(["Alicia"]),
+            "own name excluded: {response}"
+        );
+        assert_eq!(
+            by_name["Bob"]["aliases"],
+            serde_json::json!([]),
+            "no aliases → present and empty: {response}"
+        );
     }
 
     // ── search_entities_by_type ───────────────────────────────────────────

@@ -7,11 +7,17 @@
 //! optional `warning`). The frozen schema exposes no search-mode argument,
 //! so only the hybrid entry point is used.
 //!
+//! The result entities carry an additive `aliases` field
+//! (multilingual-entity-resolution D8): the recorded surface names, own name
+//! excluded, always present (empty array when there are none), fetched with
+//! one PK lookup per distinct entity, batched per response.
+//!
 //! **Design (error text):** this crate uses the [`McpError`] conventions
 //! established by task 5.1 (e.g. `"invalid arguments for tool 'search':
 //! …"`). The tool-error structure (is_error result with a text block) is
 //! the frozen contract; internal message text is not part of it.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use search::Searcher;
@@ -110,6 +116,11 @@ struct EntityRef {
     /// Entity type.
     #[serde(rename = "type")]
     r#type: String,
+    /// The recorded surface names that resolved to this entity (the entity's
+    /// own name excluded); always present, empty when there are none
+    /// (additive field, multilingual-entity-resolution D8 — appended after
+    /// the last frozen field, existing field order untouched).
+    aliases: Vec<String>,
 }
 
 /// Handle the `search` tool call (design D2/D4).
@@ -155,8 +166,39 @@ pub fn handle_search(
         _ => None,
     };
 
+    // Recorded aliases for the result entities (additive field,
+    // multilingual-entity-resolution D8): one PK lookup per distinct entity
+    // (the `entity_aliases` table's PK covers the per-id query), batched
+    // into the response's single pool checkout; the entity's own name is
+    // excluded (a merge records the surviving name as an alias of itself).
+    let alias_map = db
+        .with_conn(|conn| {
+            let dao = db::EntityAliasDao::new(db::ConnectionOrTx::Connection(conn));
+            let mut map: HashMap<i64, Vec<String>> = HashMap::new();
+            for result in &results {
+                for entity in &result.entities {
+                    if map.contains_key(&entity.id) {
+                        continue;
+                    }
+                    let aliases = dao.aliases_of(entity.id)?;
+                    map.insert(
+                        entity.id,
+                        aliases
+                            .into_iter()
+                            .filter(|alias| alias != &entity.name)
+                            .collect(),
+                    );
+                }
+            }
+            Ok(map)
+        })
+        .and_then(|result| result)?;
+
     let response = SearchResponse {
-        results: results.iter().map(result_item).collect(),
+        results: results
+            .iter()
+            .map(|result| result_item(result, &alias_map))
+            .collect(),
         total_count: results.len(),
         search_time_ms,
         warning,
@@ -213,8 +255,9 @@ fn is_known_domain(db: &db::Db, domain: &str) -> Result<bool, McpError> {
 /// `metadata["domains"]` extraction and the `metadata["updated_at"]`
 /// freshness field). The `text` field carries the chunk's pure `chunk_text`
 /// (the section context lives in the item's `metadata` field, the chunk's
-/// own bag).
-fn result_item(result: &search::SearchResult) -> ResultItem {
+/// own bag). `alias_map` carries the recorded aliases per entity id (own
+/// name removed; the handler fetches it, batched per response).
+fn result_item(result: &search::SearchResult, alias_map: &HashMap<i64, Vec<String>>) -> ResultItem {
     ResultItem {
         document_id: result.document_id,
         chunk_id: result.chunk_id,
@@ -245,6 +288,7 @@ fn result_item(result: &search::SearchResult) -> ResultItem {
                 id: entity.id,
                 name: entity.name.clone(),
                 r#type: entity.entity_type.clone(),
+                aliases: alias_map.get(&entity.id).cloned().unwrap_or_default(),
             })
             .collect(),
         updated_at: result
@@ -261,7 +305,7 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use db::{ConnectionOrTx, DocumentDao, test_util};
+    use db::{ConnectionOrTx, DocumentDao, EntityAliasDao, EntityDao, test_util};
     use search::{SearchError, SearchResult};
 
     use super::*;
@@ -522,9 +566,62 @@ mod tests {
         assert_eq!(item["entities"][0]["id"], serde_json::json!(100));
         assert_eq!(item["entities"][0]["name"], "Alice");
         assert_eq!(item["entities"][0]["type"], "employee");
+        // Additive aliases field: entity 100 has no recorded aliases in the
+        // (fresh) db → present and empty.
+        assert_eq!(item["entities"][0]["aliases"], serde_json::json!([]));
         // The document freshness field: the enricher's RFC3339 value,
         // surfaced on the wire (an additive field).
         assert_eq!(item["updated_at"], "2026-01-15T12:00:00Z");
+    }
+
+    /// Result entities carry the recorded aliases (additive field,
+    /// multilingual-entity-resolution D8): an entity's own name is excluded
+    /// from the list (a merge records the surviving name as an alias of
+    /// itself), and an entity without aliases gets an empty array that is
+    /// still present.
+    #[test]
+    fn entity_ref_carries_recorded_aliases() {
+        let db = test_util::in_memory_db();
+        let (alice, bob) = db
+            .exec_tx(|tx| -> Result<(i64, i64), db::DbError> {
+                let exec = ConnectionOrTx::Transaction(&*tx);
+                let entities = EntityDao::new(exec);
+                let aliases = EntityAliasDao::new(exec);
+                let alice = entities.create("employee", "Alice", "hr", None, None, None)?;
+                aliases.insert_or_ignore(alice, "Alicia")?;
+                aliases.insert_or_ignore(alice, "Alice")?; // own name — must be excluded
+                let bob = entities.create("employee", "Bob", "hr", None, None, None)?;
+                Ok((alice, bob))
+            })
+            .expect("seed transaction commits");
+
+        let entity = |id: i64, name: &str| db::Entity {
+            id,
+            entity_type: "employee".to_owned(),
+            name: name.to_owned(),
+            domain: "hr".to_owned(),
+            description: None,
+            confidence: None,
+            metadata_json: None,
+            created_at: "2026-01-01 00:00:00".to_owned(),
+        };
+        let mut result = canned_result(1);
+        result.entities = vec![entity(alice, "Alice"), entity(bob, "Bob")];
+        let searcher = StubSearcher::new(vec![result]);
+
+        let response = call(&db, &searcher, Some(serde_json::json!({ "query": "test" }))).unwrap();
+        let entities = response["results"][0]["entities"].as_array().unwrap();
+        assert_eq!(entities.len(), 2, "{response}");
+        assert_eq!(
+            entities[0]["aliases"],
+            serde_json::json!(["Alicia"]),
+            "own name excluded: {response}"
+        );
+        assert_eq!(
+            entities[1]["aliases"],
+            serde_json::json!([]),
+            "no aliases → present and empty: {response}"
+        );
     }
 
     #[test]

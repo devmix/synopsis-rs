@@ -9,8 +9,8 @@
 
 use config::preset::GraphConfig;
 use db::{
-    ConnectionOrTx, DocumentDao, EntityDao, EntityLink, EntityLinkDao, EntitySourceDao, FactDao,
-    FactSourceDao, test_util,
+    ConnectionOrTx, DocumentDao, EntityAliasDao, EntityDao, EntityLink, EntityLinkDao,
+    EntitySourceDao, FactDao, FactSourceDao, test_util,
 };
 use graph::GraphIndex;
 use mcp::error::McpError;
@@ -185,6 +185,12 @@ fn dossier_returns_entity_facts_and_sources() {
     assert_eq!(response["entity"]["name"], "Alice");
     assert_eq!(response["entity"]["type"], "PERSON");
     assert_eq!(response["entity"]["domain"], "hr");
+    // Additive aliases field: no recorded aliases → present and empty.
+    assert_eq!(
+        response["entity"]["aliases"],
+        serde_json::json!([]),
+        "{response}"
+    );
 
     let facts = response["facts"].as_array().unwrap();
     assert_eq!(facts.len(), 1, "{response}");
@@ -230,6 +236,36 @@ fn dossier_entity_carries_description_and_raw_metadata() {
     assert_eq!(
         response["entity"]["metadata"], r#"{"role":"senior_engineer"}"#,
         "metadata must be the raw string, not parsed"
+    );
+}
+
+/// The entity payload carries the recorded aliases (additive field,
+/// multilingual-entity-resolution D8): the entity's own name is excluded
+/// from the list (a merge records the surviving name as an alias of
+/// itself), and the list is ordered by alias (the DAO's order).
+#[test]
+fn dossier_entity_carries_recorded_aliases() {
+    let (db, alice) = seed_db(|exec| {
+        let entities = EntityDao::new(exec);
+        let aliases = EntityAliasDao::new(exec);
+        let alice = entities.create("PERSON", "Alice", "hr", None, None, None)?;
+        aliases.insert_or_ignore(alice, "Alicia")?;
+        aliases.insert_or_ignore(alice, "the alicia")?;
+        aliases.insert_or_ignore(alice, "Alice")?; // own name — must be excluded
+        Ok(alice)
+    });
+    let graph = GraphIndex::Unavailable;
+
+    let response = call(
+        &db,
+        &graph,
+        Some(serde_json::json!({ "entity_id": alice.to_string() })),
+    )
+    .unwrap();
+    assert_eq!(
+        response["entity"]["aliases"],
+        serde_json::json!(["Alicia", "the alicia"]),
+        "own name excluded, DAO alias order: {response}"
     );
 }
 

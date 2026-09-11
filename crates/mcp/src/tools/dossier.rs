@@ -21,12 +21,16 @@
 //! 6. *`confidence` 0.0:* the house convention (as in `entities_catalog`)
 //!    keeps an explicit `0.0` rather than dropping a zero confidence. In
 //!    practice the column is `NULL` when absent, so this is theoretical.
+//! 7. *`aliases` (additive):* the entity payload carries the recorded
+//!    surface names (multilingual-entity-resolution D8) — own name excluded,
+//!    always present (empty array when there are none), fetched with one PK
+//!    lookup per response.
 
 use std::collections::HashMap;
 
 use db::{
-    ConnectionOrTx, Document, DocumentDao, Entity, EntityDao, EntityLinkDao, EntitySourceDao, Fact,
-    FactDao, FactSource, FactSourceDao,
+    ConnectionOrTx, Document, DocumentDao, Entity, EntityAliasDao, EntityDao, EntityLinkDao,
+    EntitySourceDao, Fact, FactDao, FactSource, FactSourceDao,
 };
 use graph::{EntityNode, GraphIndex, TraverseOptions};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -74,6 +78,11 @@ struct DossierEntity {
     /// The raw `metadata_json` string; absent when there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<String>,
+    /// The recorded surface names that resolved to this entity (the entity's
+    /// own name excluded); always present, empty when there are none
+    /// (additive field, multilingual-entity-resolution D8 — appended after
+    /// the last frozen field, existing field order untouched).
+    aliases: Vec<String>,
 }
 
 /// A dossier fact: field order follows the frozen contract (`mcp-contract`).
@@ -306,8 +315,10 @@ fn resolve_entity(db: &db::Db, args: &DossierArgs) -> Result<Entity, McpError> {
 
 // ── wire mapping ─────────────────────────────────────────────────────────────
 
-/// Map a stored entity to the wire `entity` object.
-fn dossier_entity(entity: &Entity) -> DossierEntity {
+/// Map a stored entity to the wire `entity` object. `aliases` is the
+/// entity's recorded surface names with the own name removed (fetched by
+/// the handler: one PK lookup, batched per response).
+fn dossier_entity(entity: &Entity, aliases: Vec<String>) -> DossierEntity {
     DossierEntity {
         id: entity.id,
         name: entity.name.clone(),
@@ -324,6 +335,7 @@ fn dossier_entity(entity: &Entity) -> DossierEntity {
             .as_deref()
             .filter(|metadata| !metadata.is_empty())
             .map(str::to_owned),
+        aliases,
     }
 }
 
@@ -527,6 +539,19 @@ pub fn handle_get_entity_dossier(
     let args: DossierArgs = deserialize_args(args, GET_ENTITY_DOSSIER)?;
 
     let entity = resolve_entity(db, &args)?;
+
+    // Recorded aliases (additive field, multilingual-entity-resolution D8):
+    // one PK lookup, batched into the response; the entity's own name is
+    // excluded (a merge records the surviving name as an alias of itself).
+    let aliases = db
+        .with_conn(|conn| {
+            EntityAliasDao::new(ConnectionOrTx::Connection(conn)).aliases_of(entity.id)
+        })
+        .and_then(|result| result)?
+        .into_iter()
+        .filter(|alias| alias != &entity.name)
+        .collect::<Vec<_>>();
+
     let depth = parse_depth(args.depth.as_ref());
     let include_facts = args.include_facts.unwrap_or(true);
     let include_sources = args.include_sources.unwrap_or(true);
@@ -622,7 +647,7 @@ pub fn handle_get_entity_dossier(
     cross_domain_links.sort_by_key(|link| link.target_entity_id);
 
     let response = DossierResponse {
-        entity: dossier_entity(&entity),
+        entity: dossier_entity(&entity, aliases),
         facts,
         sources,
         related_entities,
