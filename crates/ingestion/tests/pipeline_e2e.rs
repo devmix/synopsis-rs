@@ -271,6 +271,7 @@ fn equals_links() -> CrossDomainLinksConfig {
         methods: vec![LinkMethod::Equals],
         equals: Some(EqualsConfig { min_words: 1 }),
         llm_confidence_threshold: 0.7,
+        merge_confidence_threshold: None,
         batch_size: 5,
         expressions: Vec::new(),
     }
@@ -283,6 +284,7 @@ fn non_bool_expression_links() -> CrossDomainLinksConfig {
         methods: vec![LinkMethod::Expression],
         equals: None,
         llm_confidence_threshold: 0.7,
+        merge_confidence_threshold: None,
         batch_size: 5,
         expressions: vec![LinkExpression {
             name: "non_bool".to_owned(),

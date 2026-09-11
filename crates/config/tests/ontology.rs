@@ -130,6 +130,8 @@ fn assert_fixture_cross_domain_links(cfg: &config::GlobalConfig) {
     // The fixture omits both threshold elements: the loader applies the defaults on top of
     // the raw zero values (task 3.1b criterion (a)).
     assert!((cdl.llm_confidence_threshold - 0.7).abs() < f64::EPSILON);
+    // The fixture omits the merge threshold too: the loader applies its 0.95 default (task 7.1).
+    assert!((cdl.merge_confidence_threshold.expect("default applied") - 0.95).abs() < f64::EPSILON);
     assert_eq!(cdl.batch_size, 5);
 
     let expression = cdl.expressions.first().expect("fixture has one expression");
@@ -489,6 +491,9 @@ fn minimal_document_parses_to_empty_structure() {
     .expect("block present");
     // Both threshold elements are absent: the raw zero values survive, defaults come in 3.1b.
     assert_eq!(cdl.llm_confidence_threshold, 0.0);
+    // Absent <merge-confidence-threshold> parses to None; the 0.95 default is applied by the
+    // loader (task 7.1).
+    assert!(cdl.merge_confidence_threshold.is_none());
     assert_eq!(cdl.batch_size, 0);
     assert!(cdl.equals.is_none());
     assert_eq!(cdl.expressions[0].relation_type, "");
@@ -752,9 +757,81 @@ fn duplicate_alias_name_in_global_is_rejected() {
     assert_validation_error(
         "alias-duplicate",
         "<global version=\"1.0\"><aliases>\
-         <alias name=\"alias-a\" canonical=\"canonical-a\"/>\
-         <alias name=\"alias-a\" canonical=\"canonical-b\"/>\
-         </aliases></global>",
+          <alias name=\"alias-a\" canonical=\"canonical-a\"/>\
+          <alias name=\"alias-a\" canonical=\"canonical-b\"/>\
+          </aliases></global>",
         "duplicate alias name: alias-a",
+    );
+}
+
+// ── <merge-confidence-threshold> (multilingual-entity-resolution task 7.1) ─
+
+/// A minimal `<cross-domain-links>` document (one method so it validates) with the given
+/// `<merge-confidence-threshold>` element text; pass `""` for the absent-element case.
+fn cdl_doc_with_merge_threshold(element: &str) -> String {
+    format!(
+        "<global><cross-domain-links><methods><method>llm</method></methods>{element}</cross-domain-links></global>"
+    )
+}
+
+#[test]
+fn merge_threshold_absent_defaults_to_095() {
+    // Absent element → the ontology validates and the effective value is the default.
+    let dir = TempOntology::new("merge-threshold-absent", &cdl_doc_with_merge_threshold(""));
+    let cfg = dir.load().expect("must load").expect("file present");
+    let cdl = cfg.cross_domain_links.expect("block present");
+    assert!((cdl.merge_confidence_threshold.expect("default applied") - 0.95).abs() < f64::EPSILON);
+}
+
+#[test]
+fn merge_threshold_in_range_is_used() {
+    // A value in (0, 1] survives defaulting and validation verbatim.
+    let dir = TempOntology::new(
+        "merge-threshold-set",
+        &cdl_doc_with_merge_threshold(
+            "<merge-confidence-threshold>0.8</merge-confidence-threshold>",
+        ),
+    );
+    let cfg = dir.load().expect("must load").expect("file present");
+    let cdl = cfg.cross_domain_links.expect("block present");
+    assert!((cdl.merge_confidence_threshold.expect("value present") - 0.8).abs() < f64::EPSILON);
+
+    // Upper boundary: 1 (a valid "always merge" setting) is accepted.
+    let dir = TempOntology::new(
+        "merge-threshold-one",
+        &cdl_doc_with_merge_threshold("<merge-confidence-threshold>1</merge-confidence-threshold>"),
+    );
+    let cfg = dir.load().expect("must load").expect("file present");
+    let cdl = cfg.cross_domain_links.expect("block present");
+    assert_eq!(cdl.merge_confidence_threshold.expect("value present"), 1.0);
+}
+
+#[test]
+fn merge_threshold_out_of_range_fails_validation_naming_the_key() {
+    // An explicitly written 0 is a validation error (absence is the defaulting case, not 0).
+    assert_validation_error(
+        "merge-threshold-zero",
+        &cdl_doc_with_merge_threshold("<merge-confidence-threshold>0</merge-confidence-threshold>"),
+        "cross-domain-links.merge-confidence-threshold 0.000000 must be in (0, 1]",
+    );
+    // Above 1 is rejected the same way; the message formats the value with 6 decimal places.
+    assert_validation_error(
+        "merge-threshold-above",
+        &cdl_doc_with_merge_threshold(
+            "<merge-confidence-threshold>1.5</merge-confidence-threshold>",
+        ),
+        "cross-domain-links.merge-confidence-threshold 1.500000 must be in (0, 1]",
+    );
+}
+
+#[test]
+fn merge_threshold_absent_parses_to_none() {
+    // Parse-only: the absent element stays None — the 0.95 default is a loader concern.
+    let cfg = parse(&cdl_doc_with_merge_threshold("")).unwrap();
+    assert!(
+        cfg.cross_domain_links
+            .expect("block present")
+            .merge_confidence_threshold
+            .is_none()
     );
 }

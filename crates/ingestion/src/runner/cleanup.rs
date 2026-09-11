@@ -260,6 +260,7 @@ mod tests {
             methods: vec![LinkMethod::Equals],
             equals: None,
             llm_confidence_threshold: 0.7,
+            merge_confidence_threshold: None,
             batch_size: 5,
             expressions: Vec::new(),
         }
@@ -525,6 +526,7 @@ mod tests {
             methods: vec![LinkMethod::Expression],
             equals: None,
             llm_confidence_threshold: 0.7,
+            merge_confidence_threshold: None,
             batch_size: 5,
             expressions: vec![LinkExpression {
                 name: "bad-rule".to_owned(),

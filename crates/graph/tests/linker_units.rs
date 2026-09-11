@@ -49,6 +49,7 @@ fn links_config(
         methods,
         equals: None,
         llm_confidence_threshold: 0.7,
+        merge_confidence_threshold: None,
         batch_size: 5,
         expressions,
     }

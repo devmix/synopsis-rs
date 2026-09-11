@@ -55,6 +55,8 @@ pub const GLOBAL_XML_FILE: &str = "global.xml";
 const DEFAULT_EQUALS_MIN_WORDS: i32 = 2;
 /// Default confidence threshold for LLM linking results when absent or non-positive.
 const DEFAULT_LLM_CONFIDENCE_THRESHOLD: f64 = 0.7;
+/// Default confidence threshold for the within-domain cross-script merge action when absent.
+const DEFAULT_MERGE_CONFIDENCE_THRESHOLD: f64 = 0.95;
 /// Default number of entity pairs per LLM call when absent or non-positive.
 const DEFAULT_LLM_BATCH_SIZE: i32 = 5;
 /// Default relation type for linking expressions that omit one.
@@ -310,6 +312,16 @@ pub struct CrossDomainLinksConfig {
     /// loader replaces with the default of 0.7.
     #[serde(default, rename = "llm-confidence-threshold")]
     pub llm_confidence_threshold: f64,
+    /// Minimum confidence for the within-domain cross-script **merge** action
+    /// (multilingual-entity-resolution task 7.1): an LLM verdict at or above it merges the
+    /// pair; a verdict between [`llm_confidence_threshold`](Self::llm_confidence_threshold)
+    /// and this value creates a `same_entity` link only. `None` when the
+    /// `<merge-confidence-threshold>` element is absent — the loader applies the default of
+    /// 0.95. A present value must lie in (0, 1] — checked by `validate` with an error naming
+    /// the key. `Option` (unlike the plain `f64` above) so an explicitly written `0` is
+    /// distinguishable from absence and rejected instead of silently defaulting.
+    #[serde(default, rename = "merge-confidence-threshold")]
+    pub merge_confidence_threshold: Option<f64>,
     /// Entity pairs per LLM call; an absent element parses to `0`, which the loader replaces with
     /// the default of 5.
     #[serde(default, rename = "batch-size")]
@@ -863,10 +875,11 @@ where
 
 impl GlobalConfig {
     /// Applies the defaults: equals min-words ≤ 0 → 2, LLM confidence threshold ≤ 0 → 0.7,
-    /// batch size ≤ 0 → 5, empty expression relation types → `"same_entity"`, and each source
-    /// without any domain gets `["default"]`. Absent cross-domain links stay absent (guarded on
-    /// a non-nil pointer); an absent or empty NER method list becomes the fallback `[regex, llm]`
-    /// (both shapes parse to an empty vec here, so one check covers both branches).
+    /// absent merge confidence threshold → 0.95, batch size ≤ 0 → 5, empty expression relation
+    /// types → `"same_entity"`, and each source without any domain gets `["default"]`. Absent
+    /// cross-domain links stay absent (guarded on a non-nil pointer); an absent or empty NER
+    /// method list becomes the fallback `[regex, llm]` (both shapes parse to an empty vec here,
+    /// so one check covers both branches).
     fn apply_defaults(&mut self) {
         if let Some(cdl) = &mut self.cross_domain_links {
             // An absent `<equals>` element is guarded on before defaulting min-words.
@@ -878,6 +891,9 @@ impl GlobalConfig {
             if cdl.llm_confidence_threshold <= 0.0 {
                 cdl.llm_confidence_threshold = DEFAULT_LLM_CONFIDENCE_THRESHOLD;
             }
+            // Absence only: a present (even out-of-range) value survives to `validate`.
+            cdl.merge_confidence_threshold
+                .get_or_insert(DEFAULT_MERGE_CONFIDENCE_THRESHOLD);
             if cdl.batch_size <= 0 {
                 cdl.batch_size = DEFAULT_LLM_BATCH_SIZE;
             }
@@ -929,6 +945,17 @@ impl GlobalConfig {
                 return Err(validation(
                     "cross-domain-links.methods must have at least one method",
                 ));
+            }
+            // <merge-confidence-threshold> (task 7.1): absence was replaced by the default in
+            // apply_defaults, so only a present out-of-range value reaches here. The range is
+            // (0, 1]: an explicitly written 0 is rejected (absence is `None`, not 0.0) while
+            // 1 is a valid "always merge" setting; NaN is rejected by the same check.
+            if let Some(threshold) = cdl.merge_confidence_threshold
+                && !(0.0 < threshold && threshold <= 1.0)
+            {
+                return Err(validation(format!(
+                    "cross-domain-links.merge-confidence-threshold {threshold:.6} must be in (0, 1]"
+                )));
             }
         }
 
