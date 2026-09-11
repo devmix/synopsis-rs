@@ -14,8 +14,8 @@ database:
 embeddings:
   mode: "local"
   local:
-#    model_name: "bge-m3-int8"  # auto-download
-    model_name: "bge-small-en-v1.5"  # auto-download
+    model_name: "bge-m3-int8"  # auto-download
+#    model_name: "bge-small-en-v1.5"  # auto-download
     # Local dev override: bge-small-en-v1.5 instead of the frozen
     # bge-m3-int8 — a deliberate local deviation for faster local testing.
     # The dimension (384) comes from the onnx.yaml registry entry.
@@ -48,7 +48,7 @@ ingestion:
       api_key: "sk-none"
       temperature: 0.01
       seed: 12
-      max_tokens: 8192   # safety bound for low-effort NER output (kills the long-reasoning hang)
+      max_tokens: 16384
       # Response format mode for LLM output:
       #   "json_object" — default; sends {"type": "json_object"} and includes JSON example in system prompt
       #   "json_schema" — sends full JSON Schema in request body, omits example from prompt (requires API support)
@@ -71,7 +71,7 @@ ingestion:
 linker:
   disabled: false          # set false to activate LLM cross-domain linking
   llm:
-    api_base_url: "http://192.168.1.7:1234/v1"     # OpenAI-compatible API endpoint
+    api_base_url: "http://192.168.1.6:1234/v1"     # OpenAI-compatible API endpoint
     #    model_name: "meta-llama-3.1-8b-instruct"
     model_name: "openai/gpt-oss-20b"
     api_key: "sk-none"                        # Bearer token; empty if not required
