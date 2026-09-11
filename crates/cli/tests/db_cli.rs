@@ -394,6 +394,27 @@ fn db_merge_entities_help_shows_into_flag() {
 }
 
 #[test]
+fn db_merge_entities_missing_positional_is_usage_error_not_panic() {
+    // Regression (fix-merge-entities-required-id task 1.1): omitting the
+    // positional <ID> used to hit the `unreachable!()` in the parse
+    // fall-through; clap now enforces it and rejects the command with a
+    // usage error before any config/DB access (no fixture needed).
+    let out = run(&["db", "merge-entities", "--into", "42"]);
+    assert!(
+        !out.status.success(),
+        "missing positional must exit non-zero"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stdout.contains("panicked"), "must not panic: {stdout:?}");
+    assert!(!stderr.contains("panicked"), "must not panic: {stderr:?}");
+    assert!(
+        stderr.contains("<ID>") || stderr.contains("required"),
+        "clap usage error names the missing <ID>: {stderr:?}"
+    );
+}
+
+#[test]
 fn db_merge_entities_piped_y_merges_and_records_aliases() {
     let f = fixture("merge-y");
     let survivor = entity_id(&f.dir, "system", "CRM", "hr");

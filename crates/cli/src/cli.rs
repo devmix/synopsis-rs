@@ -326,6 +326,7 @@ fn build_db_command() -> ClapCommand {
                     .value_name("ID")
                     .action(ArgAction::Set)
                     .value_parser(clap::value_parser!(i64))
+                    .required(true)
                     .help("the entity id to merge away (the duplicate row, deleted after the merge)"),
             )
             .arg(
