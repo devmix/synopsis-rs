@@ -299,9 +299,10 @@ Ingestion sources and the entity/relation vocabulary are **not** in the YAML pre
 | `<entities>` | `<entity id= name= description=>` with `<attributes><attribute name= type= required= target=>` and `<synonyms><synonym>` — entity types available in every domain |
 | `<relations>` | `<relation source= predicate= target= description=>` with `<attributes>` — relation types available in every domain |
 | `<sources>` | `<source path= type= disabled= space= dataset=>` with `<domains><domain>` — the ingestion sources and the domains each one is tagged with |
-| `<cross-domain-links>` | `<methods><method>`, `<equals><min-words>`, `<llm-confidence-threshold>`, `<batch-size>`, and `<expressions><expression>` (each with `<name>`, `<description>`, `<priority>`, `<where>`, `<relation-type>`) — the cross-domain linking configuration |
+| `<cross-domain-links>` | `<methods><method>`, `<equals><min-words>`, `<llm-confidence-threshold>`, `<merge-confidence-threshold>`, `<batch-size>`, and `<expressions><expression>` (each with `<name>`, `<description>`, `<priority>`, `<where>`, `<relation-type>`) — the cross-domain linking configuration |
 | `<ner>` | `<methods><method>` — the NER methods used during ingestion |
 | `<extraction>` | `<regex-rules><regex id= entity= pattern= confidence=>` — shared regex extraction rules |
+| `<aliases>` | `<alias name= canonical=>` — the dataset alias map: instance-name variants resolved to their canonical entity name during entity resolution (tier 3) |
 
 **`domains/*.xml`** (one file per domain; a missing or malformed file is a **startup error**; a non-compiling regex pattern is a **startup error**):
 
@@ -312,8 +313,13 @@ Ingestion sources and the entity/relation vocabulary are **not** in the YAML pre
 | `<relations>` | `<relation source= predicate= target=>` with optional `<attributes>` |
 | `<extraction>` | `<regex-rules><regex id= entity= pattern= confidence=>` |
 | `<confidence auto_publish_threshold= review_threshold= reject_threshold=>` | Per-domain extraction confidence thresholds (defaults `0.85` / `0.60` / `0.40` when absent) |
+| `<aliases>` | `<alias name= canonical=>` — the domain's contribution to the dataset alias map |
 
 Every group of repeating elements is wrapped in a plural wrapper (`<entities>`, `<relations>`, `<regex-rules>`) — the deliberate breaking format change of 2026-08-19. Lookup searches the domain layer first, then the global pool (shadowing); reference validation (relation → entity) runs on the merged layers.
+
+**The dataset alias map.** The `<aliases>` blocks of `global.xml` and every domain file are unioned into one flat map (alias name → canonical name) that the entity resolver consults as tier 3: the normalized surface form maps to the canonical name, which is then resolved by its tier-1 key. The map keys on the name only, so the domain+type gate of the resolution tiers still applies. A canonical need not pre-exist — the first extraction of either side creates the entity under the canonical name. The map is for deterministic pairs (abbreviations, cross-lingual variants) and is deliberately distinct from the type-level `<synonyms>` of an entity type. See [Entity Resolution](../concepts/entity-resolution) for the full tier model.
+
+**`<merge-confidence-threshold>`** (inside `<cross-domain-links>`) sets the confidence at or above which the LLM's verdict on a within-domain cross-script pair **merges** the two entities (between it and `<llm-confidence-threshold>` the pair is only linked). Absent → default `0.95`; a present value must lie in (0, 1].
 
 ## Validation rules
 
@@ -325,6 +331,8 @@ The configuration is validated after defaults are applied; violations are fatal 
 - `vectors.engine` must be absent or `"usearch"` (`"lance"` is rejected with an explicit removal error; any other value fails the parse).
 - `vectors.usearch`: `max_segment_vectors > 0`, `compaction_stale_threshold` in 1–100, `search_threads > 0`.
 - `vectors`: `dim > 0`, `m > 0`, `ef_construction >= m`, `ef_search > 0`, `quantization` one of `u8`/`i8`/`f16`/`bf16`/`f32`.
+- Ontology `<aliases>` (both `global.xml` and the domain files): every `name` and `canonical` is non-empty, and a `name` is unique within a file **and** across the dataset (the union of global + all domain blocks) — a duplicate names both sources.
+- `<cross-domain-links><merge-confidence-threshold>`: a present value must lie in (0, 1] (the error names the key); absent → the effective default is `0.95`.
 
 ## See also
 

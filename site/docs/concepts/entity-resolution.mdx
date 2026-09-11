@@ -1,0 +1,82 @@
+---
+title: Entity Resolution
+description: How duplicate entity names collapse into one record — the four resolution tiers (article-stripped exact, stem, alias, Jaro-Winkler), the alias memory, the dataset alias map, and the cross-script merge/link action
+sidebar_position: 6
+---
+
+# Entity Resolution
+
+NER extracts entity names from every chunk, and the same real-world entity often appears under different surface forms: "Beacon", "beacon", "beacon ", "маяк". Entity resolution maps every surface form onto a **single entity row** before facts, chunk links, and source records are written, so the graph is never fragmented by name variants.
+
+Resolution runs inside the ingestion pipeline (the "Entities + facts" stage of [The Pipeline](./pipeline)) and is scoped by `(domain, type)`: every tier key is a `(domain, type, key)` tuple, so entities in different domains or of different types are **never** merged.
+
+## The four resolution tiers
+
+When a surface form is resolved, the resolver evaluates the tiers **in order** and stops at the first hit:
+
+| Tier | Key | Hit condition | Score |
+|------|-----|---------------|-------|
+| 1. Article-stripped exact | `match_key` | same `(domain, type, match_key)` as an existing entity | 1.0 |
+| 2. Stem equality | `stem_key` | same `(domain, type, stem_key)` | 1.0 |
+| 3. Alias | alias map / alias memory | the surface form is a known alias of an entity (below) | 1.0 |
+| 4. Jaro-Winkler | shared bigram blocks | best JW similarity over the shared bigrams is at least `ingestion.resolver.similarity_threshold` (default **0.8**; shipped config **0.85**) | the similarity itself |
+
+- **Normalization** trims, lowercases, and collapses whitespace. **Article stripping** removes a leading `the ` / `a ` / `an ` at a word boundary, so tier 1 matches "The Beacon" against "beacon" — and a name without a leading article is unaffected.
+- **Stemming** keys each word by script: Latin → English Porter, Cyrillic → Russian Snowball, everything else (CJK, …) → lowercased identity. "gates" and "gate" share a stem key, as do inflected Cyrillic case/plural variants; CJK names fall back to exact matching.
+- **Tiers 1–3 are deterministic** and score 1.0 regardless of the configured threshold; only tier 4 competes against it.
+- When several pre-existing rows share a stem key, the **lowest id** is the deterministic pick.
+
+A surface form that matches **no tier** creates a new entity. When variants of the same real-world entity are merged, the **longest name** (by rune count) becomes the canonical name of the surviving record.
+
+## Alias memory
+
+Every non-creating resolution — a hit at any of the four tiers — records the surface form in the **`entity_aliases`** table (one alias names exactly one entity: the `alias` column carries a global unique index). On later runs that surface form resolves by **lookup** (tier 3) instead of similarity work, so resolution is **monotone**: the same input always lands on the same entity.
+
+Recorded aliases are exposed through MCP: the `get_entity_dossier`, `catalog_entities`, and `search` payloads each carry an additive `aliases` array (the entity's own name is excluded; the array is empty when there are no aliases).
+
+## The dataset alias map
+
+For variants the tiers cannot see — abbreviations, cross-lingual names — the ontology can declare a **dataset alias map** as `<aliases>` blocks in `global.xml` and/or the domain files:
+
+```xml
+<aliases>
+    <alias name="vm" canonical="virtual machine"/>
+    <alias name="маяк" canonical="beacon"/>
+</aliases>
+```
+
+The effective map is the **union** of the global and every domain block, validated at startup: every `name` and `canonical` must be non-empty, and a `name` must be unique within a file **and** across the dataset.
+
+Tier 3 consults this map first: the normalized surface form maps to the canonical name, and the canonical is then resolved by its tier-1 key. Because the map keys on the name only, the domain+type gate still applies — an alias never resolves across types or domains. The canonical **need not pre-exist**: the first extraction of either side creates the entity **under the canonical name**, with the surface form recorded in the alias memory.
+
+The alias map is for **deterministic** pairs — the ones you know for sure. It is deliberately distinct from the type-level `<synonyms>` of an entity type, which are surface forms of the *type* rather than of one entity's name. See [Entity Merging & Alias Maps](../guides/entity-merging#authoring-the-dataset-alias-map) for authoring guidance.
+
+## Cross-script merge and link action
+
+Names in different scripts ("beacon" / "маяк") cannot share a tier-1 or tier-2 key, and Jaro-Winkler is meaningless across scripts. The linker therefore enumerates **within-domain cross-script pairs** — same type, same normalized domain, different dominant script, and tier-1/tier-2 keys both distinct (i.e. not already resolved by the tiers) — and judges them with the `llm` method **only**:
+
+| LLM confidence | Action |
+|----------------|--------|
+| at least `<merge-confidence-threshold>` (default **0.95**) | **merge** the pair in one transaction: the canonical (survivor) is the entity with the greater number of source documents, on a tie the longer name, on a further tie the lower id; both names are recorded as aliases of the survivor and every dependent row is re-pointed |
+| at least `<llm-confidence-threshold>` (default **0.7**) | a `same_entity` link (method `llm`, evidence = the reasoning) |
+| below that | no action |
+
+The decision is cached in the cache DB exactly like a cross-domain decision, so a repeat run neither re-consults the model nor re-merges (after a merge, the pair no longer exists). See [Cross-Domain Linking](./cross-domain-linking) for the LLM method and the decision cache.
+
+## Merging manually
+
+Duplicates that slipped through ingestion — or that you simply want to consolidate — can be merged by hand:
+
+```bash
+synopsis db merge-entities <duplicate-id> --into <survivor-id>
+```
+
+The command validates the preconditions (both ids exist and share the same type and domain), asks for confirmation, and runs the same transactional merge the linker uses. See [Entity Merging & Alias Maps](../guides/entity-merging) for the full walkthrough.
+
+## See also
+
+- [The Pipeline](./pipeline) — where resolution sits in the ingestion flow
+- [Cross-Domain Linking](./cross-domain-linking) — links across domain boundaries
+- [Entity Merging & Alias Maps](../guides/entity-merging) — the manual merge and the alias map
+- [Configuration Schema](../reference/config-schema#the-xml-ontologies) — the `<aliases>` blocks and the thresholds
+- [Database Schema](../reference/database-schema#entity_aliases) — the `entity_aliases` table

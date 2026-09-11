@@ -15,22 +15,23 @@ Migrations live at the **repository root**, not in a crate, in one directory per
 ```
 migrations/
 ├── knowledge/          # per-dataset knowledge DB
-│   └── 1-init/up.sql   # the squashed init migration
+│   ├── 1-init/up.sql           # the squashed init migration
+│   └── 2-entity-aliases/up.sql # the entity_aliases table (alias memory)
 └── cache/              # global cache DB
     └── 1-init/up.sql
 ```
 
 `crates/db` embeds both trees at compile time with `include_dir!` (`crates/db/src/connection.rs`) and applies them with `rusqlite_migration` 2.x (the `from-directory` feature). The SQL ships inside the binary — there is no migration directory to ship or locate at runtime.
 
-## One squashed init migration
+## A squashed init migration, then forward-only migrations
 
-Each database has exactly **one** migration: `1-init/up.sql`, the squashed init. For the knowledge DB it creates the full schema in a single file — all tables (`documents`, `chunks`, `entities`, `facts`, the link tables, and the `usearch_vectors_log` ANN write-ahead log), all indexes, the FTS5 `chunks_fts` table with its sync triggers, and the `queue_tasks` event queue (folded into the init at squash time — there is no separate forward migration for it). The cache DB's init creates its own tables (the LLM/NER caches and the `app_kv` markers) in its own `1-init/up.sql`.
+Each database starts from the squashed init migration `1-init/up.sql`. For the knowledge DB it creates the full schema in a single file — all tables (`documents`, `chunks`, `entities`, `facts`, the link tables, and the `usearch_vectors_log` ANN write-ahead log), all indexes, the FTS5 `chunks_fts` table with its sync triggers, and the `queue_tasks` event queue (folded into the init at squash time — there is no separate forward migration for it). The knowledge DB has one forward migration on top: `2-entity-aliases/up.sql` adds the `entity_aliases` table (the alias memory of entity resolution). The cache DB's init creates its own tables (the LLM/NER caches and the `app_kv` markers) in its own `1-init/up.sql`.
 
 ## `PRAGMA user_version` is the sole source of schema state
 
-- `PRAGMA user_version` records the applied schema version — it is **1** after the init migration, and it is the **sole** source of truth about the schema state.
+- `PRAGMA user_version` records the applied schema version — it is **2** for the knowledge DB after the current migration set (the cache DB is **1**), and it is the **sole** source of truth about the schema state.
 - The `_schema_migrations` tracking table is **deliberately not created** — there is no table of applied versions to drift out of sync with the PRAGMA.
-- On open, the `db` crate reads `PRAGMA user_version`: `0` (a new file) → run the init migration; `1` → already initialized, apply nothing further, preserve the data.
+- On open, the `db` crate reads `PRAGMA user_version`: `0` (a new file) → apply every migration; a version below the latest → apply the remaining migrations; at the latest → already migrated, apply nothing further, preserve the data.
 
 ## Forward-only
 
@@ -45,7 +46,7 @@ The Rust binary always builds its database **from scratch**. A pre-existing `kno
 
 ## Testing a migration
 
-The init migration runs on every fresh database — the `db` crate's test helper builds a database from scratch in tests and asserts `PRAGMA user_version = 1` plus the full schema. For a new numbered migration:
+The full migration set runs on every fresh database — the `db` crate's test helper builds a database from scratch in tests and asserts `PRAGMA user_version = 2` plus the full schema (including `entity_aliases`). For a new numbered migration:
 
 1. Add `migrations/knowledge/<id>-<slug>/up.sql` (and/or the `cache/` side) with the next number.
 2. Keep it forward-only and SQLite-compatible; new columns need defaults or `NULL`, and unique indexes on existing data need dedup first.

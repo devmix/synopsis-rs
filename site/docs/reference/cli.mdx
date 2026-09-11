@@ -16,7 +16,7 @@ synopsis [--config PATH] [--preset NAME] [--dataset NAME] [--version] <subcomman
 | --- | --- |
 | `serve` | Start the MCP server (startup reconcile + file watching + background job worker) |
 | `queue status \| reset-retries` | Inspect and repair the event task queue |
-| `db stats \| clear` | Dataset statistics / delete the entire dataset state |
+| `db stats \| clear \| merge-entities` | Dataset statistics / delete the entire dataset state / merge one entity into another |
 | `model list \| download \| delete \| info \| benchmark [NAME]` | Manage embedding models |
 | `onnx-runtime install \| status \| uninstall` | Manage the ONNX Runtime library |
 | `load-test` | Fill the database with synthetic data and benchmark all MCP tool handlers |
@@ -118,11 +118,12 @@ synopsis queue reset-retries --identity workspace/datasets/edtech/content/docume
 
 ## `db`
 
-Dataset database maintenance. Both actions operate on the dataset-bound knowledge database and do not load the embedding model or the ONNX runtime; a non-empty dataset name is required.
+Dataset database maintenance. All three actions operate on the dataset-bound knowledge database and do not load the embedding model or the ONNX runtime; a non-empty dataset name is required.
 
 ```
 synopsis db stats
 synopsis db clear
+synopsis db merge-entities <ID> --into <ID>
 ```
 
 ### `db stats`
@@ -135,9 +136,33 @@ Prints the same statistics, then asks for confirmation (`Confirm deletion? [y/N]
 
 There is no standalone re-ingest subcommand: a full re-ingest is `db clear` followed by a `serve` restart, whose startup reconcile re-enqueues the source files and the worker re-embeds them, recreating the DB and the vector index.
 
+### `db merge-entities`
+
+Merges one entity into another: re-points facts (subject **and** object), chunk links, sources, and entity links, records **both names as aliases** of the survivor, and deletes the duplicate row — all in one transaction. This is the same merge primitive the within-domain cross-script linker action uses; see [Entity Resolution](../concepts/entity-resolution) for when it runs automatically.
+
+```
+synopsis db merge-entities <ID> --into <ID>
+```
+
+| Argument / flag | Description |
+| --- | --- |
+| `<ID>` (positional) | The entity id to merge away (the duplicate row, deleted after the merge) |
+| `--into <ID>` | **required** — the surviving entity id |
+
+Preconditions (checked **before any write**; a violation is a clear error and the database is left unmodified): both ids exist, the ids differ, and the two entities share the same `type` and `domain`.
+
+After the preconditions pass, the command prints the dataset statistics block and asks `Confirm merge? [y/N]` on stdin. Only `y`/`Y` proceeds; any other answer (including EOF) aborts without modifying anything. On `y`, the merge summary is printed: the surviving and merged entity (name + id), the re-pointed row counts per table (`facts`, `facts dropped`, `chunk_entities`, `entity_sources`, `entity_links`), and the recorded aliases.
+
+```bash
+synopsis --dataset mydata db merge-entities 42 --into 17
+```
+
+Full walkthrough (finding the ids, sample output, and the alias-map alternative): [Entity Merging & Alias Maps](../guides/entity-merging.mdx).
+
 ```bash
 synopsis db stats
 synopsis db clear
+synopsis db merge-entities 42 --into 17
 ```
 
 ## `model`
@@ -215,7 +240,7 @@ Full guide: [Load Testing](../guides/load-testing.mdx) — phases, scales, repor
 
 | Outcome | Exit code |
 | --- | --- |
-| Success (including `--version` and an aborted `db clear`) | `0` |
+| Success (including `--version`, an aborted `db clear`, and an aborted `db merge-entities`) | `0` |
 | Usage error: no subcommand, unknown subcommand, or invalid flags | `1` |
 | Config load / validation failure | `1` |
 | Database open / migration failure (incl. unrecovered dimension mismatch) | `1` |
@@ -232,3 +257,5 @@ Every fatal error exits with code `1`.
 - [Troubleshooting](../guides/troubleshooting.mdx) — dimension mismatch, stuck queue jobs, missing model / ONNX runtime
 - [MCP Tools](./mcp-tools/index.mdx) — the 12 tools served by `serve`
 - [Job Queue](../concepts/job-queue.mdx) — the `queue_tasks` event queue behind `queue status` / `queue reset-retries`
+- [Entity Resolution](../concepts/entity-resolution.mdx) — the tiers behind entity dedup and the automatic cross-script merge
+- [Entity Merging & Alias Maps](../guides/entity-merging.mdx) — `db merge-entities` and the ontology `<aliases>` blocks

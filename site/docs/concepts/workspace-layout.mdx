@@ -1,7 +1,7 @@
 ---
 title: Workspace Layout
 description: The workspace/ runtime-state tree — configs, per-dataset state, the global cache DB, downloaded models and ONNX runtime; what is tracked and what is gitignored
-sidebar_position: 6
+sidebar_position: 7
 ---
 
 # Workspace Layout
@@ -48,7 +48,7 @@ Each dataset has three parts:
 | `content/` | The documents the sources point at (Markdown, JSON, web pages). See [The Pipeline](./pipeline). |
 | `state/` | The dataset's **knowledge DB** (`knowledge.db`) and the **vector index** (`vectors/` directory), plus a `backups/` directory for WAL snapshots taken before indexing. |
 
-The knowledge DB is **always built from scratch** by the Rust binary: one squashed init migration, `PRAGMA user_version` as the sole schema state. Existing `knowledge.db` files are never opened or upgraded, and data is never migrated. The table-by-table layout is in the [Database schema reference](../reference/database-schema).
+The knowledge DB is **always built from scratch** by the Rust binary: a squashed init migration plus numbered forward-only migrations, `PRAGMA user_version` as the sole schema state. Existing `knowledge.db` files are never opened or upgraded, and data is never migrated. The table-by-table layout is in the [Database schema reference](../reference/database-schema).
 
 ## `db/cache/cache.db` — the global cache DB
 

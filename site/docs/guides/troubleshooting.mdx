@@ -176,7 +176,7 @@ synopsis db clear   # prints the same stats, asks for confirmation, then removes
 synopsis serve      # startup reconcile re-enqueues all files; the worker re-embeds everything
 ```
 
-`db clear` removes the whole dataset state directory (knowledge DB + vector index) in one call — the next `serve` rebuilds both from the sources. Note that the Rust binary **always builds its own DB from scratch** (one squashed init migration, `PRAGMA user_version` as the sole schema state); pre-existing `knowledge.db` files are never opened or upgraded — if you "see old data", you are looking at a different dataset or a leftover file outside `state/`.
+`db clear` removes the whole dataset state directory (knowledge DB + vector index) in one call — the next `serve` rebuilds both from the sources. Note that the Rust binary **always builds its own DB from scratch** (a squashed init migration plus numbered forward-only migrations, `PRAGMA user_version` as the sole schema state); pre-existing `knowledge.db` files are never opened or upgraded — if you "see old data", you are looking at a different dataset or a leftover file outside `state/`.
 
 ## `workspace/` layout issues
 

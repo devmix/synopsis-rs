@@ -72,7 +72,7 @@ synopsis [--config PATH] [--preset NAME] [--dataset NAME] <subcommand>
 |---|---|
 | `serve [--no-initial-sync] [--port N] [--auto-rebuild-vectors]` | start the MCP server with initial sync + file watching |
 | `queue status\|reset-retries` | inspect/repair the event task queue |
-| `db stats\|clear` | dataset statistics / delete all dataset state |
+| `db stats\|clear\|merge-entities` | dataset statistics / delete all dataset state / merge one entity into another |
 | `model list\|download\|delete\|info\|benchmark [NAME]` | manage embedding models |
 | `onnx-runtime install\|status\|uninstall` | manage the ONNX runtime library |
 | `load-test [--scale small\|medium\|large] [--seed N] [--iterations N] [--json PATH] [--no-fill]` | benchmark all MCP tool handlers on generated data |
@@ -94,9 +94,13 @@ workspace/
 └── onnxruntime/              # downloaded ONNX runtime library
 ```
 
-The knowledge DB is always built from scratch by the Rust binary (one
-squashed init migration, `PRAGMA user_version` as the sole schema state) —
-existing `knowledge.db` files are never opened or upgraded.
+The ontology directory holds the dataset's `global.xml` and `domains/*.xml`;
+an optional `<aliases>` block in either file maps entity-name variants to
+their canonical names (the dataset alias map used by entity resolution).
+
+The knowledge DB is always built from scratch (a squashed init migration plus
+numbered forward-only migrations, `PRAGMA user_version` as the sole schema
+state) — existing `knowledge.db` files are never opened or upgraded.
 
 ## MCP tools
 

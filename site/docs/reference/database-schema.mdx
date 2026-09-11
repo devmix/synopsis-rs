@@ -18,9 +18,9 @@ The layout is part of the [Workspace Layout](../concepts/workspace-layout.mdx).
 
 ## Migrations and schema state
 
-- Each database is created by a **single squashed init migration** — `migrations/knowledge/1-init/up.sql` for the knowledge DB, `migrations/cache/1-init/up.sql` for the cache DB — embedded into the binary at compile time (`include_dir!` in `crates/db`).
-- `PRAGMA user_version` is the **sole source of truth** about the schema state (`= 1` after init). The `_schema_migrations` tracking table is **deliberately NOT created**.
-- Migrations are applied at startup, are idempotent (`IF NOT EXISTS`), and a subsequent startup is a no-op. Future migrations are numbered directories `<id>-<slug>/up.sql`, forward-only (no down.sql); shipped migrations are never edited.
+- Each database starts from a **squashed init migration** — `migrations/knowledge/1-init/up.sql` for the knowledge DB, `migrations/cache/1-init/up.sql` for the cache DB — and evolves through numbered forward-only migrations on top (`migrations/knowledge/2-entity-aliases/up.sql` adds the `entity_aliases` table). Everything is embedded into the binary at compile time (`include_dir!` in `crates/db`).
+- `PRAGMA user_version` is the **sole source of truth** about the schema state (`= 2` for a fresh knowledge DB, `= 1` for the cache DB). The `_schema_migrations` tracking table is **deliberately NOT created**.
+- Migrations are applied at startup, are idempotent (`IF NOT EXISTS`), and a subsequent startup is a no-op. New migrations are numbered directories `<id>-<slug>/up.sql`, forward-only (no down.sql); shipped migrations are never edited.
 - A pre-existing `knowledge.db` is **NOT opened and NOT migrated**: the Rust binary always builds its database from scratch, and data is never migrated.
 
 See [Migrations](../developer/migrations.mdx) for the full migration discipline.
@@ -137,6 +137,17 @@ Cross-domain entity links created during ingestion (see [Cross-Domain Linking](.
 
 Primary key: `(subject_entity_id, target_entity_id, relation_type)`. Check constraint: `subject_entity_id != target_entity_id`.
 
+### `entity_aliases`
+
+Alias memory of [entity resolution](../concepts/entity-resolution.mdx): every surface name that has resolved to an entity (a tier hit or a merge) is recorded here, so repeated surface forms resolve by lookup instead of similarity work. Added by the `2-entity-aliases` migration.
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `entity_id` | INTEGER | NOT NULL, FK → `entities.id` ON DELETE CASCADE | The entity the alias resolves to. |
+| `alias` | TEXT | NOT NULL | The alias surface form. |
+
+Unique constraint: `(entity_id, alias)`. Unique index: `idx_entity_aliases_alias` on `alias` alone — an alias names exactly one entity globally.
+
 ### `queue_tasks`
 
 The generic event queue — the single state machine the file watcher, the startup reconcile, the pipeline, and the background worker all enqueue into (see [Job Queue](../concepts/job-queue.mdx)). One row per `(type, identity)`, covering document operations (`doc:index`, `doc:delete`) and entity-linking tasks (`entity:link`).
@@ -189,12 +200,13 @@ Primary key: `(segment_id, chunk_id)`.
 | `idx_entity_links_target` | `entity_links` | `target_entity_id` | |
 | `idx_entity_sources_entity_id` | `entity_sources` | `entity_id` | |
 | `idx_entity_sources_document_id` | `entity_sources` | `document_id` | |
+| `idx_entity_aliases_alias` | `entity_aliases` | `alias` | UNIQUE — an alias names exactly one entity globally |
 | `idx_queue_tasks_due` | `queue_tasks` | `status, next_attempt_at` | Serves the worker's due query |
 | `idx_queue_tasks_identity` | `queue_tasks` | `type, identity` | UNIQUE — at most one row per event identity (the dedup/upsert key) |
 | `idx_usearch_vectors_log_flags` | `usearch_vectors_log` | `flags` | |
 | `idx_usearch_vectors_log_segment` | `usearch_vectors_log` | `segment_id` | |
 
-In addition, every table's primary key and the composite UNIQUE constraints (`entities`, `facts`, `entity_sources`, `chunk_entities`, `entity_links`) are backed by SQLite's implicit indexes.
+In addition, every table's primary key and the composite UNIQUE constraints (`entities`, `facts`, `entity_sources`, `chunk_entities`, `entity_links`, `entity_aliases`) are backed by SQLite's implicit indexes.
 
 ## Full-text index (FTS5)
 

@@ -77,7 +77,7 @@ Query time: an MCP client calls `search`; the lexical and semantic legs run in p
 
 All runtime state lives under `workspace/` (gitignored; created and downloaded by the binary). There are **two SQLite databases** plus the ANN index files:
 
-- **Per-dataset knowledge DB** — `workspace/datasets/<name>/state/knowledge.db`: documents, chunks with the FTS5 index, entities, facts, entity links, and the `queue_tasks` event queue. It is always built from scratch: one squashed init migration, `PRAGMA user_version` as the sole source of schema state — the `_schema_migrations` table is deliberately not created, and existing `knowledge.db` files are never opened or upgraded.
+- **Per-dataset knowledge DB** — `workspace/datasets/<name>/state/knowledge.db`: documents, chunks with the FTS5 index, entities, facts, entity links, and the `queue_tasks` event queue. It is always built from scratch: a squashed init migration plus numbered forward-only migrations, `PRAGMA user_version` as the sole source of schema state — the `_schema_migrations` table is deliberately not created, and existing `knowledge.db` files are never opened or upgraded.
 - **Global cache DB** — `workspace/db/cache/cache.db`: the persistent LLM/NER decision caches, shared across datasets and independent of any single dataset.
 - **usearch index files** — under the dataset's `state/`: the disk-backed, scalar-quantized HNSW index with its WAL and segments. Vectors are rebuilt from chunk text; they are never read from any previous store.
 
@@ -89,7 +89,7 @@ The four architecture decisions are recorded as ADRs. Each is summarized here; t
 
 ### ADR 0001 — SQLite/FTS5 seam (bundled, source-compiled)
 
-Synopsis owns the full SQLite/FTS5 path in Rust: SQLite is compiled from source into the binary (rusqlite + libsqlite3-sys, `bundled`), so FTS5 ships with every build and the "no fts5 module → silently degrade" failure class is excluded by construction — no C-compiler flags anywhere, and the one-binary / no-external-dependencies contract holds across all five cross-build targets. The same ADR froze the migration mechanism: `rusqlite_migration` with the SQL embedded at compile time, a single squashed init migration, and `PRAGMA user_version` as the sole source of schema state — the `_schema_migrations` table is never created, and pre-existing `knowledge.db` files are never opened or upgraded.
+Synopsis owns the full SQLite/FTS5 path in Rust: SQLite is compiled from source into the binary (rusqlite + libsqlite3-sys, `bundled`), so FTS5 ships with every build and the "no fts5 module → silently degrade" failure class is excluded by construction — no C-compiler flags anywhere, and the one-binary / no-external-dependencies contract holds across all five cross-build targets. The same ADR froze the migration mechanism: `rusqlite_migration` with the SQL embedded at compile time, a squashed init migration as the schema's starting point (future migrations are numbered forward-only directories), and `PRAGMA user_version` as the sole source of schema state — the `_schema_migrations` table is never created, and pre-existing `knowledge.db` files are never opened or upgraded.
 
 ### ADR 0002 — ONNX Runtime seam (ort, load-dynamic)
 

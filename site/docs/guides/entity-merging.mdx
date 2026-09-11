@@ -1,0 +1,121 @@
+---
+title: Entity Merging & Alias Maps
+description: Merge duplicate entity rows with synopsis db merge-entities, and author the dataset alias map in the ontology <aliases> blocks
+sidebar_position: 8
+---
+
+# Entity Merging & Alias Maps
+
+[Entity resolution](../concepts/entity-resolution) keeps the graph from fragmenting into near-duplicate entities during ingestion, but two situations need your hand:
+
+1. **Duplicates already exist** — the same real-world entity is stored as two rows (different scripts, or names the tiers could not join). Merge them with `db merge-entities`.
+2. **You know the mapping for sure** — an abbreviation or a cross-lingual variant that the deterministic tiers will never see. Declare it in the ontology's `<aliases>` block so every future extraction resolves to the canonical name.
+
+## Merging two entities manually
+
+### Finding the ids
+
+List the candidates with the MCP tools (`catalog_entities`, `search`, `search_entities_by_type`) or the database directly — the entity `id`, `type`, `name`, and `domain` are what the command validates.
+
+### The command
+
+```
+synopsis db merge-entities <id> --into <id>
+```
+
+| Argument / flag | Description |
+| --- | --- |
+| `<id>` (positional) | The entity id to merge away — the duplicate row, deleted after the merge |
+| `--into <id>` | The surviving entity id |
+
+Example (global flags precede the subcommand):
+
+```bash
+synopsis --dataset mydata db merge-entities 42 --into 17
+```
+
+### Preconditions
+
+The command loads both entities **before any write** and fails with a clear error — without modifying anything — when:
+
+- either id does not exist;
+- the two ids are the same;
+- the entities have different `type`s or different `domain`s.
+
+### Confirmation and summary
+
+After the preconditions pass, the command prints the dataset statistics block and asks:
+
+```
+Confirm merge? [y/N]
+```
+
+Only `y` or `Y` proceeds; any other answer (including EOF) aborts with **no modification**. On `y`, the merge runs in one transaction and the summary is printed:
+
+```
+Merge Summary:
+  Surviving entity        beacon (id 17)
+  Merged entity           маяк (id 42)
+  Facts re-pointed        3
+  Facts dropped           0
+  Chunk links re-pointed  5
+  Sources re-pointed      2
+  Entity links re-pointed 1
+  Recorded aliases        beacon, маяк
+```
+
+What the transaction does:
+
+- re-points every dependent row — `facts` (subject **and** object), `chunk_entities`, `entity_sources`, `entity_links` (self-links after the re-point are skipped; duplicates are ignored);
+- records **both names** as aliases of the survivor in `entity_aliases` (idempotent — repeated merges never duplicate them);
+- deletes the duplicate row.
+
+The command is one-shot: it opens only the dataset-bound knowledge DB and never loads the embedding model or the ONNX runtime.
+
+## Authoring the dataset alias map
+
+### Where
+
+An optional top-level `<aliases>` block in `global.xml` and/or in any `domains/*.xml`:
+
+```xml
+<global version="1.0">
+    <!-- ... -->
+    <aliases>
+        <alias name="vm" canonical="virtual machine"/>
+        <alias name="маяк" canonical="beacon"/>
+    </aliases>
+</global>
+```
+
+Each `<alias>` has exactly two attributes:
+
+| Attribute | Meaning |
+| --- | --- |
+| `name` | The alias surface form as extracted (compared after normalization: trim, lowercase, whitespace collapse) |
+| `canonical` | The canonical entity name the alias resolves to |
+
+### Semantics
+
+- The effective map is the **union** of the global block and every domain block.
+- The map keys on the **name only** — the domain+type gate of the resolution tiers still applies, so an alias never resolves an entity of a different type or domain.
+- The canonical **need not pre-exist**: the first extraction of either side creates the entity **under the canonical name**, with the alias surface form recorded in the alias memory (`entity_aliases`).
+- An alias that does match an existing canonical resolves to it with **no similarity work** (tier 3, score 1.0).
+
+The alias map is for **deterministic** pairs — abbreviations, cross-lingual variants, known renames. Pairs you are *not* sure about are the linker's job: within-domain cross-script pairs are judged by the LLM and merged or linked by confidence (see [Cross-script merge and link action](../concepts/entity-resolution#cross-script-merge-and-link-action)).
+
+### Validation (startup errors)
+
+- every `name` and `canonical` must be non-empty;
+- a `name` must be unique **within a file** and **across the dataset** (a duplicate `name` in `global.xml` and a domain file is a startup error naming both sources).
+
+### When the map takes effect
+
+The map is read at startup and drives resolution during ingestion. It does **not** retro-merge existing duplicate rows: if the two names are already stored as separate entities, merge them with `db merge-entities` (or re-ingest the dataset — `db clear` + `serve` — so the new resolution runs from scratch).
+
+## See also
+
+- [Entity Resolution](../concepts/entity-resolution) — the four tiers, alias memory, and the cross-script action
+- [CLI Reference](../reference/cli#db) — `db merge-entities` in the command reference
+- [Configuration Schema](../reference/config-schema#the-xml-ontologies) — the ontology formats and validation rules
+- [Cross-Domain Linking](../concepts/cross-domain-linking) — the LLM method and its decision cache
