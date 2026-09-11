@@ -3,12 +3,21 @@
 //! # Pipeline
 //!
 //! [`build_entity_links`] loads all entities, enumerates the candidate pairs
-//! (same type + equal normalized name, different normalized domain) and
-//! applies the ontology's methods in the configured order (`equals`,
+//! and applies the ontology's methods in the configured order (`equals`,
 //! `expression`, `llm`). Every method is idempotent: `entity_links` has the
 //! composite primary key `(subject, target, relation_type)`, the DAO insert
 //! is `INSERT OR IGNORE`, and self-links are rejected by the DAO — so a
 //! repeated run creates no duplicates.
+//!
+//! Two kinds of candidate pairs are enumerated:
+//!
+//! - **cross-domain** (same type + equal normalized name, different
+//!   normalized domain) — judged by all three methods;
+//! - **within-domain cross-script** (same type + normalized domain, different
+//!   dominant scripts per `utils::text::detect_script`, and tier-1/tier-2
+//!   keys both distinct — i.e. not already resolved by the resolution
+//!   tiers) — judged by the `llm` method ONLY (equals/expression do not
+//!   apply within a domain), with the merge action described below.
 //!
 //! # Methods
 //!
@@ -42,6 +51,25 @@
 //!   `LinkerConfig::disabled` excludes the method entirely (the ingestion
 //!   runner checks the same flag).
 //!
+//! # Within-domain cross-script merge action (design D7)
+//!
+//! For a cross-script pair the LLM decision is acted on, not just linked:
+//!
+//! - confidence ≥ `merge_confidence_threshold` (ontology key, default
+//!   [`DEFAULT_MERGE_CONFIDENCE_THRESHOLD`]) → the pair is **merged** through
+//!   `db::merge_entities` (one transaction): the canonical (survivor) is the
+//!   entity with the greater number of source documents, on a tie the longer
+//!   name (character count), on a further tie the lower id; both names are
+//!   recorded as aliases of the survivor and every dependent row is
+//!   re-pointed;
+//! - confidence ≥ `llm_confidence_threshold` → a `same_entity` link
+//!   (method `llm`, evidence = the reasoning);
+//! - below → no action.
+//!
+//! The decision is cached in `llm_linker_cache` exactly like a cross-domain
+//! decision (same request-signature key), so a repeat run neither re-consults
+//! the model nor re-merges (after a merge the pair no longer exists).
+//!
 //! # Design decisions
 //!
 //! - No incremental mode (`since`): the rebuild is always a full rebuild
@@ -69,9 +97,11 @@ use config::preset::{LinkerConfig, LlmConfig};
 use db::utils::normalize;
 use db::{
     ChunkEntityDao, ConnectionOrTx, Db, DbExecutor, Entity, EntityDao, EntityLink, EntityLinkDao,
+    EntitySourceDao, merge_entities,
 };
 use llm::LlmClient;
 use serde::{Deserialize, Serialize};
+use utils::text::{detect_script, match_key, stem_key};
 
 use crate::cel::{CelEngine, register_data_functions, register_graph_functions};
 use crate::error::GraphError;
@@ -88,6 +118,11 @@ const DEFAULT_RELATION_TYPE: &str = "same_entity";
 const EQUALS_CONFIDENCE: f64 = 0.9;
 /// Confidence of `expression` links.
 const RULE_CONFIDENCE: f64 = 1.0;
+/// The default within-domain cross-script merge threshold (design D7), used
+/// when the ontology's `merge_confidence_threshold` key is absent (the config
+/// loader applies the same default when the block is loaded; this keeps the
+/// linker correct for a hand-built config too).
+const DEFAULT_MERGE_CONFIDENCE_THRESHOLD: f64 = 0.95;
 /// Max context chunk texts per entity in the LLM prompt.
 const LLM_CONTEXT_LIMIT: i64 = 3;
 /// Max description length in the LLM prompt.
@@ -130,6 +165,10 @@ pub struct LinkResult {
     /// re-run), or decided not linkable by the `llm` method (`same_entity`
     /// false or confidence below the threshold).
     pub links_skipped: usize,
+    /// Cross-script candidate pairs merged through the transactional merge
+    /// (design D7): the duplicate row is deleted, both names survive as
+    /// aliases of the survivor.
+    pub entities_merged: usize,
     /// Informational notes (e.g. the `llm` stub's skip record). The crate
     /// has no logging dependency; the CLI layer can surface these.
     pub notes: Vec<String>,
@@ -138,13 +177,17 @@ pub struct LinkResult {
     pub errors: Vec<String>,
 }
 
-/// A candidate pair: two entities of the same type with equal normalized
-/// names in different (normalized) domains.
+/// A candidate pair: two entities of the same type judged by the `llm`
+/// method — either a cross-domain pair (equal normalized names in different
+/// normalized domains) or a within-domain cross-script pair (different
+/// dominant scripts, tier-1/tier-2 keys both distinct).
 #[derive(Debug, Clone)]
 struct CandidatePair {
-    /// The entity from the lexicographically smaller normalized domain.
+    /// The cross-domain pair's entity from the lexicographically smaller
+    /// normalized domain; the cross-script pair's lower-id entity.
     a: Entity,
-    /// The entity from the lexicographically larger normalized domain.
+    /// The cross-domain pair's entity from the lexicographically larger
+    /// normalized domain; the cross-script pair's higher-id entity.
     b: Entity,
 }
 
@@ -193,6 +236,50 @@ fn cross_domain_pairs(entities: &[Entity]) -> Vec<CandidatePair> {
         }
     }
     pairs
+}
+
+/// Enumerate the within-domain cross-script candidate pairs (design D7):
+/// entities of the same (type, normalized domain) whose dominant scripts
+/// differ and whose resolution-tier keys both differ (the deterministic
+/// tiers do not settle them).
+///
+/// Deterministic: groups are sorted (BTreeMap), members sorted by id, and
+/// pairs are emitted as (i, j) with i < j — `a` always carries the lower id.
+#[must_use]
+fn cross_script_pairs(entities: &[Entity]) -> Vec<CandidatePair> {
+    // (type, normalized domain) → members.
+    let mut groups: BTreeMap<(String, String), Vec<Entity>> = BTreeMap::new();
+    for entity in entities {
+        let key = (entity.entity_type.clone(), normalize(&entity.domain));
+        groups.entry(key).or_default().push(entity.clone());
+    }
+
+    let mut pairs = Vec::new();
+    for members in groups.values_mut() {
+        members.sort_by_key(|entity| entity.id);
+        for (i, a) in members.iter().enumerate() {
+            for b in members.iter().skip(i + 1) {
+                if is_cross_script_candidate(a, b) {
+                    pairs.push(CandidatePair {
+                        a: a.clone(),
+                        b: b.clone(),
+                    });
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// Whether `a` and `b` are within-domain cross-script candidates (design
+/// D7): different dominant scripts, and both resolution-tier keys distinct —
+/// a shared tier-1 or tier-2 key means the deterministic tiers already settle
+/// the pair, so no LLM call is spent on it.
+fn is_cross_script_candidate(a: &Entity, b: &Entity) -> bool {
+    if detect_script(&a.name) == detect_script(&b.name) {
+        return false;
+    }
+    match_key(&a.name) != match_key(&b.name) && stem_key(&a.name) != stem_key(&b.name)
 }
 
 /// Insert the A→B and B→A rows;
@@ -680,20 +767,19 @@ enum PairOutcome {
     NotLinked,
 }
 
-/// One candidate pair under the `llm` method (plus the threshold gate):
-/// cache check BEFORE the call, decision, cache write AFTER the decision
-/// (including below-threshold ones), then the threshold gate.
+/// The shared `llm` decision path (cross-domain and cross-script pairs,
+/// design D6/D7): cache check BEFORE the call, decision, cache write AFTER
+/// the decision (including below-threshold ones).
 ///
 /// `Err` carries a pair-level failure message (non-fatal for the run); a
 /// failed cache write is recorded in `result` and does not fail the pair.
-fn process_llm_pair(
+fn resolve_llm_decision(
     db: &Db,
     cache: Option<&Db>,
     pair: &CandidatePair,
     run: &LlmRun,
-    threshold: f64,
     result: &mut LinkResult,
-) -> Result<PairOutcome, String> {
+) -> Result<LinkDecision, String> {
     tracing::info!(
         "try link entities A: {:?}[{:?}] B: {:?}[{:?}]",
         pair.a.name,
@@ -714,19 +800,30 @@ fn process_llm_pair(
     );
 
     // Cache check BEFORE the call (task 1.10): a hit skips the HTTP round-trip.
-    let decision = match read_cached_decision(cache, &key)? {
-        Some(decision) => decision,
-        None => {
-            let decision = call_llm(run, &user_prompt)?;
-            // Cache AFTER the decision — including below-threshold ones: a
-            // "not the same" verdict is as reusable as a match (no TTL). A
-            // failed write is non-fatal (recorded as a pair error).
-            if let Err(err) = write_cached_decision(cache, &key, &decision) {
-                result.errors.push(format!("cache write: {err}"));
-            }
-            decision
-        }
-    };
+    if let Some(decision) = read_cached_decision(cache, &key)? {
+        return Ok(decision);
+    }
+    let decision = call_llm(run, &user_prompt)?;
+    // Cache AFTER the decision — including below-threshold ones: a
+    // "not the same" verdict is as reusable as a match (no TTL). A
+    // failed write is non-fatal (recorded as a pair error).
+    if let Err(err) = write_cached_decision(cache, &key, &decision) {
+        result.errors.push(format!("cache write: {err}"));
+    }
+    Ok(decision)
+}
+
+/// One cross-domain candidate pair under the `llm` method (plus the
+/// threshold gate): decision, then the threshold gate.
+fn process_llm_pair(
+    db: &Db,
+    cache: Option<&Db>,
+    pair: &CandidatePair,
+    run: &LlmRun,
+    threshold: f64,
+    result: &mut LinkResult,
+) -> Result<PairOutcome, String> {
+    let decision = resolve_llm_decision(db, cache, pair, run, result)?;
 
     // The threshold gate (design D6): both flags must hold.
     if !decision.same_entity || decision.confidence < threshold {
@@ -749,13 +846,112 @@ fn process_llm_pair(
     })
 }
 
-/// The `llm` method: one chat completion per pair, decisions cached in
-/// `llm_linker_cache` on the cache database (task 1.10).
+/// The outcome of one within-domain cross-script pair (design D7).
+enum CrossScriptOutcome {
+    /// The duplicate entity was merged into the canonical.
+    Merged,
+    /// A new `same_entity` link row was inserted for the pair.
+    Linked,
+    /// No action: the decision was `same_entity` false or below the link
+    /// threshold (the decision is still cached).
+    NotLinked,
+}
+
+/// The number of source documents of one entity (the canonical-selection
+/// criterion, design D7).
+fn source_count(db: &Db, entity_id: i64) -> Result<i64, String> {
+    let documents = db
+        .with_conn(|conn| {
+            let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));
+            sources
+                .get_documents_by_entity_id(entity_id)
+                .map_err(|err| format!("count sources: {err}"))
+        })
+        .map_err(|err| err.to_string())??;
+    Ok(documents.len() as i64)
+}
+
+/// The canonical (surviving) entity of a merge (design D7): the greater
+/// `entity_sources` count; tie → the longer name (character count); tie →
+/// the lower id.
+fn canonical_id(db: &Db, a: &Entity, b: &Entity) -> Result<i64, String> {
+    let (sources_a, sources_b) = (source_count(db, a.id)?, source_count(db, b.id)?);
+    if sources_a != sources_b {
+        return Ok(if sources_a > sources_b { a.id } else { b.id });
+    }
+    let (chars_a, chars_b) = (a.name.chars().count(), b.name.chars().count());
+    if chars_a != chars_b {
+        return Ok(if chars_a > chars_b { a.id } else { b.id });
+    }
+    Ok(a.id.min(b.id))
+}
+
+/// One within-domain cross-script pair under the `llm` method, with the
+/// merge / link actioning (design D7): merge at/above the merge threshold,
+/// link at/above the link threshold, no action below (the decision is cached
+/// either way).
+fn process_cross_script_pair(
+    db: &Db,
+    cache: Option<&Db>,
+    pair: &CandidatePair,
+    run: &LlmRun,
+    links_config: &CrossDomainLinksConfig,
+    result: &mut LinkResult,
+) -> Result<CrossScriptOutcome, String> {
+    let decision = resolve_llm_decision(db, cache, pair, run, result)?;
+    if !decision.same_entity {
+        return Ok(CrossScriptOutcome::NotLinked);
+    }
+    let merge_threshold = links_config
+        .merge_confidence_threshold
+        .unwrap_or(DEFAULT_MERGE_CONFIDENCE_THRESHOLD);
+    if decision.confidence >= merge_threshold {
+        let into_id = canonical_id(db, &pair.a, &pair.b)?;
+        let from_id = if into_id == pair.a.id {
+            pair.b.id
+        } else {
+            pair.a.id
+        };
+        let summary = db
+            .exec_tx(|tx| merge_entities(ConnectionOrTx::Transaction(&*tx), into_id, from_id))
+            .map_err(|err| err.to_string())?;
+        result.notes.push(format!(
+            "merged entity {} ({}) into {} ({})",
+            summary.from_id, summary.merged_name, summary.into_id, summary.surviving_name
+        ));
+        return Ok(CrossScriptOutcome::Merged);
+    }
+    if decision.confidence < links_config.llm_confidence_threshold {
+        return Ok(CrossScriptOutcome::NotLinked);
+    }
+    let created = create_bidirectional_link(
+        db,
+        pair.a.id,
+        pair.b.id,
+        DEFAULT_RELATION_TYPE,
+        "llm",
+        decision.confidence,
+        &decision.reasoning,
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(if created {
+        CrossScriptOutcome::Linked
+    } else {
+        CrossScriptOutcome::NotLinked
+    })
+}
+
+/// The `llm` method: one chat completion per pair (cross-domain and
+/// within-domain cross-script), decisions cached in `llm_linker_cache` on the
+/// cache database (task 1.10).
 ///
 /// A broken LLM configuration or prompt load fails the whole method
 /// (recorded in [`LinkResult::errors`], the `expression` init pattern); a
 /// per-pair failure never aborts the run. `cache` is the cache database
 /// (`None` runs the method uncached).
+// The parameter list mirrors the per-method signature shape (house style:
+// plain parameters, as in the sibling `run_equals`/`run_expression`).
+#[allow(clippy::too_many_arguments)]
 fn run_llm(
     db: &Db,
     cache: Option<&Db>,
@@ -763,9 +959,10 @@ fn run_llm(
     linker_config: &LinkerConfig,
     prompts_path: &str,
     pairs: &[CandidatePair],
+    cross_script_pairs: &[CandidatePair],
     result: &mut LinkResult,
 ) {
-    if pairs.is_empty() {
+    if pairs.is_empty() && cross_script_pairs.is_empty() {
         return;
     }
     let run = match LlmRun::new(&linker_config.llm, prompts_path) {
@@ -792,6 +989,19 @@ fn run_llm(
             }
         }
     }
+    for pair in cross_script_pairs {
+        match process_cross_script_pair(db, cache, pair, &run, links_config, result) {
+            Ok(CrossScriptOutcome::Merged) => result.entities_merged += 1,
+            Ok(CrossScriptOutcome::Linked) => result.links_created += 1,
+            Ok(CrossScriptOutcome::NotLinked) => result.links_skipped += 1,
+            Err(msg) => {
+                result
+                    .errors
+                    .push(format!("llm pair ({} <-> {}): {msg}", pair.a.id, pair.b.id));
+                result.links_skipped += 1;
+            }
+        }
+    }
 }
 
 /// Run the cross-domain linking pipeline: the methods in the ontology's
@@ -806,9 +1016,9 @@ fn run_llm(
 /// `llm_linker_cache` table; `None` runs the method uncached.
 ///
 /// `candidates` controls the pair scope (incremental linking, design D9):
-/// `None` = full rebuild (all cross-domain pairs, current behavior);
-/// `Some(ids)` = consider only pairs with at least one member in the set
-/// (the entity ids changed by the latest index run).
+/// `None` = full rebuild (all cross-domain and cross-script pairs, current
+/// behavior); `Some(ids)` = consider only pairs with at least one member in
+/// the set (the entity ids changed by the latest index run).
 pub fn build_entity_links(
     db: &Db,
     cache: Option<&Db>,
@@ -820,12 +1030,16 @@ pub fn build_entity_links(
     let entities =
         db.with_conn(|conn| EntityDao::new(ConnectionOrTx::Connection(conn)).list())??;
     let mut pairs = cross_domain_pairs(&entities);
+    let mut cross_script_pairs = cross_script_pairs(&entities);
 
     // Incremental mode: keep only pairs with at least one member in the
-    // candidate set.
+    // candidate set (both pair kinds).
     if let Some(ids) = candidates {
         let candidate_set: std::collections::HashSet<i64> = ids.iter().copied().collect();
         pairs.retain(|pair| {
+            candidate_set.contains(&pair.a.id) || candidate_set.contains(&pair.b.id)
+        });
+        cross_script_pairs.retain(|pair| {
             candidate_set.contains(&pair.a.id) || candidate_set.contains(&pair.b.id)
         });
     }
@@ -848,6 +1062,7 @@ pub fn build_entity_links(
                         linker_config,
                         prompts_path,
                         &pairs,
+                        &cross_script_pairs,
                         &mut result,
                     );
                 }
@@ -958,6 +1173,50 @@ mod tests {
         assert_eq!((pairs[0].a.id, pairs[0].b.id), (5, 4));
         assert_eq!((pairs[1].a.id, pairs[1].b.id), (5, 6));
         assert_eq!((pairs[2].a.id, pairs[2].b.id), (4, 6));
+    }
+
+    // ── Cross-script candidate generation (task 7.2) ───────────────────────
+
+    #[test]
+    fn cross_script_pairs_enumeration() {
+        let entities = vec![
+            // Cross-script pair, same domain+type: THE candidate.
+            entity(1, "ORGANIZATION", "Alpha Site", "hr"),
+            entity(2, "ORGANIZATION", "Альфа Сайт", "hr"),
+            // Same script: not candidates with each other.
+            entity(3, "ORGANIZATION", "Beta Site", "it"),
+            entity(4, "ORGANIZATION", "Gamma Site", "it"),
+            // Tier-1 shared (leading article): not a candidate.
+            entity(5, "PERSON", "The City of Ash", "hr"),
+            entity(6, "PERSON", "City of Ash", "hr"),
+            // Tier-2 shared (stem): not a candidate.
+            entity(7, "PERSON", "Gates", "it"),
+            entity(8, "PERSON", "Gate", "it"),
+            // Different type: not candidates with each other.
+            entity(9, "PERSON", "Дельта Сайт", "ops"),
+            entity(10, "ORGANIZATION", "Delta Site", "ops"),
+            // Different domain: not a candidate with 1 (alone in its group).
+            entity(11, "ORGANIZATION", "Альфа Сайт", "ops2"),
+        ];
+        let pairs = cross_script_pairs(&entities);
+        assert_eq!(pairs.len(), 1, "only the cross-script pair: {pairs:?}");
+        assert_eq!((pairs[0].a.id, pairs[0].b.id), (1, 2));
+    }
+
+    #[test]
+    fn cross_script_pairs_is_deterministic() {
+        // Unsorted input: members sort by id within each (type, domain)
+        // group, `a` carries the lower id, and groups follow sorted order.
+        let entities = vec![
+            entity(5, "ORGANIZATION", "Бета Сайт", "hr"),
+            entity(2, "ORGANIZATION", "Alpha Site", "hr"),
+            entity(9, "ORGANIZATION", "Гамма Сайт", "it"),
+            entity(4, "ORGANIZATION", "Beta Site", "it"),
+        ];
+        let pairs = cross_script_pairs(&entities);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!((pairs[0].a.id, pairs[0].b.id), (2, 5));
+        assert_eq!((pairs[1].a.id, pairs[1].b.id), (4, 9));
     }
 
     // ── LLM method (task 2.2) ──────────────────────────────────────────────

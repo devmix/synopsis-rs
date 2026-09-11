@@ -1199,6 +1199,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tracing",
+ "utils",
 ]
 
 [[package]]
