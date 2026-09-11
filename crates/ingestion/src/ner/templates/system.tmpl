@@ -41,6 +41,9 @@ INSTRUCTIONS:
   6. Return your output in valid JSON format with 'entities' and 'relations' arrays.
   7. Only extract entities and relations that are explicitly mentioned or clearly implied in the text.
   8. If no entities or relations are found, return an empty array for that field.
+  9. If the provided text is a JSON object (a wiki page export), extract only from its human-readable text fields (title, wikitext). Ignore markup-heavy or metadata fields (html, images, links, externallinks, templates, categories, url) as extraction sources; they may only disambiguate names.
+  10. If the content is a wiki redirect (#REDIRECT [[Page]]) or a disambiguation page, extract the canonical target entity under its canonical name. Do not create a separate entity for the redirect or the disambiguation page itself.
+  11. Export metadata (an entity_type field, category lists, folder names) is a hint that may be wrong. Classify every entity by the actual page content against the schema above; when content and metadata disagree, content wins.
 
 {% if with_json_example %}
 OUTPUT FORMAT:
