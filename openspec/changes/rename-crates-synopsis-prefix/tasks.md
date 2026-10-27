@@ -276,7 +276,7 @@ Per-task acceptance (in addition to the recipe gates):
     as tasks 2.2/2.3/2.5/2.6/2.8/2.9; reverse-transform diff confirmed the
     whole diff is mechanical. Gates green (1606/1606).
 
-- [ ] 2.11 Rename `cli` → `synopsis-cli`
+- [x] 2.11 Rename `cli` → `synopsis-cli`
   - Dependencies: task 2.10.
   - File scope: root `Cargo.toml` (`members` only — `cli` has NO
     `[workspace.dependencies]` palette entry); `crates/cli/**` →
@@ -341,11 +341,26 @@ Per-task acceptance (in addition to the recipe gates):
     `scripts/release.sh` (no crate paths — verified), `openspec/changes/archive/**`.
   - Acceptance:
     - `rg 'crates/(cli|config|db|embedding|graph|ingestion|llm|mcp|search|utils|vectors)\b'`
-      returns no matches outside `openspec/changes/archive/**` and `target/`.
+      returns no matches outside `openspec/changes/archive/**`,
+      `openspec/changes/rename-crates-synopsis-prefix/**` (the change's own
+      planning record — it describes the rename and becomes the archive on
+      finalization), and `target/`.
     - `rg '\b(config|db|vectors|utils|llm|embedding|ingestion|graph|search|mcp|cli)::' -g '*.md'`
-      returns no matches outside `openspec/changes/archive/**`.
+      returns no matches outside `openspec/changes/archive/**` and
+      `openspec/changes/rename-crates-synopsis-prefix/**` (same reason).
     - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
       `cargo test` still green (comments only, but gates are mandatory).
+  - Revision history: implemented 2026-10-27. 44 files updated (docs,
+    comments, code, tests, agent defs). Both sweeps verified clean for the
+    entire codebase; the only residual matches are inside the change's own
+    planning artifacts (intentionally not edited — scrubbing them would
+    corrupt the rename record; they fall inside the acceptance exclusion
+    once archived). The 3 agent files without actual crate references
+    (site-implementer, rust-implementer, docs-writer — only common words
+    like "search"/"config") were left untouched; ontology-author.md updated.
+    NOTE: `/.opencode` is gitignored (.gitignore line 2) — the agent-def
+    edits were applied on disk (sweeps pass) but are NOT committable; the
+    commit covers the 43 tracked files + tasks.md. Gates green.
 
 ## 4. Final verification
 

@@ -8,8 +8,8 @@ the executable / CWD. Without `--config` the binary uses `config.default.yaml`
 |---|---|---|
 | `onnx.yaml` | Carried over unchanged | `runtime.platforms[*]` + `models.entries[*]` (bge-m3-int8, bge-small-en-v1.5, paraphrase-multilingual-MiniLM-L12-v2). Unchanged. |
 | `config.default.yaml` | The default preset | Deliberate deviation FROM the frozen default: `embeddings.local.model_name` is `bge-small-en-v1.5` instead of the frozen `bge-m3-int8` — faster local testing. The model dimension (384 vs 1024) comes from the `onnx.yaml` registry entry, not the preset. All other sections follow the same structure. |
-| `prompts/entity-linker/{system,user}.tmpl` | Rust minijinja templates | Minijinja templates with a fixed prompt text and data shape (field paths `entity_a.*` / `entity_b.*` instead of `.EntityA.*` / `.EntityB.*`; `join`/`truncate` are minijinja functions; context numbering uses a registered `enumerate` filter). Byte-identical to the embedded defaults in `crates/graph/src/templates/entity-linker/`. |
-| `prompts/ner/{system,user}.tmpl` | Rust minijinja templates | Same minijinja engine as the entity-linker templates. Byte-identical to the embedded defaults in `crates/ingestion/src/ner/templates/`. |
+| `prompts/entity-linker/{system,user}.tmpl` | Rust minijinja templates | Minijinja templates with a fixed prompt text and data shape (field paths `entity_a.*` / `entity_b.*` instead of `.EntityA.*` / `.EntityB.*`; `join`/`truncate` are minijinja functions; context numbering uses a registered `enumerate` filter). Byte-identical to the embedded defaults in `crates/synopsis-graph/src/templates/entity-linker/`. |
+| `prompts/ner/{system,user}.tmpl` | Rust minijinja templates | Same minijinja engine as the entity-linker templates. Byte-identical to the embedded defaults in `crates/synopsis-ingestion/src/ner/templates/`. |
 
 ## Prompt override semantics
 

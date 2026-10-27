@@ -1,5 +1,5 @@
 //! Integration tests for the `facts` DAO ([`synopsis_db::FactDao`]), relocated from
-//! the inline `#[cfg(test)]` module in `crates/db/src/fact.rs` (change
+//! the inline `#[cfg(test)]` module in `crates/synopsis-db/src/fact.rs` (change
 //! `test-hygiene-phase-1`, task 1.2).
 //!
 //! The tests exercise only the public API; names and assertions are carried

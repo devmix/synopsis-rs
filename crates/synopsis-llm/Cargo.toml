@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 # Base tier of the D1 graph (change llm, design D1): the only internal
-# dependency is `config` (source of LlmConfig); graph/embedding depend on this
+# dependency is `synopsis-config` (source of LlmConfig); synopsis-graph/synopsis-embedding depend on this
 # crate, never the other way around. The sync ureq client is design D2:
 # callers (the graph linker) dispatch calls onto spawn_blocking workers.
 [dependencies]

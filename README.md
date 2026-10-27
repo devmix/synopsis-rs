@@ -120,11 +120,12 @@ to `approved` status. Wire contract: `openspec/specs/mcp-contract/`.
   (targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
   `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`)
 
-Workspace crates: `config` (presets/ontology), `db` (SQLite/FTS5/migrations),
-`vectors` (ANN engine), `embedding` (ONNX runtime), `ingestion` (parsers,
-chunkers, NER, event task queue), `graph` (knowledge graph + linkers), `search`
-(hybrid/RRF), `mcp` (server + tools), `llm` (LLM client), `utils` (shared
-helpers), `cli` (the `synopsis` binary).
+Workspace crates: `synopsis-config` (presets/ontology), `synopsis-db` (SQLite/FTS5/migrations),
+`synopsis-vectors` (ANN engine), `synopsis-embedding` (ONNX runtime),
+`synopsis-ingestion` (parsers, chunkers, NER, event task queue),
+`synopsis-graph` (knowledge graph + linkers), `synopsis-search` (hybrid/RRF),
+`synopsis-mcp` (server + tools), `synopsis-llm` (LLM client),
+`synopsis-utils` (shared helpers), `synopsis-cli` (the `synopsis` binary).
 
 Architecture decisions: `docs/adr/`. Spec-driven workflow: `openspec/`.
 Agent instructions: `AGENTS.md`.

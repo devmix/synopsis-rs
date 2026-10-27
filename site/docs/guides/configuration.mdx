@@ -324,7 +324,7 @@ logging:
 | `logging.format` | string | `"console"` | `console` or `json`; tolerant. |
 | `logging.output` | string | `"stderr"` | `stderr` or `stdout`; tolerant. |
 
-Logging is emitted via `tracing` in the `cli` crate only — the library crates stay logger-less.
+Logging is emitted via `tracing` in the `synopsis-cli` crate only — the library crates stay logger-less.
 
 ### `dataset`
 
@@ -436,7 +436,7 @@ workspace/configs/prompts/
     └── user.tmpl
 ```
 
-A present `{system,user}.tmpl` file overrides the embedded default (and is noted in the run's notes); a **missing file silently falls back** to the embedded default in `crates/graph` / `crates/ingestion`. The shipped files are byte-identical to the embedded defaults, so they exist for visibility and editing — not for correctness.
+A present `{system,user}.tmpl` file overrides the embedded default (and is noted in the run's notes); a **missing file silently falls back** to the embedded default in `crates/synopsis-graph` / `crates/synopsis-ingestion`. The shipped files are byte-identical to the embedded defaults, so they exist for visibility and editing — not for correctness.
 
 ## The XML ontologies
 

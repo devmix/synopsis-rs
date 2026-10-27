@@ -4,7 +4,7 @@
 //! to the model. The templates are **data**, not code: they are embedded via
 //! `include_str!` and a user can override them on disk under
 //! `{prompts_path}/ner/{system,user}.tmpl` without a rebuild (the same pattern
-//! as `crates/graph/src/prompts.rs`). A missing override file is the normal
+//! as `crates/synopsis-graph/src/prompts.rs`). A missing override file is the normal
 //! case and is *not* an error; a loaded override is recorded in
 //! [`NerPrompts::notes`].
 //!
@@ -660,7 +660,7 @@ mod tests {
         assert!(!system.contains("200-500 characters"), "{system}");
 
         // Workspace override: the tracked override under workspace/configs
-        // (the same repo-root pattern as crates/config's preset tests).
+        // (the same repo-root pattern as crates/synopsis-config's preset tests).
         let override_root = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../workspace/configs/prompts"

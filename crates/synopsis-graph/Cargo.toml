@@ -6,7 +6,7 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges (design.md): SQLite is the source of truth (db crate DAOs), the
+# D1 edges (design.md): SQLite is the source of truth (synopsis-db crate DAOs), the
 # petgraph DiGraph + HashMap name/type indexes are a derived read-only
 # in-memory index; CEL entity-linking expressions run on the `cel` crate
 # (D2, replaces cel-interpreter). Feasibility gate for both new dependencies
@@ -16,7 +16,7 @@ workspace = true
 [dependencies]
 synopsis_config = { workspace = true }
 synopsis_db = { workspace = true }
-# utils::text (multilingual-entity-resolution D1/D7): script detection and the
+# synopsis_utils::text (multilingual-entity-resolution D1/D7): script detection and the
 # resolution-tier keys for within-domain cross-script candidate generation.
 synopsis_utils = { workspace = true }
 # In-memory graph index (D1): DiGraph + name->NodeId / type->nodes HashMaps.

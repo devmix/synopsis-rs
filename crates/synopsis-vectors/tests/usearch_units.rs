@@ -1,6 +1,6 @@
 //! Integration tests for `synopsis_vectors::usearch::UsearchEngine` (moved
 //! verbatim from the `flush_tests` module in
-//! `crates/vectors/src/usearch/mod.rs`, test-hygiene phase-2 task 2.6).
+//! `crates/synopsis-vectors/src/usearch/mod.rs`, test-hygiene phase-2 task 2.6).
 //! Import paths rewritten from `super::` to the public `vectors` API;
 //! the crate-private `keys_manifest::read_keys` codec and the RAM layer
 //! index size are reached through `synopsis_vectors::test_support`. The shared

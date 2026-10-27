@@ -18,7 +18,7 @@ The layout is part of the [Workspace Layout](../concepts/workspace-layout.mdx).
 
 ## Migrations and schema state
 
-- Each database starts from a **squashed init migration** — `migrations/knowledge/1-init/up.sql` for the knowledge DB, `migrations/cache/1-init/up.sql` for the cache DB — and evolves through numbered forward-only migrations on top (`migrations/knowledge/2-entity-aliases/up.sql` adds the `entity_aliases` table). Everything is embedded into the binary at compile time (`include_dir!` in `crates/db`).
+- Each database starts from a **squashed init migration** — `migrations/knowledge/1-init/up.sql` for the knowledge DB, `migrations/cache/1-init/up.sql` for the cache DB — and evolves through numbered forward-only migrations on top (`migrations/knowledge/2-entity-aliases/up.sql` adds the `entity_aliases` table). Everything is embedded into the binary at compile time (`include_dir!` in `crates/synopsis-db`).
 - `PRAGMA user_version` is the **sole source of truth** about the schema state (`= 2` for a fresh knowledge DB, `= 1` for the cache DB). The `_schema_migrations` tracking table is **deliberately NOT created**.
 - Migrations are applied at startup, are idempotent (`IF NOT EXISTS`), and a subsequent startup is a no-op. New migrations are numbered directories `<id>-<slug>/up.sql`, forward-only (no down.sql); shipped migrations are never edited.
 - A pre-existing `knowledge.db` is **NOT opened and NOT migrated**: the Rust binary always builds its database from scratch, and data is never migrated.

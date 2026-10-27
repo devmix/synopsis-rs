@@ -1,5 +1,5 @@
 //! Integration tests for `synopsis_cli::serve::bootstrap` (moved verbatim from
-//! `crates/cli/src/serve/bootstrap.rs`, test-hygiene task 1.3). Import paths
+//! `crates/synopsis-cli/src/serve/bootstrap.rs`, test-hygiene task 1.3). Import paths
 //! rewritten from `use super::*` to the public `synopsis_cli::serve::bootstrap` API.
 
 // Test code: unwrap/expect are intentional (asserting on well-defined outcomes).
@@ -847,7 +847,7 @@ fn has_active_dataset_requires_name_and_directory() {
 /// CLI_TEST_ONNXRUNTIME_LIB=/path/libonnxruntime.so \
 /// CLI_TEST_MODEL=/path/model.onnx \
 /// CLI_TEST_TOKENIZER=/path/tokenizer.json \
-/// CLI_TEST_DIM=1024 cargo test -p cli -- --ignored
+/// CLI_TEST_DIM=1024 cargo test -p synopsis-cli -- --ignored
 /// ```
 #[test]
 #[ignore = "requires a real onnxruntime library + bge-m3 model (see test docs)"]

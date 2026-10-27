@@ -1,6 +1,6 @@
 //! Integration tests for the transactional entity merge
 //! ([`synopsis_db::merge_entities`]), relocated from the inline `#[cfg(test)]` module
-//! in `crates/db/src/merge.rs` (change `multilingual-entity-resolution`,
+//! in `crates/synopsis-db/src/merge.rs` (change `multilingual-entity-resolution`,
 //! task 2.2).
 //!
 //! The tests exercise only the public API (plus the always-compiled

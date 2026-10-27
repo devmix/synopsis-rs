@@ -16,32 +16,32 @@ The project is a Cargo workspace with 11 crates:
 
 | Crate | Role |
 |---|---|
-| `crates/config` | YAML presets, onnx.yaml download config, XML ontologies |
-| `crates/db` | rusqlite connections, migrations, DAOs, FTS5 queries |
-| `crates/vectors` | ANN index contract (trait) + usearch engine; WAL + compaction |
-| `crates/embedding` | ONNX runtime lifecycle + bge-m3 int8 provider |
-| `crates/ingestion` | document parsers, chunkers, NER, entity extraction, event task queue + worker |
-| `crates/graph` | knowledge graph (petgraph) + CEL linkers + minijinja prompts |
-| `crates/search` | hybrid (FTS5 + vector) search with RRF fusion |
-| `crates/mcp` | MCP server (double transport) + 12 tool handlers |
-| `crates/llm` | OpenAI-compatible LLM client (NER + entity linking); base tier, depends only on `config` |
-| `crates/utils` | shared helpers (temporal: RFC 3339 UTC); leaf crate any crate may depend on |
-| `crates/cli` | the `synopsis` binary: subcommand dispatch, flags, config resolution |
+| `crates/synopsis-config` | YAML presets, onnx.yaml download config, XML ontologies |
+| `crates/synopsis-db` | rusqlite connections, migrations, DAOs, FTS5 queries |
+| `crates/synopsis-vectors` | ANN index contract (trait) + usearch engine; WAL + compaction |
+| `crates/synopsis-embedding` | ONNX runtime lifecycle + bge-m3 int8 provider |
+| `crates/synopsis-ingestion` | document parsers, chunkers, NER, entity extraction, event task queue + worker |
+| `crates/synopsis-graph` | knowledge graph (petgraph) + CEL linkers + minijinja prompts |
+| `crates/synopsis-search` | hybrid (FTS5 + vector) search with RRF fusion |
+| `crates/synopsis-mcp` | MCP server (double transport) + 12 tool handlers |
+| `crates/synopsis-llm` | OpenAI-compatible LLM client (NER + entity linking); base tier, depends only on `synopsis-config` |
+| `crates/synopsis-utils` | shared helpers (temporal: RFC 3339 UTC); leaf crate any crate may depend on |
+| `crates/synopsis-cli` | the `synopsis` binary: subcommand dispatch, flags, config resolution |
 
-The layering is deliberate: `config`, `db`, `vectors`, `utils`, and `llm` form the base tier; `embedding`, `ingestion`, and `graph` build on it; `search` composes the three; `mcp` exposes the result; `cli` assembles the binary. `cli` is also the only crate that logs (tracing) — the library crates stay logger-less.
+The layering is deliberate: `synopsis-config`, `synopsis-db`, `synopsis-vectors`, `synopsis-utils`, and `synopsis-llm` form the base tier; `synopsis-embedding`, `synopsis-ingestion`, and `synopsis-graph` build on it; `synopsis-search` composes the three; `synopsis-mcp` exposes the result; `synopsis-cli` assembles the binary. `synopsis-cli` is also the only crate that logs (tracing) — the library crates stay logger-less.
 
 ## Dependency graph
 
 The dependency graph is fixed by design (D1) — a crate depends only on the tier below it:
 
 ```
-  base tier      config · db · vectors · utils · llm
-                          │
-                          ▼
-  middle tier    embedding · ingestion · graph
-                          │
-                          ▼
-                   search ──▶ mcp ──▶ cli
+  base tier      synopsis-config · synopsis-db · synopsis-vectors · synopsis-utils · synopsis-llm
+                           │
+                           ▼
+  middle tier    synopsis-embedding · synopsis-ingestion · synopsis-graph
+                           │
+                           ▼
+                    synopsis-search ──▶ synopsis-mcp ──▶ synopsis-cli
 ```
 
 ## Data flow: ingestion → search
@@ -52,23 +52,23 @@ Documents (Markdown, JSON, web pages) move through the workspace in one directio
   Documents (Markdown, JSON, web pages)
         │
         ▼
-   ingestion    parse → chunk → embed (local ONNX) → NER → entity/fact extraction
-                cross-domain linking; a background worker drains the queue_tasks event queue
+  synopsis-ingestion    parse → chunk → embed (local ONNX) → NER → entity/fact extraction
+                        cross-domain linking; a background worker drains the queue_tasks event queue
         │
         ▼
-  db / vectors / graph
+  synopsis-db / synopsis-vectors / synopsis-graph
     · per-dataset knowledge DB — documents, chunks + FTS5, entities, facts, links
     · usearch index files — disk-backed, scalar-quantized ANN (per dataset)
     · knowledge graph — petgraph index over entities and relations
         │
         ▼
-  search       FTS5 (BM25) + vector (usearch HNSW) in parallel → RRF fusion → reranking
+  synopsis-search       FTS5 (BM25) + vector (usearch HNSW) in parallel → RRF fusion → reranking
         │
         ▼
-  mcp          12 read-only tools over Streamable HTTP (/mcp) + legacy HTTP+SSE (/sse, /message)
+  synopsis-mcp          12 read-only tools over Streamable HTTP (/mcp) + legacy HTTP+SSE (/sse, /message)
         │
         ▼
-  cli          the synopsis binary: serve, queue, db, model, onnx-runtime, load-test
+  synopsis-cli          the synopsis binary: serve, queue, db, model, onnx-runtime, load-test
 ```
 
 Query time: an MCP client calls `search`; the lexical and semantic legs run in parallel, are fused with RRF, reranked, and returned as JSON. If one leg fails, the other still returns results — only a double failure propagates as an error. Details: [Hybrid Search](../concepts/hybrid-search) and the [`search` tool](../reference/mcp-tools/search).
@@ -93,7 +93,7 @@ Synopsis owns the full SQLite/FTS5 path in Rust: SQLite is compiled from source 
 
 ### ADR 0002 — ONNX Runtime seam (ort, load-dynamic)
 
-Embeddings and NER run locally through ONNX Runtime, which the binary loads dynamically: the runtime `.so`/`.dylib` is neither downloaded nor linked at build time — it is opened at runtime from a local path, and the runtime and model weights are downloaded on demand per the `onnx.yaml` registry (URL + size + SHA-256 verified). The bindings are pinned to `ort` 2.0.0-rc.13 (`load-dynamic`, default features off) — a deliberate pre-release pin whose API churn is isolated in `crates/embedding`. The spike also proved determinism: identical inputs produce bit-identical vectors across independent processes, which is what makes fixture-based parity testing possible.
+Embeddings and NER run locally through ONNX Runtime, which the binary loads dynamically: the runtime `.so`/`.dylib` is neither downloaded nor linked at build time — it is opened at runtime from a local path, and the runtime and model weights are downloaded on demand per the `onnx.yaml` registry (URL + size + SHA-256 verified). The bindings are pinned to `ort` 2.0.0-rc.13 (`load-dynamic`, default features off) — a deliberate pre-release pin whose API churn is isolated in `crates/synopsis-embedding`. The spike also proved determinism: identical inputs produce bit-identical vectors across independent processes, which is what makes fixture-based parity testing possible.
 
 ### ADR 0003 — ANN engine (LanceDB; superseded by 0004)
 

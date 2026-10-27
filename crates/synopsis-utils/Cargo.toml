@@ -11,7 +11,7 @@ workspace = true
 # date/time engine — default features OFF: the tz-system/tzdb features bundle
 # the IANA timezone database this project never uses (everything is UTC).
 # rust-stemmers (change multilingual-entity-resolution, design D1) provides
-# the Snowball stemmers behind `utils::text` (English Porter + Russian).
+# the Snowball stemmers behind `synopsis_utils::text` (English Porter + Russian).
 [dependencies]
 jiff = { workspace = true }
 rust-stemmers = { workspace = true }

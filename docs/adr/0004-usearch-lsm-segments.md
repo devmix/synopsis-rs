@@ -12,15 +12,15 @@
 | # | Defect | Where |
 |---|---|---|
 | 1 | **The DISK tier is dead code**: `disk_segments` is always empty (`Vec::new()` in every constructor), no RAM→DISK[n] flush path exists, `open` does not restore segments, no segment files exist | `usearch_engine.rs:162,192,226` |
-| 2 | **WAL is not wired in production**: `with_wal_db` has no callers; the `create_vector_engine` factory passes neither WAL nor `UsearchConfig` | `usearch_engine.rs:246`, `lib.rs:428-476`, `cli/src/serve/bootstrap.rs:418-432` |
-| 3 | **`cargo test -p db` is red**: migration 4 was added, but the tests expect `user_version = 3` and insert rows without `segment_id` (no DEFAULT in the new table) — 6 failures | `db/src/connection.rs:347-491`, `db/src/test_util.rs` |
+| 2 | **WAL is not wired in production**: `with_wal_db` has no callers; the `create_vector_engine` factory passes neither WAL nor `UsearchConfig` | `usearch_engine.rs:246`, `lib.rs:428-476`, `synopsis-cli/src/serve/bootstrap.rs:418-432` |
+| 3 | **`cargo test -p synopsis-db` is red**: migration 4 was added, but the tests expect `user_version = 3` and insert rows without `segment_id` (no DEFAULT in the new table) — 6 failures | `synopsis-db/src/connection.rs:347-491`, `synopsis-db/src/test_util.rs` |
 | 4 | **`maybe_compact(&mut self)`** is not callable through `Arc<dyn VectorIndex>`; there are no callers | `usearch_engine.rs:587` |
 | 5 | **`count()`/`chunk_ids()` see only RAM** — DISK segments are invisible to reconcile/GC | `usearch_engine.rs:410,434` |
 | 6 | **`compact` does not persist new segments to disk** (only the in-memory `Index`); it does not remove old files; the dedup comment "later segment wins" contradicts the code (the **earlier** segment wins) | `usearch_engine.rs:601-654` |
 | 7 | **`load_live_keys_per_segment` is always empty**: it looks for ADD rows with `segment_id > 0`, but the write path never writes them (ADDs only in segment 0) → compaction, if it had run, would have **erased all data** | `usearch_engine.rs:664-702` |
 | 8 | **`rebuild` leaves old DISK segments and wipes the whole WAL** → after a rebuild, search would have returned stale vectors as live | `usearch_engine.rs:472-510` |
 | 9 | **Search: a SQL query to the WAL on every search** (a full DEL-row scan); the UPD flag is defined but never written or read anywhere; `search_threads` from the config is ignored | `usearch_engine.rs:321-367,749-779` |
-| 10 | **Not a single test** of the WAL/compaction/search paths (commit 2063842 claims "5 compaction tests" — they are not in the tree) | `crates/vectors/` |
+| 10 | **Not a single test** of the WAL/compaction/search paths (commit 2063842 claims "5 compaction tests" — they are not in the tree) | `crates/synopsis-vectors/` |
 | 11 | **No crash recovery**: no WAL replay, no segment reconciliation on start, no segment-file naming/registry | — |
 | 12 | **Doc comment is wrong**: `Index::restore` is **mmap read-write**, not "loads the file into memory". Verified experimentally: `add` through mmap `restore` **does not persist to the file** without an explicit `save()` (size after a re-restore = 0) | `usearch_engine.rs:20-25` |
 
@@ -63,7 +63,7 @@ Conclusion: the target architecture (RAM + DISK[n] + WAL + vacuum) does not exis
 - **RAM**: `restore_from_buffer(ram.usearch)` — an in-memory copy, read-write. Persisted by explicit `save()`: (a) on `create` — an empty snapshot (the file header carries the dimension: an empty index is distinguishable by dim before the first insert — without a snapshot an 8-dim and a 4-dim index are byte-for-byte indistinguishable on disk and the dim check on `open` did not fire; clarification 2026-08-31, task 3.3 revision); (b) on flush — the content becomes the new DISK[n] file; (c) on graceful shutdown / `build_index()` — a snapshot of the current state.
 - **DISK[n]**: `restore_view` — read-only mmap, zero-copy, page cache. Never mutated.
 - **Sidecar `.keys`** (format): `magic u32 LE = 0x534B4559`, `count u32 LE`, `count × chunk_id u32 LE`. Written atomically (tmp + rename) next to the index file. The key manifest is moved out of the WAL into a sidecar — the WAL stays small (invalidations only), and key enumeration does not require `exact_search`.
-- Naming is fixed: `segment-<n>.usearch`/`.keys`, n = decimal. The segment registry = a directory scan (the db crate's D3 protocol: self-recovery from files, no external registry).
+- Naming is fixed: `segment-<n>.usearch`/`.keys`, n = decimal. The segment registry = a directory scan (the synopsis-db crate's D3 protocol: self-recovery from files, no external registry).
 
 ### 2. Segment numbering
 
@@ -139,14 +139,14 @@ Trigger: `RAM.size() ≥ max_segment_vectors` inside `insert_batch`. Procedure u
 
 ### 9. Wiring (closing hole #2)
 
-- The `create_vector_engine` factory receives the WAL: a new signature with `wal_db: Option<&Path>` (the path to knowledge.db) — the engine opens its **dedicated** long-lived `rusqlite::Connection` itself (SQLite's WAL mode allows it; the db crate's pool is not needed for this). `VectorIndexConfig.usearch` is finally passed to the engine (previously ignored).
+- The `create_vector_engine` factory receives the WAL: a new signature with `wal_db: Option<&Path>` (the path to knowledge.db) — the engine opens its **dedicated** long-lived `rusqlite::Connection` itself (SQLite's WAL mode allows it; the synopsis-db crate's pool is not needed for this). `VectorIndexConfig.usearch` is finally passed to the engine (previously ignored).
 - `search_threads` → the engine's dedicated `rayon::ThreadPool` (the previous global pool + ignoring the config — bug #9).
-- Consumer integration (cli/ingestion): `maybe_compact()` — after an ingestion batch (in the cleanup phase next to `reconcile_vectors`); `build_index()` — on serve graceful shutdown.
+- Consumer integration (synopsis-cli/synopsis-ingestion): `maybe_compact()` — after an ingestion batch (in the cleanup phase next to `reconcile_vectors`); `build_index()` — on serve graceful shutdown.
 
 ### 10. Config and schema
 
 - The `vectors.usearch` section is **unchanged** (`max_segment_vectors`, `compaction_stale_threshold`, `search_threads`) — all three fields now get a real meaning.
-- The WAL table schema is **unchanged** (migrations 3+4 stay; migration 5 is not needed). The db crate's **tests** are fixed (they expect `user_version = 4`; the insert test gets `segment_id`) — defect #3.
+- The WAL table schema is **unchanged** (migrations 3+4 stay; migration 5 is not needed). The synopsis-db crate's **tests** are fixed (they expect `user_version = 4`; the insert test gets `segment_id`) — defect #3.
 
 ## Rejected alternatives
 
@@ -167,11 +167,11 @@ Trigger: `RAM.size() ≥ max_segment_vectors` inside `insert_batch`. Procedure u
 
 ## Implementation plan (tasks.md update for the change)
 
-1. Fix the db tests (user_version 4, segment_id) — unblock a green workspace.
+1. Fix the synopsis-db tests (user_version 4, segment_id) — unblock a green workspace.
 2. `UsearchEngine` core: layout (ram/segments), the sidecar codec, `create`/`open` + recovery (section 8).
 3. WAL write paths: transactional DEL rows, the stale cache + version (sections 3–4).
 4. Search: the pool, per-segment filtering, "freshest wins" merge; `count`/`chunk_ids` over the manifests (section 6).
 5. Flush + layout lock (section 5).
 6. Compaction: `maybe_compact` (an additive trait method), a background thread, monotonic ids, crash safety (section 7).
 7. Wiring: the factory (+WAL path, +UsearchConfig), bootstrap, the shutdown save, the `maybe_compact` call in ingestion cleanup.
-8. Tests: unit (sidecar, WAL invariants, flush, compaction, crash scenarios by file manipulation) + integration (restart, search correctness, concurrency) + fixes to layout-dependent tests (the factory in `lib.rs`, cli fixtures).
+8. Tests: unit (sidecar, WAL invariants, flush, compaction, crash scenarios by file manipulation) + integration (restart, search correctness, concurrency) + fixes to layout-dependent tests (the factory in `lib.rs`, synopsis-cli fixtures).

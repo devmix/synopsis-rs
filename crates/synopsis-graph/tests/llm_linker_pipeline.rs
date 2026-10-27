@@ -167,7 +167,7 @@ fn llm_linker_config(base_url: &str) -> LinkerConfig {
 
 // ── Mock LLM server ────────────────────────────────────────────────────────
 //
-// The `crates/llm` / `linker.rs` TcpListener pattern (keeps CI network-free),
+// The `crates/synopsis-llm` / `linker.rs` TcpListener pattern (keeps CI network-free),
 // extended to be content-aware: it routes on the rendered user prompt, so the
 // Acme pair gets a `same_entity: true` decision and every other pair a
 // `same_entity: false` one. Every request is counted and captured raw.

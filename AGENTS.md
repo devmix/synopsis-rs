@@ -14,34 +14,34 @@ A local RAG + knowledge-graph MCP server, one binary for a 16 GB laptop. Toolcha
 
 - Rust + tokio (async runtime) + axum (HTTP for non-MCP endpoints such as `/health`)
 - rusqlite 0.40 — bundled SQLite via a **direct** `libsqlite3-sys = { features = ["bundled"] }` workspace dependency (cargo forbids enabling it transitively through rusqlite); FTS5 ships in every bundled build (there is no separate `fts5` feature anymore). Sync driver behind `spawn_blocking` + r2d2 pool. Migrations: `rusqlite_migration` 2.x (`from-directory`) with `PRAGMA user_version` as sole schema-state authority (design D6)
-- ONNX runtime as external `.so`/`.dylib` (bge-m3 int8, 1024-dim embeddings only); downloaded/verified per `onnx.yaml`. Bindings: `ort` **2.0.0-rc.13** (`load-dynamic` only, default features off) — a deliberate pre-release pin (ADR 0002); all API churn is isolated in `crates/embedding`
+- ONNX runtime as external `.so`/`.dylib` (bge-m3 int8, 1024-dim embeddings only); downloaded/verified per `onnx.yaml`. Bindings: `ort` **2.0.0-rc.13** (`load-dynamic` only, default features off) — a deliberate pre-release pin (ADR 0002); all API churn is isolated in `crates/synopsis-embedding`
 - usearch 2.x — the sole ANN engine (ADR 0004): C++11 HNSW core via cxx, disk-backed, scalar-quantized (default bf16), WAL + segments. Vectors are NOT read from old vec0: they are rebuilt from chunk text
 - rmcp 3.x — MCP protocol (Streamable HTTP, design D8); the legacy HTTP+SSE transport is **also** served (double transport — D8 override, human decision 2026-08-31, wire contract mcp-go v0.57.0)
-- `cel` 0.14 (entity-linking expressions — supersedes cel-interpreter, 2026-08-22), tokenizers, notify, minijinja (prompt templates), petgraph (graph index), noyalib (YAML), jiff (UTC dates), clap 4.6.6 (CLI), tracing (logging in `cli` only — library crates stay logger-less)
+- `cel` 0.14 (entity-linking expressions — supersedes cel-interpreter, 2026-08-22), tokenizers, notify, minijinja (prompt templates), petgraph (graph index), noyalib (YAML), jiff (UTC dates), clap 4.6.6 (CLI), tracing (logging in `synopsis-cli` only — library crates stay logger-less)
 
 ## Hard constraints
 
 - Laptop target (16 GB RAM), personal use — NOT a server. At N=1M × 1024-dim full-precision vectors (~4 GB) do not fit in RAM → the ANN index must be disk-backed/mmap + quantized; the query path does **not** load the embedding model.
-- One local binary, no external services — except the user-configured OpenAI-compatible LLM endpoint that NER + cross-domain entity linking call (`crates/llm`). The test suite needs no network.
+- One local binary, no external services — except the user-configured OpenAI-compatible LLM endpoint that NER + cross-domain entity linking call (`crates/synopsis-llm`). The test suite needs no network.
 - Rust always builds its own DB from scratch: one squashed init migration, `PRAGMA user_version` is the single source of schema truth — the `_schema_migrations` table is deliberately NOT created. Existing `knowledge.db` files are NOT opened or upgraded, and data is not migrated. Future migrations: numbered directories `<id>-<slug>/up.sql`, shipped ones never edited, forward-only (no down.sql).
 
 ## Layout
 
 | Crate | Role |
 |---|---|
-| `crates/config` | YAML presets, onnx.yaml download config, XML ontologies |
-| `crates/db` | rusqlite connections, migrations, DAOs, FTS5 queries |
-| `crates/vectors` | ANN index contract (trait) + usearch engine; WAL + compaction |
-| `crates/embedding` | ONNX runtime lifecycle + bge-m3 int8 provider |
-| `crates/ingestion` | document parsers, chunkers, NER, entity extraction, event task queue + worker |
-| `crates/graph` | knowledge graph (petgraph) + CEL linkers + minijinja prompts |
-| `crates/search` | hybrid (FTS5 + vector) search with RRF fusion |
-| `crates/mcp` | MCP server (double transport) + 12 tool handlers |
-| `crates/llm` | OpenAI-compatible LLM client (NER + entity linking); base tier, depends only on `config` |
-| `crates/utils` | shared helpers (temporal: RFC 3339 UTC); leaf crate any crate may depend on |
-| `crates/cli` | `synopsis` binary: subcommand dispatch, flags, config resolution |
+| `crates/synopsis-config` | YAML presets, onnx.yaml download config, XML ontologies |
+| `crates/synopsis-db` | rusqlite connections, migrations, DAOs, FTS5 queries |
+| `crates/synopsis-vectors` | ANN index contract (trait) + usearch engine; WAL + compaction |
+| `crates/synopsis-embedding` | ONNX runtime lifecycle + bge-m3 int8 provider |
+| `crates/synopsis-ingestion` | document parsers, chunkers, NER, entity extraction, event task queue + worker |
+| `crates/synopsis-graph` | knowledge graph (petgraph) + CEL linkers + minijinja prompts |
+| `crates/synopsis-search` | hybrid (FTS5 + vector) search with RRF fusion |
+| `crates/synopsis-mcp` | MCP server (double transport) + 12 tool handlers |
+| `crates/synopsis-llm` | OpenAI-compatible LLM client (NER + entity linking); base tier, depends only on `synopsis-config` |
+| `crates/synopsis-utils` | shared helpers (temporal: RFC 3339 UTC); leaf crate any crate may depend on |
+| `crates/synopsis-cli` | `synopsis` binary: subcommand dispatch, flags, config resolution |
 
-Dependency graph (fixed by design D1): `config, db, vectors, utils, llm → embedding, ingestion, graph → search → mcp → cli`. Also: `openspec/` holds the spec-driven workflow artifacts; `docs/adr/` holds ADRs 0001–0004; `.opencode/` holds agent skills (`openspec-*`, `rust-best-practices`), `opsx-*` commands, and subagent definitions; `migrations/{knowledge,cache}/` holds the SQL migrations (see Gotchas).
+Dependency graph (fixed by design D1): `synopsis-config, synopsis-db, synopsis-vectors, synopsis-utils, synopsis-llm → synopsis-embedding, synopsis-ingestion, synopsis-graph → synopsis-search → synopsis-mcp → synopsis-cli`. Also: `openspec/` holds the spec-driven workflow artifacts; `docs/adr/` holds ADRs 0001–0004; `.opencode/` holds agent skills (`openspec-*`, `rust-best-practices`), `opsx-*` commands, and subagent definitions; `migrations/{knowledge,cache}/` holds the SQL migrations (see Gotchas).
 
 ## Commands (repo root)
 
@@ -56,7 +56,7 @@ Dependency graph (fixed by design D1): `config, db, vectors, utils, llm → embe
 | `scripts/release.sh` | release automation (preflight checks, version-bump commit, annotated tag, push to `github` + `origin`; `--dry-run` prints the plan without pushing) |
 
 - Single crate: `cargo test -p <crate>` · single test: `cargo test -p <crate> -- <TestNameFilter>`
-- Run the server: `cargo run -p cli -- serve` (config auto-search: `<exeDir>/workspace/configs/` → parent dir → CWD; default preset `default`, port 8080). Subcommands: `serve`, `queue status|reset-retries`, `db stats|clear`, `model list|download|delete|info|benchmark`, `onnx-runtime install|status|uninstall`, `load-test`.
+- Run the server: `cargo run -p synopsis-cli -- serve` (config auto-search: `<exeDir>/workspace/configs/` → parent dir → CWD; default preset `default`, port 8080). Subcommands: `serve`, `queue status|reset-retries`, `db stats|clear`, `model list|download|delete|info|benchmark`, `onnx-runtime install|status|uninstall`, `load-test`.
 - Cross-build targets (the CI cross-build matrix): `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`.
 
 ## Gotchas
@@ -64,12 +64,12 @@ Dependency graph (fixed by design D1): `config, db, vectors, utils, llm → embe
 - **Toolchain pin:** `rust-toolchain.toml` pins 1.96.0, and the CI action `dtolnay/rust-toolchain@<rev>` must match that file exactly — a mismatch makes every cargo command fail with "toolchain not installed".
 - **Cargo.lock is committed on purpose:** this workspace produces a binary, and reproducible builds matter for parity testing. Do not remove it.
 - **Workspace lints:** `missing_docs = "deny"` — public API must be documented; `unsafe_code = "forbid"`; clippy `all`/`unwrap_used`/`expect_used` are warn-level, but the gate runs with `-D warnings`, so any warning fails CI. Test modules may opt out locally: `#![allow(clippy::unwrap_used)]`.
-- **Tests live in `tests/`:** crate tests are integration tests under the crate's `tests/` directory, written against the public API + public test support (e.g. `db::test_util`) (user decision 2026-09-10). A `#[cfg(test)]` module inside `src/` is reserved for tests that need private internals, with the reason stated in the module doc.
+- **Tests live in `tests/`:** crate tests are integration tests under the crate's `tests/` directory, written against the public API + public test support (e.g. `synopsis_db::test_util`) (user decision 2026-09-10). A `#[cfg(test)]` module inside `src/` is reserved for tests that need private internals, with the reason stated in the module doc.
 - **MCP transport is double:** rmcp Streamable HTTP serves as the **fallback for every path** (clients connect e.g. to `/mcp`), and the legacy HTTP+SSE pair (`GET /sse` + `POST /message?sessionId=`) is mounted explicitly, plus `GET /health`. Parity lives at the level of tool responses, compared against recorded fixtures.
-- **Migrations live at the repo root** in `migrations/{knowledge,cache}/` and are embedded at compile time via `include_dir!` in `crates/db` — a new migration goes there, not in the crate. There are two DBs: the per-dataset knowledge DB and the global cache DB (`workspace/db/cache/cache.db`).
+- **Migrations live at the repo root** in `migrations/{knowledge,cache}/` and are embedded at compile time via `include_dir!` in `crates/synopsis-db` — a new migration goes there, not in the crate. There are two DBs: the per-dataset knowledge DB and the global cache DB (`workspace/db/cache/cache.db`).
 - **`workspace/` is runtime state, mostly gitignored:** ONNX runtime `.so` (~24 MB) under `workspace/onnxruntime/`, model weights (~2.3 GB) under `workspace/models/`, per-dataset state (knowledge.db + vectors) under `workspace/datasets/<name>/state/`. Only `workspace/configs/` and the `edtech` demo dataset (ontology + content) are tracked. The runtime and models are downloaded by the binary per `onnx.yaml` (`onnx-runtime install` / `model download`).
 - **Shipped config presets deliberately deviate from the frozen default:** the local presets use `bge-small-en-v1.5` (384-dim) instead of the frozen `bge-m3-int8` (1024-dim) — documented in `workspace/configs/README.md`; do not "fix" it.
-- **Prompt templates are minijinja:** `workspace/configs/prompts/**` are byte-identical to the embedded defaults in `crates/graph`/`crates/ingestion`; a missing override file silently falls back to the embedded default.
+- **Prompt templates are minijinja:** `workspace/configs/prompts/**` are byte-identical to the embedded defaults in `crates/synopsis-graph`/`crates/synopsis-ingestion`; a missing override file silently falls back to the embedded default.
 - **CI is GitHub-native (change `rebuild-github-cicd-flow`, user decision 2026-09-07):** `ci.yml` is ONE job — fmt + clippy + test + `cargo llvm-cov` (coverage is `continue-on-error`, measure-first, no gates). `release.yml` on `v*` tags: `gate` (fmt+clippy+test on the tagged commit) → `build` (5-way parallel matrix, one zigbuild target per leg; no strip step — `[profile.release] strip = true` strips at link time) → `publish` (standard `actions/*` + `softprops/action-gh-release@v3`, categorized changelog from conventional commits, `SHA256SUMS.txt`). The earlier Gitea compatibility (single job, Gitea-fork actions) is superseded — the Gitea remote (`origin`) is a plain git mirror without CI. Cross-builds run only on `v*` tags.
 - **`release.yml` copies the root `README.md` into every release archive** — the README doubles as end-user documentation shipped with the binary; keep it in sync with the CLI surface and config layout.
 - **Cross-builds:** Windows is `x86_64-pc-windows-gnu`, not msvc — Zig 0.16 ships no libc/headers for the MSVC target, so C code (ring, libsqlite3-sys, usearch) cannot compile for msvc via zig cc; the Windows leg carries a one-line case-sensitivity shim for usearch's `#include <Windows.h>` (`third_party/windows-case-shim/`). The old fully-static targets are dropped: they are slow to compile and their only benefit (a binary with no glibc dependency) is irrelevant for end-user machines; glibc is present on every supported distro.

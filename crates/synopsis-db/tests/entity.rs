@@ -1,5 +1,5 @@
 //! Integration tests for the `entities` DAO ([`synopsis_db::EntityDao`]), relocated
-//! from the inline `#[cfg(test)]` module in `crates/db/src/entity.rs`
+//! from the inline `#[cfg(test)]` module in `crates/synopsis-db/src/entity.rs`
 //! (change `test-hygiene-phase-2`, task 2.2).
 //!
 //! The tests exercise only the public API (plus the always-compiled

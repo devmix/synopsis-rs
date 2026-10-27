@@ -18,7 +18,7 @@ Byte-for-byte copy of the original implementation's `configs/config.default.yaml
 Verify:
 
 ```sh
-sha256sum crates/config/tests/data/config.default.yaml   # must match the table above
+sha256sum crates/synopsis-config/tests/data/config.default.yaml   # must match the table above
 ```
 
 ## `onnx.yaml`
@@ -34,7 +34,7 @@ Byte-for-byte copy of the original implementation's `configs/onnx.yaml` (byte-id
 Verify:
 
 ```sh
-sha256sum crates/config/tests/data/onnx.yaml   # must match the table above
+sha256sum crates/synopsis-config/tests/data/onnx.yaml   # must match the table above
 ```
 
 ## `global.xml`
@@ -63,8 +63,8 @@ diff against it must be empty — the 36 added lines are the only difference):
 
 ```sh
 grep -vE '^[[:space:]]*</?(attributes|synonyms|methods|regex-rules)>[[:space:]]*$' \
-  crates/config/tests/data/global.xml
-sha256sum crates/config/tests/data/global.xml   # must match the table above
+  crates/synopsis-config/tests/data/global.xml
+sha256sum crates/synopsis-config/tests/data/global.xml   # must match the table above
 ```
 
 > Note on `<method>equals</method>`: that line in the recorded source is an element with one
@@ -98,8 +98,8 @@ diff against it must be empty — the added lines are the only difference; repea
 
 ```sh
 grep -vE '^[[:space:]]*</?(entities|relations|attributes|synonyms|regex-rules)>[[:space:]]*$' \
-  crates/config/tests/data/domains/domain_hr.xml
-sha256sum crates/config/tests/data/domains/*.xml   # must match the table above
+  crates/synopsis-config/tests/data/domains/domain_hr.xml
+sha256sum crates/synopsis-config/tests/data/domains/*.xml   # must match the table above
 ```
 
 > Note on location: fixtures live under `tests/data/`, not a top-level `fixtures/` directory (design D10).

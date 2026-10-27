@@ -1,6 +1,6 @@
 //! Integration tests for the entity-alias DAO ([`synopsis_db::EntityAliasDao`]),
 //! relocated from the inline `#[cfg(test)]` module in
-//! `crates/db/src/entity_alias.rs` (change `multilingual-entity-resolution`,
+//! `crates/synopsis-db/src/entity_alias.rs` (change `multilingual-entity-resolution`,
 //! task 2.1; test placement per the 2026-09-10 decision).
 //!
 //! The tests exercise only the public API (plus the always-compiled

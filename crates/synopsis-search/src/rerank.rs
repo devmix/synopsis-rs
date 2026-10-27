@@ -820,7 +820,7 @@ mod tests {
     // ── time fixture helpers ─────────────────────────────────────────────
     // The fixtures render through the workspace date/time seam (no calendar
     // math in test code); the parser round-trips they used to pin now live
-    // in crates/utils (change utils-crate, task 1.1).
+    // in crates/synopsis-utils (change utils-crate, task 1.1).
 
     /// RFC3339 (UTC, `Z`) for a unix timestamp.
     fn rfc3339_utc(secs: i64) -> String {

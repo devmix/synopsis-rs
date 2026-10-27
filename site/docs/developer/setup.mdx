@@ -24,7 +24,7 @@ cargo build --release   # → target/release/synopsis
 cargo test              # full workspace suite, ~20 s warm; no services or network needed
 ```
 
-Run the server with `cargo run -p cli -- serve` — config is auto-searched (`<exeDir>/workspace/configs/` → parent directory → CWD), the default preset is `default`, and the MCP server listens on port 8080. The full first-run walkthrough (runtime install, model download, serving, connecting an MCP client) is in the [Quickstart](../quickstart).
+Run the server with `cargo run -p synopsis-cli -- serve` — config is auto-searched (`<exeDir>/workspace/configs/` → parent directory → CWD), the default preset is `default`, and the MCP server listens on port 8080. The full first-run walkthrough (runtime install, model download, serving, connecting an MCP client) is in the [Quickstart](../quickstart).
 
 ## Quality gates
 

@@ -1299,7 +1299,7 @@ mod tests {
             .unwrap()
     }
 
-    /// A minimal HTTP/1.1 mock LLM server on 127.0.0.1 (the `crates/llm`
+    /// A minimal HTTP/1.1 mock LLM server on 127.0.0.1 (the `crates/synopsis-llm`
     /// pattern; keeps CI network-free): counts every request, captures the
     /// raw requests, and serves a fixed `(status, body)` with
     /// `Connection: close`.

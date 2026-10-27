@@ -2,7 +2,7 @@
 //!
 //! Unlike the unit tests in `src/`, this test exercises the PUBLIC crate-root
 //! API against REAL infrastructure: an in-memory SQLite database with a real
-//! FTS5 index (`synopsis_db::test_util::in_memory_db`, the crates/db test pattern) and
+//! FTS5 index (`synopsis_db::test_util::in_memory_db`, the crates/synopsis-db test pattern) and
 //! documents/chunks/entities seeded through the db DAOs. The only seams
 //! mocked are the model-level ones, which the product never exposes:
 //!

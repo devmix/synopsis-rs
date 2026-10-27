@@ -6,18 +6,18 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges. db: SearchResult carries chunk/entity rows (task 4.1).
+# D1 edges. synopsis-db: SearchResult carries chunk/entity rows (task 4.1).
 [dependencies]
 synopsis_config = { workspace = true }
 synopsis_db = { workspace = true }
 synopsis_embedding = { workspace = true }
 synopsis_graph = { workspace = true }
 synopsis_vectors = { workspace = true }
-# utils::temporal (change utils-crate, design D4): the workspace date/time
+# synopsis_utils::temporal (change utils-crate, design D4): the workspace date/time
 # seam — enricher timestamp normalization and reranker epoch parsing.
 synopsis_utils = { workspace = true }
 # thiserror for SearchError (workspace convention, config-module D4).
 thiserror = { workspace = true }
 # Result metadata bag: `serde_json::Map<String, Value>` (workspace convention,
-# same as ingestion — BTreeMap-backed: deterministic key order).
+# same as synopsis-ingestion — BTreeMap-backed: deterministic key order).
 serde_json = { workspace = true }

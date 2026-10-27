@@ -1,5 +1,5 @@
 //! Integration tests for `synopsis_cli::serve::server` (moved verbatim from
-//! `crates/cli/src/serve/server.rs`, test-hygiene phase-2 task 2.4). Import
+//! `crates/synopsis-cli/src/serve/server.rs`, test-hygiene phase-2 task 2.4). Import
 //! paths rewritten from `use super::*` to the public `synopsis_cli::serve::server`
 //! API; the crate-private `SHUTDOWN_TIMEOUT` and the `pub(crate)`
 //! `recreate_vectors_engine` are reached through `synopsis_cli::test_support`.

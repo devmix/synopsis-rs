@@ -7,7 +7,7 @@
 
 ## Question
 
-Which ANN engine and configuration to freeze for the `vectors` crate under the laptop's hard gates (16 GB RAM, one local binary): **p95 < 10 ms**, **recall@10 ≥ 0.95**, **RSS-delta ≤ ~2 GB** on an N=1M×1024-class corpus? The candidate is singular — **lancedb** (the usearch spike was cancelled by human decision on 2026-08-18: hours of run time and an unsatisfactory result).
+Which ANN engine and configuration to freeze for the `synopsis-vectors` crate under the laptop's hard gates (16 GB RAM, one local binary): **p95 < 10 ms**, **recall@10 ≥ 0.95**, **RSS-delta ≤ ~2 GB** on an N=1M×1024-class corpus? The candidate is singular — **lancedb** (the usearch spike was cancelled by human decision on 2026-08-18: hours of run time and an unsatisfactory result).
 
 ## Options
 
@@ -31,7 +31,7 @@ Diagnostic sweep nprobes {64,128,256} × efSearch {50,200} (appendix): efSearch 
 
 ## Decision (GO)
 
-**Engine:** LanceDB, `lancedb = "0.37"` / lance 10.0.0 (Cargo.lock: lancedb 0.37.1, lance 10.0.0). **Configuration for the `vectors` crate:**
+**Engine:** LanceDB, `lancedb = "0.37"` / lance 10.0.0 (Cargo.lock: lancedb 0.37.1, lance 10.0.0). **Configuration for the `synopsis-vectors` crate:**
 
 | Parameter | Value |
 |---|---|
@@ -56,14 +56,14 @@ Source vectors are stored in the table as f32 (`FixedSizeList<Float32, 1024>`); 
 
 ## Open questions / residual risks
 
-1. **Thin margins at i8_ef200:** p95 9.6–9.8 ms against the <10 ms gate (~3 % headroom) and recall 0.957–0.962 against ≥0.95 (+0.7–1.2 pp). On a more loaded laptop machine p95 may go past the gate. Mitigation in the `vectors` crate: efSearch is a runtime setting (not a constant), default 200; on regression on a real corpus raise nprobes/efSearch or fall back to f32_ef200 at the cost of p95.
+1. **Thin margins at i8_ef200:** p95 9.6–9.8 ms against the <10 ms gate (~3 % headroom) and recall 0.957–0.962 against ≥0.95 (+0.7–1.2 pp). On a more loaded laptop machine p95 may go past the gate. Mitigation in the `synopsis-vectors` crate: efSearch is a runtime setting (not a constant), default 200; on regression on a real corpus raise nprobes/efSearch or fall back to f32_ef200 at the cost of p95.
 2. **Synthetic geometry:** a 256-cluster Gaussian mixture is a question of index mechanics (design D2), but the real bge-m3 corpus may differ. Per the D2 mitigation, the S3 measurements **are repeated on a real fixture** in the `vectors` change (an explicit task there); the full 1M run also stays with it. — *closed by the appendix (2026-08-22): the 1M run was performed — the p95/recall gates are not met, see "Escalation"; the repeat on the real fixture is deferred (the `vectors.bin` export is unavailable).*
 3. **Machine noise:** p50/p95 spread >5 % between A/B runs on the NOT-recommended configs (an artifact of a generally loaded machine; both percentiles of i8_ef200 are <5 %) — see the appendix "Reproducibility".
 4. **Async measurement path:** the timing includes the full async path search→stream collect through tokio (as in the production crate) — the runtime overhead is accounted for, not attributed to the engine.
 
 ## Appendix — full N=1M run (vectors task 1.8, 2026-08-22)
 
-Closure of open question #2 (full scale + repeat on real geometry). Protocol: s3b_lance via `crates/vectors/tests/full_benchmark.rs` (release, `#[ignore]`), ADR 0003 configuration (IvfHnswSq, M=16, efConstruction=100, 256 partitions, nprobes=32, efSearch=200, L2). **lancedb 0.37.1 / lance 10.0.0.** Machine: 16-core laptop, 31 GB RAM, NVMe; **the machine was loaded** (load average ~4–5, shared processes) — see "Reproducibility".
+Closure of open question #2 (full scale + repeat on real geometry). Protocol: s3b_lance via `crates/synopsis-vectors/tests/full_benchmark.rs` (release, `#[ignore]`), ADR 0003 configuration (IvfHnswSq, M=16, efConstruction=100, 256 partitions, nprobes=32, efSearch=200, L2). **lancedb 0.37.1 / lance 10.0.0.** Machine: 16-core laptop, 31 GB RAM, NVMe; **the machine was loaded** (load average ~4–5, shared processes) — see "Reproducibility".
 
 ### Run (a): synthetic N=1 000 000×1024
 
@@ -95,17 +95,17 @@ An additional run the same day (before the sweep): A p50/p95 20.012/55.539 ms, r
 
 ### Run (b): real vectors.bin fixture
 
-**Deferred** — the `vectors.bin` export is unavailable (task 1.8: NOT a blocker for archiving the change). Harness ready: `SYNOPSIS_BENCH_VECTORS_BIN=<path> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture`. Documented deviation: queries — a seeded sample of corpus lines (no held-out set in the export); recall@10 against exact top-10 is still well defined.
+**Deferred** — the `vectors.bin` export is unavailable (task 1.8: NOT a blocker for archiving the change). Harness ready: `SYNOPSIS_BENCH_VECTORS_BIN=<path> cargo test -p synopsis-vectors --release -- --ignored full_benchmark_real_fixture --nocapture`. Documented deviation: queries — a seeded sample of corpus lines (no held-out set in the export); recall@10 against exact top-10 is still well defined.
 
 ### Run commands (reproducibility)
 
 ```sh
 # run (a): A/B + gates, ~9 min, release only, ~5.4 GB of disk
-cargo test -p vectors --release -- --ignored full_benchmark_synthetic --nocapture
+cargo test -p synopsis-vectors --release -- --ignored full_benchmark_synthetic --nocapture
 # same + mitigation sweep on run B's index
-SYNOPSIS_BENCH_SWEEP=1 cargo test -p vectors --release -- --ignored full_benchmark_synthetic --nocapture
+SYNOPSIS_BENCH_SWEEP=1 cargo test -p synopsis-vectors --release -- --ignored full_benchmark_synthetic --nocapture
 # run (b) — once the vectors.bin export becomes available
-SYNOPSIS_BENCH_VECTORS_BIN=<vectors.bin> cargo test -p vectors --release -- --ignored full_benchmark_real_fixture --nocapture
+SYNOPSIS_BENCH_VECTORS_BIN=<vectors.bin> cargo test -p synopsis-vectors --release -- --ignored full_benchmark_real_fixture --nocapture
 # env: SYNOPSIS_BENCH_N (default 1_000_000), SYNOPSIS_BENCH_WORK_DIR (default /mnt/local/sandbox/opencode-vectors-18)
 ```
 

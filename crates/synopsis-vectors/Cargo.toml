@@ -24,9 +24,9 @@ cxx = { version = "1" }
 rayon = { version = "1" }
 # SQLite WAL for the usearch engine (usearch-wal-persistence task 2.2): the
 # engine journals operations to the `usearch_vectors_log` table (migration
-# 3-usearch-vectors-log, db crate). Tier 0 forbids a `db` dependency, so the
+# 3-usearch-vectors-log, synopsis-db crate). Tier 0 forbids a `synopsis-db` dependency, so the
 # consumer injects an open connection via `UsearchEngine::with_wal_db`. Same
-# bundled SQLite build as the db crate (workspace palette: the direct
+# bundled SQLite build as the synopsis-db crate (workspace palette: the direct
 # libsqlite3-sys dep forces `bundled`; cargo forbids enabling it transitively
 # through rusqlite).
 rusqlite = { workspace = true }

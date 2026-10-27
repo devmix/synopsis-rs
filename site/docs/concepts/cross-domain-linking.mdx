@@ -57,7 +57,7 @@ Every LLM decision is **cached in the application key-value store, keyed by a ha
 
 #### The LLM client
 
-The comparison goes through Synopsis' OpenAI-compatible client (`crates/llm`), configured by the `linker.llm` section of the YAML preset (`api_base_url`, `model_name`, `api_key`, `temperature`, `seed`, `max_tokens`, `timeout_ms`, `max_retries`, `response_format`):
+The comparison goes through Synopsis' OpenAI-compatible client (`crates/synopsis-llm`), configured by the `linker.llm` section of the YAML preset (`api_base_url`, `model_name`, `api_key`, `temperature`, `seed`, `max_tokens`, `timeout_ms`, `max_retries`, `response_format`):
 
 - the request is `POST {api_base_url}/chat/completions` with `model`, `messages` (system + user), `temperature`, `seed`, `max_tokens`; authentication is a Bearer token from `api_key` (an empty key sends no Authorization header);
 - **structured output** — `response_format: json_object` sends `{"type":"json_object"}`; `response_format: json_schema` sends a nested `json_schema` object with a name (default `"llm_output"`) and the schema supplied by the caller;

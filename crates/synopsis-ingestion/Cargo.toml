@@ -6,13 +6,13 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges: config is the only internal dependency this crate needs — the
+# D1 edges: synopsis-config is the only internal dependency this crate needs — the
 # chunkers take their `ChunkingConfig` / `MarkdownChunkerConfig` from it
 # (task 1.3+). The imports of database/embedding/relations come back
-# with later changes (pipeline DB writes, NER via the embedding crate); YAGNI.
+# with later changes (pipeline DB writes, NER via the synopsis-embedding crate); YAGNI.
 [dependencies]
 synopsis_config = { workspace = true }
-# utils::temporal (change utils-crate, design D4): RFC3339 UTC formatting
+# synopsis_utils::temporal (change utils-crate, design D4): RFC3339 UTC formatting
 # for the parsers and the VACUUM snapshot naming in the ingester backup.
 synopsis_utils = { workspace = true }
 # thiserror for IngestionError (workspace convention, config-module D4).
@@ -37,16 +37,16 @@ ignore = { workspace = true }
 html-to-markdown-rs = { workspace = true }
 # Jinja2 engine for the NER prompt templates (ingestion-ner task 2.2):
 # embedded defaults via include_str! + user overrides, same pattern as the
-# graph crate's entity-linker prompts (workspace pin: 2.x, serde +
+# synopsis-graph crate's entity-linker prompts (workspace pin: 2.x, serde +
 # std_collections). `builtins` adds the standard filter set — the templates
-# use the built-in `join` filter (the graph crate registers its own `join`
+# use the built-in `join` filter (the synopsis-graph crate registers its own `join`
 # function because it renders without this feature).
 minijinja = { workspace = true, features = ["builtins"] }
 # Template-source SHA-256 hashes feeding the LLM-NER cache key (ingestion-ner
 # design D4; also used by the task 2.4 cache-key builder).
 sha2 = { workspace = true }
-# LLM-NER response cache (ingestion-ner task 2.4, design D6): bound to the db
-# crate's unified executor surface (ConnectionOrTx), same shape as the db
+# LLM-NER response cache (ingestion-ner task 2.4, design D6): bound to the synopsis-db
+# crate's unified executor surface (ConnectionOrTx), same shape as the synopsis-db
 # crate's own DAOs.
 synopsis_db = { workspace = true }
 # Synchronous OpenAI-compatible chat client for the LlmNer provider
@@ -62,12 +62,12 @@ indicatif = { workspace = true }
 synopsis_embedding = { workspace = true }
 # Vector-index seam for the pipeline's post-commit vector write (task 3.4,
 # design D5): the Ingester holds a `&dyn VectorSink` (a narrow local trait
-# with a blanket impl over `vectors::VectorIndex`), so tests record writes
+# with a blanket impl over `synopsis_vectors::VectorIndex`), so tests record writes
 # without a vector engine.
 synopsis_vectors = { workspace = true }
 # Cross-domain entity linking for the Runner's post-run tail (task 3.8,
-# design D1: ingestion → graph edge): the runner delegates to
-# `graph::build_entity_links` instead of re-implementing the linker.
+# design D1: synopsis-ingestion → synopsis-graph edge): the runner delegates to
+# `synopsis_graph::build_entity_links` instead of re-implementing the linker.
 synopsis_graph = { workspace = true }
 # Async runtime for the document worker's poll loop (document-jobs-queue
 # task 1.4): `tokio::select!` between the poll tick and the stop signal,
@@ -76,5 +76,5 @@ tokio = { workspace = true }
 # Structured logging for the ingestion pipeline's per-document warnings
 # (document-jobs-queue task 1.8): the ingester's former `eprintln!` "warning:
 # document …" lines are now `tracing::error!`/`warn!`/`info!`, so the serve
-# layer's tracing subscriber owns them (workspace pin: 0.1.44, same as cli).
+# layer's tracing subscriber owns them (workspace pin: 0.1.44, same as synopsis-cli).
 tracing = { workspace = true }

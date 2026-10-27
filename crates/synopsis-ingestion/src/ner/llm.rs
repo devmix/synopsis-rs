@@ -359,7 +359,7 @@ mod tests {
         LlmNer::new(&llm_config(&server.url), domains, prompts(), cache).unwrap()
     }
 
-    // ── Mock OpenAI-compatible server (pattern: crates/llm tests) ──────────
+    // ── Mock OpenAI-compatible server (pattern: crates/synopsis-llm tests) ──────────
 
     /// Minimal HTTP/1.1 server on 127.0.0.1 with an ephemeral port: records
     /// each request's JSON body and serves the handler's `(status, body)`

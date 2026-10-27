@@ -6,7 +6,7 @@ sidebar_position: 2
 
 # Configuration Schema
 
-This page is the authoritative schema for the three configuration formats: the YAML **preset** (`config.{preset}.yaml`), the external **model registry** (`onnx.yaml`), and the per-dataset **XML ontologies**. Every key below is verified against the `crates/config` loader and the shipped `workspace/configs/config.default.yaml`. Defaults are the values the loader applies when a key is absent (**Default** column); the values actually shipped in `config.default.yaml` may differ and are noted where relevant.
+This page is the authoritative schema for the three configuration formats: the YAML **preset** (`config.{preset}.yaml`), the external **model registry** (`onnx.yaml`), and the per-dataset **XML ontologies**. Every key below is verified against the `crates/synopsis-config` loader and the shipped `workspace/configs/config.default.yaml`. Defaults are the values the loader applies when a key is absent (**Default** column); the values actually shipped in `config.default.yaml` may differ and are noted where relevant.
 
 Config path resolution (which file is read) is documented in the [CLI Reference](./cli.mdx#config-path-resolution). The [Configuration guide](../guides/configuration) covers the same file as a task-oriented walk-through.
 
@@ -26,12 +26,12 @@ The knowledge-DB **path is not configurable**: it is derived from `paths.workspa
 
 | Key | Type | Default | Behavior |
 |---|---|---|---|
-| `database.pragma` | map of string → string | `{}` | Custom PRAGMA overrides, parsed into the config. The `db` crate applies a **fixed** PRAGMA set to every connection (see [PRAGMAs applied on connection](#pragmas-applied-on-connection)); the shipped preset's map mirrors that fixed set. |
+| `database.pragma` | map of string → string | `{}` | Custom PRAGMA overrides, parsed into the config. The `synopsis-db` crate applies a **fixed** PRAGMA set to every connection (see [PRAGMAs applied on connection](#pragmas-applied-on-connection)); the shipped preset's map mirrors that fixed set. |
 | `database.path` | string | — | **Legacy key — accepted but ignored** (pre-restructure layout). The knowledge-DB path is derived from `paths.workspace_dir` + `dataset.name` instead. |
 
 ### PRAGMAs applied on connection
 
-The `db` crate sets these on every pooled connection, in this fixed order:
+The `synopsis-db` crate sets these on every pooled connection, in this fixed order:
 
 | PRAGMA | Value | Meaning |
 |---|---|---|
@@ -231,7 +231,7 @@ One job is registered:
 
 ## `logging`
 
-Logging is emitted via `tracing` in the `cli` crate only — the library crates stay logger-less.
+Logging is emitted via `tracing` in the `synopsis-cli` crate only — the library crates stay logger-less.
 
 | Key | Type | Default | Behavior |
 |---|---|---|---|

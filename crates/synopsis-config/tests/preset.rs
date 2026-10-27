@@ -1497,7 +1497,7 @@ fn loads_demo_config() {
     // The demo preset (workspace/configs/config.demo.yaml) must parse
     // through the real file loader into the storage-layout-restructure
     // shape. Ingestion sources live in the dataset ontology (global.xml),
-    // not in this file. CARGO_MANIFEST_DIR is `<repo>/crates/config`, so
+    // not in this file. CARGO_MANIFEST_DIR is `<repo>/crates/synopsis-config`, so
     // two `..` reach the repo root where `workspace/configs/` lives.
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),

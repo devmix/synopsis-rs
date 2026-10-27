@@ -6,14 +6,14 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# D1 edges (config, db, graph, search). rmcp features: server role +
+# D1 edges (synopsis-config, synopsis-db, synopsis-graph, synopsis-search). rmcp features: server role +
 # Streamable HTTP transport (design D8).
 [dependencies]
 # Opaque cursor base64 for the paginated catalog tools (task 5.2).
 base64 = { workspace = true }
 axum = { workspace = true }
-# D1 layering (design.md): mcp depends on {config, db, search, graph}.
-# `config` is consumed by the 5.10 assembly (server name/version, graph
+# D1 layering (design.md): synopsis-mcp depends on {synopsis-config, synopsis-db, synopsis-search, synopsis-graph}.
+# `synopsis-config` is consumed by the 5.10 assembly (server name/version, graph
 # enablement); the 5.1 scaffold injects those as plain values.
 synopsis_config = { workspace = true }
 synopsis_db = { workspace = true }

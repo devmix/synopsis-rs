@@ -34,7 +34,7 @@ The only part of `workspace/` that ships in the repository and in the release ar
 | `prompts/entity-linker/{system,user}.tmpl` | Minijinja prompt overrides for cross-domain entity linking |
 | `prompts/ner/{system,user}.tmpl` | Minijinja prompt overrides for LLM-based NER |
 
-The prompt overrides are **byte-identical** to the defaults embedded in `crates/graph` and `crates/ingestion`; a missing override file silently falls back to the embedded default, so the shipped files exist for visibility and editing, not for correctness.
+The prompt overrides are **byte-identical** to the defaults embedded in `crates/synopsis-graph` and `crates/synopsis-ingestion`; a missing override file silently falls back to the embedded default, so the shipped files exist for visibility and editing, not for correctness.
 
 Without `--config`, the binary auto-searches for `config.{preset}.yaml`: `<exeDir>/workspace/configs/` → parent directory → CWD. `--preset NAME` selects `config.{NAME}.yaml` (default: `default`). See the [Configuration guide](../guides/configuration) for the full key-by-key reference.
 

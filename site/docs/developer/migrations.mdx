@@ -21,7 +21,7 @@ migrations/
     └── 1-init/up.sql
 ```
 
-`crates/db` embeds both trees at compile time with `include_dir!` (`crates/db/src/connection.rs`) and applies them with `rusqlite_migration` 2.x (the `from-directory` feature). The SQL ships inside the binary — there is no migration directory to ship or locate at runtime.
+`crates/synopsis-db` embeds both trees at compile time with `include_dir!` (`crates/synopsis-db/src/connection.rs`) and applies them with `rusqlite_migration` 2.x (the `from-directory` feature). The SQL ships inside the binary — there is no migration directory to ship or locate at runtime.
 
 ## A squashed init migration, then forward-only migrations
 
@@ -31,7 +31,7 @@ Each database starts from the squashed init migration `1-init/up.sql`. For the k
 
 - `PRAGMA user_version` records the applied schema version — it is **2** for the knowledge DB after the current migration set (the cache DB is **1**), and it is the **sole** source of truth about the schema state.
 - The `_schema_migrations` tracking table is **deliberately not created** — there is no table of applied versions to drift out of sync with the PRAGMA.
-- On open, the `db` crate reads `PRAGMA user_version`: `0` (a new file) → apply every migration; a version below the latest → apply the remaining migrations; at the latest → already migrated, apply nothing further, preserve the data.
+- On open, the `synopsis-db` crate reads `PRAGMA user_version`: `0` (a new file) → apply every migration; a version below the latest → apply the remaining migrations; at the latest → already migrated, apply nothing further, preserve the data.
 
 ## Forward-only
 
@@ -46,11 +46,11 @@ The Rust binary always builds its database **from scratch**. A pre-existing `kno
 
 ## Testing a migration
 
-The full migration set runs on every fresh database — the `db` crate's test helper builds a database from scratch in tests and asserts `PRAGMA user_version = 2` plus the full schema (including `entity_aliases`). For a new numbered migration:
+The full migration set runs on every fresh database — the `synopsis-db` crate's test helper builds a database from scratch in tests and asserts `PRAGMA user_version = 2` plus the full schema (including `entity_aliases`). For a new numbered migration:
 
 1. Add `migrations/knowledge/<id>-<slug>/up.sql` (and/or the `cache/` side) with the next number.
 2. Keep it forward-only and SQLite-compatible; new columns need defaults or `NULL`, and unique indexes on existing data need dedup first.
-3. Run `cargo test -p db` — fresh-database initialization must still pass, with `PRAGMA user_version` ending at the new value.
+3. Run `cargo test -p synopsis-db` — fresh-database initialization must still pass, with `PRAGMA user_version` ending at the new value.
 4. Apply it to a copy of a real dataset DB and confirm it lands cleanly on top of existing data, not just on a fresh schema.
 
 ## See also

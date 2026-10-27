@@ -51,16 +51,16 @@ expect_used = "warn" # same as unwrap_used
 # 2026-08-18; unused entries stay out of the resolve graph until inherited.
 [workspace.dependencies]
 # Internal crates - dependency graph fixed by design.md D1 (revised by
-# db-module task 1.18, human decision 2026-08-20: db → config for the
-# SQLite batch-size constants; llm change D1 adds llm to the base tier;
-# utils-crate D1 adds utils as a leaf any crate may depend on):
-# config, db, vectors, utils, llm -> embedding, ingestion, graph -> search -> mcp -> cli
+# db-module task 1.18, human decision 2026-08-20: synopsis-db → synopsis-config for the
+# SQLite batch-size constants; llm change D1 adds synopsis-llm to the base tier;
+# utils-crate D1 adds synopsis-utils as a leaf any crate may depend on):
+# synopsis-config, synopsis-db, synopsis-vectors, synopsis-utils, synopsis-llm -> synopsis-embedding, synopsis-ingestion, synopsis-graph -> synopsis-search -> synopsis-mcp -> synopsis-cli
 synopsis_config = { package = "synopsis-config", path = "crates/synopsis-config" }
 synopsis_db = { package = "synopsis-db", path = "crates/synopsis-db" }
 synopsis_vectors = { package = "synopsis-vectors", path = "crates/synopsis-vectors" }
 synopsis_utils = { package = "synopsis-utils", path = "crates/synopsis-utils" }
 # Base tier (llm change D1): OpenAI-compatible LLM client; only internal
-# dependency is config (LlmConfig). graph/embedding depend on it, never
+# dependency is synopsis-config (LlmConfig). synopsis-graph/synopsis-embedding depend on it, never
 # the other way around.
 synopsis_llm = { package = "synopsis-llm", path = "crates/synopsis-llm" }
 synopsis_embedding = { package = "synopsis-embedding", path = "crates/synopsis-embedding" }
@@ -87,13 +87,13 @@ uuid = { version = "1", features = ["v4"] }
 # (2026-08-18): Streamable HTTP transport, wire compatibility with the legacy
 # SSE transport deliberately NOT preserved. 3.1.3 is current (verified on crates.io).
 rmcp = "3"
-# Plain-HTTP client for the mcp integration test (task 5.10): the GET /health
+# Plain-HTTP client for the synopsis-mcp integration test (task 5.10): the GET /health
 # assertion. reqwest 0.13.4 is already in the lock graph (rmcp 3.1.3's
 # Streamable HTTP client transport depends on it) — inheriting it adds no new
 # crate version to the build. Default features off at the palette level
 # (workspace-inheritance rule: a member cannot flip them): a plain http://
 # loopback assertion needs no TLS provider, keeping the stack pure-Rust
-# (no native-tls/OpenSSL); the mcp dev-dep adds `json`.
+# (no native-tls/OpenSSL); the synopsis-mcp dev-dep adds `json`.
 reqwest = { version = "0.13", default-features = false }
 
 # SQLite storage, FTS5 compiled in (design D3). As of rusqlite 0.40 / libsqlite3-sys
@@ -141,7 +141,7 @@ indicatif = "0.18"
 # over flag/help structure. Help text is Rust-idiomatic — deliberately NOT
 # byte-matched to any prior reference (user decision 2026-08-27).
 clap = "4.6.6"
-# Structured logging in the cli binary only (cli change, design D2; user-approved
+# Structured logging in the synopsis-cli binary only (cli change, design D2; user-approved
 # 2026-08-27): library crates stay logger-less. Both are already in the lock
 # graph (verified 2026-08-27: tracing 0.1.44 / tracing-subscriber 0.3.23 are the
 # current pins); `env-filter` honors RUST_LOG, `json` is the alternate log
@@ -165,7 +165,7 @@ owo-colors = "4.4"
 # 2026-03-23).
 terminal_size = "0.4"
 
-# Serialization and config (config crate)
+# Serialization and config (synopsis-config crate)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 noyalib = "0.0.23" # YAML: successor of serde_yaml/serde_yml, both deprecated (verified 2026-08-18)
@@ -273,7 +273,7 @@ tar = "0.4"
 # footprint). Disk-backed serving via `Index::restore_view` (mmap).
 usearch = { version = "2.26", default-features = false }
 # cxx FFI glue for usearch: the Rust bindings surface `cxx::Exception` error
-# types, so vectors depends on cxx directly to map them into VectorsError.
+# types, so synopsis-vectors depends on cxx directly to map them into VectorsError.
 cxx = "1"
 
 # Intentionally NOT pinned here - decisions deferred to module changes:
@@ -299,11 +299,11 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 
 # Script-based word stemming for entity resolution (change
 # multilingual-entity-resolution, task 1.1, design D1): Snowball algorithms
-# (English Porter + Russian) shared by ingestion and graph via `utils::text`.
+# (English Porter + Russian) shared by synopsis-ingestion and synopsis-graph via `synopsis_utils::text`.
 # Verified against the crates.io index + registry source (2026-09-10):
 # 1.2.0 is the current release (published 2019-11-17, ~31M downloads),
 # MIT/BSD-3-Clause, pure Rust with only serde/serde_derive as dependencies —
 # no I/O, no unsafe, no native code. The algorithms are frozen upstream
 # (Snowball), so the crate's age is a non-issue; all usage is isolated behind
-# `utils::text`, so a swap touches one module.
+# `synopsis_utils::text`, so a swap touches one module.
 rust-stemmers = "1.2.0"

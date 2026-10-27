@@ -166,7 +166,7 @@ fn cached_decisions(cache: &Db) -> Vec<(String, String)> {
 
 // ── Mock LLM server ────────────────────────────────────────────────────────
 //
-// The `crates/llm` / `linker.rs` TcpListener pattern (keeps CI network-free),
+// The `crates/synopsis-llm` / `linker.rs` TcpListener pattern (keeps CI network-free),
 // extended to be content-aware: the first route whose marker occurs in the
 // rendered user prompt answers the request with its own decision (or an
 // invalid body, for the per-pair failure scenario). Every request is counted.

@@ -168,7 +168,7 @@ fn client_is_send_sync_and_cheap_to_clone() {
 /// Minimal HTTP/1.1 server on 127.0.0.1 with an ephemeral port: reads each
 /// POST in full (headers + body), records the raw request, and serves the
 /// handler's `(status, body)` with `Connection: close`. Keeps CI
-/// network-free (pattern: `crates/embedding`).
+/// network-free (pattern: `crates/synopsis-embedding`).
 struct MockServer {
     url: String,
     requests: Arc<AtomicUsize>,
