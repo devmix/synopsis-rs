@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use embedding::EmbeddingProvider;
 use rusqlite::params;
 use synopsis_db::Db;
+use synopsis_embedding::EmbeddingProvider;
 use synopsis_vectors::VectorIndex;
 
 use super::generator::Dataset;
@@ -291,8 +291,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use embedding::EmbeddingProvider;
     use synopsis_db::test_util::in_memory_db;
+    use synopsis_embedding::EmbeddingProvider;
     use synopsis_vectors::{UsearchEngine, VectorIndexConfig};
 
     use super::super::generator::{Generator, Scale};
@@ -308,7 +308,7 @@ mod tests {
         fn generate_embeddings(
             &self,
             texts: &[String],
-        ) -> Result<Vec<Vec<f32>>, embedding::EmbeddingError> {
+        ) -> Result<Vec<Vec<f32>>, synopsis_embedding::EmbeddingError> {
             Ok((0..texts.len()).map(|_| vec![0.1f32; self.dim]).collect())
         }
 

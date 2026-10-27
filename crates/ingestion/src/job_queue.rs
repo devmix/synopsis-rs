@@ -356,12 +356,12 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
 
-    use embedding::{EmbeddingError, EmbeddingProvider};
     use synopsis_config::DomainConfig;
     use synopsis_config::ontology::{GlobalConfig, GlobalNerConfig, SourceConfig, SourceType};
     use synopsis_config::preset::{IngestionConfig, LinkerConfig};
     use synopsis_db::test_util::in_memory_db;
     use synopsis_db::{ConnectionOrTx, Db, DocumentDao, QueueTaskDao};
+    use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

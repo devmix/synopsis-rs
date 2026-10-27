@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_config::DomainConfig;
 use synopsis_config::ontology::{
     GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType,
@@ -25,6 +24,7 @@ use synopsis_config::ontology::{
 use synopsis_config::preset::{IngestionConfig, LinkerConfig};
 use synopsis_db::test_util::in_memory_db;
 use synopsis_db::{ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, QueueTaskDao};
+use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 use ingestion::runner::detect_source_type;

@@ -20,7 +20,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use embedding::{EmbeddingError, EmbeddingProvider};
 use ingestion::worker::DocumentWorker;
 use ingestion::{
     CompositeNer, DocumentJobQueue, Ingester, IngestionError, JsonChunker, JsonSource,
@@ -40,6 +39,7 @@ use synopsis_db::{
     EntityLinkDao, EntityLinkPayload, EntitySourceDao, FactDao, FactSourceDao, QueueTaskDao,
     QueueTaskType,
 };
+use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 /// One markdown document with two heading sections and one email each.

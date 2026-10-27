@@ -16,13 +16,13 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use embedding::{EmbeddingError, EmbeddingProvider};
 use serde_json::Map;
 use synopsis_config::preset::{ChunkingStrategy, IngestionConfig, MarkdownChunkerConfig};
 use synopsis_db::test_util::in_memory_db;
 use synopsis_db::{
     ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, FactSourceDao,
 };
+use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 
 use ingestion::{
     Chunker, Document, DocumentChunk, DocumentMetadata, Ingester, IngestionError, MarkdownChunker,

@@ -131,7 +131,7 @@ Per-task acceptance (in addition to the recipe gates):
     78 files; 2 synopsis-vectors doc-comment-only renames in scope; 3 stale
     crates/config prose paths deferred to 3.1 and listed there; gates green).
 
-- [ ] 2.5 Rename `db` → `synopsis-db` (user-approved diff exception, design D4)
+- [x] 2.5 Rename `db` → `synopsis-db` (user-approved diff exception, design D4)
   - Dependencies: task 2.4.
   - File scope: root `Cargo.toml`; `crates/db/**` → `crates/synopsis-db/**`;
     dependents with a Cargo.toml entry (5): `crates/ingestion`, `crates/graph`,
@@ -172,6 +172,13 @@ Per-task acceptance (in addition to the recipe gates):
     `crates/ingestion`, `crates/search`, `crates/cli`; all `.rs` files containing
     `embedding::` (~44 lines).
   - Acceptance: recipe gates + `rg '\bembedding::' -g '*.rs'` empty + metadata check.
+  - Revision history: implemented 2026-10-27. 43 references renamed across
+    26 files; rustfmt re-sorted import groups in ~22 files and re-wrapped one
+    line (cli loadtest/mod.rs:166, >100 chars after the longer identifier) —
+    the same mechanical class as tasks 2.2/2.3/2.5 (the implementer's
+    zero-deviations claim was corrected by the reviewer's reverse-transform
+    check). Gates green (one flaky first full test run under disk pressure;
+    two clean 1606/1606 runs).
 
 - [ ] 2.7 Rename `ingestion` → `synopsis-ingestion`
   - Dependencies: task 2.6.

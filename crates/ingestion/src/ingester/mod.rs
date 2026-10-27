@@ -36,13 +36,13 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use embedding::EmbeddingProvider;
 use serde_json::{Map, Value};
 use synopsis_config::preset::IngestionConfig;
 use synopsis_db::{
     ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, EntityLinkPayload, GcDao,
     QueueTaskDao, QueueTaskType,
 };
+use synopsis_embedding::EmbeddingProvider;
 use synopsis_vectors::VectorIndex;
 
 use crate::entities::{EntityChanges, Resolver};

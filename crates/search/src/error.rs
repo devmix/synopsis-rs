@@ -35,7 +35,7 @@ pub enum SearchError {
 
     /// Query embedding generation failed.
     #[error("embedding error: {0}")]
-    Embedding(#[from] embedding::EmbeddingError),
+    Embedding(#[from] synopsis_embedding::EmbeddingError),
 
     /// The vector index query failed.
     #[error("vector index error: {0}")]

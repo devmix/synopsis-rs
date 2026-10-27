@@ -439,7 +439,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "embedding",
  "graph",
  "ingestion",
  "mcp",
@@ -453,6 +452,7 @@ dependencies = [
  "sha2",
  "synopsis-config",
  "synopsis-db",
+ "synopsis-embedding",
  "synopsis-utils",
  "synopsis-vectors",
  "tabled",
@@ -873,25 +873,6 @@ name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
-
-[[package]]
-name = "embedding"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "indicatif",
- "ort",
- "serde",
- "serde_json",
- "sha2",
- "synopsis-config",
- "synopsis-utils",
- "tar",
- "thiserror",
- "tokenizers",
- "ureq",
- "zip",
-]
 
 [[package]]
 name = "encode_unicode"
@@ -1558,7 +1539,6 @@ dependencies = [
 name = "ingestion"
 version = "0.1.0"
 dependencies = [
- "embedding",
  "graph",
  "html-to-markdown-rs",
  "ignore",
@@ -1570,6 +1550,7 @@ dependencies = [
  "sha2",
  "synopsis-config",
  "synopsis-db",
+ "synopsis-embedding",
  "synopsis-llm",
  "synopsis-utils",
  "synopsis-vectors",
@@ -2970,11 +2951,11 @@ checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
 name = "search"
 version = "0.1.0"
 dependencies = [
- "embedding",
  "graph",
  "serde_json",
  "synopsis-config",
  "synopsis-db",
+ "synopsis-embedding",
  "synopsis-utils",
  "synopsis-vectors",
  "thiserror",
@@ -3323,6 +3304,25 @@ dependencies = [
  "serde_json",
  "synopsis-config",
  "thiserror",
+]
+
+[[package]]
+name = "synopsis-embedding"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "indicatif",
+ "ort",
+ "serde",
+ "serde_json",
+ "sha2",
+ "synopsis-config",
+ "synopsis-utils",
+ "tar",
+ "thiserror",
+ "tokenizers",
+ "ureq",
+ "zip",
 ]
 
 [[package]]

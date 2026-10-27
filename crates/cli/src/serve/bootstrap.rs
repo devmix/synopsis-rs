@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use embedding::{EmbeddingProvider, ModelManager, new_onnx_provider};
 use ingestion::{
     IngestionError, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource, MediawikiChunker,
     MediawikiSource, NerPrompts, Registry, Runner, RunnerParams, UnstructuredSource, WebpageSource,
@@ -26,6 +25,7 @@ use synopsis_config::{
     load_domain_config, load_global_config, load_onnx_config,
 };
 use synopsis_db::Db;
+use synopsis_embedding::{EmbeddingProvider, ModelManager, new_onnx_provider};
 use synopsis_vectors::{VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine};
 
 use crate::error::CliError;

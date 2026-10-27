@@ -374,7 +374,6 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    use embedding::{EmbeddingError, EmbeddingProvider};
     use synopsis_config::DomainConfig;
     use synopsis_config::ontology::{GlobalConfig, GlobalNerConfig, SourceConfig, SourceType};
     use synopsis_config::preset::{IngestionConfig, LinkerConfig};
@@ -383,6 +382,7 @@ mod tests {
         ChunkDao, ConnectionOrTx, Db, DocIndexPayload, DocumentDao, EntityDao, QueueTaskDao,
         QueueTaskType, ReIndexOp,
     };
+    use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

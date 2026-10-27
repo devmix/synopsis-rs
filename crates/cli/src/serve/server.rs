@@ -86,7 +86,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use embedding::EmbeddingProvider;
 use graph::GraphIndex;
 use ingestion::worker::DocumentWorker;
 use ingestion::{DocumentJobQueue, Runner, RunnerParams, ShutdownFlag};
@@ -97,6 +96,7 @@ use search::{
 use synopsis_config::GlobalConfig;
 use synopsis_config::preset::{GraphConfig, SearchConfig};
 use synopsis_db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao, QueueTaskDao};
+use synopsis_embedding::EmbeddingProvider;
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndex, VectorsError, create_vector_engine};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;

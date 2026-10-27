@@ -1,5 +1,5 @@
 //! `model` subcommand body (design D9): a thin CLI facade over
-//! `embedding::ModelManager` for the embedding model registry in `onnx.yaml`.
+//! `synopsis_embedding::ModelManager` for the embedding model registry in `onnx.yaml`.
 //!
 //! `list` / `download` / `delete` / `info` / `benchmark`.
 //! Download/verify is NOT re-implemented here — `download` goes through
@@ -21,7 +21,7 @@
 //!   padding). A padded (seq=512) measurement and a natural-length section
 //!   are intentionally omitted: they require raw ONNX session access, which
 //!   this codebase isolates inside the `embedding` crate (`runtime.rs`), and
-//!   the `embedding::benchmark_model` the task body references does not exist
+//!   the `synopsis_embedding::benchmark_model` the task body references does not exist
 //!   yet.
 
 use std::io::Write;
@@ -29,10 +29,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use embedding::{LibraryManager, ModelCache, ModelManager, new_onnx_provider};
 use synopsis_config::onnx::ModelInfo;
 use synopsis_config::preset::LocalEmbedding;
 use synopsis_config::{OnnxConfig, load, load_onnx_config};
+use synopsis_embedding::{LibraryManager, ModelCache, ModelManager, new_onnx_provider};
 
 use crate::cli::ModelAction;
 use crate::console::{Color, Console};
@@ -563,7 +563,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use embedding::InstalledModel;
+    use synopsis_embedding::InstalledModel;
 
     use super::*;
 

@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use embedding::{EmbeddingError, EmbeddingProvider};
 use ingestion::Runner;
 use synopsis_config::onnx::{
     ModelFile, ModelInfo, OnnxModelsConfig, OnnxPlatformConfig, OnnxRuntimeConfig,
@@ -18,6 +17,7 @@ use synopsis_config::onnx::{
 use synopsis_config::preset::{Config, EmbeddingsMode, LocalEmbedding};
 use synopsis_config::{ConfigError, GlobalConfig, OnnxConfig};
 use synopsis_db::Db;
+use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndexConfig, VectorsError, create_vector_engine};
 
 use cli::error::CliError;
@@ -852,7 +852,7 @@ fn has_active_dataset_requires_name_and_directory() {
 #[test]
 #[ignore = "requires a real onnxruntime library + bge-m3 model (see test docs)"]
 fn bootstrap_full_with_pre_installed_model() {
-    use embedding::{InstalledModel, LibraryCache, ModelCache};
+    use synopsis_embedding::{InstalledModel, LibraryCache, ModelCache};
 
     let lib = std::env::var("CLI_TEST_ONNXRUNTIME_LIB")
         .expect("set CLI_TEST_ONNXRUNTIME_LIB to a real onnxruntime .so/.dylib");

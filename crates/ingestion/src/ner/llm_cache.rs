@@ -143,7 +143,7 @@ pub fn build_cache_key(
     to_hex(&digest)
 }
 
-/// Lowercase hex encoding (same helper shape as `embedding::cache::to_hex`).
+/// Lowercase hex encoding (same helper shape as `synopsis_embedding::cache::to_hex`).
 fn to_hex(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

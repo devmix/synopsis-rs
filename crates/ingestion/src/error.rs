@@ -210,7 +210,7 @@ pub enum IngestionError {
     /// Embedding generation failed (pipeline task 3.4): the embedding
     /// provider is the source of truth.
     #[error("embedding: {0}")]
-    Embedding(#[from] embedding::EmbeddingError),
+    Embedding(#[from] synopsis_embedding::EmbeddingError),
 
     /// The embedding provider returned a different vector count than the
     /// requested text count (pipeline task 3.4): continuing would silently

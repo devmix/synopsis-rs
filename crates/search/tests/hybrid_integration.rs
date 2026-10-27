@@ -23,7 +23,6 @@
 
 use std::sync::Mutex;
 
-use embedding::{EmbeddingError, EmbeddingProvider};
 use search::{
     Enricher, HybridSearcher, LexicalSearcher, Reranker, SearchResult, Searcher, SemanticSearcher,
 };
@@ -31,6 +30,7 @@ use serde_json::json;
 use synopsis_config::preset::SearchConfig;
 use synopsis_db::test_util::in_memory_db;
 use synopsis_db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, EntityDao};
+use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 // ── test doubles ──────────────────────────────────────────────────────────

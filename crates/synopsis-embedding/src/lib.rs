@@ -6,7 +6,7 @@
 //! Runtime shared library and the model files (downloading them on first use),
 //! initializes the runtime, and returns a ready `Arc<dyn EmbeddingProvider>`.
 //! Every public module item is re-exported at the crate root
-//! (`embedding::OnnxProvider`, `embedding::EmbeddingCache`, …), so callers only
+//! (`synopsis_embedding::OnnxProvider`, `synopsis_embedding::EmbeddingCache`, …), so callers only
 //! need the root namespace.
 //!
 //! All pipeline methods are synchronous and may block on network, disk, or
@@ -83,7 +83,7 @@ const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 ///
 /// use synopsis_config::onnx::OnnxConfig;
 /// use synopsis_config::preset::LocalEmbedding;
-/// use embedding::{new_onnx_provider, EmbeddingProvider};
+/// use synopsis_embedding::{new_onnx_provider, EmbeddingProvider};
 ///
 /// let cfg = LocalEmbedding {
 ///     model_name: "bge-m3-int8".to_string(),
@@ -184,7 +184,7 @@ fn resolve_model(
 /// # Examples
 ///
 /// ```
-/// use embedding::EmbeddingProvider;
+/// use synopsis_embedding::EmbeddingProvider;
 ///
 /// struct ConstProvider {
 ///     dim: usize,
@@ -194,7 +194,7 @@ fn resolve_model(
 ///     fn generate_embeddings(
 ///         &self,
 ///         texts: &[String],
-///     ) -> Result<Vec<Vec<f32>>, embedding::EmbeddingError> {
+///     ) -> Result<Vec<Vec<f32>>, synopsis_embedding::EmbeddingError> {
 ///         Ok(vec![vec![1.0; self.dim]; texts.len()])
 ///     }
 ///

@@ -532,7 +532,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use embedding::{EmbeddingError, EmbeddingProvider};
     use ingestion::{
         DocumentJobQueue, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource,
         MediawikiChunker, MediawikiSource, NerPrompts, Registry, Runner, RunnerParams,
@@ -546,6 +545,7 @@ mod tests {
     use synopsis_config::preset::{GraphConfig, IngestionConfig, LinkerConfig};
     use synopsis_db::test_util::in_memory_db;
     use synopsis_db::{ConnectionOrTx, DocumentDao, QueueTaskDao};
+    use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

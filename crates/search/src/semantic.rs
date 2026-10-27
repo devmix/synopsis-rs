@@ -32,8 +32,8 @@
 
 use std::collections::HashMap;
 
-use embedding::EmbeddingProvider;
 use synopsis_db::{ChunkDao, DocumentDao};
+use synopsis_embedding::EmbeddingProvider;
 use synopsis_vectors::VectorIndex;
 
 use crate::{SearchError, SemanticHit, document_domains, normalize_domain};
@@ -166,9 +166,9 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use embedding::EmbeddingError;
     use synopsis_db::test_util::in_memory_db;
     use synopsis_db::{ConnectionOrTx, Db, DocumentDao};
+    use synopsis_embedding::EmbeddingError;
     use synopsis_vectors::VectorsError;
 
     use super::*;

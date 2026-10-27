@@ -69,7 +69,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use embedding::EmbeddingProvider;
 use serde_json::Value;
 use synopsis_config::DomainConfig;
 use synopsis_config::ontology::{GlobalConfig, SourceConfig, SourceType};
@@ -78,6 +77,7 @@ use synopsis_db::{
     ChunkDao, ConnectionOrTx, Db, DocIndexPayload, DocumentDao, GcDao, QueueTaskDao, QueueTaskType,
     ReIndexOp,
 };
+use synopsis_embedding::EmbeddingProvider;
 use synopsis_vectors::VectorIndex;
 
 pub use cleanup::OrphanCleanupStats;
@@ -818,13 +818,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use embedding::EmbeddingError;
     use synopsis_config::DomainConfig;
     use synopsis_config::ontology::{
         GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType,
     };
     use synopsis_config::preset::{IngestionConfig, LinkerConfig};
     use synopsis_db::test_util::in_memory_db;
+    use synopsis_embedding::EmbeddingError;
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

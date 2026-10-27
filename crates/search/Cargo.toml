@@ -10,7 +10,7 @@ workspace = true
 [dependencies]
 synopsis_config = { workspace = true }
 synopsis_db = { workspace = true }
-embedding = { workspace = true }
+synopsis_embedding = { workspace = true }
 graph = { workspace = true }
 synopsis_vectors = { workspace = true }
 # utils::temporal (change utils-crate, design D4): the workspace date/time

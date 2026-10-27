@@ -163,7 +163,8 @@ fn open_vectors_with_recreate(boot: &mut Bootstrap, no_fill: bool) -> Result<(),
 
 /// Verifies the embedding model is installed; fails loudly if not.
 fn require_embedding_model(boot: &Bootstrap) -> Result<(), CliError> {
-    let manager = embedding::model::ModelManager::new(&boot.config.paths.workspace_dir, &boot.onnx);
+    let manager =
+        synopsis_embedding::model::ModelManager::new(&boot.config.paths.workspace_dir, &boot.onnx);
     let model_name = boot.config.embeddings.local.model_name.as_str();
     if !manager.is_installed(model_name) {
         return Err(CliError::Unsupported(format!(
@@ -195,12 +196,12 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use embedding::EmbeddingProvider;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use synopsis_config::onnx::{ModelInfo, OnnxModelsConfig};
     use synopsis_config::{Config, OnnxConfig};
     use synopsis_db::test_util::in_memory_db;
+    use synopsis_embedding::EmbeddingProvider;
     use synopsis_vectors::{UsearchEngine, VectorIndexConfig};
 
     use crate::serve::bootstrap::open_db;
@@ -316,7 +317,7 @@ mod tests {
         fn generate_embeddings(
             &self,
             texts: &[String],
-        ) -> Result<Vec<Vec<f32>>, embedding::EmbeddingError> {
+        ) -> Result<Vec<Vec<f32>>, synopsis_embedding::EmbeddingError> {
             self.calls.fetch_add(texts.len(), Ordering::SeqCst);
             Ok((0..texts.len()).map(|_| vec![0.1f32; self.dim]).collect())
         }

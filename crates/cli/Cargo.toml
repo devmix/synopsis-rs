@@ -19,7 +19,7 @@ axum = { workspace = true }
 clap = { workspace = true }
 synopsis_config = { workspace = true }
 synopsis_db = { workspace = true }
-embedding = { workspace = true }
+synopsis_embedding = { workspace = true }
 graph = { workspace = true }
 ingestion = { workspace = true }
 mcp = { workspace = true }

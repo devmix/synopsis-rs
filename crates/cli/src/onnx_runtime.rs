@@ -1,5 +1,5 @@
 //! `onnx-runtime` subcommand body (design D10): a thin CLI facade over
-//! `embedding::LibraryManager` for the ONNX Runtime shared library.
+//! `synopsis_embedding::LibraryManager` for the ONNX Runtime shared library.
 //!
 //! `install` / `status` / `uninstall`. Download, extraction, verification,
 //! and the `.cache.json` manifest are NOT re-implemented here — `install`
@@ -23,9 +23,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use embedding::LibraryManager;
 use synopsis_config::onnx::OnnxPlatformConfig;
 use synopsis_config::{OnnxConfig, load, load_onnx_config};
+use synopsis_embedding::LibraryManager;
 
 use crate::cli::OnnxRuntimeAction;
 use crate::console::{Color, Console};
@@ -203,7 +203,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use embedding::LibraryCache;
+    use synopsis_embedding::LibraryCache;
 
     use super::*;
 
@@ -242,7 +242,7 @@ mod tests {
     /// The platform key of the machine running the tests (the CI matrix
     /// covers linux-amd64 / linux-arm64 / windows-amd64 / darwin-arm64).
     fn test_platform_key() -> String {
-        embedding::current_platform_key().expect("test host must be a supported platform")
+        synopsis_embedding::current_platform_key().expect("test host must be a supported platform")
     }
 
     /// Writes a minimal config (paths only — the runtime commands need no

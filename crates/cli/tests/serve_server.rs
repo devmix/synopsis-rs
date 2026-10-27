@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::GraphIndex;
 use ingestion::ShutdownFlag;
 use search::Searcher;
@@ -23,6 +22,7 @@ use synopsis_config::{Config, GlobalConfig, OnnxConfig};
 use synopsis_db::{
     ChunkDao, ConnectionOrTx, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType, ReIndexOp,
 };
+use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_vectors::{
     ENGINE_USEARCH, VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine,
 };
