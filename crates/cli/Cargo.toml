@@ -20,7 +20,7 @@ clap = { workspace = true }
 synopsis_config = { workspace = true }
 synopsis_db = { workspace = true }
 synopsis_embedding = { workspace = true }
-graph = { workspace = true }
+synopsis_graph = { workspace = true }
 synopsis_ingestion = { workspace = true }
 mcp = { workspace = true }
 rusqlite = { workspace = true }

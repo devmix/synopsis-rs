@@ -42,12 +42,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use graph::GraphIndex;
 use notify::Watcher as _;
 use notify::{Event, EventKind, PollWatcher, RecursiveMode};
 use synopsis_config::preset::GraphConfig;
 use synopsis_config::{Config, load_global_config};
 use synopsis_db::Db;
+use synopsis_graph::GraphIndex;
 use synopsis_ingestion::ingester::compute_content_hash;
 use synopsis_ingestion::{DocumentJobQueue, Registry, Runner};
 use thiserror::Error;

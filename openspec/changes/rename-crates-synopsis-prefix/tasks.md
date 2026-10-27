@@ -180,7 +180,7 @@ Per-task acceptance (in addition to the recipe gates):
     check). Gates green (one flaky first full test run under disk pressure;
     two clean 1606/1606 runs).
 
-- [ ] 2.7 Rename `ingestion` → `synopsis-ingestion`
+- [x] 2.7 Rename `ingestion` → `synopsis-ingestion`
   - Dependencies: task 2.6.
   - File scope: root `Cargo.toml`; `crates/ingestion/**` →
     `crates/synopsis-ingestion/**`; dependent with a Cargo.toml entry (1):
@@ -203,17 +203,33 @@ Per-task acceptance (in addition to the recipe gates):
 
 - [ ] 2.8 Rename `graph` → `synopsis-graph`
   - Dependencies: task 2.7.
-  - File scope: root `Cargo.toml`; `crates/graph/**` → `crates/synopsis-graph/**`;
-    dependents with a Cargo.toml entry (4): `crates/ingestion`, `crates/search`,
-    `crates/mcp`, `crates/cli`; all `.rs` files containing `graph::`
-    (46 pre-rename matches, 43 of them crate references).
-  - Exclusions (the graph crate has an INTERNAL module `graph` at
-    `crates/graph/src/graph.rs` — NOT the graph crate): `crate::graph::` in
-    `crates/graph/src/cel.rs:183`, `crates/graph/src/metrics.rs:64`,
-    `crates/graph/src/traverser.rs:63` must NOT be renamed. A blanket sed of
-    `\bgraph::` would corrupt all three — resolve every match (recipe step 5).
-  - Acceptance: recipe gates + NO crate-reference `graph::` remains (the 3
-    internal-module lines above are expected to remain) + metadata check.
+  - File scope: root `Cargo.toml`; `crates/graph/**` →
+    `crates/synopsis-graph/**`; dependents with a Cargo.toml entry (4):
+    `crates/synopsis-ingestion`, `crates/search`, `crates/mcp`, `crates/cli`;
+    all `.rs` files containing `graph::` — 38 crate references across 28
+    files (the planning estimate was 46 matches / 43 crate references; the
+    measured distribution is below).
+  - Exclusions (NOT the graph crate — resolve every match by the referenced
+    item's definition, recipe step 5; a blanket sed of `\bgraph::` would
+    corrupt all eight):
+    (a) the graph crate's INTERNAL module `graph` at
+    `crates/graph/src/graph.rs`: `crate::graph::` in `cel.rs:183`,
+    `metrics.rs:64`, `traverser.rs:63` (3 lines, listed at planning);
+    (b) the EXTERNAL `petgraph` crate: `petgraph::graph::` in
+    `traverser.rs:59`, `metrics.rs:62`, `lib.rs:51`, `graph.rs:74` (4 lines,
+    discovered in implementation — grep false positives);
+    (c) the INTERNAL re-export `pub use graph::{...}` in `lib.rs:33` (resolves
+    to the `pub mod graph;` declared at `lib.rs:21`; discovered in
+    implementation — a rename would break compilation).
+  - Acceptance: recipe gates + NO crate-reference `graph::` remains (the 8
+    exclusion lines above are expected to remain) + metadata check.
+  - Revision history: implemented 2026-10-27. 38 crate references renamed
+    across 28 files; the 5 additional survivor lines (b)+(c) discovered
+    during implementation were correctly left untouched (gates green confirm).
+    rustfmt re-sorted import groups in 22 files (same mechanical class as
+    tasks 2.2/2.3/2.5/2.6); reverse-transform diff confirmed the whole
+    diff is mechanical. Gates green (1606/1606; one flaky cli serve_server
+    failure on the first parallel run, clean on re-runs).
 
 - [ ] 2.9 Rename `search` → `synopsis-search`
   - Dependencies: task 2.8.
@@ -297,13 +313,16 @@ Per-task acceptance (in addition to the recipe gates):
        `.rs` files must be an INTERNAL module path, never a crate reference.
        Known expected survivors (documented in tasks 2.1/2.3/2.5/2.8/2.11):
        `crate::utils::` ×7 + `db::utils::` ×6 (db's internal utils module),
-       `llm::LlmNer` re-export in `crates/ingestion/src/ner/mod.rs` ×1 (the
-       internal ner::llm module), `crate::db::` ×1 + `synopsis_cli::db::` ×1
-       (cli's internal db subcommand module), `db::{ID_BATCH_SIZE,
-       LINK_BATCH_SIZE}` re-export in `crates/synopsis-config/src/lib.rs` ×1
-       (config's internal db module), `crate::graph::` ×3 (graph's internal
-       graph module). Verify the match set equals exactly this
-       survivor list; any other `X::` match is a failure.
+       `llm::LlmNer` re-export in `crates/synopsis-ingestion/src/ner/mod.rs`
+       ×1 (the internal ner::llm module), `crate::db::` ×1 +
+       `synopsis_cli::db::` ×1 (cli's internal db subcommand module),
+       `db::{ID_BATCH_SIZE, LINK_BATCH_SIZE}` re-export in
+       `crates/synopsis-config/src/lib.rs` ×1 (config's internal db module),
+       `crate::graph::` ×3 (graph's internal graph module),
+       `petgraph::graph::` ×4 (external petgraph crate, grep false positives),
+       `pub use graph::{...}` re-export in `crates/synopsis-graph/src/lib.rs`
+       ×1 (graph's internal graph module). Verify the match set equals
+       exactly this survivor list; any other `X::` match is a failure.
     3. `cargo build --release`; re-capture the 19 `--help` sections exactly as in
        task 1.1 to `/tmp/opencode/synopsis-help-after.txt`;
        `diff /tmp/opencode/synopsis-help-before.txt /tmp/opencode/synopsis-help-after.txt`

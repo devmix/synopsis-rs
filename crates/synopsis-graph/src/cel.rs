@@ -46,7 +46,7 @@
 //! use std::sync::Arc;
 //!
 //! use cel::{Context, Value};
-//! use graph::{CelEngine, FactIndex, ScopeCache};
+//! use synopsis_graph::{CelEngine, FactIndex, ScopeCache};
 //!
 //! let mut engine = CelEngine::new();
 //! engine.register(|scope: Arc<ScopeCache>, ctx: &mut Context| {

@@ -15,7 +15,7 @@ pub enum McpError {
     Search(#[from] search::SearchError),
     /// Knowledge-graph failure (graph crate).
     #[error(transparent)]
-    Graph(#[from] graph::GraphError),
+    Graph(#[from] synopsis_graph::GraphError),
     /// A registered tool whose handler is not implemented yet (tasks 5.3–5.9).
     #[error("tool '{0}' is not implemented yet")]
     NotYetImplemented(String),
@@ -93,7 +93,7 @@ mod tests {
     fn collaborator_errors_wrap_transparently() {
         let db_err = McpError::from(synopsis_db::DbError::NestedTransaction);
         assert!(db_err.to_string().contains("nested transaction"));
-        let graph_err = McpError::Graph(graph::GraphError::EmptyQuery { what: "name" });
+        let graph_err = McpError::Graph(synopsis_graph::GraphError::EmptyQuery { what: "name" });
         assert_eq!(graph_err.to_string(), "empty query: name must not be empty");
     }
 }

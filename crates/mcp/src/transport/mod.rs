@@ -72,8 +72,8 @@ mod test_util {
 
     use std::sync::Arc;
 
-    use graph::GraphIndex;
     use search::{SearchError, SearchResult};
+    use synopsis_graph::GraphIndex;
 
     use crate::server::Server;
 

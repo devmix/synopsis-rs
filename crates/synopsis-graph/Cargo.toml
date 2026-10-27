@@ -1,5 +1,5 @@
 [package]
-name = "graph"
+name = "synopsis-graph"
 version.workspace = true
 edition.workspace = true
 

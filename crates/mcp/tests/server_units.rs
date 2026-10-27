@@ -8,11 +8,11 @@
 
 use std::sync::Arc;
 
-use graph::GraphIndex;
 use rmcp::ServerHandler;
 use search::{SearchError, SearchResult, Searcher};
 use serde_json::{Map, Value, json};
 use synopsis_db::test_util;
+use synopsis_graph::GraphIndex;
 
 use mcp::McpError;
 use mcp::server::{Server, tool_definitions};
@@ -328,7 +328,7 @@ impl Searcher for CannedSearcher {
 /// factory clones the server per session) shares the swapped handles.
 #[test]
 fn set_searcher_and_set_graph_swap_the_active_handles() {
-    use graph::Graph;
+    use synopsis_graph::Graph;
 
     let server = test_server();
 

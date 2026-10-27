@@ -29,10 +29,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use graph::{EntityNode, GraphIndex, TraverseOptions};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use synopsis_db::{ConnectionOrTx, Entity, EntityDao, EntityLinkDao};
+use synopsis_graph::{EntityNode, GraphIndex, TraverseOptions};
 
 use crate::error::McpError;
 use crate::tools::entity::{EntityBrief, entity_brief, node_brief};

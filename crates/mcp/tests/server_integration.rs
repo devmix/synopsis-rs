@@ -15,7 +15,6 @@
 
 use std::sync::Arc;
 
-use graph::GraphIndex;
 use rmcp::{
     ServiceExt,
     model::{
@@ -28,6 +27,7 @@ use rmcp::{
 use search::{SearchError, SearchResult, Searcher};
 use serde_json::{Map, Value, json};
 use synopsis_db::{ChunkDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, test_util};
+use synopsis_graph::GraphIndex;
 
 /// The 12 frozen tool names (`mcp-contract`), sorted for set comparison.
 const FROZEN_TOOL_NAMES: [&str; 12] = [

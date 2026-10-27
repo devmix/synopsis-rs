@@ -25,8 +25,8 @@
 use std::collections::HashSet;
 use std::time::SystemTime;
 
-use graph::LinkResult;
 use synopsis_db::{AppKv, ChunkDao, ConnectionOrTx, Db, GcDao};
+use synopsis_graph::LinkResult;
 use synopsis_vectors::VectorIndex;
 
 use super::Runner;
@@ -131,7 +131,7 @@ impl<'a> Runner<'a> {
             Some(since) => eprintln!("entity linking: full rebuild (last run {since})"),
             None => eprintln!("entity linking: full rebuild (no previous run)"),
         }
-        let result = graph::build_entity_links(
+        let result = synopsis_graph::build_entity_links(
             self.db,
             cache,
             links_config,
@@ -171,7 +171,7 @@ impl<'a> Runner<'a> {
             return Ok(());
         };
         let cache = self.llm_cache.as_ref();
-        let result = graph::build_entity_links(
+        let result = synopsis_graph::build_entity_links(
             self.db,
             cache,
             links_config,
@@ -243,11 +243,11 @@ mod tests {
 
     use std::fs;
 
-    use graph::LinkResult;
     use synopsis_config::ontology::{
         CrossDomainLinksConfig, LinkExpression, LinkMethod, SourceType,
     };
     use synopsis_db::{AppKv, ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, FactDao};
+    use synopsis_graph::LinkResult;
     use synopsis_vectors::VectorIndex;
 
     use super::{LAST_LINKING_RUN_KEY, OrphanCleanupStats};

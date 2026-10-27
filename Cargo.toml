@@ -24,7 +24,7 @@ members = [
     "crates/synopsis-llm",
     "crates/synopsis-embedding",
     "crates/synopsis-ingestion",
-    "crates/graph",
+    "crates/synopsis-graph",
     "crates/search",
     "crates/mcp",
     "crates/cli",
@@ -65,7 +65,7 @@ synopsis_utils = { package = "synopsis-utils", path = "crates/synopsis-utils" }
 synopsis_llm = { package = "synopsis-llm", path = "crates/synopsis-llm" }
 synopsis_embedding = { package = "synopsis-embedding", path = "crates/synopsis-embedding" }
 synopsis_ingestion = { package = "synopsis-ingestion", path = "crates/synopsis-ingestion" }
-graph = { path = "crates/graph" }
+synopsis_graph = { package = "synopsis-graph", path = "crates/synopsis-graph" }
 search = { path = "crates/search" }
 mcp = { path = "crates/mcp" }
 

@@ -16,7 +16,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use graph::Graph;
 use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
     Searcher, SemanticSearcher,
@@ -27,6 +26,7 @@ use synopsis_db::{
     ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, Entity, EntityDao, Fact, FactDao,
 };
 use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
+use synopsis_graph::Graph;
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 // ── fixtures ────────────────────────────────────────────────────────────────

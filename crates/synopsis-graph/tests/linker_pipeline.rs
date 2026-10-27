@@ -6,11 +6,11 @@
 
 use std::path::Path;
 
-use graph::build_entity_links;
 use synopsis_config::ontology::load_global_config;
 use synopsis_config::preset::LinkerConfig;
 use synopsis_db::test_util::in_memory_db;
 use synopsis_db::{ConnectionOrTx, EntityDao, EntityLinkDao, FactDao};
+use synopsis_graph::build_entity_links;
 
 fn ontology_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/linker-ontology")

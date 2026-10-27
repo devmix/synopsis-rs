@@ -65,7 +65,7 @@ mod root_api {
             String,
             synopsis_db::Db,
             SearcherHandle,
-            Arc<graph::GraphIndex>,
+            Arc<synopsis_graph::GraphIndex>,
         ) -> crate::Server = crate::Server::new;
         let _router: fn(crate::Server) -> axum::Router = crate::Server::router;
 

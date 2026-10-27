@@ -50,7 +50,7 @@ pub struct Server {
     version: String,
     db: synopsis_db::Db,
     searcher: Arc<RwLock<Arc<dyn Searcher + Send + Sync>>>,
-    graph: Arc<RwLock<Arc<graph::GraphIndex>>>,
+    graph: Arc<RwLock<Arc<synopsis_graph::GraphIndex>>>,
     tools: Vec<Tool>,
     /// The legacy SSE session map (fix-serve-signal-shutdown D5): created
     /// in [`Self::new`] and shared by every clone (the `Arc` is cloned) —
@@ -72,7 +72,7 @@ impl Server {
         version: String,
         db: synopsis_db::Db,
         searcher: Arc<dyn Searcher + Send + Sync>,
-        graph: Arc<graph::GraphIndex>,
+        graph: Arc<synopsis_graph::GraphIndex>,
     ) -> Self {
         Self {
             name,
@@ -162,7 +162,7 @@ impl Server {
     /// The current knowledge-graph index handle (Ready/Unavailable per
     /// config; a clone of the active handle).
     #[must_use]
-    pub fn graph(&self) -> Arc<graph::GraphIndex> {
+    pub fn graph(&self) -> Arc<synopsis_graph::GraphIndex> {
         read_slot(&self.graph)
     }
 
@@ -179,7 +179,7 @@ impl Server {
     /// Replaces the active knowledge-graph handle: after a graph reload the
     /// CLI swaps the freshly loaded index in so the graph tools serve the
     /// new state.
-    pub fn set_graph(&self, graph: Arc<graph::GraphIndex>) {
+    pub fn set_graph(&self, graph: Arc<synopsis_graph::GraphIndex>) {
         write_slot(&self.graph, graph);
     }
 
@@ -783,9 +783,9 @@ mod tests {
 
     use std::sync::Arc;
 
-    use graph::GraphIndex;
     use search::{SearchError, SearchResult, Searcher};
     use synopsis_db::test_util;
+    use synopsis_graph::GraphIndex;
 
     use super::Server;
 

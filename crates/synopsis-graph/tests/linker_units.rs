@@ -14,10 +14,10 @@
 
 #![allow(clippy::unwrap_used)]
 
-use graph::linker::build_entity_links;
 use synopsis_config::ontology::{CrossDomainLinksConfig, EqualsConfig, LinkExpression, LinkMethod};
 use synopsis_config::preset::LinkerConfig;
 use synopsis_db::{ConnectionOrTx, Db, EntityDao, EntityLink, EntityLinkDao};
+use synopsis_graph::linker::build_entity_links;
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 

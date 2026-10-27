@@ -31,7 +31,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use graph::{LinkResult, build_entity_links};
 use synopsis_config::ontology::{CrossDomainLinksConfig, LinkMethod};
 use synopsis_config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
 use synopsis_db::test_util::in_memory_db;
@@ -39,6 +38,7 @@ use synopsis_db::{
     ConnectionOrTx, Db, DocumentDao, EntityAliasDao, EntityDao, EntityLink, EntityLinkDao,
     EntitySourceDao, FactDao,
 };
+use synopsis_graph::{LinkResult, build_entity_links};
 
 /// A nonexistent prompts path: the `llm` method falls back to the embedded
 /// templates (the normal case, design D3).

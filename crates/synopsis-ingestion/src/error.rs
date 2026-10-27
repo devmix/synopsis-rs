@@ -270,7 +270,7 @@ pub enum IngestionError {
     /// per-link failures are recorded in its result and never fatal (design
     /// D8).
     #[error("entity linking: {0}")]
-    Graph(#[from] graph::GraphError),
+    Graph(#[from] synopsis_graph::GraphError),
 
     /// A queue-task DAO failure (event-queue-incremental-linking task 1.2):
     /// the db crate is the source of truth for the `queue_tasks` state

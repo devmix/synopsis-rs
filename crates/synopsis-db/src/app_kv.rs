@@ -11,7 +11,7 @@
 //! created lazily at runtime on first use — the same pattern as
 //! `synopsis_ingestion::ner::llm_cache::LlmNerCache`. The LLM linker DECISIONS do not
 //! live here: since task 1.10 they are stored in the dedicated
-//! `llm_linker_cache` table (see `graph::linker::LlmLinkerCache`).
+//! `llm_linker_cache` table (see `synopsis_graph::linker::LlmLinkerCache`).
 //!
 //! **Design:** driver errors are propagated as [`DbError`] rather than
 //! swallowed and reported as a missing key (best-effort semantics). A

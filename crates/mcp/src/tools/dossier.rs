@@ -28,13 +28,13 @@
 
 use std::collections::HashMap;
 
-use graph::{EntityNode, GraphIndex, TraverseOptions};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use synopsis_db::{
     ConnectionOrTx, Document, DocumentDao, Entity, EntityAliasDao, EntityDao, EntityLinkDao,
     EntitySourceDao, Fact, FactDao, FactSource, FactSourceDao,
 };
+use synopsis_graph::{EntityNode, GraphIndex, TraverseOptions};
 
 use crate::error::McpError;
 use crate::tools::entity::{EntityBrief, node_brief};

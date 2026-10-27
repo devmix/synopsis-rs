@@ -439,7 +439,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "graph",
  "mcp",
  "notify",
  "owo-colors",
@@ -452,6 +451,7 @@ dependencies = [
  "synopsis-config",
  "synopsis-db",
  "synopsis-embedding",
+ "synopsis-graph",
  "synopsis-ingestion",
  "synopsis-utils",
  "synopsis-vectors",
@@ -1136,24 +1136,6 @@ dependencies = [
  "log",
  "regex-automata",
  "regex-syntax",
-]
-
-[[package]]
-name = "graph"
-version = "0.1.0"
-dependencies = [
- "cel",
- "minijinja",
- "petgraph",
- "serde",
- "serde_json",
- "sha2",
- "synopsis-config",
- "synopsis-db",
- "synopsis-llm",
- "synopsis-utils",
- "thiserror",
- "tracing",
 ]
 
 [[package]]
@@ -1847,7 +1829,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
- "graph",
  "reqwest",
  "rmcp",
  "search",
@@ -1856,6 +1837,7 @@ dependencies = [
  "sse-stream",
  "synopsis-config",
  "synopsis-db",
+ "synopsis-graph",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -2927,11 +2909,11 @@ checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
 name = "search"
 version = "0.1.0"
 dependencies = [
- "graph",
  "serde_json",
  "synopsis-config",
  "synopsis-db",
  "synopsis-embedding",
+ "synopsis-graph",
  "synopsis-utils",
  "synopsis-vectors",
  "thiserror",
@@ -3302,10 +3284,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "synopsis-graph"
+version = "0.1.0"
+dependencies = [
+ "cel",
+ "minijinja",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "sha2",
+ "synopsis-config",
+ "synopsis-db",
+ "synopsis-llm",
+ "synopsis-utils",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "synopsis-ingestion"
 version = "0.1.0"
 dependencies = [
- "graph",
  "html-to-markdown-rs",
  "ignore",
  "indicatif",
@@ -3317,6 +3316,7 @@ dependencies = [
  "synopsis-config",
  "synopsis-db",
  "synopsis-embedding",
+ "synopsis-graph",
  "synopsis-llm",
  "synopsis-utils",
  "synopsis-vectors",

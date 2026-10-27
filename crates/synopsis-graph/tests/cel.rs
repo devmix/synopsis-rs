@@ -13,14 +13,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cel::objects::{Key as CelKey, Map as CelMap};
 use cel::{Context, Value};
-use graph::{
-    CelEngine, FactIndex, Graph, GraphError, ReachabilityIndex, ScopeCache, build_chunk_index,
-    build_fact_index, build_reachability_index, register_data_functions, register_graph_functions,
-};
 use synopsis_db::test_util::in_memory_db;
 use synopsis_db::{
     ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, Entity, EntityDao, EntityLink,
     EntityLinkDao, Fact, FactDao,
+};
+use synopsis_graph::{
+    CelEngine, FactIndex, Graph, GraphError, ReachabilityIndex, ScopeCache, build_chunk_index,
+    build_fact_index, build_reachability_index, register_data_functions, register_graph_functions,
 };
 
 /// Design D7: the engine, the scope cache and the cached program type

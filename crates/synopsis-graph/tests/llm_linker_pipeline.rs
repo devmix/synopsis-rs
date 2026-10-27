@@ -22,11 +22,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use graph::build_entity_links;
 use synopsis_config::ontology::{LinkMethod, load_global_config};
 use synopsis_config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
 use synopsis_db::test_util::in_memory_db;
 use synopsis_db::{ConnectionOrTx, Db, EntityDao, EntityLinkDao, FactDao};
+use synopsis_graph::build_entity_links;
 
 /// A nonexistent prompts path: the `llm` method falls back to the embedded
 /// templates (the normal case, design D3).

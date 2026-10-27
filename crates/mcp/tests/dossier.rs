@@ -7,7 +7,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use graph::GraphIndex;
 use mcp::error::McpError;
 use mcp::tools::dossier::handle_get_entity_dossier;
 use serde_json::Value;
@@ -16,6 +15,7 @@ use synopsis_db::{
     ConnectionOrTx, DocumentDao, EntityAliasDao, EntityDao, EntityLink, EntityLinkDao,
     EntitySourceDao, FactDao, FactSourceDao, test_util,
 };
+use synopsis_graph::GraphIndex;
 
 /// Seed an in-memory KB in one transaction; returns the db and the value
 /// the seeder produced (usually the created ids).

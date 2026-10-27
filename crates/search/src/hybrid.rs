@@ -371,11 +371,11 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use graph::Graph;
     use synopsis_config::preset::GraphConfig;
     use synopsis_db::test_util::in_memory_db;
     use synopsis_db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, FactDao};
     use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
+    use synopsis_graph::Graph;
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

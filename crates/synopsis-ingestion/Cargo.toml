@@ -68,7 +68,7 @@ synopsis_vectors = { workspace = true }
 # Cross-domain entity linking for the Runner's post-run tail (task 3.8,
 # design D1: ingestion → graph edge): the runner delegates to
 # `graph::build_entity_links` instead of re-implementing the linker.
-graph = { workspace = true }
+synopsis_graph = { workspace = true }
 # Async runtime for the document worker's poll loop (document-jobs-queue
 # task 1.4): `tokio::select!` between the poll tick and the stop signal,
 # plus `tokio::time::sleep` for the backoff between claim cycles.

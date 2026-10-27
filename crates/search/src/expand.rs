@@ -28,10 +28,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use graph::{EntityNode, Graph, TraversalEdge, TraverseOptions};
 use serde_json::{Map, Value};
 use synopsis_config::preset::GraphConfig;
 use synopsis_db::FactDao;
+use synopsis_graph::{EntityNode, Graph, TraversalEdge, TraverseOptions};
 
 use crate::SearchResult;
 
@@ -241,10 +241,10 @@ fn serialize_facts(facts: &[synopsis_db::Fact]) -> Vec<Value> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use graph::EdgeKind;
     use synopsis_config::preset::GraphConfig;
     use synopsis_db::test_util::in_memory_db;
     use synopsis_db::{ConnectionOrTx, Db, Entity, EntityDao, Fact, FactDao};
+    use synopsis_graph::EdgeKind;
 
     use super::*;
     use crate::SourceType;
