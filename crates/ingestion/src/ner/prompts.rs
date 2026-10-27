@@ -37,12 +37,12 @@
 
 use std::path::Path;
 
-use config::DomainConfig;
-use config::ontology::{AttributeDef, AttributeType, EntityDef, RelationDef};
 use minijinja::Environment;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use synopsis_config::DomainConfig;
+use synopsis_config::ontology::{AttributeDef, AttributeType, EntityDef, RelationDef};
 
 use crate::error::IngestionError;
 
@@ -417,12 +417,12 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use config::domain::effective_domain;
-    use config::ontology::{
+    use synopsis_config::domain::effective_domain;
+    use synopsis_config::ontology::{
         AttributeDef, AttributeType, EntityDef, ExtractionDef, GlobalConfig, GlobalNerConfig,
         RelAttrDef, RelationDef,
     };
-    use config::{ConfidencePolicy, DomainConfig};
+    use synopsis_config::{ConfidencePolicy, DomainConfig};
 
     use super::*;
 

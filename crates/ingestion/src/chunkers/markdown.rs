@@ -3,7 +3,7 @@
 //! Splits a Markdown document at ATX heading boundaries (levels 1-6) and caps
 //! sections that exceed `max_chunk_size` with fixed-size splitting + overlap.
 //! Configuration is injected at construction time from
-//! [`config::preset::MarkdownChunkerConfig`] (`chunking.markdown.*`), which the
+//! [`synopsis_config::preset::MarkdownChunkerConfig`] (`chunking.markdown.*`), which the
 //! config crate has already normalized: defaults applied, and a configured
 //! `overlap_size: 0` preserved (the chunker never substitutes defaults).
 //!
@@ -37,8 +37,8 @@
 //!   (numbering by heading index would collide with the preamble chunk and
 //!   leave gaps at skipped header-only sections).
 
-use config::preset::{ChunkingStrategy, MarkdownChunkerConfig};
 use serde_json::{Map, Value};
+use synopsis_config::preset::{ChunkingStrategy, MarkdownChunkerConfig};
 
 use crate::error::IngestionError;
 use crate::types::{Chunker, DocumentChunk, DocumentMetadata};
@@ -359,7 +359,7 @@ mod tests {
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use config::preset::ChunkingStrategy;
+    use synopsis_config::preset::ChunkingStrategy;
 
     use super::*;
     use crate::error::IngestionError;

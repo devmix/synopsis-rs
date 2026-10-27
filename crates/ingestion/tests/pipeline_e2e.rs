@@ -20,12 +20,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use config::DomainConfig;
-use config::ontology::{
-    CrossDomainLinksConfig, EqualsConfig, GlobalConfig, GlobalNerConfig, LinkExpression,
-    LinkMethod, NerMethod, SourceConfig, SourceType,
-};
-use config::preset::{IngestionConfig, LinkerConfig, LlmConfig};
 use db::test_util::in_memory_db;
 use db::{
     Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, Document, DocumentDao, Entity, EntityDao,
@@ -40,6 +34,12 @@ use ingestion::{
     Registry, Resolver, Runner, RunnerParams, VectorSink, load_ner_prompts,
 };
 use serde_json::{Map, Value};
+use synopsis_config::DomainConfig;
+use synopsis_config::ontology::{
+    CrossDomainLinksConfig, EqualsConfig, GlobalConfig, GlobalNerConfig, LinkExpression,
+    LinkMethod, NerMethod, SourceConfig, SourceType,
+};
+use synopsis_config::preset::{IngestionConfig, LinkerConfig, LlmConfig};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 /// One markdown document with two heading sections and one email each.
@@ -251,7 +251,7 @@ fn hr_domain() -> DomainConfig {
     let xml = r#"<domain name="hr" version="1.0"><extraction><regex-rules><regex id="employee_from_email" entity="employee" pattern="([a-zA-Z0-9._%+\-]+)@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" confidence="0.9"/></regex-rules></extraction></domain>"#;
     let path = dir.0.join("hr.xml");
     fs::write(&path, xml).unwrap();
-    config::load_domain_config(&path).unwrap()
+    synopsis_config::load_domain_config(&path).unwrap()
 }
 
 /// The "it" domain: the same email rule as [`hr_domain`], the second half
@@ -261,7 +261,7 @@ fn it_domain() -> DomainConfig {
     let xml = r#"<domain name="it" version="1.0"><extraction><regex-rules><regex id="employee_from_email" entity="employee" pattern="([a-zA-Z0-9._%+\-]+)@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" confidence="0.9"/></regex-rules></extraction></domain>"#;
     let path = dir.0.join("it.xml");
     fs::write(&path, xml).unwrap();
-    config::load_domain_config(&path).unwrap()
+    synopsis_config::load_domain_config(&path).unwrap()
 }
 
 /// The `equals`-only links config (one word is enough for the fixture

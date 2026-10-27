@@ -56,10 +56,10 @@
 
 use std::fmt;
 
-use config::DomainConfig;
-use config::preset::LlmConfig;
 use db::{ConnectionOrTx, Db};
 use serde_json::{Map, Value};
+use synopsis_config::DomainConfig;
+use synopsis_config::preset::LlmConfig;
 use synopsis_llm::LlmClient;
 
 use super::regex::normalize;
@@ -284,11 +284,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use config::ontology::{EntityDef, ExtractionDef, RelationDef};
-    use config::preset::ResponseFormat;
-    use config::{ConfidencePolicy, DomainConfig};
     use db::test_util::in_memory_db;
     use serde_json::json;
+    use synopsis_config::ontology::{EntityDef, ExtractionDef, RelationDef};
+    use synopsis_config::preset::ResponseFormat;
+    use synopsis_config::{ConfidencePolicy, DomainConfig};
     use synopsis_llm::LlmError;
 
     use super::*;

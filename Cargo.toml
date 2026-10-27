@@ -17,7 +17,7 @@ debug = false
 # Edition 2024 default resolver (requires Rust >= 1.85).
 resolver = "3"
 members = [
-    "crates/config",
+    "crates/synopsis-config",
     "crates/db",
     "crates/synopsis-vectors",
     "crates/synopsis-utils",
@@ -55,7 +55,7 @@ expect_used = "warn" # same as unwrap_used
 # SQLite batch-size constants; llm change D1 adds llm to the base tier;
 # utils-crate D1 adds utils as a leaf any crate may depend on):
 # config, db, vectors, utils, llm -> embedding, ingestion, graph -> search -> mcp -> cli
-config = { path = "crates/config" }
+synopsis_config = { package = "synopsis-config", path = "crates/synopsis-config" }
 db = { path = "crates/db" }
 synopsis_vectors = { package = "synopsis-vectors", path = "crates/synopsis-vectors" }
 synopsis_utils = { package = "synopsis-utils", path = "crates/synopsis-utils" }

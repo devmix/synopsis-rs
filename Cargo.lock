@@ -439,7 +439,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "config",
  "db",
  "embedding",
  "graph",
@@ -453,6 +452,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "synopsis-config",
  "synopsis-utils",
  "synopsis-vectors",
  "tabled",
@@ -512,17 +512,6 @@ dependencies = [
  "ryu",
  "serde",
  "static_assertions",
-]
-
-[[package]]
-name = "config"
-version = "0.1.0"
-dependencies = [
- "noyalib",
- "quick-xml",
- "regex",
- "serde",
- "thiserror",
 ]
 
 [[package]]
@@ -787,7 +776,6 @@ dependencies = [
 name = "db"
 version = "0.1.0"
 dependencies = [
- "config",
  "include_dir",
  "libsqlite3-sys",
  "r2d2",
@@ -796,6 +784,7 @@ dependencies = [
  "rusqlite_migration",
  "serde",
  "serde_json",
+ "synopsis-config",
  "thiserror",
 ]
 
@@ -905,13 +894,13 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 name = "embedding"
 version = "0.1.0"
 dependencies = [
- "config",
  "flate2",
  "indicatif",
  "ort",
  "serde",
  "serde_json",
  "sha2",
+ "synopsis-config",
  "synopsis-utils",
  "tar",
  "thiserror",
@@ -1189,13 +1178,13 @@ name = "graph"
 version = "0.1.0"
 dependencies = [
  "cel",
- "config",
  "db",
  "minijinja",
  "petgraph",
  "serde",
  "serde_json",
  "sha2",
+ "synopsis-config",
  "synopsis-llm",
  "synopsis-utils",
  "thiserror",
@@ -1585,7 +1574,6 @@ dependencies = [
 name = "ingestion"
 version = "0.1.0"
 dependencies = [
- "config",
  "db",
  "embedding",
  "graph",
@@ -1597,6 +1585,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "synopsis-config",
  "synopsis-llm",
  "synopsis-utils",
  "synopsis-vectors",
@@ -1917,7 +1906,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
- "config",
  "db",
  "graph",
  "reqwest",
@@ -1926,6 +1914,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sse-stream",
+ "synopsis-config",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -2997,11 +2986,11 @@ checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
 name = "search"
 version = "0.1.0"
 dependencies = [
- "config",
  "db",
  "embedding",
  "graph",
  "serde_json",
+ "synopsis-config",
  "synopsis-utils",
  "synopsis-vectors",
  "thiserror",
@@ -3326,12 +3315,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "synopsis-config"
+version = "0.1.0"
+dependencies = [
+ "noyalib",
+ "quick-xml",
+ "regex",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "synopsis-llm"
 version = "0.1.0"
 dependencies = [
- "config",
  "serde",
  "serde_json",
+ "synopsis-config",
  "thiserror",
  "ureq",
 ]

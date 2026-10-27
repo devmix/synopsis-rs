@@ -34,8 +34,8 @@ pub use tokenizer::{DEFAULT_MAX_LENGTH, Tokenized, Tokenizer};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use config::onnx::OnnxConfig;
-use config::preset::LocalEmbedding;
+use synopsis_config::onnx::OnnxConfig;
+use synopsis_config::preset::LocalEmbedding;
 
 /// Tokenizer file name shipped alongside model files.
 const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
@@ -81,8 +81,8 @@ const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 /// ```no_run
 /// use std::sync::Arc;
 ///
-/// use config::onnx::OnnxConfig;
-/// use config::preset::LocalEmbedding;
+/// use synopsis_config::onnx::OnnxConfig;
+/// use synopsis_config::preset::LocalEmbedding;
 /// use embedding::{new_onnx_provider, EmbeddingProvider};
 ///
 /// let cfg = LocalEmbedding {
@@ -235,11 +235,11 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use config::onnx::{
+    use synopsis_config::onnx::{
         ArchiveFormat, ModelFile, ModelInfo, OnnxConfig, OnnxModelsConfig, OnnxPlatformConfig,
         OnnxRuntimeConfig,
     };
-    use config::preset::LocalEmbedding;
+    use synopsis_config::preset::LocalEmbedding;
 
     use super::*;
 

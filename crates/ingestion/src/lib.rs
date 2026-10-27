@@ -177,7 +177,7 @@ mod root_api {
         assert_eq!(key.len(), 64);
         let parsed = parse_llm_response("{}").expect("an empty response parses");
         assert!(parsed.entities.is_empty() && parsed.facts.is_empty());
-        let domain = config::DomainConfig {
+        let domain = synopsis_config::DomainConfig {
             name: "demo".to_owned(),
             version: "1".to_owned(),
             description: String::new(),

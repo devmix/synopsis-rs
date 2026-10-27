@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use config::preset::SearchConfig;
+use synopsis_config::preset::SearchConfig;
 use synopsis_utils::temporal::parse_epoch_seconds;
 
 use crate::SearchResult;

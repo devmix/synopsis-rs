@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 axum = { workspace = true }
 clap = { workspace = true }
-config = { workspace = true }
+synopsis_config = { workspace = true }
 db = { workspace = true }
 embedding = { workspace = true }
 graph = { workspace = true }

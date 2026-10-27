@@ -1,7 +1,7 @@
 //! Error type shared by every parser, chunker and registry lookup in this crate.
 //!
 //! `IngestionError` is a [`thiserror`] enum (workspace convention, cf.
-//! `config::ConfigError`). Parsers never fail hard: per-file failures are
+//! `synopsis_config::ConfigError`). Parsers never fail hard: per-file failures are
 //! collected in [`ParseResult::errors`](crate::types::ParseResult::errors) and
 //! the walk continues (design D1). Chunkers and the source
 //! registry (task 1.6) return the error directly.

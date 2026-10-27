@@ -30,7 +30,7 @@ pub mod preset;
 /// Private read+parse helpers shared by the file loaders above (task 3.1).
 mod io_util;
 
-// Public re-exports so consumers can write `config::Config`, `config::load`, …
+// Public re-exports so consumers can write `synopsis_config::Config`, `synopsis_config::load`, …
 pub use aliases::dataset_alias_map;
 pub use db::{ID_BATCH_SIZE, LINK_BATCH_SIZE};
 pub use domain::{ConfidencePolicy, DomainConfig, EffectiveConfidence, load_domain_config};

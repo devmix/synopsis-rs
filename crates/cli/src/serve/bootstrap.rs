@@ -13,18 +13,18 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use config::domain::effective_domain;
-use config::preset::{ChunkingConfig, EmbeddingsMode};
-use config::{
-    Config, ConfigError, DomainConfig, GlobalConfig, OnnxConfig, dataset_alias_map, load,
-    load_domain_config, load_global_config, load_onnx_config,
-};
 use db::Db;
 use embedding::{EmbeddingProvider, ModelManager, new_onnx_provider};
 use ingestion::{
     IngestionError, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource, MediawikiChunker,
     MediawikiSource, NerPrompts, Registry, Runner, RunnerParams, UnstructuredSource, WebpageSource,
     load_ner_prompts,
+};
+use synopsis_config::domain::effective_domain;
+use synopsis_config::preset::{ChunkingConfig, EmbeddingsMode};
+use synopsis_config::{
+    Config, ConfigError, DomainConfig, GlobalConfig, OnnxConfig, dataset_alias_map, load,
+    load_domain_config, load_global_config, load_onnx_config,
 };
 use synopsis_vectors::{VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine};
 

@@ -30,8 +30,8 @@
 //! same shape); they stay private here rather than shared until a
 //! consolidation task unifies the two chunkers.
 
-use config::preset::{ChunkingStrategy, MarkdownChunkerConfig};
 use serde_json::{Map, Value};
+use synopsis_config::preset::{ChunkingStrategy, MarkdownChunkerConfig};
 
 use crate::error::IngestionError;
 use crate::types::{Chunker, DocumentChunk, DocumentMetadata};
@@ -324,7 +324,7 @@ mod tests {
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use config::preset::ChunkingStrategy;
+    use synopsis_config::preset::ChunkingStrategy;
 
     use super::*;
 

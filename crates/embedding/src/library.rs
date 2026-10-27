@@ -21,8 +21,8 @@
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-use config::onnx::{ArchiveFormat, OnnxConfig, OnnxPlatformConfig};
 use serde::{Deserialize, Serialize};
+use synopsis_config::onnx::{ArchiveFormat, OnnxConfig, OnnxPlatformConfig};
 
 use crate::downloader::Downloader;
 use crate::error::EmbeddingError;
@@ -392,7 +392,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use config::onnx::{OnnxConfig, OnnxPlatformConfig, OnnxRuntimeConfig};
+    use synopsis_config::onnx::{OnnxConfig, OnnxPlatformConfig, OnnxRuntimeConfig};
 
     use super::*;
 

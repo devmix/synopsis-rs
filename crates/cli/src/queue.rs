@@ -20,8 +20,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use config::{Config, ConfigError, load};
 use db::{ConnectionOrTx, Db, QueueTask, QueueTaskDao};
+use synopsis_config::{Config, ConfigError, load};
 
 use crate::cli::QueueAction;
 use crate::console::{Color, Console};

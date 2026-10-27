@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// after compaction, the stale-vector percentage that triggers compaction,
 /// and the number of parallel search threads (rayon).
 ///
-/// Mirrors `config::preset::UsearchConfig` (dependency direction D1: this
+/// Mirrors `synopsis_config::preset::UsearchConfig` (dependency direction D1: this
 /// crate cannot depend on `config`), so the wiring maps it field by field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsearchConfig {

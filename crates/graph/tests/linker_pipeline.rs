@@ -6,18 +6,18 @@
 
 use std::path::Path;
 
-use config::ontology::load_global_config;
-use config::preset::LinkerConfig;
 use db::test_util::in_memory_db;
 use db::{ConnectionOrTx, EntityDao, EntityLinkDao, FactDao};
 use graph::build_entity_links;
+use synopsis_config::ontology::load_global_config;
+use synopsis_config::preset::LinkerConfig;
 
 fn ontology_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/linker-ontology")
 }
 
 /// Loads the fixture ontology and requires its `<cross-domain-links>` block.
-fn links_config() -> config::ontology::CrossDomainLinksConfig {
+fn links_config() -> synopsis_config::ontology::CrossDomainLinksConfig {
     let global = load_global_config(ontology_dir())
         .expect("fixture global.xml must load")
         .expect("fixture must carry a cross-domain-links block");
@@ -78,8 +78,8 @@ fn end_to_end_linking_and_idempotent_rerun() {
     assert_eq!(
         config.methods,
         vec![
-            config::ontology::LinkMethod::Equals,
-            config::ontology::LinkMethod::Expression
+            synopsis_config::ontology::LinkMethod::Equals,
+            synopsis_config::ontology::LinkMethod::Expression
         ],
         "the fixture applies equals before expression"
     );

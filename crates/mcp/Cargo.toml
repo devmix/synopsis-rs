@@ -15,7 +15,7 @@ axum = { workspace = true }
 # D1 layering (design.md): mcp depends on {config, db, search, graph}.
 # `config` is consumed by the 5.10 assembly (server name/version, graph
 # enablement); the 5.1 scaffold injects those as plain values.
-config = { workspace = true }
+synopsis_config = { workspace = true }
 db = { workspace = true }
 graph = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }

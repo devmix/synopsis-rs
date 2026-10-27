@@ -17,7 +17,7 @@
 //!   fact with a NULL endpoint would silently disable the whole cleanup
 //!   (regression test below).
 //! - `delete_orphaned_by_ids`/`get_by_ids` batch the `IN` list in chunks of
-//!   [`config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
+//!   [`synopsis_config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
 //!   could hit the 32766 bound-parameter limit.
 //!
 //! **House conventions (as in `document.rs`/`chunk.rs`):**
@@ -38,8 +38,8 @@
 
 use std::collections::HashMap;
 
-use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
+use synopsis_config::ID_BATCH_SIZE;
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
@@ -377,7 +377,7 @@ impl<'conn> EntityDao<'conn> {
     /// Delete the subset of `ids` that are orphaned (same rules as
     /// [`Self::delete_orphaned_entity_ids`]); non-orphan candidates are left
     /// untouched. Empty `ids` → `0`. The `IN` list is batched in chunks of
-    /// [`config::ID_BATCH_SIZE`] (design D9). Returns the number of rows
+    /// [`synopsis_config::ID_BATCH_SIZE`] (design D9). Returns the number of rows
     /// deleted.
     pub fn delete_orphaned_by_ids(&self, ids: &[i64]) -> Result<i64, DbError> {
         let mut deleted = 0;
@@ -401,7 +401,7 @@ impl<'conn> EntityDao<'conn> {
     /// Retrieve several entities by id; ids that do not exist are simply
     /// absent from the result. Empty `ids` yields an empty vec.
     ///
-    /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`] to
+    /// The `IN` list is batched in chunks of [`synopsis_config::ID_BATCH_SIZE`] to
     /// stay far below SQLite's 32766 bound on bound parameters (design D9).
     pub fn get_by_ids(&self, ids: &[i64]) -> Result<Vec<Entity>, DbError> {
         let mut entities = Vec::new();

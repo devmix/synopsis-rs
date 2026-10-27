@@ -1,11 +1,11 @@
 //! Shared synchronous HTTP client for OpenAI-compatible LLM APIs.
 //!
 //! New base-tier crate per design.md D1 (change `llm`): the only internal
-//! dependency is `config` (source of [`LlmConfig`](config::preset::LlmConfig));
+//! dependency is `config` (source of [`LlmConfig`](synopsis_config::preset::LlmConfig));
 //! `graph` and `embedding` depend on this crate, never the other way around.
 //!
 //! The public seam is [`LlmClient`] (built from a validated
-//! [`LlmConfig`](config::preset::LlmConfig)) and [`LlmError`]. The client is a
+//! [`LlmConfig`](synopsis_config::preset::LlmConfig)) and [`LlmError`]. The client is a
 //! blocking ureq wrapper (design D2): async consumers must dispatch calls onto
 //! `spawn_blocking` workers (workspace convention). [`LlmClient::call`]
 //! performs a single chat completion and returns the model's text content.

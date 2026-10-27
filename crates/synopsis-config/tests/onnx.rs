@@ -10,8 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
-use config::onnx::ArchiveFormat;
-use config::{ConfigError, OnnxConfig, load_onnx_config};
+use synopsis_config::onnx::ArchiveFormat;
+use synopsis_config::{ConfigError, OnnxConfig, load_onnx_config};
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/onnx.yaml")

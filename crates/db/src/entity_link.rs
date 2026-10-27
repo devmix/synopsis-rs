@@ -2,7 +2,7 @@
 //!
 //! **Design:**
 //! - `delete_by_entity_ids` batches its `IN` lists in chunks of
-//!   [`config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
+//!   [`synopsis_config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
 //!   could hit SQLite's 32766 bound-parameter limit. The two lists are
 //!   bound full-list-then-full-list, and the input ids are de-duplicated.
 //! - `create` rejects self-links with an explicit pre-check returning
@@ -23,8 +23,8 @@
 
 use std::collections::HashSet;
 
-use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
+use synopsis_config::ID_BATCH_SIZE;
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
@@ -185,7 +185,7 @@ impl<'conn> EntityLinkDao<'conn> {
     /// `0`. Returns the number of rows deleted.
     ///
     /// The input ids are de-duplicated and the two `IN` lists are batched in
-    /// chunks of [`config::ID_BATCH_SIZE`] (design D9: 500 × 2 = 1000
+    /// chunks of [`synopsis_config::ID_BATCH_SIZE`] (design D9: 500 × 2 = 1000
     /// parameters per statement), bound full-list-then-full-list.
     pub fn delete_by_entity_ids(&self, entity_ids: &[i64]) -> Result<i64, DbError> {
         let mut deleted = 0;

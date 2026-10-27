@@ -243,9 +243,11 @@ mod tests {
 
     use std::fs;
 
-    use config::ontology::{CrossDomainLinksConfig, LinkExpression, LinkMethod, SourceType};
     use db::{AppKv, ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, FactDao};
     use graph::LinkResult;
+    use synopsis_config::ontology::{
+        CrossDomainLinksConfig, LinkExpression, LinkMethod, SourceType,
+    };
     use synopsis_vectors::VectorIndex;
 
     use super::{LAST_LINKING_RUN_KEY, OrphanCleanupStats};

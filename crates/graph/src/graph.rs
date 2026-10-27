@@ -71,12 +71,12 @@
 
 use std::collections::HashMap;
 
-use config::preset::GraphConfig;
 use db::{
     ConnectionOrTx, Db, DbError, Entity, EntityDao, EntityLink, EntityLinkDao, Fact, FactDao,
     utils::normalize,
 };
 use petgraph::graph::{DiGraph, EdgeIndex, NodeIndex};
+use synopsis_config::preset::GraphConfig;
 
 use crate::error::GraphError;
 

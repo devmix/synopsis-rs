@@ -28,10 +28,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use config::preset::GraphConfig;
 use db::FactDao;
 use graph::{EntityNode, Graph, TraversalEdge, TraverseOptions};
 use serde_json::{Map, Value};
+use synopsis_config::preset::GraphConfig;
 
 use crate::SearchResult;
 
@@ -237,10 +237,10 @@ fn serialize_facts(facts: &[db::Fact]) -> Vec<Value> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use config::preset::GraphConfig;
     use db::test_util::in_memory_db;
     use db::{ConnectionOrTx, Db, Entity, EntityDao, Fact, FactDao};
     use graph::EdgeKind;
+    use synopsis_config::preset::GraphConfig;
 
     use super::*;
     use crate::SourceType;

@@ -34,8 +34,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use config::onnx::{ModelInfo, OnnxConfig};
 use serde::{Deserialize, Serialize};
+use synopsis_config::onnx::{ModelInfo, OnnxConfig};
 
 use crate::downloader::Downloader;
 use crate::error::EmbeddingError;
@@ -345,7 +345,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use config::onnx::{ModelFile, OnnxConfig, OnnxModelsConfig, OnnxRuntimeConfig};
+    use synopsis_config::onnx::{ModelFile, OnnxConfig, OnnxModelsConfig, OnnxRuntimeConfig};
 
     use super::*;
 

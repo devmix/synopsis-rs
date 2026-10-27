@@ -10,12 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use config::onnx::{ModelFile, ModelInfo, OnnxModelsConfig, OnnxPlatformConfig, OnnxRuntimeConfig};
-use config::preset::{Config, EmbeddingsMode, LocalEmbedding};
-use config::{ConfigError, GlobalConfig, OnnxConfig};
 use db::Db;
 use embedding::{EmbeddingError, EmbeddingProvider};
 use ingestion::Runner;
+use synopsis_config::onnx::{
+    ModelFile, ModelInfo, OnnxModelsConfig, OnnxPlatformConfig, OnnxRuntimeConfig,
+};
+use synopsis_config::preset::{Config, EmbeddingsMode, LocalEmbedding};
+use synopsis_config::{ConfigError, GlobalConfig, OnnxConfig};
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndexConfig, VectorsError, create_vector_engine};
 
 use cli::error::CliError;
@@ -161,7 +163,7 @@ fn test_onnx(dim: i32) -> OnnxConfig {
 
 fn local_config(workspace_dir: &Path) -> Config {
     Config {
-        embeddings: config::preset::EmbeddingsConfig {
+        embeddings: synopsis_config::preset::EmbeddingsConfig {
             mode: EmbeddingsMode::Local,
             local: LocalEmbedding {
                 model_name: "bge-m3-int8".to_string(),
@@ -169,7 +171,7 @@ fn local_config(workspace_dir: &Path) -> Config {
             api: Default::default(),
             auto_rebuild_vectors: false,
         },
-        paths: config::preset::PathsConfig {
+        paths: synopsis_config::preset::PathsConfig {
             workspace_dir: workspace_dir.to_string_lossy().into_owned(),
             ..Default::default()
         },
@@ -557,16 +559,16 @@ fn sync_config(workspace_dir: &Path) -> Config {
 /// A minimal global config with one enabled markdown source at `src`.
 fn one_markdown_source(src: &Path) -> GlobalConfig {
     GlobalConfig {
-        sources: vec![config::ontology::SourceConfig {
+        sources: vec![synopsis_config::ontology::SourceConfig {
             path: src.to_string_lossy().into_owned(),
-            source_type: config::ontology::SourceType::Markdown,
+            source_type: synopsis_config::ontology::SourceType::Markdown,
             disabled: false,
             space: String::new(),
             domains: vec!["default".to_string()],
             dataset: String::new(),
         }],
         cross_domain_links: None,
-        ner: config::ontology::GlobalNerConfig {
+        ner: synopsis_config::ontology::GlobalNerConfig {
             methods: Vec::new(),
         },
         entities: Vec::new(),
@@ -679,8 +681,8 @@ fn build_runner_dimension_mismatch_sets_flag() {
 fn vectors_index_config_maps_the_usearch_section() {
     let dir = TempDir::new("index-config");
     let mut config = local_config(dir.as_ref());
-    config.vectors = Some(config::preset::VectorsConfig {
-        usearch: Some(config::preset::UsearchConfig {
+    config.vectors = Some(synopsis_config::preset::VectorsConfig {
+        usearch: Some(synopsis_config::preset::UsearchConfig {
             max_segment_vectors: 42,
             compaction_stale_threshold: 25,
             search_threads: 2,

@@ -16,10 +16,10 @@
 
 use std::path::{Path, PathBuf};
 
-use config::onnx::ModelInfo;
-use config::{Config, ConfigError, OnnxConfig, load};
+use synopsis_config::onnx::ModelInfo;
+use synopsis_config::{Config, ConfigError, OnnxConfig, load};
 // Pull in the enum variants and nested struct names used by the assertions below.
-use config::preset::*;
+use synopsis_config::preset::*;
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/config.default.yaml")
@@ -197,7 +197,7 @@ fn fixture_load_returns_error_for_missing_file() {
     let missing =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/definitely-missing.yaml");
     match load(missing) {
-        Err(config::ConfigError::Io { path, .. }) => {
+        Err(synopsis_config::ConfigError::Io { path, .. }) => {
             assert!(path.ends_with("definitely-missing.yaml"))
         }
         other => panic!("expected Io error for missing file, got: {other:?}"),

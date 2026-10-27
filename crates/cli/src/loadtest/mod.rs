@@ -195,12 +195,12 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use config::onnx::{ModelInfo, OnnxModelsConfig};
-    use config::{Config, OnnxConfig};
     use db::test_util::in_memory_db;
     use embedding::EmbeddingProvider;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use synopsis_config::onnx::{ModelInfo, OnnxModelsConfig};
+    use synopsis_config::{Config, OnnxConfig};
     use synopsis_vectors::{UsearchEngine, VectorIndexConfig};
 
     use crate::serve::bootstrap::open_db;
@@ -357,12 +357,12 @@ mod tests {
             )
             .unwrap(),
         );
-        let graph_config = config::preset::GraphConfig::default();
+        let graph_config = synopsis_config::preset::GraphConfig::default();
         let graph =
             Arc::new(GraphIndex::from_db(&db, &graph_config).unwrap_or(GraphIndex::Unavailable));
         let searcher = Arc::new(PooledSearcher::new(
             db.clone(),
-            config::preset::SearchConfig::default(),
+            synopsis_config::preset::SearchConfig::default(),
             graph_config.clone(),
             embed.clone(),
             vectors.clone(),

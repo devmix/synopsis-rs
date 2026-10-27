@@ -369,15 +369,15 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    use config::DomainConfig;
-    use config::ontology::{GlobalConfig, GlobalNerConfig, SourceConfig, SourceType};
-    use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
     use db::{
         ChunkDao, ConnectionOrTx, Db, DocIndexPayload, DocumentDao, EntityDao, QueueTaskDao,
         QueueTaskType, ReIndexOp,
     };
     use embedding::{EmbeddingError, EmbeddingProvider};
+    use synopsis_config::DomainConfig;
+    use synopsis_config::ontology::{GlobalConfig, GlobalNerConfig, SourceConfig, SourceType};
+    use synopsis_config::preset::{IngestionConfig, LinkerConfig};
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

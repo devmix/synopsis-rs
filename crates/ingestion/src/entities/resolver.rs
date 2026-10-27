@@ -71,8 +71,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
-use config::preset::ResolverConfig;
 use db::{ConnectionOrTx, EntityAliasDao, EntityDao, EntitySourceDao};
+use synopsis_config::preset::ResolverConfig;
 
 use super::cluster::{canonical_proto, cluster_batch, scope_entity_metadata};
 use super::similarity::{bigrams, jaro_winkler, match_key, normalize_name, stem_key};

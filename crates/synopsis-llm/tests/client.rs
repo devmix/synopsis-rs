@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use config::preset::{LlmConfig, ResponseFormat};
+use synopsis_config::preset::{LlmConfig, ResponseFormat};
 use synopsis_llm::{LlmClient, LlmError};
 
 /// A valid config pointing at `base_url`; every other field satisfies the

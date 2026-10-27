@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use config::{ConfigError, dataset_alias_map, load_domain_config, load_global_config};
+use synopsis_config::{ConfigError, dataset_alias_map, load_domain_config, load_global_config};
 
 /// Owns a temp ontology dir; removed on drop even when a test panics. One instance per
 /// scenario keeps parallel tests from clobbering each other.
@@ -37,11 +37,11 @@ impl TempOntology {
         std::fs::write(domains.join(format!("{name}.xml")), document).unwrap();
     }
 
-    fn load_global(&self) -> Option<config::GlobalConfig> {
+    fn load_global(&self) -> Option<synopsis_config::GlobalConfig> {
         load_global_config(&self.0).unwrap()
     }
 
-    fn load_domains(&self, names: &[&str]) -> HashMap<String, config::DomainConfig> {
+    fn load_domains(&self, names: &[&str]) -> HashMap<String, synopsis_config::DomainConfig> {
         names
             .iter()
             .map(|name| {
@@ -117,7 +117,7 @@ fn global_and_domain_blocks_union() {
         </global>"#,
     );
     let global = dir.load_global();
-    let domains: HashMap<String, config::DomainConfig> = HashMap::new();
+    let domains: HashMap<String, synopsis_config::DomainConfig> = HashMap::new();
     let map = dataset_alias_map(global.as_ref(), &domains).expect("valid blocks must union");
     assert_eq!(map.len(), 2);
     assert_eq!(map["alias-a"], "canonical-a");

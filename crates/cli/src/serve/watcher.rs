@@ -42,14 +42,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::preset::GraphConfig;
-use config::{Config, load_global_config};
 use db::Db;
 use graph::GraphIndex;
 use ingestion::ingester::compute_content_hash;
 use ingestion::{DocumentJobQueue, Registry, Runner};
 use notify::Watcher as _;
 use notify::{Event, EventKind, PollWatcher, RecursiveMode};
+use synopsis_config::preset::GraphConfig;
+use synopsis_config::{Config, load_global_config};
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -70,7 +70,7 @@ pub enum WatcherError {
     Notify(#[from] notify::Error),
     /// The global ontology could not be loaded.
     #[error(transparent)]
-    Config(#[from] config::ConfigError),
+    Config(#[from] synopsis_config::ConfigError),
     /// A source path could not be resolved.
     #[error("source path: {0}")]
     Io(#[from] std::io::Error),
@@ -532,9 +532,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use config::DomainConfig;
-    use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
-    use config::preset::{GraphConfig, IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
     use db::{ConnectionOrTx, DocumentDao, QueueTaskDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
@@ -544,6 +541,11 @@ mod tests {
         UnstructuredSource, WebpageSource, ingester::compute_content_hash, load_ner_prompts,
     };
     use notify::event::{AccessKind, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind};
+    use synopsis_config::DomainConfig;
+    use synopsis_config::ontology::{
+        GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType,
+    };
+    use synopsis_config::preset::{GraphConfig, IngestionConfig, LinkerConfig};
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

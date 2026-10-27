@@ -1,7 +1,7 @@
 //! Error type for the search pipeline (design D9).
 //!
 //! `SearchError` is a [`thiserror`] enum (workspace convention, cf.
-//! `config::ConfigError`). A hybrid search where **both** sub-search legs
+//! `synopsis_config::ConfigError`). A hybrid search where **both** sub-search legs
 //! fail is a hard error carrying both causes; a single leg failing degrades
 //! to the other leg (task 4.6). An empty query returns `Ok(empty vec)`,
 //! never an error.

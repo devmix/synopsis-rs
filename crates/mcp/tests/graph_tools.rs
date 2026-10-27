@@ -7,12 +7,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use config::preset::GraphConfig;
 use db::{ConnectionOrTx, EntityDao, EntityLink, EntityLinkDao, test_util};
 use graph::GraphIndex;
 use mcp::error::McpError;
 use mcp::tools::graph_tools::{handle_get_entity_links, handle_get_entity_relations};
 use serde_json::Value;
+use synopsis_config::preset::GraphConfig;
 
 /// Seed an in-memory KB in one transaction; returns the db and the value
 /// the seeder produced (usually the created ids). Same helper as

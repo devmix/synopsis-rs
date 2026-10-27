@@ -2,7 +2,7 @@
 //!
 //! **Design:**
 //! - `get_entities_by_chunks` batches the `IN` list in chunks of
-//!   [`config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
+//!   [`synopsis_config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
 //!   could hit SQLite's 32766 bound-parameter limit. It also
 //!   de-duplicates the input chunk ids and reuses
 //!   [`crate::entity::EntityDao::get_by_ids`] for the entity rows (DRY).
@@ -28,8 +28,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use config::ID_BATCH_SIZE;
 use rusqlite::params_from_iter;
+use synopsis_config::ID_BATCH_SIZE;
 
 use crate::entity::{Entity, EntityDao};
 use crate::error::DbError;
@@ -156,7 +156,7 @@ impl<'conn> ChunkEntityDao<'conn> {
     /// yields an empty map. Within one chunk the entities are sorted by
     /// name, `id` as the tie-break (deterministic).
     ///
-    /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`]
+    /// The `IN` list is batched in chunks of [`synopsis_config::ID_BATCH_SIZE`]
     /// (design D9); input ids are de-duplicated, and the entity rows come
     /// from [`EntityDao::get_by_ids`] (DRY, full column set).
     pub fn get_entities_by_chunks(

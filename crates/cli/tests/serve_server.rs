@@ -13,9 +13,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use config::onnx::{ModelInfo, OnnxModelsConfig};
-use config::preset::GraphConfig;
-use config::{Config, GlobalConfig, OnnxConfig};
 use db::{
     ChunkDao, ConnectionOrTx, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType, ReIndexOp,
 };
@@ -23,6 +20,9 @@ use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::GraphIndex;
 use ingestion::ShutdownFlag;
 use search::Searcher;
+use synopsis_config::onnx::{ModelInfo, OnnxModelsConfig};
+use synopsis_config::preset::GraphConfig;
+use synopsis_config::{Config, GlobalConfig, OnnxConfig};
 use synopsis_vectors::{
     ENGINE_USEARCH, VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine,
 };
@@ -191,15 +191,15 @@ impl VectorIndex for MemIndex {
 /// A 4-dim local-mode config (matching [`FakeEmbed`]), NER disabled.
 fn test_config(workspace_dir: &Path) -> Config {
     let mut config = Config {
-        embeddings: config::preset::EmbeddingsConfig {
-            mode: config::preset::EmbeddingsMode::Local,
-            local: config::preset::LocalEmbedding {
+        embeddings: synopsis_config::preset::EmbeddingsConfig {
+            mode: synopsis_config::preset::EmbeddingsMode::Local,
+            local: synopsis_config::preset::LocalEmbedding {
                 model_name: "bge-m3-int8".to_string(),
             },
             api: Default::default(),
             auto_rebuild_vectors: false,
         },
-        paths: config::preset::PathsConfig {
+        paths: synopsis_config::preset::PathsConfig {
             workspace_dir: workspace_dir.to_string_lossy().into_owned(),
             ..Default::default()
         },
@@ -417,16 +417,16 @@ fn serve_starts_serves_health_and_stops() {
 /// A minimal global config with one enabled markdown source at `src`.
 fn one_markdown_source(src: &Path) -> GlobalConfig {
     GlobalConfig {
-        sources: vec![config::ontology::SourceConfig {
+        sources: vec![synopsis_config::ontology::SourceConfig {
             path: src.to_string_lossy().into_owned(),
-            source_type: config::ontology::SourceType::Markdown,
+            source_type: synopsis_config::ontology::SourceType::Markdown,
             disabled: false,
             space: String::new(),
             domains: vec!["default".to_string()],
             dataset: String::new(),
         }],
         cross_domain_links: None,
-        ner: config::ontology::GlobalNerConfig {
+        ner: synopsis_config::ontology::GlobalNerConfig {
             methods: Vec::new(),
         },
         entities: Vec::new(),

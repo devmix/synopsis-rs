@@ -11,7 +11,7 @@ workspace = true
 # (task 1.3+). The imports of database/embedding/relations come back
 # with later changes (pipeline DB writes, NER via the embedding crate); YAGNI.
 [dependencies]
-config = { workspace = true }
+synopsis_config = { workspace = true }
 # utils::temporal (change utils-crate, design D4): RFC3339 UTC formatting
 # for the parsers and the VACUUM snapshot naming in the ingester backup.
 synopsis_utils = { workspace = true }

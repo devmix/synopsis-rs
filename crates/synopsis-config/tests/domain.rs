@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use config::{AliasDef, ConfigError, load_domain_config};
+use synopsis_config::{AliasDef, ConfigError, load_domain_config};
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/domains")
@@ -35,7 +35,7 @@ impl TempDomain {
         Self(dir)
     }
 
-    fn load(&self) -> Result<config::DomainConfig, ConfigError> {
+    fn load(&self) -> Result<synopsis_config::DomainConfig, ConfigError> {
         load_domain_config(self.0.join("domain.xml"))
     }
 }
@@ -454,19 +454,19 @@ fn effective_domain_keeps_only_the_domains_own_aliases() {
     // The alias block is dataset-wide data, not a shadowable definition: the effective domain
     // carries its own block only — the pool's block is unioned by
     // `aliases::dataset_alias_map`, not merged in here (task 4.3).
-    let domain: config::DomainConfig = quick_xml::de::from_str(
+    let domain: synopsis_config::DomainConfig = quick_xml::de::from_str(
         r#"<domain name="alpha" version="1.0">
             <aliases><alias name="alias-a" canonical="canonical-a"/></aliases>
         </domain>"#,
     )
     .unwrap();
-    let pool: config::GlobalConfig = quick_xml::de::from_str(
+    let pool: synopsis_config::GlobalConfig = quick_xml::de::from_str(
         r#"<global version="1.0">
             <aliases><alias name="alias-p" canonical="canonical-p"/></aliases>
         </global>"#,
     )
     .unwrap();
-    let merged = config::domain::effective_domain(&domain, &pool);
+    let merged = synopsis_config::domain::effective_domain(&domain, &pool);
     assert_eq!(
         merged.aliases,
         vec![AliasDef {

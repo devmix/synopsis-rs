@@ -11,7 +11,7 @@ workspace = true
 # crate, never the other way around. The sync ureq client is design D2:
 # callers (the graph linker) dispatch calls onto spawn_blocking workers.
 [dependencies]
-config = { workspace = true }
+synopsis_config = { workspace = true }
 # Sync HTTP (design D2): same ureq 3 pin as the embedding downloader; default
 # rustls+gzip keeps TLS pure-Rust for the gnu cross-build CI targets.
 ureq = { workspace = true }

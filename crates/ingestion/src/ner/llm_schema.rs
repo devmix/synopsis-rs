@@ -7,7 +7,7 @@
 //! # Design decisions
 //!
 //! - The mode flag lives at the call site. `LlmClient` exposes the mode as
-//!   `ResponseFormat` (`config::preset`) and itself falls back to
+//!   `ResponseFormat` (`synopsis_config::preset`) and itself falls back to
 //!   `json_object` when the schema is absent or empty (task 2.5 passes
 //!   `None` there), so this function is a pure function of the domain config
 //!   and always produces a schema.
@@ -18,9 +18,9 @@
 //! - The `entity_schema`/`relation_schema` builders are `pub(crate)` because
 //!   the tests exercise them directly.
 
-use config::DomainConfig;
-use config::ontology::AttributeType;
 use serde_json::{Map, Value, json};
+use synopsis_config::DomainConfig;
+use synopsis_config::ontology::AttributeType;
 
 /// Generates the JSON schema for one domain's NER structured output.
 ///
@@ -204,10 +204,10 @@ mod tests {
     // Test code: unwrap/expect are intentional (the fixtures are valid).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use config::ontology::{
+    use synopsis_config::ontology::{
         AttributeDef, AttributeType, EntityDef, ExtractionDef, RelAttrDef, RelationDef,
     };
-    use config::{ConfidencePolicy, DomainConfig};
+    use synopsis_config::{ConfidencePolicy, DomainConfig};
 
     use super::*;
 

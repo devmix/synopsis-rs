@@ -42,7 +42,7 @@ pub struct MarkdownSource {
 
 impl MarkdownSource {
     /// Registry key: the `type` attribute word in `global.xml`
-    /// (`config::ontology::SourceType::Markdown`).
+    /// (`synopsis_config::ontology::SourceType::Markdown`).
     pub const SOURCE_TYPE: &'static str = "markdown";
 
     /// Creates a markdown source over the given chunker.
@@ -136,7 +136,7 @@ pub struct MediawikiSource {
 
 impl MediawikiSource {
     /// Registry key: the `type` attribute word in `global.xml`
-    /// (`config::ontology::SourceType::Mediawiki`).
+    /// (`synopsis_config::ontology::SourceType::Mediawiki`).
     pub const SOURCE_TYPE: &'static str = "mediawiki";
 
     /// Creates a mediawiki source over the given chunker.
@@ -183,7 +183,7 @@ pub struct WebpageSource {
 
 impl WebpageSource {
     /// Registry key: the `type` attribute word in `global.xml`
-    /// (`config::ontology::SourceType::Webpages`).
+    /// (`synopsis_config::ontology::SourceType::Webpages`).
     pub const SOURCE_TYPE: &'static str = "webpages";
 
     /// Creates a webpage source over the given (markdown) chunker.
@@ -232,7 +232,7 @@ pub struct UnstructuredSource {
 
 impl UnstructuredSource {
     /// Registry key: the `type` attribute word in `global.xml`
-    /// (`config::ontology::SourceType::Unstructured`).
+    /// (`synopsis_config::ontology::SourceType::Unstructured`).
     pub const SOURCE_TYPE: &'static str = "unstructured";
 
     /// Creates an unstructured source over the given markdown and JSON
@@ -354,7 +354,7 @@ impl Registry {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use config::preset::{ChunkingStrategy, JsonChunkerConfig, MarkdownChunkerConfig};
+    use synopsis_config::preset::{ChunkingStrategy, JsonChunkerConfig, MarkdownChunkerConfig};
 
     use super::*;
     use crate::chunkers::json::JsonChunker;

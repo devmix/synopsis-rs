@@ -12,9 +12,9 @@
 //! (registry-as-model-source-of-truth D5), so there is nothing left to
 //! check here.
 
-use config::Config;
 use db::{ConnectionOrTx, Db, DocumentDao, DocumentFilter};
 use embedding::EmbeddingProvider;
+use synopsis_config::Config;
 
 use crate::error::CliError;
 
@@ -104,9 +104,9 @@ mod tests {
 
     use std::sync::Arc;
 
-    use config::preset::{Config, EmbeddingsMode, LocalEmbedding};
     use db::test_util::in_memory_db;
     use embedding::EmbeddingError;
+    use synopsis_config::preset::{Config, EmbeddingsMode, LocalEmbedding};
 
     use super::*;
 
@@ -132,7 +132,7 @@ mod tests {
 
     fn local_config() -> Config {
         Config {
-            embeddings: config::preset::EmbeddingsConfig {
+            embeddings: synopsis_config::preset::EmbeddingsConfig {
                 mode: EmbeddingsMode::Local,
                 local: LocalEmbedding {
                     model_name: "test".to_string(),

@@ -19,9 +19,9 @@
 
 use std::collections::HashSet;
 
-use config::DomainConfig;
 use regex::Regex;
 use serde_json::{Map, Value};
+use synopsis_config::DomainConfig;
 
 use super::{NerEntity, NerProvider, NerResult};
 use crate::error::IngestionError;
@@ -46,7 +46,7 @@ struct PreparedRule {
 ///
 /// Construction flattens all rules of all domains in config order and reuses
 /// the patterns as compiled by
-/// [`config::load_domain_config`](config::load_domain_config) — no
+/// [`synopsis_config::load_domain_config`](synopsis_config::load_domain_config) — no
 /// recompilation here (design D3).
 pub struct RegexNer {
     /// Prepared rules in config order.
@@ -161,7 +161,7 @@ mod tests {
     // Test code: unwrap/expect are intentional (fixtures always parse).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use config::load_domain_config;
+    use synopsis_config::load_domain_config;
 
     use super::*;
 

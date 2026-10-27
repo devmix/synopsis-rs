@@ -31,14 +31,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use config::ontology::{CrossDomainLinksConfig, LinkMethod};
-use config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
 use db::test_util::in_memory_db;
 use db::{
     ConnectionOrTx, Db, DocumentDao, EntityAliasDao, EntityDao, EntityLink, EntityLinkDao,
     EntitySourceDao, FactDao,
 };
 use graph::{LinkResult, build_entity_links};
+use synopsis_config::ontology::{CrossDomainLinksConfig, LinkMethod};
+use synopsis_config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
 
 /// A nonexistent prompts path: the `llm` method falls back to the embedded
 /// templates (the normal case, design D3).

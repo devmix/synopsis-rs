@@ -3,7 +3,7 @@
 //!
 //! **Design:**
 //! - `link_batch` uses a single multi-row `INSERT OR IGNORE` shape, batched
-//!   in rows of [`config::LINK_BATCH_SIZE`]: 500 × 2 = 1000 parameters per
+//!   in rows of [`synopsis_config::LINK_BATCH_SIZE`]: 500 × 2 = 1000 parameters per
 //!   statement stay far below SQLite's 32766 bound (design D9). Duplicates
 //!   in the input (across or inside a batch) are skipped by `OR IGNORE`, so
 //!   no pre-de-duplication is needed.
@@ -16,8 +16,8 @@
 //! Deletion of an entity or a document cascades to `entity_sources` per the
 //! schema FKs (no explicit cleanup method needed).
 
-use config::LINK_BATCH_SIZE;
 use rusqlite::params_from_iter;
+use synopsis_config::LINK_BATCH_SIZE;
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
@@ -67,7 +67,7 @@ impl<'conn> EntitySourceDao<'conn> {
 
     /// Bulk-link `entity_ids` to `document_id` with multi-row
     /// `INSERT OR IGNORE` statements of at most
-    /// [`config::LINK_BATCH_SIZE`] rows each (idempotent: existing pairs are
+    /// [`synopsis_config::LINK_BATCH_SIZE`] rows each (idempotent: existing pairs are
     /// skipped). Empty `entity_ids` is a no-op.
     pub fn link_batch(&self, document_id: i64, entity_ids: &[i64]) -> Result<(), DbError> {
         for batch in entity_ids.chunks(LINK_BATCH_SIZE) {

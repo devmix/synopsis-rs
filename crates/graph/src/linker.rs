@@ -92,14 +92,14 @@ use std::sync::Arc;
 
 use cel::Value;
 use cel::objects::{Key as CelKey, Map as CelMap};
-use config::ontology::{CrossDomainLinksConfig, LinkExpression, LinkMethod};
-use config::preset::{LinkerConfig, LlmConfig};
 use db::utils::normalize;
 use db::{
     ChunkEntityDao, ConnectionOrTx, Db, DbExecutor, Entity, EntityDao, EntityLink, EntityLinkDao,
     EntitySourceDao, merge_entities,
 };
 use serde::{Deserialize, Serialize};
+use synopsis_config::ontology::{CrossDomainLinksConfig, LinkExpression, LinkMethod};
+use synopsis_config::preset::{LinkerConfig, LlmConfig};
 use synopsis_llm::LlmClient;
 use synopsis_utils::text::{detect_script, match_key, stem_key};
 
@@ -1081,7 +1081,7 @@ mod tests {
     use std::io::{Read, Write};
 
     use super::*;
-    use config::preset::{LlmConfig, ResponseFormat};
+    use synopsis_config::preset::{LlmConfig, ResponseFormat};
 
     /// A nonexistent prompts path: the `llm` method falls back to the
     /// embedded templates (the normal case, design D3).

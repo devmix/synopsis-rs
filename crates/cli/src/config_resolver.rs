@@ -3,7 +3,7 @@
 //! An explicit `--config` path wins outright; otherwise
 //! `config.{preset}.yaml` is searched relative to the executable
 //! first, then relative to the CWD, with a final fallback that lets
-//! `config::load` surface the error.
+//! `synopsis_config::load` surface the error.
 //!
 //! Design (D1): the executable path is not symlink-resolved; Rust binaries
 //! are not symlinked in this deployment, so `std::env::current_exe()` is
@@ -35,7 +35,7 @@ pub fn resolve_config_path(cli_path: Option<&Path>, preset: &str) -> PathBuf {
 /// 6. `<cwd>/`
 ///
 /// When nothing exists (or `exe` / `cwd` are unavailable), falls back to the
-/// relative `workspace/configs/config.{preset}.yaml` so that `config::load`
+/// relative `workspace/configs/config.{preset}.yaml` so that `synopsis_config::load`
 /// surfaces the error with the path the user would have passed via `--config`.
 pub fn resolve_config_candidates(exe: Option<&Path>, cwd: Option<&Path>, preset: &str) -> PathBuf {
     let config_name = format!("config.{preset}.yaml");

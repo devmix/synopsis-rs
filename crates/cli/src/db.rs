@@ -33,11 +33,11 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use config::{Config, ConfigError, load};
 use db::{
     ChunkDao, ConnectionOrTx, Db, DbError, DocumentDao, DocumentFilter, Entity, EntityDao,
     EntityFilter, EntityLinkDao, FactDao, MergeSummary, QueueTaskDao, merge_entities,
 };
+use synopsis_config::{Config, ConfigError, load};
 
 use crate::cli::DbAction;
 use crate::console::Console;

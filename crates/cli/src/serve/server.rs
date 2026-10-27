@@ -86,8 +86,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::GlobalConfig;
-use config::preset::{GraphConfig, SearchConfig};
 use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao, QueueTaskDao};
 use embedding::EmbeddingProvider;
 use graph::GraphIndex;
@@ -97,6 +95,8 @@ use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
     Searcher, SemanticSearcher,
 };
+use synopsis_config::GlobalConfig;
+use synopsis_config::preset::{GraphConfig, SearchConfig};
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndex, VectorsError, create_vector_engine};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -409,7 +409,7 @@ pub fn serve_with_stop(
     let registry = bootstrap::build_registry(&config.ingestion.chunking)
         .map_err(|err| CliError::Unsupported(format!("source registry: {err}")))?;
     let prompts = ingestion::load_ner_prompts(&config.paths.prompts_path).map_err(|err| {
-        CliError::Config(config::ConfigError::Validation {
+        CliError::Config(synopsis_config::ConfigError::Validation {
             message: format!("NER prompts: {err}"),
         })
     })?;

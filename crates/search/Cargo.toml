@@ -8,7 +8,7 @@ workspace = true
 
 # D1 edges. db: SearchResult carries chunk/entity rows (task 4.1).
 [dependencies]
-config = { workspace = true }
+synopsis_config = { workspace = true }
 db = { workspace = true }
 embedding = { workspace = true }
 graph = { workspace = true }

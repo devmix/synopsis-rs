@@ -52,11 +52,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use config::DomainConfig;
-use config::ontology::NerMethod;
-use config::preset::LlmConfig;
 use db::Db;
 use serde_json::{Map, Value};
+use synopsis_config::DomainConfig;
+use synopsis_config::ontology::NerMethod;
+use synopsis_config::preset::LlmConfig;
 
 use super::regex::normalize;
 use super::{LlmNer, NerPrompts, NerProvider, NerResult, RegexNer};
@@ -267,8 +267,8 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-    use config::load_domain_config;
-    use config::preset::{LlmConfig, ResponseFormat};
+    use synopsis_config::load_domain_config;
+    use synopsis_config::preset::{LlmConfig, ResponseFormat};
 
     use super::*;
     use crate::ner::{NerEntity, NerFact, load_ner_prompts};

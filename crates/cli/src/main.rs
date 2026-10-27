@@ -38,7 +38,7 @@ fn main() -> ExitCode {
 
     // Load the config just to read logging.level before dispatch (design D2);
     // the rest of the config is consumed by the per-subcommand bootstrap.
-    let cfg = match config::load(&cfg_path) {
+    let cfg = match synopsis_config::load(&cfg_path) {
         Ok(cfg) => cfg,
         Err(err) => {
             eprintln!("failed to load config {}: {err}", cfg_path.display());
@@ -142,7 +142,7 @@ fn usage_error(err: &clap::Error) -> ExitCode {
 /// Initializes the tracing subscriber once from `config.Logging.Level`
 /// (design D2). `RUST_LOG` wins over the config level when set. Library
 /// crates stay logger-less; only this binary logs.
-fn init_tracing(level: &config::preset::LogLevel) {
+fn init_tracing(level: &synopsis_config::preset::LogLevel) {
     use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_from_default_env()
@@ -151,15 +151,15 @@ fn init_tracing(level: &config::preset::LogLevel) {
 }
 
 /// Maps a config log level to its tracing filter word.
-fn level_to_filter(level: &config::preset::LogLevel) -> &'static str {
+fn level_to_filter(level: &synopsis_config::preset::LogLevel) -> &'static str {
     match level {
-        config::preset::LogLevel::Trace => "trace",
-        config::preset::LogLevel::Debug => "debug",
-        config::preset::LogLevel::Info => "info",
-        config::preset::LogLevel::Warn => "warn",
-        config::preset::LogLevel::Error => "error",
+        synopsis_config::preset::LogLevel::Trace => "trace",
+        synopsis_config::preset::LogLevel::Debug => "debug",
+        synopsis_config::preset::LogLevel::Info => "info",
+        synopsis_config::preset::LogLevel::Warn => "warn",
+        synopsis_config::preset::LogLevel::Error => "error",
         // Tolerant enum: an unrecognized level cannot break startup (design D2:
         // default info).
-        config::preset::LogLevel::Unknown(_) => "info",
+        synopsis_config::preset::LogLevel::Unknown(_) => "info",
     }
 }

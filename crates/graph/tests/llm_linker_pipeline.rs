@@ -22,11 +22,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use config::ontology::{LinkMethod, load_global_config};
-use config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
 use db::test_util::in_memory_db;
 use db::{ConnectionOrTx, Db, EntityDao, EntityLinkDao, FactDao};
 use graph::build_entity_links;
+use synopsis_config::ontology::{LinkMethod, load_global_config};
+use synopsis_config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
 
 /// A nonexistent prompts path: the `llm` method falls back to the embedded
 /// templates (the normal case, design D3).
@@ -43,7 +43,7 @@ fn ontology_dir() -> PathBuf {
 }
 
 /// Loads the fixture ontology and requires its `<cross-domain-links>` block.
-fn links_config() -> config::ontology::CrossDomainLinksConfig {
+fn links_config() -> synopsis_config::ontology::CrossDomainLinksConfig {
     let global = load_global_config(ontology_dir())
         .expect("fixture global.xml must load")
         .expect("fixture must carry a cross-domain-links block");

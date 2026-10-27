@@ -3,7 +3,7 @@
 //! response into the model's text content.
 //!
 //! [`LlmClient`] is the public seam (design D1). It is built once from a
-//! validated [`LlmConfig`](config::preset::LlmConfig) (see [`LlmClient::new`])
+//! validated [`LlmConfig`](synopsis_config::preset::LlmConfig) (see [`LlmClient::new`])
 //! and shared across threads; [`LlmClient::call`] performs a blocking
 //! `POST {api_base_url}/chat/completions` and returns the model's content
 //! (design D2).
@@ -46,8 +46,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use config::preset::{LlmConfig, ResponseFormat};
 use serde::{Deserialize, Serialize};
+use synopsis_config::preset::{LlmConfig, ResponseFormat};
 use ureq::{Agent, http::Uri};
 
 use crate::error::LlmError;
@@ -63,7 +63,7 @@ const SPLITMIX_GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Synchronous client for an OpenAI-compatible chat completions endpoint.
 ///
-/// Built once from a validated [`LlmConfig`](config::preset::LlmConfig) and
+/// Built once from a validated [`LlmConfig`](synopsis_config::preset::LlmConfig) and
 /// shared across threads (`Send + Sync`; the ureq connection pool and the
 /// backoff sleeper live behind `Arc`s, so cloning is cheap). Methods block —
 /// call from sync contexts or `spawn_blocking` workers, never from inside an

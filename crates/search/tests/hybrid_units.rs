@@ -16,7 +16,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use config::preset::{GraphConfig, SearchConfig};
 use db::test_util::in_memory_db;
 use db::{
     ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, Entity, EntityDao, Fact, FactDao,
@@ -27,6 +26,7 @@ use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
     Searcher, SemanticSearcher,
 };
+use synopsis_config::preset::{GraphConfig, SearchConfig};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 // ── fixtures ────────────────────────────────────────────────────────────────

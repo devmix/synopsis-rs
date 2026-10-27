@@ -97,7 +97,7 @@ Per-task acceptance (in addition to the recipe gates):
   - Revision history: implemented 2026-10-27, zero deviations (43 references,
     27 files; 5 config doc-comments renamed; 3 rustfmt rewraps; gates green).
 
-- [ ] 2.3 Rename `llm` → `synopsis-llm`
+- [x] 2.3 Rename `llm` → `synopsis-llm`
   - Dependencies: task 2.2.
   - File scope: root `Cargo.toml`; `crates/llm/**` → `crates/synopsis-llm/**`;
     dependents with a Cargo.toml entry: `crates/ingestion`, `crates/graph`;
@@ -115,6 +115,9 @@ Per-task acceptance (in addition to the recipe gates):
     Resolve every match by the item's definition (recipe step 5).
   - Acceptance: recipe gates + NO crate-reference `llm::` remains (the 1
     internal-module line above is expected to remain) + metadata check.
+  - Revision history: implemented 2026-10-27, zero deviations (18 of 19
+    references renamed; the ner/mod.rs:46 internal-module re-export preserved;
+    6 rustfmt re-wraps in synopsis-llm/tests/client.rs; gates green).
 
 - [ ] 2.4 Rename `config` → `synopsis-config`
   - Dependencies: task 2.3.
@@ -225,6 +228,11 @@ Per-task acceptance (in addition to the recipe gates):
     - Prose comments in `Cargo.toml` files (root palette comment block lines
       ~53–71, and per-crate comments such as the `# D1 edges` block in
       `crates/synopsis-cli/Cargo.toml`)
+    - Stale `crates/<name>` path mentions in code comments and test data known
+      from the rename subtasks: `crates/synopsis-config/tests/data/README.md`
+      (sha256sum examples), `crates/synopsis-config/tests/preset.rs` (comment),
+      `crates/ingestion/src/ner/prompts.rs` (comment), and any other hit of the
+      acceptance rg below (the acceptance sweep is repo-wide — fix every hit)
   - Do NOT touch: `Cargo.lock` (no paths inside), `.github/workflows/**`,
     `scripts/release.sh` (no crate paths — verified), `openspec/changes/archive/**`.
   - Acceptance:

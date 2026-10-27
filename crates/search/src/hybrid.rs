@@ -44,8 +44,8 @@
 //! - a non-positive finalize `topK` skips the truncation, so a negative
 //!   `FinalTopK` from config is harmless.
 
-use config::preset::SearchConfig;
 use serde_json::Map;
+use synopsis_config::preset::SearchConfig;
 
 use crate::{
     Enricher, GraphExpander, LexicalHit, LexicalSearcher, Reranker, SearchError, SearchResult,
@@ -371,11 +371,11 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use config::preset::GraphConfig;
     use db::test_util::in_memory_db;
     use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, FactDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
     use graph::Graph;
+    use synopsis_config::preset::GraphConfig;
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

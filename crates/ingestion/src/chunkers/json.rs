@@ -3,7 +3,7 @@
 //! Splits a JSON document at its structural unit: one chunk per object —
 //! each top-level element of an array document, or the whole value of a
 //! single-object document. Configuration arrives at construction from
-//! [`config::preset::JsonChunkerConfig`] (`chunking.json.*`): `text_fields`
+//! [`synopsis_config::preset::JsonChunkerConfig`] (`chunking.json.*`): `text_fields`
 //! (an empty list falls back to the four defaults — the config crate's
 //! `apply_defaults` normally already applied them), `combine_fields` (one
 //! chunk per object vs. one chunk per text field) and `max_objects`
@@ -37,8 +37,8 @@
 
 use std::path::PathBuf;
 
-use config::preset::JsonChunkerConfig;
 use serde_json::{Map, Value};
+use synopsis_config::preset::JsonChunkerConfig;
 
 use crate::error::IngestionError;
 use crate::types::{Chunker, DocumentChunk, DocumentMetadata};
@@ -404,7 +404,7 @@ mod tests {
 
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use config::preset::JsonChunkerConfig;
+    use synopsis_config::preset::JsonChunkerConfig;
 
     use super::*;
 

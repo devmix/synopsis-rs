@@ -23,9 +23,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use config::onnx::OnnxPlatformConfig;
-use config::{OnnxConfig, load, load_onnx_config};
 use embedding::LibraryManager;
+use synopsis_config::onnx::OnnxPlatformConfig;
+use synopsis_config::{OnnxConfig, load, load_onnx_config};
 
 use crate::cli::OnnxRuntimeAction;
 use crate::console::{Color, Console};

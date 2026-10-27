@@ -21,8 +21,8 @@
 
 use std::path::{Path, PathBuf};
 
-use config::ConfigError;
-use config::ontology::{
+use synopsis_config::ConfigError;
+use synopsis_config::ontology::{
     AliasDef, AttributeType, GlobalConfig, LinkMethod, NerMethod, SourceType, load_global_config,
 };
 
@@ -43,7 +43,7 @@ impl TempOntology {
         Self(dir)
     }
 
-    fn load(&self) -> Result<Option<config::GlobalConfig>, ConfigError> {
+    fn load(&self) -> Result<Option<synopsis_config::GlobalConfig>, ConfigError> {
         load_global_config(&self.0)
     }
 }
@@ -76,7 +76,7 @@ fn fixture_parses_complete_ontology() {
     assert_fixture_ner_entities_relations_extraction(&cfg);
 }
 
-fn assert_fixture_sources(cfg: &config::GlobalConfig) {
+fn assert_fixture_sources(cfg: &synopsis_config::GlobalConfig) {
     // 8 sources: markdown x4, webpages x3, mediawiki x1. No source sets disabled/space/dataset.
     assert_eq!(cfg.sources.len(), 8);
     for source in &cfg.sources[0..4] {
@@ -111,7 +111,7 @@ fn assert_fixture_sources(cfg: &config::GlobalConfig) {
     );
 }
 
-fn assert_fixture_cross_domain_links(cfg: &config::GlobalConfig) {
+fn assert_fixture_cross_domain_links(cfg: &synopsis_config::GlobalConfig) {
     let cdl = cfg
         .cross_domain_links
         .as_ref()
@@ -146,7 +146,7 @@ fn assert_fixture_cross_domain_links(cfg: &config::GlobalConfig) {
     );
 }
 
-fn assert_fixture_ner_entities_relations_extraction(cfg: &config::GlobalConfig) {
+fn assert_fixture_ner_entities_relations_extraction(cfg: &synopsis_config::GlobalConfig) {
     // The fixture's <ner> block is explicit; the fallback defaulting is covered by a dedicated test.
     assert_eq!(cfg.ner.methods, vec![NerMethod::Regex, NerMethod::Llm]);
 

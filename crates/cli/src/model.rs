@@ -29,10 +29,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use config::onnx::ModelInfo;
-use config::preset::LocalEmbedding;
-use config::{OnnxConfig, load, load_onnx_config};
 use embedding::{LibraryManager, ModelCache, ModelManager, new_onnx_provider};
+use synopsis_config::onnx::ModelInfo;
+use synopsis_config::preset::LocalEmbedding;
+use synopsis_config::{OnnxConfig, load, load_onnx_config};
 
 use crate::cli::ModelAction;
 use crate::console::{Color, Console};

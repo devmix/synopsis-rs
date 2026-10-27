@@ -27,7 +27,7 @@
 //! - `update`/`delete` return `bool` (`false` = no such id) instead of a
 //!   "chunk not found" error (consistent with `DocumentDao`);
 //! - `delete_by_ids` returns the number of rows deleted and batches the `IN`
-//!   list in chunks of [`config::ID_BATCH_SIZE`] (design D9);
+//!   list in chunks of [`synopsis_config::ID_BATCH_SIZE`] (design D9);
 //! - vector-store operations are deliberately absent — vector
 //!   search moves to the `vectors` change (design D7);
 //! - `metadata_json` column (chunk-metadata-persistence design D1): the
@@ -40,8 +40,8 @@
 //! not match the frozen v5 schema, which has exactly the columns of
 //! [`Chunk`]; the schema is the contract.
 
-use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
+use synopsis_config::ID_BATCH_SIZE;
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
@@ -289,7 +289,7 @@ impl<'conn> ChunkDao<'conn> {
     /// Delete several chunks by id; ids that do not exist are ignored.
     /// Returns the number of rows deleted.
     ///
-    /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`] to
+    /// The `IN` list is batched in chunks of [`synopsis_config::ID_BATCH_SIZE`] to
     /// stay far below SQLite's 32766 bound on bound parameters (design D9).
     pub fn delete_by_ids(&self, ids: &[i64]) -> Result<usize, DbError> {
         let mut deleted = 0;

@@ -69,15 +69,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use config::DomainConfig;
-use config::ontology::{GlobalConfig, SourceConfig, SourceType};
-use config::preset::{IngestionConfig, LinkerConfig};
 use db::{
     ChunkDao, ConnectionOrTx, Db, DocIndexPayload, DocumentDao, GcDao, QueueTaskDao, QueueTaskType,
     ReIndexOp,
 };
 use embedding::EmbeddingProvider;
 use serde_json::Value;
+use synopsis_config::DomainConfig;
+use synopsis_config::ontology::{GlobalConfig, SourceConfig, SourceType};
+use synopsis_config::preset::{IngestionConfig, LinkerConfig};
 use synopsis_vectors::VectorIndex;
 
 pub use cleanup::OrphanCleanupStats;
@@ -818,11 +818,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use config::DomainConfig;
-    use config::ontology::{GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType};
-    use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
     use embedding::EmbeddingError;
+    use synopsis_config::DomainConfig;
+    use synopsis_config::ontology::{
+        GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType,
+    };
+    use synopsis_config::preset::{IngestionConfig, LinkerConfig};
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

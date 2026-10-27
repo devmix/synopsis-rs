@@ -9,7 +9,7 @@
 //!   would perform a pointless self-assignment write on every conflict.
 //! - `recompute_weights`, `find_orphaned_fact_ids`, `delete_orphaned_facts`
 //!   and `get_by_ids` batch their `IN` lists in chunks of
-//!   [`config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
+//!   [`synopsis_config::ID_BATCH_SIZE`] (design D9): one unbounded placeholder list
 //!   could hit SQLite's 32766 bound-parameter limit.
 //! - `list_by_entity_ids` de-duplicates its input ids: the same fact would
 //!   be returned twice in one map slice when the same id appears twice in
@@ -53,8 +53,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use config::ID_BATCH_SIZE;
 use rusqlite::{Row, params, params_from_iter};
+use synopsis_config::ID_BATCH_SIZE;
 
 use crate::error::DbError;
 use crate::executor::{ConnectionOrTx, DbExecutor};
@@ -270,7 +270,7 @@ impl<'conn> FactDao<'conn> {
 
     /// Set `weight = COUNT(fact_sources)` for each of `fact_ids`; returns
     /// the number of rows updated. Empty `fact_ids` is a no-op. The `IN`
-    /// list is batched in chunks of [`config::ID_BATCH_SIZE`] (design D9).
+    /// list is batched in chunks of [`synopsis_config::ID_BATCH_SIZE`] (design D9).
     pub fn recompute_weights(&self, fact_ids: &[i64]) -> Result<i64, DbError> {
         let mut updated = 0;
         for batch in fact_ids.chunks(ID_BATCH_SIZE) {
@@ -315,7 +315,7 @@ impl<'conn> FactDao<'conn> {
     ///
     /// Input ids are de-duplicated (a fact would be returned twice when an
     /// id appeared twice in the input), and the two `IN` lists are batched
-    /// in chunks of [`config::ID_BATCH_SIZE`] (design D9: 500 × 2 = 1000
+    /// in chunks of [`synopsis_config::ID_BATCH_SIZE`] (design D9: 500 × 2 = 1000
     /// parameters per statement). The parameters are bound
     /// full-list-then-full-list, and a fact selected by more than one batch
     /// query (endpoints in different batches) is attached to the map exactly
@@ -381,7 +381,7 @@ impl<'conn> FactDao<'conn> {
     /// Ids of facts with no remaining `fact_sources` rows, ordered by id.
     /// `exclude_approved` skips approved facts from the result; a non-empty
     /// `candidates` list scopes the search to those ids (batched in chunks
-    /// of [`config::ID_BATCH_SIZE`], design D9).
+    /// of [`synopsis_config::ID_BATCH_SIZE`], design D9).
     pub fn find_orphaned_fact_ids(
         &self,
         exclude_approved: bool,
@@ -416,7 +416,7 @@ impl<'conn> FactDao<'conn> {
 
     /// Delete the facts with the given ids (a bulk cleanup step; single-fact
     /// removal is [`Self::delete`]). Empty `fact_ids` → `0`. The `IN` list
-    /// is batched in chunks of [`config::ID_BATCH_SIZE`] (design D9).
+    /// is batched in chunks of [`synopsis_config::ID_BATCH_SIZE`] (design D9).
     /// Returns the number of rows deleted.
     pub fn delete_orphaned_facts(&self, fact_ids: &[i64]) -> Result<i64, DbError> {
         let mut deleted = 0;
@@ -462,7 +462,7 @@ impl<'conn> FactDao<'conn> {
     /// Retrieve several facts by id; ids that do not exist are simply absent
     /// from the result. Empty `ids` yields an empty vec.
     ///
-    /// The `IN` list is batched in chunks of [`config::ID_BATCH_SIZE`] to
+    /// The `IN` list is batched in chunks of [`synopsis_config::ID_BATCH_SIZE`] to
     /// stay far below SQLite's 32766 bound on bound parameters (design D9).
     pub fn get_by_ids(&self, ids: &[i64]) -> Result<Vec<Fact>, DbError> {
         let mut facts = Vec::new();

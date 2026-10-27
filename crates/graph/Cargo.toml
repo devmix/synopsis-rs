@@ -14,7 +14,7 @@ workspace = true
 # + x86_64-apple-darwin,
 # cel API verified against registry sources).
 [dependencies]
-config = { workspace = true }
+synopsis_config = { workspace = true }
 db = { workspace = true }
 # utils::text (multilingual-entity-resolution D1/D7): script detection and the
 # resolution-tier keys for within-domain cross-script candidate generation.

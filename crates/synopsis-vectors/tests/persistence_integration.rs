@@ -11,7 +11,7 @@
 //!   `usearch::flush_tests` (missing sidecar / segment), `usearch::compaction`
 //!   (directory swap + WAL reconciliation);
 //! - config validation: `synopsis_vectors::tests::usearch_config_validate_*` (this
-//!   crate) and the `config::preset` `vectors_usearch_section_*` tests.
+//!   crate) and the `synopsis_config::preset` `vectors_usearch_section_*` tests.
 //!
 //! What these tests add is the seam a unit test cannot reach: a full restart
 //! across a persistent WAL database, cross-layer search correctness, a
