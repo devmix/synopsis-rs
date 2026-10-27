@@ -313,7 +313,7 @@ Per-task acceptance (in addition to the recipe gates):
 
 ## 3. Documentation and agent definitions
 
-- [ ] 3.1 Update docs, comments, and agent definitions to `synopsis-*` names
+- [x] 3.1 Update docs, comments, and agent definitions to `synopsis-*` names
   - Dependencies: tasks 2.1–2.11.
   - Goal: remove all remaining bare-name references in prose/comments (design D7).
     `openspec/changes/archive/**` is a historical record — do NOT modify it.
@@ -364,7 +364,7 @@ Per-task acceptance (in addition to the recipe gates):
 
 ## 4. Final verification
 
-- [ ] 4.1 Parity and full-gate verification
+- [x] 4.1 Parity and full-gate verification
   - Dependencies: tasks 2.11, 3.1.
   - File scope: none (verification only; no source edits expected — if any gate
     fails, fix within the failing area and re-run).
@@ -387,7 +387,7 @@ Per-task acceptance (in addition to the recipe gates):
        `pub use graph::{...}` re-export in `crates/synopsis-graph/src/lib.rs`
        ×1 (graph's internal graph module), `tools::search::handle_search`
        in `crates/mcp/src/server.rs` ×1 (mcp's internal tools::search
-       module),        `use search::{add_rows, build_search_pool};` in
+       module), `use search::{add_rows, build_search_pool};` in
        `crates/synopsis-vectors/src/usearch/mod.rs` ×1 (vectors' internal
        usearch::search module), `use crate::cli::<Action>;` (one per file)
        in `crates/synopsis-cli/src/{model,queue,db,onnx_runtime}.rs` ×4 +
@@ -404,3 +404,17 @@ Per-task acceptance (in addition to the recipe gates):
     5. `cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name'`
        → exactly the 11 `synopsis-*` names, no bare names.
   - Acceptance: all five checks pass; report the results compactly.
+  - Revision history: verified 2026-10-27, all five checks passed, zero
+    deviations, no source edits. (1) Gates green: fmt clean, clippy
+    -D warnings clean, 1606/1606 tests (MCP differential fixture suites
+    ran; fixtures unchanged). (2) Survivor set equals the documented list
+    exactly — 32 unique lines: `db::` ×3, `utils::` ×13 (7 × `crate::utils::`
+    + 6 × `synopsis_db::utils::`), `llm::` ×1, `graph::` ×8 (3 internal +
+    4 petgraph false positives + 1 re-export), `search::` ×2, `cli::` ×5;
+    zero matches for config/vectors/embedding/ingestion/mcp. (3) Release
+    build OK; 19 `--help` sections re-captured (271 lines) — diff/cmp vs
+    the task 1.1 baseline byte-identical. (4) Repo-wide `crates/<bare>`
+    sweep clean outside archive/, target/ and this change's own planning
+    dir (47 lines in tasks.md — expected, falls inside the archive
+    exclusion on finalization). (5) cargo metadata: exactly the 11
+    synopsis-* packages, no bare names.
