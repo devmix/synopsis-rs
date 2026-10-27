@@ -40,7 +40,7 @@ use ingestion::{
     Registry, Resolver, Runner, RunnerParams, VectorSink, load_ner_prompts,
 };
 use serde_json::{Map, Value};
-use vectors::{VectorIndex, VectorsError};
+use synopsis_vectors::{VectorIndex, VectorsError};
 
 /// One markdown document with two heading sections and one email each.
 const MD_CONTENT: &str = "# Team\n\nContact alice@example.com for onboarding.\n\n## Policy\n\nBob's email is bob@corp.io.\n";

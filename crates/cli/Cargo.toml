@@ -39,9 +39,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 synopsis_utils = { workspace = true }
-vectors = { workspace = true }
+synopsis_vectors = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
-vectors = { workspace = true }
+synopsis_vectors = { workspace = true }

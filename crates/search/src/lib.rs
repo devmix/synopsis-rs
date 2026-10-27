@@ -6,7 +6,7 @@
 //!
 //! 1. **Legs** — [`LexicalSearcher`] (FTS5/BM25 over
 //!    [`db::ChunkDao::search_fts`]) and [`SemanticSearcher`] (embedding
-//!    provider + [`vectors::VectorIndex`], with application-side domain
+//!    provider + [`synopsis_vectors::VectorIndex`], with application-side domain
 //!    filtering and over-fetch, design D3). The legs run sequentially
 //!    (no task spawning or timeout plumbing; `timeout_ms` stays in the
 //!    frozen config but is not plumbed); a disabled leg is an empty

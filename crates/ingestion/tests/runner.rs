@@ -23,7 +23,7 @@ use config::preset::{IngestionConfig, LinkerConfig};
 use db::test_util::in_memory_db;
 use db::{ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, QueueTaskDao};
 use embedding::{EmbeddingError, EmbeddingProvider};
-use vectors::{VectorIndex, VectorsError};
+use synopsis_vectors::{VectorIndex, VectorsError};
 
 use ingestion::runner::detect_source_type;
 use ingestion::worker::DocumentWorker;

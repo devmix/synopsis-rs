@@ -14,7 +14,7 @@ use config::ConfigError;
 use db::DbError;
 use embedding::EmbeddingError;
 use graph::GraphError;
-use vectors::VectorsError;
+use synopsis_vectors::VectorsError;
 
 /// Boundary error of the `synopsis` CLI: wraps the upstream crate errors that
 /// can surface during bootstrap and subcommand execution.

@@ -1,5 +1,5 @@
 [package]
-name = "vectors"
+name = "synopsis-vectors"
 version.workspace = true
 edition.workspace = true
 

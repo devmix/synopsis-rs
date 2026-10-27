@@ -16,7 +16,7 @@ use config::{ConfigError, GlobalConfig, OnnxConfig};
 use db::Db;
 use embedding::{EmbeddingError, EmbeddingProvider};
 use ingestion::Runner;
-use vectors::{ENGINE_USEARCH, VectorIndexConfig, VectorsError, create_vector_engine};
+use synopsis_vectors::{ENGINE_USEARCH, VectorIndexConfig, VectorsError, create_vector_engine};
 
 use cli::error::CliError;
 use cli::serve::bootstrap::*;

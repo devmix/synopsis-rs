@@ -378,7 +378,7 @@ mod tests {
         QueueTaskType, ReIndexOp,
     };
     use embedding::{EmbeddingError, EmbeddingProvider};
-    use vectors::{VectorIndex, VectorsError};
+    use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;
     use crate::error::IngestionError;

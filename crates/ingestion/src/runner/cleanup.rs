@@ -27,7 +27,7 @@ use std::time::SystemTime;
 
 use db::{AppKv, ChunkDao, ConnectionOrTx, Db, GcDao};
 use graph::LinkResult;
-use vectors::VectorIndex;
+use synopsis_vectors::VectorIndex;
 
 use super::Runner;
 use crate::error::IngestionError;
@@ -246,7 +246,7 @@ mod tests {
     use config::ontology::{CrossDomainLinksConfig, LinkExpression, LinkMethod, SourceType};
     use db::{AppKv, ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, FactDao};
     use graph::LinkResult;
-    use vectors::VectorIndex;
+    use synopsis_vectors::VectorIndex;
 
     use super::{LAST_LINKING_RUN_KEY, OrphanCleanupStats};
     use crate::error::IngestionError;

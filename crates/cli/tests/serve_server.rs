@@ -23,9 +23,11 @@ use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::GraphIndex;
 use ingestion::ShutdownFlag;
 use search::Searcher;
+use synopsis_vectors::{
+    ENGINE_USEARCH, VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine,
+};
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
-use vectors::{ENGINE_USEARCH, VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine};
 
 use cli::error::CliError;
 use cli::serve::bootstrap::{Bootstrap, open_db};

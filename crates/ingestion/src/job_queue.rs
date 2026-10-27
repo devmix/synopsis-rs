@@ -362,7 +362,7 @@ mod tests {
     use db::test_util::in_memory_db;
     use db::{ConnectionOrTx, Db, DocumentDao, QueueTaskDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
-    use vectors::{VectorIndex, VectorsError};
+    use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;
     use crate::error::IngestionError;

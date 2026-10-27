@@ -335,9 +335,9 @@ struct FailingSink;
 
 impl VectorSink for FailingSink {
     fn insert_batch(&self, _rows: &[(u32, &[f32])]) -> Result<(), IngestionError> {
-        Err(IngestionError::Vectors(vectors::VectorsError::Engine(
-            "simulated engine failure".to_owned(),
-        )))
+        Err(IngestionError::Vectors(
+            synopsis_vectors::VectorsError::Engine("simulated engine failure".to_owned()),
+        ))
     }
 }
 

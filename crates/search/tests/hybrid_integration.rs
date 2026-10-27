@@ -31,7 +31,7 @@ use search::{
     Enricher, HybridSearcher, LexicalSearcher, Reranker, SearchResult, Searcher, SemanticSearcher,
 };
 use serde_json::json;
-use vectors::{VectorIndex, VectorsError};
+use synopsis_vectors::{VectorIndex, VectorsError};
 
 // ── test doubles ──────────────────────────────────────────────────────────
 

@@ -43,7 +43,7 @@ use db::{
 };
 use embedding::EmbeddingProvider;
 use serde_json::{Map, Value};
-use vectors::VectorIndex;
+use synopsis_vectors::VectorIndex;
 
 use crate::entities::{EntityChanges, Resolver};
 use crate::error::IngestionError;

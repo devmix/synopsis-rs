@@ -12,7 +12,7 @@ config = { workspace = true }
 db = { workspace = true }
 embedding = { workspace = true }
 graph = { workspace = true }
-vectors = { workspace = true }
+synopsis_vectors = { workspace = true }
 # utils::temporal (change utils-crate, design D4): the workspace date/time
 # seam — enricher timestamp normalization and reranker epoch parsing.
 synopsis_utils = { workspace = true }

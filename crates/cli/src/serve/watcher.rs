@@ -544,7 +544,7 @@ mod tests {
         UnstructuredSource, WebpageSource, ingester::compute_content_hash, load_ner_prompts,
     };
     use notify::event::{AccessKind, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind};
-    use vectors::{VectorIndex, VectorsError};
+    use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;
 

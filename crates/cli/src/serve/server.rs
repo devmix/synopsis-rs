@@ -16,7 +16,7 @@
 //! 2. The vectors engine and the embedding provider are sync facades over
 //!    their own runtimes and must never be called from inside a tokio
 //!    runtime context (a nested `block_on` panics with "Cannot start a
-//!    runtime from within a runtime"; `vectors::UsearchEngine` module docs:
+//!    runtime from within a runtime"; `synopsis_vectors::UsearchEngine` module docs:
 //!    sync methods, `spawn_blocking` workers only).
 //!
 //! The serve flow is therefore a *synchronous* function on the main
@@ -97,10 +97,10 @@ use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
     Searcher, SemanticSearcher,
 };
+use synopsis_vectors::{ENGINE_USEARCH, VectorIndex, VectorsError, create_vector_engine};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, mpsc};
-use vectors::{ENGINE_USEARCH, VectorIndex, VectorsError, create_vector_engine};
 
 use crate::db::clear_dataset_tables;
 use crate::error::CliError;

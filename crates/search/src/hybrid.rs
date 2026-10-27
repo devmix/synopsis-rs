@@ -376,7 +376,7 @@ mod tests {
     use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, FactDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
     use graph::Graph;
-    use vectors::{VectorIndex, VectorsError};
+    use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;
 

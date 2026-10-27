@@ -64,7 +64,7 @@ Per-task acceptance (in addition to the recipe gates):
 - Reference counts below are sanity checks (measured pre-rename): the replacement
   must touch exactly those lines (± comment/doc lines containing `X::`).
 
-- [ ] 2.1 Rename `utils` → `synopsis-utils`
+- [x] 2.1 Rename `utils` → `synopsis-utils`
   - Dependencies: task 1.1.
   - File scope: root `Cargo.toml`; `crates/utils/**` → `crates/synopsis-utils/**`;
     dependents with a Cargo.toml entry: `crates/embedding`, `crates/ingestion`,

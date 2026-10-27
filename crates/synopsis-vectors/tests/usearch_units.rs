@@ -1,9 +1,9 @@
-//! Integration tests for `vectors::usearch::UsearchEngine` (moved
+//! Integration tests for `synopsis_vectors::usearch::UsearchEngine` (moved
 //! verbatim from the `flush_tests` module in
 //! `crates/vectors/src/usearch/mod.rs`, test-hygiene phase-2 task 2.6).
 //! Import paths rewritten from `super::` to the public `vectors` API;
 //! the crate-private `keys_manifest::read_keys` codec and the RAM layer
-//! index size are reached through `vectors::test_support`. The shared
+//! index size are reached through `synopsis_vectors::test_support`. The shared
 //! fixtures (temp dir, config, vector, WAL-table helpers) are local
 //! copies of the crate's inline `test_util` fixtures, which stay in the
 //! crate for the sibling inline test modules.
@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::Connection;
 
-use vectors::test_support::{ram_index_size, read_keys};
-use vectors::{UsearchConfig, UsearchEngine, VectorIndexConfig, VectorsError};
+use synopsis_vectors::test_support::{ram_index_size, read_keys};
+use synopsis_vectors::{UsearchConfig, UsearchEngine, VectorIndexConfig, VectorsError};
 
 /// A unique temporary directory that removes itself (and its contents)
 /// when dropped.

@@ -236,7 +236,7 @@ pub enum IngestionError {
     /// without vectors; orphan reconciliation repairs the divergence (the
     /// chunk row is the source of truth).
     #[error("vector index: {0}")]
-    Vectors(#[from] vectors::VectorsError),
+    Vectors(#[from] synopsis_vectors::VectorsError),
 
     /// Serializing document metadata to JSON failed (pipeline task 3.4).
     /// In practice unreachable (parser-produced values are finite), but the

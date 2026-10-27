@@ -27,7 +27,7 @@ use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
     Searcher, SemanticSearcher,
 };
-use vectors::{VectorIndex, VectorsError};
+use synopsis_vectors::{VectorIndex, VectorsError};
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 

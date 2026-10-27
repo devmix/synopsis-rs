@@ -10,7 +10,7 @@ use std::time::Instant;
 use db::Db;
 use embedding::EmbeddingProvider;
 use rusqlite::params;
-use vectors::VectorIndex;
+use synopsis_vectors::VectorIndex;
 
 use super::generator::Dataset;
 
@@ -293,7 +293,7 @@ mod tests {
 
     use db::test_util::in_memory_db;
     use embedding::EmbeddingProvider;
-    use vectors::{UsearchEngine, VectorIndexConfig};
+    use synopsis_vectors::{UsearchEngine, VectorIndexConfig};
 
     use super::super::generator::{Generator, Scale};
     use super::*;

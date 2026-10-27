@@ -78,7 +78,7 @@ use db::{
 };
 use embedding::EmbeddingProvider;
 use serde_json::Value;
-use vectors::VectorIndex;
+use synopsis_vectors::VectorIndex;
 
 pub use cleanup::OrphanCleanupStats;
 
@@ -823,7 +823,7 @@ mod tests {
     use config::preset::{IngestionConfig, LinkerConfig};
     use db::test_util::in_memory_db;
     use embedding::EmbeddingError;
-    use vectors::{VectorIndex, VectorsError};
+    use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;
     use crate::ner::load_ner_prompts;

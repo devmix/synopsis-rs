@@ -1295,7 +1295,7 @@ fn vectors_engine_field_removed_engine_is_rejected() {
 
 #[test]
 fn vectors_engine_field_absent_stays_none() {
-    // Absent key → None; the wiring (vectors::create_vector_engine)
+    // Absent key → None; the wiring (synopsis_vectors::create_vector_engine)
     // resolves the default engine ("usearch") — backward compatible with
     // presets written before the field.
     let cfg = parse("vectors:\n  dim: 512\n");

@@ -483,7 +483,7 @@ impl Config {
 
     /// Returns the effective ANN index configuration (design D7): the parsed
     /// `vectors:` section when present, otherwise the ADR 0003 defaults
-    /// ([`VectorsConfig::default`]). The mapping to `vectors::VectorIndexConfig`
+    /// ([`VectorsConfig::default`]). The mapping to `synopsis_vectors::VectorIndexConfig`
     /// happens at the wiring level (a future change); field names and types
     /// already mirror it, so the mapping is a field-by-field copy.
     pub fn vectors_config(&self) -> VectorsConfig {
@@ -791,7 +791,7 @@ vectors_adr_default!(default_vectors_ef_search, 200);
 /// an explicit removal error (a loud, actionable failure instead of a silent
 /// engine swap, design D2 of the engine-removal change); any other value
 /// fails the parse. An absent key stays `None` — the wiring
-/// (`vectors::create_vector_engine`) resolves the default engine (`"usearch"`),
+/// (`synopsis_vectors::create_vector_engine`) resolves the default engine (`"usearch"`),
 /// keeping pre-field presets backward compatible.
 fn de_vectors_engine<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
@@ -858,7 +858,7 @@ fn default_usearch_search_threads() -> usize {
 /// after compaction, the stale-vector percentage that triggers compaction,
 /// and the number of parallel search threads (rayon).
 ///
-/// Mirrors `vectors::UsearchConfig` (dependency direction D7: this crate
+/// Mirrors `synopsis_vectors::UsearchConfig` (dependency direction D7: this crate
 /// cannot depend on `vectors`), so the wiring maps it field by field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -922,7 +922,7 @@ where
 ///
 /// Raw preset fields only: this crate does not depend on `vectors`
 /// (dependency direction, design D7), so the mapping to
-/// `vectors::VectorIndexConfig` happens at the wiring level (a future
+/// `synopsis_vectors::VectorIndexConfig` happens at the wiring level (a future
 /// change). Field names and types mirror `VectorIndexConfig` so the mapping
 /// is a field-by-field copy — except `engine`, which selects the ANN engine
 /// at the wiring level (add-usearch-ann-engine) and has no

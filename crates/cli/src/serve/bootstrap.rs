@@ -26,7 +26,7 @@ use ingestion::{
     MediawikiSource, NerPrompts, Registry, Runner, RunnerParams, UnstructuredSource, WebpageSource,
     load_ner_prompts,
 };
-use vectors::{VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine};
+use synopsis_vectors::{VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine};
 
 use crate::error::CliError;
 
@@ -453,9 +453,9 @@ pub fn vectors_index_config(
     // The usearch tuning section (usearch-wal-persistence task 3.9, ADR
     // 0004 §10): mapped field by field (dependency direction D7: config
     // cannot depend on vectors). An absent section stays `None` (the
-    // engine resolves [`vectors::UsearchConfig::default`]).
+    // engine resolves [`synopsis_vectors::UsearchConfig::default`]).
     if let Some(usearch) = &tuning.usearch {
-        index_config.usearch = Some(vectors::UsearchConfig {
+        index_config.usearch = Some(synopsis_vectors::UsearchConfig {
             max_segment_vectors: usearch.max_segment_vectors,
             compaction_stale_threshold: usearch.compaction_stale_threshold,
             search_threads: usearch.search_threads,

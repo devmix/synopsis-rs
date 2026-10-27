@@ -201,7 +201,7 @@ mod tests {
     use embedding::EmbeddingProvider;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use vectors::{UsearchEngine, VectorIndexConfig};
+    use synopsis_vectors::{UsearchEngine, VectorIndexConfig};
 
     use crate::serve::bootstrap::open_db;
 
@@ -351,7 +351,7 @@ mod tests {
         let dim = 4;
         let embed = Arc::new(FakeEmbed::new(dim));
         let vectors = Arc::new(
-            vectors::UsearchEngine::create(
+            synopsis_vectors::UsearchEngine::create(
                 std::env::temp_dir().join(format!("lt-test-{}", std::process::id())),
                 VectorIndexConfig::new(dim, 16, 100, 1).unwrap(),
             )

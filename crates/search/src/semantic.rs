@@ -1,7 +1,7 @@
 //! Semantic (vector) sub-search leg.
 //!
 //! Built around the usearch-backed index (design D3): the
-//! [`vectors::VectorIndex`] is domain-blind, so the domain filter lives on
+//! [`synopsis_vectors::VectorIndex`] is domain-blind, so the domain filter lives on
 //! the application side with over-fetch.
 //!
 //! Flow: embed the query (an empty embedding is an error) → top-k index
@@ -34,7 +34,7 @@ use std::collections::HashMap;
 
 use db::{ChunkDao, DocumentDao};
 use embedding::EmbeddingProvider;
-use vectors::VectorIndex;
+use synopsis_vectors::VectorIndex;
 
 use crate::{SearchError, SemanticHit, document_domains, normalize_domain};
 
@@ -169,7 +169,7 @@ mod tests {
     use db::test_util::in_memory_db;
     use db::{ConnectionOrTx, Db, DocumentDao};
     use embedding::EmbeddingError;
-    use vectors::VectorsError;
+    use synopsis_vectors::VectorsError;
 
     use super::*;
 

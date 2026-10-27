@@ -39,5 +39,5 @@ pub enum SearchError {
 
     /// The vector index query failed.
     #[error("vector index error: {0}")]
-    Vector(#[from] vectors::VectorsError),
+    Vector(#[from] synopsis_vectors::VectorsError),
 }

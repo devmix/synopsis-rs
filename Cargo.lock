@@ -454,13 +454,13 @@ dependencies = [
  "serde_json",
  "sha2",
  "synopsis-utils",
+ "synopsis-vectors",
  "tabled",
  "terminal_size",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vectors",
 ]
 
 [[package]]
@@ -1599,10 +1599,10 @@ dependencies = [
  "serde_json",
  "sha2",
  "synopsis-utils",
+ "synopsis-vectors",
  "thiserror",
  "tokio",
  "tracing",
- "vectors",
 ]
 
 [[package]]
@@ -3014,8 +3014,8 @@ dependencies = [
  "graph",
  "serde_json",
  "synopsis-utils",
+ "synopsis-vectors",
  "thiserror",
- "vectors",
 ]
 
 [[package]]
@@ -3342,6 +3342,19 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "rust-stemmers",
+]
+
+[[package]]
+name = "synopsis-vectors"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "libsqlite3-sys",
+ "rayon",
+ "rusqlite",
+ "thiserror",
+ "usearch",
 ]
 
 [[package]]
@@ -3858,19 +3871,6 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
-
-[[package]]
-name = "vectors"
-version = "0.1.0"
-dependencies = [
- "cxx",
- "cxx-build",
- "libsqlite3-sys",
- "rayon",
- "rusqlite",
- "thiserror",
- "usearch",
-]
 
 [[package]]
 name = "version_check"
