@@ -2,17 +2,17 @@
 //! tools (extracted from `src/tools/graph_tools.rs` by test-hygiene-phase-1
 //! task 1.5). The 17 tests previously lived in the inline `#[cfg(test)] mod
 //! tests` module; they now run against the public API
-//! (`mcp::tools::graph_tools`), with the `crate::`/`super::*` imports
+//! (`synopsis_mcp::tools::graph_tools`), with the `crate::`/`super::*` imports
 //! rewritten to the crate name.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mcp::error::McpError;
-use mcp::tools::graph_tools::{handle_get_entity_links, handle_get_entity_relations};
 use serde_json::Value;
 use synopsis_config::preset::GraphConfig;
 use synopsis_db::{ConnectionOrTx, EntityDao, EntityLink, EntityLinkDao, test_util};
 use synopsis_graph::GraphIndex;
+use synopsis_mcp::error::McpError;
+use synopsis_mcp::tools::graph_tools::{handle_get_entity_links, handle_get_entity_relations};
 
 /// Seed an in-memory KB in one transaction; returns the db and the value
 /// the seeder produced (usually the created ids). Same helper as

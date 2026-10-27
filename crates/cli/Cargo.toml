@@ -22,7 +22,7 @@ synopsis_db = { workspace = true }
 synopsis_embedding = { workspace = true }
 synopsis_graph = { workspace = true }
 synopsis_ingestion = { workspace = true }
-mcp = { workspace = true }
+synopsis_mcp = { workspace = true }
 rusqlite = { workspace = true }
 synopsis_search = { workspace = true }
 serde = { workspace = true }

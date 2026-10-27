@@ -2,19 +2,19 @@
 //! tools (extracted from `src/tools/documents.rs` by test-hygiene-phase-1
 //! task 1.4). The 19 tests previously lived in the inline `#[cfg(test)] mod
 //! tests` module; they now run against the public API
-//! (`mcp::tools::documents`), with the `crate::`/`super::*` imports rewritten
+//! (`synopsis_mcp::tools::documents`), with the `crate::`/`super::*` imports rewritten
 //! to the crate name.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashSet;
 
-use mcp::error::McpError;
-use mcp::tools::documents::{handle_get_chunk_by_id, handle_get_document_context};
 use serde_json::Value;
 use synopsis_db::{
     ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, test_util,
 };
+use synopsis_mcp::error::McpError;
+use synopsis_mcp::tools::documents::{handle_get_chunk_by_id, handle_get_document_context};
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 

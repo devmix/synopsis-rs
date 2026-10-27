@@ -9,8 +9,8 @@ pub mod runner;
 use std::path::Path;
 use std::sync::Arc;
 
-use mcp::Server;
 use synopsis_graph::GraphIndex;
+use synopsis_mcp::Server;
 
 use crate::error::CliError;
 use crate::serve::bootstrap::{Bootstrap, bootstrap, open_vectors_engine};

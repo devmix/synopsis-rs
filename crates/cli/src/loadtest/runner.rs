@@ -1,4 +1,4 @@
-//! Benchmark runner: drives `mcp::Server::dispatch` for N iterations.
+//! Benchmark runner: drives `synopsis_mcp::Server::dispatch` for N iterations.
 //!
 //! Note: `search_lexical` and `search_semantic` are not MCP tools, so they
 //! are not benchmarked.
@@ -8,7 +8,7 @@ use std::time::Instant;
 use serde::Serialize;
 use serde_json::json;
 
-use mcp::Server;
+use synopsis_mcp::Server;
 
 use super::generator::{DEFAULT_SAMPLES_SIZE, Samples};
 

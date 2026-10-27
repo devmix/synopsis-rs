@@ -231,7 +231,7 @@ Per-task acceptance (in addition to the recipe gates):
     diff is mechanical. Gates green (1606/1606; one flaky cli serve_server
     failure on the first parallel run, clean on re-runs).
 
-- [ ] 2.9 Rename `search` → `synopsis-search`
+- [x] 2.9 Rename `search` → `synopsis-search`
   - Dependencies: task 2.8.
   - File scope: root `Cargo.toml`; `crates/search/**` →
     `crates/synopsis-search/**`; dependents with a Cargo.toml entry (2):
@@ -264,8 +264,17 @@ Per-task acceptance (in addition to the recipe gates):
   - Dependencies: task 2.9.
   - File scope: root `Cargo.toml`; `crates/mcp/**` → `crates/synopsis-mcp/**`;
     dependent with a Cargo.toml entry (1): `crates/cli`; all `.rs` files
-    containing `mcp::` (~31 lines, in cli + mcp's own tests).
+    containing `mcp::` (31 matches / 29 lines across 10 files: 8 in cli,
+    1 doc comment in synopsis-mcp's own lib.rs, 22 in its tests).
   - Acceptance: recipe gates + `rg '\bmcp::' -g '*.rs'` empty + metadata check.
+  - Revision history: implemented 2026-10-27. Pre-rename verification
+    confirmed no internal `mcp` module exists (no `mod mcp`, no
+    `crate::mcp::` / `::mcp::` anywhere); the `\b` boundary protected the
+    23 `rmcp::` references (external rmcp crate, confirmed untouched in
+    HEAD and after). rustfmt re-sorted import groups in 4 files (3
+    synopsis-mcp test files + cli loadtest/mod.rs) — same mechanical class
+    as tasks 2.2/2.3/2.5/2.6/2.8/2.9; reverse-transform diff confirmed the
+    whole diff is mechanical. Gates green (1606/1606).
 
 - [ ] 2.11 Rename `cli` → `synopsis-cli`
   - Dependencies: task 2.10.

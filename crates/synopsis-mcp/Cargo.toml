@@ -1,5 +1,5 @@
 [package]
-name = "mcp"
+name = "synopsis-mcp"
 version.workspace = true
 edition.workspace = true
 

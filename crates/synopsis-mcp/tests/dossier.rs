@@ -1,14 +1,12 @@
 //! Integration tests for the `get_entity_dossier` tool (extracted from
 //! `src/tools/dossier.rs` by test-hygiene-phase-2 task 2.5). The 16 tests
 //! previously lived in the inline `#[cfg(test)] mod tests` module; they now
-//! run against the public API (`mcp::tools::dossier::handle_get_entity_dossier`,
-//! `mcp::McpError`) plus the public seams of the `db`, `graph` and `config`
+//! run against the public API (`synopsis_mcp::tools::dossier::handle_get_entity_dossier`,
+//! `synopsis_mcp::McpError`) plus the public seams of the `db`, `graph` and `config`
 //! crates (in-memory fixture db, ready graph index).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mcp::error::McpError;
-use mcp::tools::dossier::handle_get_entity_dossier;
 use serde_json::Value;
 use synopsis_config::preset::GraphConfig;
 use synopsis_db::{
@@ -16,6 +14,8 @@ use synopsis_db::{
     EntitySourceDao, FactDao, FactSourceDao, test_util,
 };
 use synopsis_graph::GraphIndex;
+use synopsis_mcp::error::McpError;
+use synopsis_mcp::tools::dossier::handle_get_entity_dossier;
 
 /// Seed an in-memory KB in one transaction; returns the db and the value
 /// the seeder produced (usually the created ids).

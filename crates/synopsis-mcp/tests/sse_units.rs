@@ -1,8 +1,8 @@
 //! Unit tests for the legacy HTTP+SSE transport (extracted from
 //! `src/transport/sse.rs` by test-hygiene-phase-1 task 1.10). The 18 tests
 //! previously lived in the inline `#[cfg(test)] mod tests` module; they now
-//! run against the public API (`mcp::transport::sse`) plus the docs-hidden
-//! `mcp::test_support` seams (`endpoint_url`, `encode_sse_frame`,
+//! run against the public API (`synopsis_mcp::transport::sse`) plus the docs-hidden
+//! `synopsis_mcp::test_support` seams (`endpoint_url`, `encode_sse_frame`,
 //! `CHANNEL_CAPACITY`). The 5 `POST /message` tests that need the
 //! `#[cfg(test)]` `test_server` fixture stay inline in `src/transport/sse.rs`.
 //!
@@ -23,8 +23,8 @@ use tokio_stream::StreamExt;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use mcp::test_support::{CHANNEL_CAPACITY, encode_sse_frame, endpoint_url};
-use mcp::transport::sse::{SseSessionMap, handle_sse};
+use synopsis_mcp::test_support::{CHANNEL_CAPACITY, encode_sse_frame, endpoint_url};
+use synopsis_mcp::transport::sse::{SseSessionMap, handle_sse};
 
 /// The non-standard proxy headers `endpoint_url` reads (design D2 revision):
 /// the production consts are private to `transport::sse`, so the moved tests

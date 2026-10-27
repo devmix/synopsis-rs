@@ -55,7 +55,7 @@ mod root_api {
 
     /// The root re-exports resolve with the exact signatures the cli
     /// assembly will use. (Inside the crate the root is `crate::`; the
-    /// external `mcp::` spelling is pinned by the integration test in
+    /// external `synopsis_mcp::` spelling is pinned by the integration test in
     /// `tests/server_integration.rs`.)
     #[test]
     fn root_reexports_resolve() {

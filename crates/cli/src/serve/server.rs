@@ -48,7 +48,7 @@
 //! graph reload the serve loop constructs a fresh handle (with the
 //! reloaded index) and swaps it — plus the graph handle — into the MCP
 //! server (design D8: an explicit handle swap instead of an in-place
-//! mutation; see [`mcp::Server::set_searcher`] / [`mcp::Server::set_graph`]).
+//! mutation; see [`synopsis_mcp::Server::set_searcher`] / [`synopsis_mcp::Server::set_graph`]).
 //!
 //! # Dimension-mismatch rebuild
 //!
@@ -69,7 +69,7 @@
 //! and drains in-flight requests; the serve task and the watcher debounce
 //! task stop under one 10 s bound. As part of the graceful stop the serve
 //! task ends the server's own long-lived legacy SSE sessions
-//! (`mcp::Server::close_all_sessions`, fix-serve-signal-shutdown D5) the
+//! (`synopsis_mcp::Server::close_all_sessions`, fix-serve-signal-shutdown D5) the
 //! moment the stop resolves — an open `GET /sse` stream is an in-flight
 //! request that would otherwise hold the axum drain open until the 10 s
 //! bound. A second signal forces an immediate exit with code 130
@@ -141,7 +141,7 @@ pub struct ServeRequest {
 /// See the module docs for the lifetime design: one pooled connection per
 /// call, a fresh immutable [`HybridSearcher`] per call. After a graph
 /// reload the serve loop constructs a fresh handle (with the reloaded
-/// index) and swaps it into [`mcp::Server::set_searcher`] — there is no
+/// index) and swaps it into [`synopsis_mcp::Server::set_searcher`] — there is no
 /// in-place mutation (search design D8).
 pub struct PooledSearcher {
     db: synopsis_db::Db,
@@ -572,7 +572,7 @@ pub fn serve_with_stop(
         vectors.clone(),
         graph.clone(),
     ));
-    let server = mcp::Server::new(
+    let server = synopsis_mcp::Server::new(
         config.server.name.clone(),
         config.server.version.clone(),
         db.clone(),

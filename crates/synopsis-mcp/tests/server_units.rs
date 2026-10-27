@@ -1,7 +1,7 @@
 //! Unit tests for the MCP server (extracted from `src/server.rs` by
 //! test-hygiene-phase-2 task 2.3). The 8 tests previously lived in the
 //! inline `#[cfg(test)]` module; they now run against the public API
-//! (`mcp::server::{Server, tool_definitions}`, `mcp::McpError`) plus the
+//! (`synopsis_mcp::server::{Server, tool_definitions}`, `synopsis_mcp::McpError`) plus the
 //! crate's production and dev dependencies (axum, rmcp, tower, tokio).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -14,8 +14,8 @@ use synopsis_db::test_util;
 use synopsis_graph::GraphIndex;
 use synopsis_search::{SearchError, SearchResult, Searcher};
 
-use mcp::McpError;
-use mcp::server::{Server, tool_definitions};
+use synopsis_mcp::McpError;
+use synopsis_mcp::server::{Server, tool_definitions};
 
 /// The 12 frozen tool names (`mcp-contract` "Tool set"), in
 /// registration order.

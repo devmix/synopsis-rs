@@ -1,6 +1,6 @@
 //! End-to-end integration test (task 5.10): the full transport round-trip.
 //!
-//! Boots [`mcp::Server`] on an ephemeral localhost port (axum + rmcp
+//! Boots [`synopsis_mcp::Server`] on an ephemeral localhost port (axum + rmcp
 //! Streamable HTTP, design D1/D8), connects with the rmcp SDK client role
 //! (reqwest-backed streamable-HTTP transport), and drives the real wire path:
 //! `initialize` → `tools/list` (exactly the 12 frozen tools) →
@@ -128,8 +128,8 @@ fn seeded_db() -> synopsis_db::Db {
 /// The integration server over the seeded KB: identity
 /// `synopsis-integration 9.9.9`, stub searcher, no graph (the Unavailable
 /// state degrades the graph tools; this test does not exercise them).
-fn integration_server() -> mcp::Server {
-    mcp::Server::new(
+fn integration_server() -> synopsis_mcp::Server {
+    synopsis_mcp::Server::new(
         "synopsis-integration".to_owned(),
         "9.9.9".to_owned(),
         seeded_db(),
@@ -141,7 +141,7 @@ fn integration_server() -> mcp::Server {
 /// Boot the server on an ephemeral localhost port; returns the base URL
 /// (the MCP transport is the fallback on any path, `/health` is the
 /// explicit route) and a shutdown trigger for graceful axum termination.
-async fn spawn_server(server: mcp::Server) -> (String, tokio::sync::oneshot::Sender<()>) {
+async fn spawn_server(server: synopsis_mcp::Server) -> (String, tokio::sync::oneshot::Sender<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
