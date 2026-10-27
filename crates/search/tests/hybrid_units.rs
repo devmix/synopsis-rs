@@ -2,7 +2,7 @@
 //!
 //! Extracted from the inline `#[cfg(test)]` module in `src/hybrid.rs` to
 //! shrink the source file. They exercise the PUBLIC crate-root API against
-//! an in-memory SQLite database (`db::test_util::in_memory_db`) with the
+//! an in-memory SQLite database (`synopsis_db::test_util::in_memory_db`) with the
 //! model-level seams mocked: a canned embedding provider and a canned
 //! search-only index.
 //!
@@ -16,10 +16,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use db::test_util::in_memory_db;
-use db::{
-    ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, Entity, EntityDao, Fact, FactDao,
-};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::Graph;
 use search::{
@@ -27,6 +23,10 @@ use search::{
     Searcher, SemanticSearcher,
 };
 use synopsis_config::preset::{GraphConfig, SearchConfig};
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{
+    ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, Entity, EntityDao, Fact, FactDao,
+};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 // ── fixtures ────────────────────────────────────────────────────────────────

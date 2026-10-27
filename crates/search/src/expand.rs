@@ -2,7 +2,7 @@
 //!
 //! Flow: collect the unique result entity ids (first-seen order, skipping
 //! ids absent from the graph) → one batched
-//! [`db::FactDao::list_by_entity_ids`] (approved facts only) → per entity:
+//! [`synopsis_db::FactDao::list_by_entity_ids`] (approved facts only) → per entity:
 //! BFS both directions via [`Graph::traverse`] (`max_depth`/`max_nodes` from
 //! [`GraphConfig`]) → serialize the edges and facts into
 //! `metadata["related_entities"]` in the wire shape
@@ -28,10 +28,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use db::FactDao;
 use graph::{EntityNode, Graph, TraversalEdge, TraverseOptions};
 use serde_json::{Map, Value};
 use synopsis_config::preset::GraphConfig;
+use synopsis_db::FactDao;
 
 use crate::SearchResult;
 
@@ -127,7 +127,7 @@ impl<'conn> GraphExpander<'conn> {
                     Vec::new()
                 }
             };
-            let facts: &[db::Fact] = facts_by_entity.get(&id).map_or(&[], Vec::as_slice);
+            let facts: &[synopsis_db::Fact] = facts_by_entity.get(&id).map_or(&[], Vec::as_slice);
             expansions.insert(id, serialize_entity(node, &edges, facts));
         }
         Ok(expansions)
@@ -161,7 +161,11 @@ fn attach_related_entities(results: &mut [SearchResult], expansions: &HashMap<i6
 /// One `related_entities` entry: the graph node identity plus the BFS
 /// edges and the entity's approved facts. The `edges`/`facts` keys are
 /// absent when empty (wire contract).
-fn serialize_entity(node: &EntityNode, edges: &[TraversalEdge], facts: &[db::Fact]) -> Value {
+fn serialize_entity(
+    node: &EntityNode,
+    edges: &[TraversalEdge],
+    facts: &[synopsis_db::Fact],
+) -> Value {
     let mut data = Map::new();
     data.insert("entity_id".to_owned(), node.id.into());
     data.insert("name".to_owned(), node.name.clone().into());
@@ -210,7 +214,7 @@ fn serialize_edges(edges: &[TraversalEdge]) -> Vec<Value> {
 /// `id`/`predicate`/`subject_entity_id`/`object_entity_id` always (a
 /// `NULL` endpoint is `0`), `metadata` only when present (the raw JSON
 /// string, NOT parsed).
-fn serialize_facts(facts: &[db::Fact]) -> Vec<Value> {
+fn serialize_facts(facts: &[synopsis_db::Fact]) -> Vec<Value> {
     facts
         .iter()
         .map(|fact| {
@@ -237,10 +241,10 @@ fn serialize_facts(facts: &[db::Fact]) -> Vec<Value> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, Db, Entity, EntityDao, Fact, FactDao};
     use graph::EdgeKind;
     use synopsis_config::preset::GraphConfig;
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ConnectionOrTx, Db, Entity, EntityDao, Fact, FactDao};
 
     use super::*;
     use crate::SourceType;
@@ -681,7 +685,7 @@ mod tests {
         let draft = seed_fact(&db, 1, "owns", 2, None);
         db.exec_tx(|tx| {
             tx.execute("UPDATE facts SET status = 'draft' WHERE id = ?", [draft])
-                .map_err(db::DbError::from)
+                .map_err(synopsis_db::DbError::from)
         })
         .expect("draft status set");
         seed_fact(&db, 1, "works_in", 2, None);

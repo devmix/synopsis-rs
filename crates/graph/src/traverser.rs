@@ -312,7 +312,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use db::{Entity, EntityLink, Fact};
+    use synopsis_db::{Entity, EntityLink, Fact};
 
     // ── fixtures ────────────────────────────────────────────────────────
     fn entity(id: i64, entity_type: &str, name: &str, domain: &str) -> Entity {

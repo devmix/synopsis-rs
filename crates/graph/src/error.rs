@@ -32,7 +32,7 @@ pub enum GraphError {
     /// A storage failure from the `db` crate: every read of entities, links,
     /// facts or chunks goes through the DAOs (design D1).
     #[error("storage error: {0}")]
-    Db(#[from] db::DbError),
+    Db(#[from] synopsis_db::DbError),
     /// A finder input was empty after normalization (a caller bug: an empty
     /// name or query cannot match — the partial entity finder rejects an
     /// empty pattern, task 1.3).

@@ -1,8 +1,8 @@
 //! Result enrichment: document metadata and chunk entities (design D6).
 //!
 //! Flow: collect the unique document ids of the pool → one batched
-//! [`db::DocumentDao::get_by_ids`] → collect the unique chunk ids → one
-//! batched [`db::ChunkEntityDao::get_entities_by_chunks`] → per result:
+//! [`synopsis_db::DocumentDao::get_by_ids`] → collect the unique chunk ids → one
+//! batched [`synopsis_db::ChunkEntityDao::get_entities_by_chunks`] → per result:
 //! `document_path`, merged `source_type` (`"lexical+pdf"` style),
 //! `metadata["document_source_type"]`, `updated_at` normalized to RFC3339,
 //! the raw `document_metadata_json`, `domains` (via the shared
@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use db::{ChunkEntityDao, DocumentDao};
+use synopsis_db::{ChunkEntityDao, DocumentDao};
 use synopsis_utils::temporal::normalize_to_rfc3339;
 
 use crate::{SearchError, SearchResult, document_domains};
@@ -70,7 +70,8 @@ impl<'conn> Enricher<'conn> {
             }
         }
         let docs = self.documents.get_by_ids(&doc_ids)?;
-        let doc_by_id: HashMap<i64, &db::Document> = docs.iter().map(|doc| (doc.id, doc)).collect();
+        let doc_by_id: HashMap<i64, &synopsis_db::Document> =
+            docs.iter().map(|doc| (doc.id, doc)).collect();
 
         // Unique chunk ids (one batched query; the DAO de-duplicates again).
         let chunk_ids: Vec<i64> = results
@@ -166,8 +167,8 @@ fn extract_reranker_flags(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use db::test_util::in_memory_db;
-    use db::{ChunkDao, Db, EntityDao};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ChunkDao, Db, EntityDao};
 
     use super::*;
     use crate::SourceType;
@@ -194,7 +195,7 @@ mod tests {
     /// Create a document and return its id.
     fn seed_doc(db: &Db, source_type: &str, path: &str, metadata_json: Option<&str>) -> i64 {
         db.exec_tx(|tx| {
-            let docs = DocumentDao::new(db::ConnectionOrTx::Transaction(&*tx));
+            let docs = DocumentDao::new(synopsis_db::ConnectionOrTx::Transaction(&*tx));
             docs.create(source_type, path, metadata_json, None)
         })
         .expect("seed document commits")
@@ -203,7 +204,7 @@ mod tests {
     /// Create a chunk and return its id.
     fn seed_chunk(db: &Db, doc_id: i64, seq: i64) -> i64 {
         db.exec_tx(|tx| {
-            let chunks = ChunkDao::new(db::ConnectionOrTx::Transaction(&*tx));
+            let chunks = ChunkDao::new(synopsis_db::ConnectionOrTx::Transaction(&*tx));
             chunks.create(doc_id, "chunk text", seq, None, None)
         })
         .expect("seed chunk commits")
@@ -212,7 +213,7 @@ mod tests {
     /// Create an entity and return its id.
     fn seed_entity(db: &Db, name: &str) -> i64 {
         db.exec_tx(|tx| {
-            let entities = EntityDao::new(db::ConnectionOrTx::Transaction(&*tx));
+            let entities = EntityDao::new(synopsis_db::ConnectionOrTx::Transaction(&*tx));
             entities.create("PERSON", name, "enrich", None, None, None)
         })
         .expect("seed entity commits")
@@ -221,7 +222,7 @@ mod tests {
     /// Link a chunk to an entity.
     fn link(db: &Db, chunk_id: i64, entity_id: i64) {
         db.with_conn(|conn| {
-            let links = ChunkEntityDao::new(db::ConnectionOrTx::Connection(conn));
+            let links = ChunkEntityDao::new(synopsis_db::ConnectionOrTx::Connection(conn));
             links.link(chunk_id, entity_id)
         })
         .expect("connection checkout")
@@ -231,8 +232,8 @@ mod tests {
     /// Run `f` with an enricher bound to pooled connections.
     fn with_enricher<T>(db: &Db, f: impl FnOnce(&Enricher<'_>) -> T) -> T {
         db.with_conn(|conn| {
-            let documents = DocumentDao::new(db::ConnectionOrTx::Connection(conn));
-            let chunk_entities = ChunkEntityDao::new(db::ConnectionOrTx::Connection(conn));
+            let documents = DocumentDao::new(synopsis_db::ConnectionOrTx::Connection(conn));
+            let chunk_entities = ChunkEntityDao::new(synopsis_db::ConnectionOrTx::Connection(conn));
             f(&Enricher::new(&documents, &chunk_entities))
         })
         .expect("connection checkout")

@@ -200,9 +200,9 @@ mod tests {
 
     use std::time::Duration;
 
-    use db::test_util::in_memory_db;
-    use db::{ChunkDao, ChunkEntityDao, Db, DocumentDao};
     use serde_json::json;
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ChunkDao, ChunkEntityDao, Db, DocumentDao};
 
     use super::*;
     use crate::Enricher;
@@ -709,7 +709,7 @@ mod tests {
 
     fn seed_doc(db: &Db, source_type: &str, path: &str, metadata_json: Option<&str>) -> i64 {
         db.exec_tx(|tx| {
-            let documents = DocumentDao::new(db::ConnectionOrTx::Transaction(&*tx));
+            let documents = DocumentDao::new(synopsis_db::ConnectionOrTx::Transaction(&*tx));
             documents.create(source_type, path, metadata_json, None)
         })
         .expect("seed document commits")
@@ -717,7 +717,7 @@ mod tests {
 
     fn seed_chunk(db: &Db, document_id: i64) -> i64 {
         db.exec_tx(|tx| {
-            let chunks = ChunkDao::new(db::ConnectionOrTx::Transaction(&*tx));
+            let chunks = ChunkDao::new(synopsis_db::ConnectionOrTx::Transaction(&*tx));
             chunks.create(document_id, "chunk text", 0, None, None)
         })
         .expect("seed chunk commits")
@@ -736,8 +736,8 @@ mod tests {
 
     fn with_enricher<T>(db: &Db, f: impl FnOnce(&Enricher<'_>) -> T) -> T {
         db.with_conn(|conn| {
-            let documents = DocumentDao::new(db::ConnectionOrTx::Connection(conn));
-            let chunk_entities = ChunkEntityDao::new(db::ConnectionOrTx::Connection(conn));
+            let documents = DocumentDao::new(synopsis_db::ConnectionOrTx::Connection(conn));
+            let chunk_entities = ChunkEntityDao::new(synopsis_db::ConnectionOrTx::Connection(conn));
             f(&Enricher::new(&documents, &chunk_entities))
         })
         .expect("connection checkout")

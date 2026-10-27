@@ -8,11 +8,11 @@
 
 use std::sync::Arc;
 
-use db::test_util;
 use graph::GraphIndex;
 use rmcp::ServerHandler;
 use search::{SearchError, SearchResult, Searcher};
 use serde_json::{Map, Value, json};
+use synopsis_db::test_util;
 
 use mcp::McpError;
 use mcp::server::{Server, tool_definitions};
@@ -412,11 +412,11 @@ async fn router_serves_health_on_explicit_route() {
 /// A temp fixture DB: 1 document + 2 chunks. The in-memory pool is the
 /// temp storage; the seeded rows give the `/health` leg real counters to
 /// assert (the same seed shape as `tests/server_integration.rs`).
-fn fixture_db() -> db::Db {
-    use db::{ChunkDao, ConnectionOrTx, DocumentDao};
+fn fixture_db() -> synopsis_db::Db {
+    use synopsis_db::{ChunkDao, ConnectionOrTx, DocumentDao};
 
     let db = test_util::in_memory_db();
-    let seeded = db.with_conn(|conn| -> Result<(), db::DbError> {
+    let seeded = db.with_conn(|conn| -> Result<(), synopsis_db::DbError> {
         let exec = ConnectionOrTx::Connection(conn);
         let doc = DocumentDao::new(exec).create("markdown", "/docs/hr-policy.md", None, None)?;
         let chunks = ChunkDao::new(exec);

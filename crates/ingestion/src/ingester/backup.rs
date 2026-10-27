@@ -23,7 +23,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
-use db::{ConnectionOrTx, Db, DocumentDao};
+use synopsis_db::{ConnectionOrTx, Db, DocumentDao};
 use synopsis_utils::temporal::format_backup_stamp;
 
 use crate::error::IngestionError;
@@ -48,7 +48,7 @@ pub(crate) fn create_backup(db: &Db) -> Result<bool, IngestionError> {
     let db_file: String = db
         .with_conn(|conn| conn.query_row("PRAGMA database_list", [], |row| row.get(2)))
         .map_err(IngestionError::from)?
-        .map_err(|source| IngestionError::Db(db::DbError::Sqlite { source }))?;
+        .map_err(|source| IngestionError::Db(synopsis_db::DbError::Sqlite { source }))?;
     if db_file.is_empty() || db_file == ":memory:" {
         // In-memory / unnamed database: nothing to snapshot (design D6).
         return Ok(false);
@@ -93,7 +93,7 @@ pub(crate) fn create_backup(db: &Db) -> Result<bool, IngestionError> {
 /// Storage errors (listing, deletion, commit).
 pub(crate) fn clear_source_data(db: &Db, source_root: &Path) -> Result<usize, IngestionError> {
     let root = clean_path(source_root);
-    let ids: Vec<i64> = db.with_conn(|conn| -> Result<Vec<i64>, db::DbError> {
+    let ids: Vec<i64> = db.with_conn(|conn| -> Result<Vec<i64>, synopsis_db::DbError> {
         let docs = DocumentDao::new(ConnectionOrTx::Connection(conn)).list()?;
         Ok(docs
             .into_iter()
@@ -128,7 +128,7 @@ fn vacuum_into(db: &Db, backup_path: &Path) -> Result<(), IngestionError> {
     let literal = format!("'{}'", backup_path.to_string_lossy().replace('\'', "''"));
     db.with_conn(|conn| conn.execute_batch(&format!("VACUUM INTO {literal}")))
         .map_err(IngestionError::from)?
-        .map_err(|source| IngestionError::Db(db::DbError::Sqlite { source }))?;
+        .map_err(|source| IngestionError::Db(synopsis_db::DbError::Sqlite { source }))?;
     Ok(())
 }
 
@@ -191,8 +191,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use db::test_util::in_memory_db;
-    use db::{ChunkDao, DocumentDao};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ChunkDao, DocumentDao};
 
     use super::*;
 

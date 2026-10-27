@@ -29,12 +29,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use db::{
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::Value;
+use synopsis_db::{
     Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Document, DocumentDao, Entity, EntityDao,
     FactDao,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::Value;
 
 use crate::error::McpError;
 use crate::tools::entity::{EntityBrief, entity_brief};
@@ -95,7 +95,7 @@ fn parse_id_arg(raw: String, key: &str, tool: &'static str) -> Result<i64, McpEr
 fn resolve_entities(
     exec: ConnectionOrTx<'_>,
     entity_ids: &[i64],
-) -> Result<Vec<Entity>, db::DbError> {
+) -> Result<Vec<Entity>, synopsis_db::DbError> {
     if entity_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -266,7 +266,10 @@ fn document_info(doc: &Document) -> DocumentInfo {
 /// `args` is the raw JSON argument object (`None` = no arguments). The
 /// result is the frozen wire payload (`mcp-contract`) the server serializes
 /// into the tool response's text block.
-pub fn handle_get_document_context(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
+pub fn handle_get_document_context(
+    db: &synopsis_db::Db,
+    args: Option<&Value>,
+) -> Result<Value, McpError> {
     let args: DocumentContextArgs = deserialize_args(args, GET_DOCUMENT_CONTEXT)?;
     let document_id = parse_id_arg(
         args.document_id.unwrap_or_default(),
@@ -439,7 +442,10 @@ struct ChunkByIdResponse {
 /// `args` is the raw JSON argument object (`None` = no arguments). The
 /// result is the frozen wire payload (`mcp-contract`) the server serializes
 /// into the tool response's text block.
-pub fn handle_get_chunk_by_id(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
+pub fn handle_get_chunk_by_id(
+    db: &synopsis_db::Db,
+    args: Option<&Value>,
+) -> Result<Value, McpError> {
     let args: ChunkByIdArgs = deserialize_args(args, GET_CHUNK_BY_ID)?;
     let chunk_id = parse_id_arg(
         args.chunk_id.unwrap_or_default(),

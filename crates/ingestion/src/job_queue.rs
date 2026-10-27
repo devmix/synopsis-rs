@@ -2,7 +2,7 @@
 //! linking task 1.2).
 //!
 //! [`DocumentJobQueue`] is the single producer surface for the persistent
-//! event queue (task 1.1, [`db::QueueTaskDao`]): the file watcher (task 1.5),
+//! event queue (task 1.1, [`synopsis_db::QueueTaskDao`]): the file watcher (task 1.5),
 //! the startup reconcile and the CLI enqueue through it instead of calling
 //! the ingestion pipeline directly. The queue is a new Rust construct:
 //! ingestion runs as per-file jobs rather than a synchronous whole-source
@@ -47,7 +47,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 
-use db::{
+use synopsis_db::{
     ConnectionOrTx, Db, DocDeletePayload, DocIndexPayload, DocumentDao, QueueTaskDao,
     QueueTaskType, ReIndexOp,
 };
@@ -248,11 +248,11 @@ impl<'db> DocumentJobQueue<'db> {
             .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
             .map_err(IngestionError::Db)?
             .map_err(IngestionError::QueueTask)?;
-        let doc_tasks: Vec<db::QueueTask> = all_tasks
+        let doc_tasks: Vec<synopsis_db::QueueTask> = all_tasks
             .into_iter()
             .filter(|t| t.task_type == "doc:index" || t.task_type == "doc:delete")
             .collect();
-        let documents_by_path: HashMap<&str, &db::Document> = documents
+        let documents_by_path: HashMap<&str, &synopsis_db::Document> = documents
             .iter()
             .map(|doc| (doc.original_path.as_str(), doc))
             .collect();
@@ -356,12 +356,12 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
 
-    use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, Db, DocumentDao, QueueTaskDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
     use synopsis_config::DomainConfig;
     use synopsis_config::ontology::{GlobalConfig, GlobalNerConfig, SourceConfig, SourceType};
     use synopsis_config::preset::{IngestionConfig, LinkerConfig};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ConnectionOrTx, Db, DocumentDao, QueueTaskDao};
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;
@@ -540,7 +540,7 @@ mod tests {
     }
 
     /// All `doc:*` tasks (test helper).
-    fn list_doc_tasks(db: &Db) -> Vec<db::QueueTask> {
+    fn list_doc_tasks(db: &Db) -> Vec<synopsis_db::QueueTask> {
         db.with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
             .unwrap()
             .unwrap()
@@ -551,7 +551,7 @@ mod tests {
 
     /// Seeds one `documents` row (test helper).
     fn seed_document(db: &Db, path: &str, content_hash: &str) {
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             DocumentDao::new(ConnectionOrTx::Transaction(&*tx)).create(
                 "test",
                 path,

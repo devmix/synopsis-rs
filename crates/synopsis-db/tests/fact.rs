@@ -1,4 +1,4 @@
-//! Integration tests for the `facts` DAO ([`db::FactDao`]), relocated from
+//! Integration tests for the `facts` DAO ([`synopsis_db::FactDao`]), relocated from
 //! the inline `#[cfg(test)]` module in `crates/db/src/fact.rs` (change
 //! `test-hygiene-phase-1`, task 1.2).
 //!
@@ -9,12 +9,12 @@
 
 use std::collections::HashSet;
 
-use db::Db;
-use db::document::DocumentDao;
-use db::entity::EntityDao;
-use db::test_util::in_memory_db;
-use db::{ConnectionOrTx, DbError, FactDao, FactFilter};
 use rusqlite::params;
+use synopsis_db::Db;
+use synopsis_db::document::DocumentDao;
+use synopsis_db::entity::EntityDao;
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{ConnectionOrTx, DbError, FactDao, FactFilter};
 
 /// Run `f` with a DAO bound to a pooled connection (checked out for the
 /// closure's duration).

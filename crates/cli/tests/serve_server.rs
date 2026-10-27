@@ -13,9 +13,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use db::{
-    ChunkDao, ConnectionOrTx, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType, ReIndexOp,
-};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use graph::GraphIndex;
 use ingestion::ShutdownFlag;
@@ -23,6 +20,9 @@ use search::Searcher;
 use synopsis_config::onnx::{ModelInfo, OnnxModelsConfig};
 use synopsis_config::preset::GraphConfig;
 use synopsis_config::{Config, GlobalConfig, OnnxConfig};
+use synopsis_db::{
+    ChunkDao, ConnectionOrTx, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType, ReIndexOp,
+};
 use synopsis_vectors::{
     ENGINE_USEARCH, VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine,
 };
@@ -482,7 +482,7 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
     let same_path = src.join("same.md").to_string_lossy().into_owned();
     let gone_path = src.join("gone.md").to_string_lossy().into_owned();
     boot.db
-        .with_conn(|conn| -> Result<(), db::DbError> {
+        .with_conn(|conn| -> Result<(), synopsis_db::DbError> {
             let dao = DocumentDao::new(ConnectionOrTx::Connection(conn));
             dao.create("markdown", &changed_path, None, Some("stale-hash"))?;
             let same_doc = dao.create(
@@ -566,7 +566,7 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
         .expect("with_conn tasks")
         .map_err(|e| panic!("list tasks: {e}"))
         .expect("list tasks");
-    let tasks_by_path: BTreeMap<&str, &db::QueueTask> = tasks
+    let tasks_by_path: BTreeMap<&str, &synopsis_db::QueueTask> = tasks
         .iter()
         .map(|task| (task.identity.as_str(), task))
         .collect();
@@ -652,7 +652,7 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
         .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
         .expect("with_conn documents")
         .expect("list documents");
-    let docs_by_path: BTreeMap<&str, &db::Document> = docs
+    let docs_by_path: BTreeMap<&str, &synopsis_db::Document> = docs
         .iter()
         .map(|doc| (doc.original_path.as_str(), doc))
         .collect();
@@ -715,7 +715,7 @@ fn serve_startup_recovers_a_stuck_processing_row() {
     // `processing` by a simulated unclean shutdown (no document row).
     let stuck_path = src.join("gone.md").to_string_lossy().into_owned();
     boot.db
-        .with_conn(|conn| -> Result<(), db::QueueTaskError> {
+        .with_conn(|conn| -> Result<(), synopsis_db::QueueTaskError> {
             let tasks = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
             tasks.enqueue(
                 QueueTaskType::DocIndex,
@@ -732,7 +732,7 @@ fn serve_startup_recovers_a_stuck_processing_row() {
                  last_error = 'simulated crash' WHERE identity = ?1",
                 [stuck_path.as_str()],
             )
-            .map_err(|e| db::QueueTaskError::Db(e.into()))?;
+            .map_err(|e| synopsis_db::QueueTaskError::Db(e.into()))?;
             Ok(())
         })
         .expect("with_conn seed")

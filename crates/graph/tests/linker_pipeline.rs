@@ -6,11 +6,11 @@
 
 use std::path::Path;
 
-use db::test_util::in_memory_db;
-use db::{ConnectionOrTx, EntityDao, EntityLinkDao, FactDao};
 use graph::build_entity_links;
 use synopsis_config::ontology::load_global_config;
 use synopsis_config::preset::LinkerConfig;
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{ConnectionOrTx, EntityDao, EntityLinkDao, FactDao};
 
 fn ontology_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/linker-ontology")
@@ -33,10 +33,10 @@ fn links_config() -> synopsis_config::ontology::CrossDomainLinksConfig {
 /// - "Jane Roe" (PERSON) in `hr` and `it` — equals only (no facts).
 ///
 /// Returns the entity ids in insertion order.
-fn fixture_db() -> (db::Db, Vec<i64>) {
+fn fixture_db() -> (synopsis_db::Db, Vec<i64>) {
     let db = in_memory_db();
     let ids = db
-        .with_conn(|conn| -> Result<Vec<i64>, db::DbError> {
+        .with_conn(|conn| -> Result<Vec<i64>, synopsis_db::DbError> {
             let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
             let mut ids: Vec<i64> = Vec::new();
             for (entity_type, name, domain) in [
@@ -66,7 +66,7 @@ fn fixture_db() -> (db::Db, Vec<i64>) {
     (db, ids)
 }
 
-fn all_links(db: &db::Db) -> Vec<db::EntityLink> {
+fn all_links(db: &synopsis_db::Db) -> Vec<synopsis_db::EntityLink> {
     db.with_conn(|conn| EntityLinkDao::new(ConnectionOrTx::Connection(conn)).list_all())
         .unwrap()
         .unwrap()
@@ -105,7 +105,7 @@ fn end_to_end_linking_and_idempotent_rerun() {
     assert_eq!(links.len(), 8, "Acme 2 + John 4 + Jane 2 rows");
 
     // equals rows: same_entity / equals / 0.9 for all three pairs.
-    let equals_rows: Vec<&db::EntityLink> = links
+    let equals_rows: Vec<&synopsis_db::EntityLink> = links
         .iter()
         .filter(|link| link.method == "equals")
         .collect();
@@ -115,7 +115,7 @@ fn end_to_end_linking_and_idempotent_rerun() {
         assert!((link.confidence - 0.9).abs() < f64::EPSILON);
     }
     // Jane's pair: equals only, no expression row.
-    let jane_rows: Vec<&db::EntityLink> = links
+    let jane_rows: Vec<&synopsis_db::EntityLink> = links
         .iter()
         .filter(|link| link.subject_entity_id == ids[4] || link.target_entity_id == ids[4])
         .collect();
@@ -124,12 +124,12 @@ fn end_to_end_linking_and_idempotent_rerun() {
 
     // John's pair: equals AND the rule row (works_at_same_org / expression /
     // 1.0 / "expression: acme_workers").
-    let john_rows: Vec<&db::EntityLink> = links
+    let john_rows: Vec<&synopsis_db::EntityLink> = links
         .iter()
         .filter(|link| link.subject_entity_id == ids[2] || link.target_entity_id == ids[2])
         .collect();
     assert_eq!(john_rows.len(), 4);
-    let rule_rows: Vec<&db::EntityLink> = john_rows
+    let rule_rows: Vec<&synopsis_db::EntityLink> = john_rows
         .into_iter()
         .filter(|link| link.method == "expression")
         .collect();

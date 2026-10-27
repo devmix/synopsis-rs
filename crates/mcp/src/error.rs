@@ -9,7 +9,7 @@ use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock};
 pub enum McpError {
     /// Storage-layer failure (db crate).
     #[error(transparent)]
-    Db(#[from] db::DbError),
+    Db(#[from] synopsis_db::DbError),
     /// Search-pipeline failure (search crate).
     #[error(transparent)]
     Search(#[from] search::SearchError),
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn collaborator_errors_wrap_transparently() {
-        let db_err = McpError::from(db::DbError::NestedTransaction);
+        let db_err = McpError::from(synopsis_db::DbError::NestedTransaction);
         assert!(db_err.to_string().contains("nested transaction"));
         let graph_err = McpError::Graph(graph::GraphError::EmptyQuery { what: "name" });
         assert_eq!(graph_err.to_string(), "empty query: name must not be empty");

@@ -7,17 +7,19 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use db::{ConnectionOrTx, EntityDao, EntityLink, EntityLinkDao, test_util};
 use graph::GraphIndex;
 use mcp::error::McpError;
 use mcp::tools::graph_tools::{handle_get_entity_links, handle_get_entity_relations};
 use serde_json::Value;
 use synopsis_config::preset::GraphConfig;
+use synopsis_db::{ConnectionOrTx, EntityDao, EntityLink, EntityLinkDao, test_util};
 
 /// Seed an in-memory KB in one transaction; returns the db and the value
 /// the seeder produced (usually the created ids). Same helper as
 /// `dossier.rs`.
-fn seed_db<T>(seed: impl FnOnce(ConnectionOrTx<'_>) -> Result<T, db::DbError>) -> (db::Db, T) {
+fn seed_db<T>(
+    seed: impl FnOnce(ConnectionOrTx<'_>) -> Result<T, synopsis_db::DbError>,
+) -> (synopsis_db::Db, T) {
     let db = test_util::in_memory_db();
     let value = db
         .exec_tx(|tx| seed(ConnectionOrTx::Transaction(&*tx)))
@@ -26,25 +28,29 @@ fn seed_db<T>(seed: impl FnOnce(ConnectionOrTx<'_>) -> Result<T, db::DbError>) -
 }
 
 /// A ready graph index over the db (config default: enabled + loaded).
-fn ready_graph(db: &db::Db) -> GraphIndex {
+fn ready_graph(db: &synopsis_db::Db) -> GraphIndex {
     GraphIndex::from_db(db, &GraphConfig::default()).expect("graph builds")
 }
 
-fn relations(db: &db::Db, graph: &GraphIndex, args: Option<Value>) -> Result<Value, McpError> {
+fn relations(
+    db: &synopsis_db::Db,
+    graph: &GraphIndex,
+    args: Option<Value>,
+) -> Result<Value, McpError> {
     handle_get_entity_relations(db, graph, args.as_ref())
 }
 
-fn links(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
+fn links(db: &synopsis_db::Db, args: Option<Value>) -> Result<Value, McpError> {
     handle_get_entity_links(db, args.as_ref())
 }
 
 /// The relations fixture: Alice --works_in--> Engineering,
 /// Bob --works_in--> Engineering, Alice --owns--> NDA,
 /// Policy --requires--> Bob, Alice --reports_to--> Policy.
-fn seeded_relations_db() -> (db::Db, (i64, i64, i64, i64, i64)) {
+fn seeded_relations_db() -> (synopsis_db::Db, (i64, i64, i64, i64, i64)) {
     seed_db(|exec| {
         let entities = EntityDao::new(exec);
-        let facts = db::FactDao::new(exec);
+        let facts = synopsis_db::FactDao::new(exec);
         let alice = entities.create("employee", "Alice", "", None, None, None)?;
         let engineering = entities.create("department", "Engineering", "", None, None, None)?;
         let nda = entities.create("policy", "NDA", "", None, None, None)?;
@@ -257,7 +263,7 @@ fn relations_depth_is_clamped_to_the_frozen_range() {
 fn relations_domain_disambiguates_and_lists_candidates() {
     let (db, (id_hr, id_product, _acme, unique)) = seed_db(|exec| {
         let entities = EntityDao::new(exec);
-        let facts = db::FactDao::new(exec);
+        let facts = synopsis_db::FactDao::new(exec);
         let id_hr = entities.create("employee", "Alice", "hr", None, None, None)?;
         let id_product = entities.create("employee", "Alice", "product", None, None, None)?;
         let acme = entities.create("organization", "Acme Corp", "hr", None, None, None)?;
@@ -351,7 +357,7 @@ fn relations_entity_missing_from_index_is_not_found() {
 fn relations_cross_domain_flag_controls_links_and_metadata() {
     let (db, (alice, ..)) = seed_db(|exec| {
         let entities = EntityDao::new(exec);
-        let facts = db::FactDao::new(exec);
+        let facts = synopsis_db::FactDao::new(exec);
         let links = EntityLinkDao::new(exec);
         let alice = entities.create("employee", "Alice", "hr", None, None, None)?;
         let bob = entities.create("employee", "Bob", "hr", None, None, None)?;
@@ -660,7 +666,7 @@ fn links_skip_missing_target_rows() {
                 )
             })
             .and_then(|_| conn.pragma_update(None, "foreign_keys", "ON"))
-            .map_err(db::DbError::from)
+            .map_err(synopsis_db::DbError::from)
     })
     .and_then(|result| result)
     .expect("dangling link row inserted past the FK");

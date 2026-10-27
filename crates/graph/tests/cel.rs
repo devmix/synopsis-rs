@@ -13,14 +13,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cel::objects::{Key as CelKey, Map as CelMap};
 use cel::{Context, Value};
-use db::test_util::in_memory_db;
-use db::{
-    ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, Entity, EntityDao, EntityLink,
-    EntityLinkDao, Fact, FactDao,
-};
 use graph::{
     CelEngine, FactIndex, Graph, GraphError, ReachabilityIndex, ScopeCache, build_chunk_index,
     build_fact_index, build_reachability_index, register_data_functions, register_graph_functions,
+};
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{
+    ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, Entity, EntityDao, EntityLink,
+    EntityLinkDao, Fact, FactDao,
 };
 
 /// Design D7: the engine, the scope cache and the cached program type
@@ -219,10 +219,10 @@ fn builder_failure_surfaces_as_cel_eval_error() {
 /// A fixed fixture: 4 entities, 4 facts (f3 made draft, f4 with a
 /// `NULL` subject), one document with 3 chunks linked to entities.
 /// Returns `(db, alice, bob, acme, eng, f1, f2, f3, f4)`.
-fn fixture_db() -> (db::Db, i64, i64, i64, i64, i64, i64, i64, i64) {
+fn fixture_db() -> (synopsis_db::Db, i64, i64, i64, i64, i64, i64, i64, i64) {
     let db = in_memory_db();
     let (alice, bob, acme, eng, f1, f2, f3, f4) = db
-        .with_conn(|conn| -> Result<_, db::DbError> {
+        .with_conn(|conn| -> Result<_, synopsis_db::DbError> {
             let exec = ConnectionOrTx::Connection(conn);
             let entities = EntityDao::new(exec);
             let alice = entities.create("PERSON", "Alice", "hr", None, None, None)?;
@@ -261,7 +261,7 @@ fn fixture_db() -> (db::Db, i64, i64, i64, i64, i64, i64, i64, i64) {
 }
 
 /// An engine with the four data functions registered over `db`.
-fn fixture_engine(db: &db::Db) -> CelEngine {
+fn fixture_engine(db: &synopsis_db::Db) -> CelEngine {
     let mut engine = CelEngine::new();
     register_data_functions(&mut engine, Arc::new(db.clone()));
     engine
@@ -706,10 +706,10 @@ fn path_exists_applies_the_d4_boundary_rule() {
 /// A two-domain fixture with facts and entity links (the graph-function
 /// counterpart of `fixture_db`). Returns `(db, alice, bob, carol, acme,
 /// globex, dave)`.
-fn graph_fixture_db() -> (db::Db, i64, i64, i64, i64, i64, i64) {
+fn graph_fixture_db() -> (synopsis_db::Db, i64, i64, i64, i64, i64, i64) {
     let db = in_memory_db();
     let (alice, bob, carol, acme, globex, dave) = db
-        .with_conn(|conn| -> Result<_, db::DbError> {
+        .with_conn(|conn| -> Result<_, synopsis_db::DbError> {
             let exec = ConnectionOrTx::Connection(conn);
             let entities = EntityDao::new(exec);
             let alice = entities.create("PERSON", "Alice", "hr", None, None, None)?;
@@ -759,7 +759,7 @@ fn graph_fixture_db() -> (db::Db, i64, i64, i64, i64, i64, i64) {
 }
 
 /// An engine with the two graph functions registered over `db`.
-fn graph_engine(db: &db::Db) -> CelEngine {
+fn graph_engine(db: &synopsis_db::Db) -> CelEngine {
     let mut engine = CelEngine::new();
     register_graph_functions(&mut engine, Arc::new(db.clone()));
     engine

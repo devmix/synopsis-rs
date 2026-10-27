@@ -37,7 +37,7 @@
 //! Consumers install functions through [`CelEngine::register`]. The installer
 //! receives the evaluation's `Arc<ScopeCache>` and the fresh root
 //! [`Context`]; it registers closures with `Context::add_function`, capturing
-//! the scope cache (and any other long-lived state, e.g. an `Arc<db::Db>`)
+//! the scope cache (and any other long-lived state, e.g. an `Arc<synopsis_db::Db>`)
 //! in the closure body. Closures must be `'static + Send + Sync`, so `Arc`
 //! is the way to share state — cel 0.14 has no other channel for function
 //! state (`FunctionContext::ptx` is an immutable `&Context`):
@@ -175,9 +175,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use cel::objects::{Key as CelKey, Map as CelMap};
 use cel::{Context, ExecutionError, Program, Value};
-use db::DbExecutor;
 use petgraph::Direction as PetDirection;
 use petgraph::visit::EdgeRef;
+use synopsis_db::DbExecutor;
 
 use crate::error::GraphError;
 use crate::graph::{EdgeKind, Graph};
@@ -239,7 +239,7 @@ impl<T> LazySlot<T> {
 pub struct FactIndex {
     /// Entity id → the approved facts attached to it (subject OR object
     /// side), in `facts.id` order (the builder's `ORDER BY id`).
-    by_entity: HashMap<i64, Vec<db::Fact>>,
+    by_entity: HashMap<i64, Vec<synopsis_db::Fact>>,
     /// Entity id → canonical name (value resolution for `has_fact` and the
     /// `value` key of `facts`).
     names: HashMap<i64, String>,
@@ -250,12 +250,12 @@ impl FactIndex {
     /// [`build_fact_index`]). A fact is attached to its subject and (when
     /// different) its object entry; `NULL` endpoints attach nothing.
     #[must_use]
-    pub fn from_rows(facts: Vec<db::Fact>, entities: Vec<db::Entity>) -> Self {
+    pub fn from_rows(facts: Vec<synopsis_db::Fact>, entities: Vec<synopsis_db::Entity>) -> Self {
         let mut names = HashMap::with_capacity(entities.len());
         for entity in &entities {
             names.insert(entity.id, entity.name.clone());
         }
-        let mut by_entity: HashMap<i64, Vec<db::Fact>> = HashMap::new();
+        let mut by_entity: HashMap<i64, Vec<synopsis_db::Fact>> = HashMap::new();
         for fact in facts {
             if let Some(subject) = fact.subject_entity_id {
                 by_entity.entry(subject).or_default().push(fact.clone());
@@ -273,7 +273,7 @@ impl FactIndex {
     /// in `facts.id` order; empty for an entity without facts or a missing
     /// entity (a lookup miss is an empty result, not an error).
     #[must_use]
-    pub fn facts(&self, entity_id: i64) -> &[db::Fact] {
+    pub fn facts(&self, entity_id: i64) -> &[synopsis_db::Fact] {
         match self.by_entity.get(&entity_id) {
             Some(facts) => facts.as_slice(),
             None => &[],
@@ -285,7 +285,7 @@ impl FactIndex {
     /// `None` when the fact has no object endpoint or the object entity is
     /// unknown.
     #[must_use]
-    pub fn value_of(&self, fact: &db::Fact) -> Option<&str> {
+    pub fn value_of(&self, fact: &synopsis_db::Fact) -> Option<&str> {
         fact.object_entity_id
             .and_then(|id| self.names.get(&id))
             .map(String::as_str)
@@ -305,11 +305,11 @@ impl FactIndex {
 /// Build the facts index from SQLite in one pass (design D5): approved
 /// facts via `FactDao::list_all` plus all entity names for value
 /// resolution.
-pub fn build_fact_index(db: &db::Db) -> Result<FactIndex, GraphError> {
+pub fn build_fact_index(db: &synopsis_db::Db) -> Result<FactIndex, GraphError> {
     db.with_conn(|conn| -> Result<FactIndex, GraphError> {
-        let exec = db::ConnectionOrTx::Connection(conn);
-        let facts = db::FactDao::new(exec).list_all()?;
-        let entities = db::EntityDao::new(exec).list()?;
+        let exec = synopsis_db::ConnectionOrTx::Connection(conn);
+        let facts = synopsis_db::FactDao::new(exec).list_all()?;
+        let entities = synopsis_db::EntityDao::new(exec).list()?;
         Ok(FactIndex::from_rows(facts, entities))
     })?
 }
@@ -362,9 +362,9 @@ impl ChunkIndex {
 /// (entity, chunk_text) pair of the `chunk_entities` join, ordered by
 /// `sequence_num` with an `id` tie-break (house convention; a
 /// `sequence_num`-only order ties across documents).
-pub fn build_chunk_index(db: &db::Db) -> Result<ChunkIndex, GraphError> {
+pub fn build_chunk_index(db: &synopsis_db::Db) -> Result<ChunkIndex, GraphError> {
     db.with_conn(|conn| -> Result<ChunkIndex, GraphError> {
-        let exec = db::ConnectionOrTx::Connection(conn);
+        let exec = synopsis_db::ConnectionOrTx::Connection(conn);
         let pairs = exec.query(
             "SELECT ce.entity_id, c.chunk_text \
              FROM chunk_entities ce INNER JOIN chunks c ON c.id = ce.chunk_id \
@@ -509,12 +509,12 @@ impl ReachabilityIndex {
 /// entities, approved facts and entity links — the same rows as the startup
 /// index (`GraphIndex::from_db`), without its configuration gating: the CEL
 /// evaluation path always reads the current database state.
-pub fn build_reachability_index(db: &db::Db) -> Result<ReachabilityIndex, GraphError> {
+pub fn build_reachability_index(db: &synopsis_db::Db) -> Result<ReachabilityIndex, GraphError> {
     db.with_conn(|conn| -> Result<ReachabilityIndex, GraphError> {
-        let exec = db::ConnectionOrTx::Connection(conn);
-        let entities = db::EntityDao::new(exec).list()?;
-        let facts = db::FactDao::new(exec).list_all()?;
-        let links = db::EntityLinkDao::new(exec).list_all()?;
+        let exec = synopsis_db::ConnectionOrTx::Connection(conn);
+        let entities = synopsis_db::EntityDao::new(exec).list()?;
+        let facts = synopsis_db::FactDao::new(exec).list_all()?;
+        let links = synopsis_db::EntityLinkDao::new(exec).list_all()?;
         Ok(ReachabilityIndex::new(Graph::from_rows(
             entities, facts, links,
         )))
@@ -667,7 +667,7 @@ impl Default for CelEngine {
 /// Map one fact to the CEL value of the `facts` contract function: a map
 /// with exactly the keys documented in the module docs (`id` / `predicate` /
 /// `domain` / `value`).
-fn fact_to_value(index: &FactIndex, fact: &db::Fact) -> Value {
+fn fact_to_value(index: &FactIndex, fact: &synopsis_db::Fact) -> Value {
     let value = index
         .value_of(fact)
         .map_or_else(String::new, |name| name.to_string());
@@ -706,7 +706,7 @@ fn fact_to_value(index: &FactIndex, fact: &db::Fact) -> Value {
 /// `ExecutionError::function_error` and surfaces as [`GraphError::CelEval`]
 /// from every function (see the module docs, design decisions); a missing
 /// entity is empty/false, never an error.
-pub fn register_data_functions(engine: &mut CelEngine, db: Arc<db::Db>) {
+pub fn register_data_functions(engine: &mut CelEngine, db: Arc<synopsis_db::Db>) {
     engine.register(move |scope, ctx| {
         // Each registered function closure is 'static and outlives the
         // installer's parameters, so every one owns its own clones.
@@ -777,7 +777,7 @@ pub fn register_data_functions(engine: &mut CelEngine, db: Arc<db::Db>) {
 /// with `ExecutionError::function_error` and surfaces as
 /// [`GraphError::CelEval`] from both functions (see the module docs, design
 /// decisions); a missing entity is empty / false, never an error.
-pub fn register_graph_functions(engine: &mut CelEngine, db: Arc<db::Db>) {
+pub fn register_graph_functions(engine: &mut CelEngine, db: Arc<synopsis_db::Db>) {
     engine.register(move |scope, ctx| {
         // Each registered function closure is 'static and outlives the
         // installer's parameters, so every one owns its own clones.

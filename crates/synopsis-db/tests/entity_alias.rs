@@ -1,10 +1,10 @@
-//! Integration tests for the entity-alias DAO ([`db::EntityAliasDao`]),
+//! Integration tests for the entity-alias DAO ([`synopsis_db::EntityAliasDao`]),
 //! relocated from the inline `#[cfg(test)]` module in
 //! `crates/db/src/entity_alias.rs` (change `multilingual-entity-resolution`,
 //! task 2.1; test placement per the 2026-09-10 decision).
 //!
 //! The tests exercise only the public API (plus the always-compiled
-//! [`db::test_util`] database fixtures); names and assertions are carried
+//! [`synopsis_db::test_util`] database fixtures); names and assertions are carried
 //! over verbatim, so the move changes no behavior.
 //!
 //! # NDA
@@ -16,10 +16,10 @@
 
 use rusqlite::params;
 
-use db::entity::EntityDao;
-use db::entity_alias::EntityAliasDao;
-use db::test_util::{in_memory_db, temp_file_db};
-use db::{ConnectionOrTx, Db, DbError};
+use synopsis_db::entity::EntityDao;
+use synopsis_db::entity_alias::EntityAliasDao;
+use synopsis_db::test_util::{in_memory_db, temp_file_db};
+use synopsis_db::{ConnectionOrTx, Db, DbError};
 
 /// Two entities of the same type/domain; returns their ids (a < b).
 fn seed_entities(db: &Db) -> (i64, i64) {

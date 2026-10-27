@@ -31,7 +31,7 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ConnectionOrTx, Db, DbError, EntitySourceDao};
+/// # use synopsis_db::{ConnectionOrTx, Db, DbError, EntitySourceDao};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));

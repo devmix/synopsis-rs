@@ -1,10 +1,10 @@
 //! Integration tests for the transactional entity merge
-//! ([`db::merge_entities`]), relocated from the inline `#[cfg(test)]` module
+//! ([`synopsis_db::merge_entities`]), relocated from the inline `#[cfg(test)]` module
 //! in `crates/db/src/merge.rs` (change `multilingual-entity-resolution`,
 //! task 2.2).
 //!
 //! The tests exercise only the public API (plus the always-compiled
-//! [`db::test_util`] database fixtures); names and assertions are carried
+//! [`synopsis_db::test_util`] database fixtures); names and assertions are carried
 //! over verbatim, so the move changes no behavior.
 //!
 //! # NDA
@@ -16,15 +16,15 @@
 
 use rusqlite::types::ValueRef;
 
-use db::chunk::ChunkDao;
-use db::document::DocumentDao;
-use db::entity::{Entity, EntityDao};
-use db::entity_alias::EntityAliasDao;
-use db::entity_link::{EntityLink, EntityLinkDao};
-use db::entity_source::EntitySourceDao;
-use db::fact::FactDao;
-use db::test_util::in_memory_db;
-use db::{ChunkEntityDao, ConnectionOrTx, Db, DbError, merge_entities};
+use synopsis_db::chunk::ChunkDao;
+use synopsis_db::document::DocumentDao;
+use synopsis_db::entity::{Entity, EntityDao};
+use synopsis_db::entity_alias::EntityAliasDao;
+use synopsis_db::entity_link::{EntityLink, EntityLinkDao};
+use synopsis_db::entity_source::EntitySourceDao;
+use synopsis_db::fact::FactDao;
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{ChunkEntityDao, ConnectionOrTx, Db, DbError, merge_entities};
 
 /// Render one row as a pipe-joined string (NULL → literal `NULL`).
 fn row_str(r: &rusqlite::Row, col_count: usize) -> String {

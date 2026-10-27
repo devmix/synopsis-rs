@@ -1,18 +1,18 @@
-//! Integration tests for the `entities` DAO ([`db::EntityDao`]), relocated
+//! Integration tests for the `entities` DAO ([`synopsis_db::EntityDao`]), relocated
 //! from the inline `#[cfg(test)]` module in `crates/db/src/entity.rs`
 //! (change `test-hygiene-phase-2`, task 2.2).
 //!
 //! The tests exercise only the public API (plus the always-compiled
-//! [`db::test_util`] database fixtures); names and assertions are carried
+//! [`synopsis_db::test_util`] database fixtures); names and assertions are carried
 //! over verbatim, so the move changes no behavior.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashSet;
 
-use db::entity::{EntityDao, EntityFilter};
-use db::test_util::{in_memory_db, temp_file_db};
-use db::{ConnectionOrTx, Db, DbError};
+use synopsis_db::entity::{EntityDao, EntityFilter};
+use synopsis_db::test_util::{in_memory_db, temp_file_db};
+use synopsis_db::{ConnectionOrTx, Db, DbError};
 
 /// Run `f` with a DAO bound to a pooled connection (checked out for the
 /// closure's duration).

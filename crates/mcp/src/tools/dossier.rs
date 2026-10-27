@@ -28,13 +28,13 @@
 
 use std::collections::HashMap;
 
-use db::{
-    ConnectionOrTx, Document, DocumentDao, Entity, EntityAliasDao, EntityDao, EntityLinkDao,
-    EntitySourceDao, Fact, FactDao, FactSource, FactSourceDao,
-};
 use graph::{EntityNode, GraphIndex, TraverseOptions};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use synopsis_db::{
+    ConnectionOrTx, Document, DocumentDao, Entity, EntityAliasDao, EntityDao, EntityLinkDao,
+    EntitySourceDao, Fact, FactDao, FactSource, FactSourceDao,
+};
 
 use crate::error::McpError;
 use crate::tools::entity::{EntityBrief, node_brief};
@@ -241,7 +241,7 @@ fn parse_depth(value: Option<&Value>) -> u32 {
 
 /// Resolve an entity from `entity_id` XOR `entity_name`. `domain`
 /// disambiguates the name lookup. A missing/ambiguous entity is a tool error.
-fn resolve_entity(db: &db::Db, args: &DossierArgs) -> Result<Entity, McpError> {
+fn resolve_entity(db: &synopsis_db::Db, args: &DossierArgs) -> Result<Entity, McpError> {
     let id_str = args.entity_id.as_deref().unwrap_or_default();
     let name = args.entity_name.as_deref().unwrap_or_default();
     let domain = args.domain.as_deref().unwrap_or_default();
@@ -532,7 +532,7 @@ fn has_better_provenance(candidate: &CrossDomainLink, existing: &CrossDomainLink
 /// payload (`mcp-contract`) the server serializes into the tool response's
 /// text block.
 pub fn handle_get_entity_dossier(
-    db: &db::Db,
+    db: &synopsis_db::Db,
     graph: &GraphIndex,
     args: Option<&Value>,
 ) -> Result<Value, McpError> {

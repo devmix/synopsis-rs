@@ -1,7 +1,7 @@
 //! Persistent LLM-NER response cache (ingestion-ner design D6).
 //!
 //! The cache is bound to a [`ConnectionOrTx`] exactly like the db crate's
-//! DAOs (cf. `db::AppKv`), so it works over a pooled connection or inside
+//! DAOs (cf. `synopsis_db::AppKv`), so it works over a pooled connection or inside
 //! an in-flight pipeline transaction. Caching is disabled by the caller
 //! simply not constructing a cache (`Option<LlmNerCache>` in the LLM
 //! provider, task 2.5).
@@ -30,8 +30,8 @@
 //! compared across implementations, so no cross-language byte parity is a
 //! contract.
 
-use db::{ConnectionOrTx, DbExecutor};
 use sha2::{Digest, Sha256};
+use synopsis_db::{ConnectionOrTx, DbExecutor};
 
 use super::NerResult;
 use crate::error::IngestionError;
@@ -45,7 +45,7 @@ const CACHE_TABLE: &str = "llm_ner_cache";
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
 /// in-flight transaction via [`ConnectionOrTx`] — the same shape as the db
-/// crate's DAOs (cf. `db::AppKv`). The instance borrows from the handle it
+/// crate's DAOs (cf. `synopsis_db::AppKv`). The instance borrows from the handle it
 /// is given, so the handle must outlive it.
 ///
 /// Entries map a cache key (see [`build_cache_key`]) to a serialized
@@ -156,10 +156,10 @@ fn to_hex(bytes: &[u8]) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, Db};
     use serde_json::{Map, Value};
     use sha2::{Digest, Sha256};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ConnectionOrTx, Db};
 
     use super::super::{NerEntity, NerFact};
     use super::*;

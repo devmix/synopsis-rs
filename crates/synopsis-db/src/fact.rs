@@ -162,7 +162,7 @@ impl FactFilter {
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ConnectionOrTx, Db, FactDao, DbError};
+/// # use synopsis_db::{ConnectionOrTx, Db, FactDao, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let facts = FactDao::new(ConnectionOrTx::Connection(conn));

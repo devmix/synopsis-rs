@@ -12,9 +12,9 @@
 //! (registry-as-model-source-of-truth D5), so there is nothing left to
 //! check here.
 
-use db::{ConnectionOrTx, Db, DocumentDao, DocumentFilter};
 use embedding::EmbeddingProvider;
 use synopsis_config::Config;
+use synopsis_db::{ConnectionOrTx, Db, DocumentDao, DocumentFilter};
 
 use crate::error::CliError;
 
@@ -104,9 +104,9 @@ mod tests {
 
     use std::sync::Arc;
 
-    use db::test_util::in_memory_db;
     use embedding::EmbeddingError;
     use synopsis_config::preset::{Config, EmbeddingsMode, LocalEmbedding};
+    use synopsis_db::test_util::in_memory_db;
 
     use super::*;
 

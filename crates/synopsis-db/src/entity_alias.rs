@@ -35,7 +35,7 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ConnectionOrTx, Db, DbError, EntityAliasDao};
+/// # use synopsis_db::{ConnectionOrTx, Db, DbError, EntityAliasDao};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let aliases = EntityAliasDao::new(ConnectionOrTx::Connection(conn));

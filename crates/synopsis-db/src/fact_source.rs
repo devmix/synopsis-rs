@@ -60,7 +60,7 @@ pub struct FactSource {
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ConnectionOrTx, Db, DbError, FactSourceDao};
+/// # use synopsis_db::{ConnectionOrTx, Db, DbError, FactSourceDao};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let sources = FactSourceDao::new(ConnectionOrTx::Connection(conn));

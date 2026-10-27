@@ -48,7 +48,7 @@ use crate::transport;
 pub struct Server {
     name: String,
     version: String,
-    db: db::Db,
+    db: synopsis_db::Db,
     searcher: Arc<RwLock<Arc<dyn Searcher + Send + Sync>>>,
     graph: Arc<RwLock<Arc<graph::GraphIndex>>>,
     tools: Vec<Tool>,
@@ -70,7 +70,7 @@ impl Server {
     pub fn new(
         name: String,
         version: String,
-        db: db::Db,
+        db: synopsis_db::Db,
         searcher: Arc<dyn Searcher + Send + Sync>,
         graph: Arc<graph::GraphIndex>,
     ) -> Self {
@@ -149,7 +149,7 @@ impl Server {
     }
 
     /// The injected database handle (cheap pool-handle clone).
-    pub fn db(&self) -> &db::Db {
+    pub fn db(&self) -> &synopsis_db::Db {
         &self.db
     }
 
@@ -783,9 +783,9 @@ mod tests {
 
     use std::sync::Arc;
 
-    use db::test_util;
     use graph::GraphIndex;
     use search::{SearchError, SearchResult, Searcher};
+    use synopsis_db::test_util;
 
     use super::Server;
 

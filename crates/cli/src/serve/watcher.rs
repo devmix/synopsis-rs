@@ -42,7 +42,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use db::Db;
 use graph::GraphIndex;
 use ingestion::ingester::compute_content_hash;
 use ingestion::{DocumentJobQueue, Registry, Runner};
@@ -50,6 +49,7 @@ use notify::Watcher as _;
 use notify::{Event, EventKind, PollWatcher, RecursiveMode};
 use synopsis_config::preset::GraphConfig;
 use synopsis_config::{Config, load_global_config};
+use synopsis_db::Db;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -532,8 +532,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, DocumentDao, QueueTaskDao};
     use embedding::{EmbeddingError, EmbeddingProvider};
     use ingestion::{
         DocumentJobQueue, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource,
@@ -546,6 +544,8 @@ mod tests {
         GlobalConfig, GlobalNerConfig, NerMethod, SourceConfig, SourceType,
     };
     use synopsis_config::preset::{GraphConfig, IngestionConfig, LinkerConfig};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ConnectionOrTx, DocumentDao, QueueTaskDao};
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;
@@ -655,7 +655,7 @@ mod tests {
     /// Two-collaborator fixture: in-memory DB, fake embed, memory index and a
     /// markdown-source registry over a caller-supplied global ontology.
     struct Fixture {
-        db: db::Db,
+        db: synopsis_db::Db,
         cfg: IngestionConfig,
         global: GlobalConfig,
         aliases: HashMap<String, String>,
@@ -738,18 +738,18 @@ mod tests {
         }
     }
 
-    fn doc_count(db: &db::Db) -> usize {
+    fn doc_count(db: &synopsis_db::Db) -> usize {
         doc_paths(db).len()
     }
 
     /// All `queue_tasks` rows (the producer's output).
-    fn job_rows(db: &db::Db) -> Vec<db::QueueTask> {
+    fn job_rows(db: &synopsis_db::Db) -> Vec<synopsis_db::QueueTask> {
         db.with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
             .unwrap()
             .unwrap()
     }
 
-    fn doc_paths(db: &db::Db) -> Vec<String> {
+    fn doc_paths(db: &synopsis_db::Db) -> Vec<String> {
         db.with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
             .unwrap()
             .unwrap()
@@ -1028,7 +1028,7 @@ mod tests {
         // nothing.
         let tasks = job_rows(&fixture.db);
         assert_eq!(tasks.len(), 3, "a.md + ghost.md + b.md enqueued; {tasks:?}");
-        let by_path: HashMap<&str, &db::QueueTask> = tasks
+        let by_path: HashMap<&str, &synopsis_db::QueueTask> = tasks
             .iter()
             .map(|task| (task.identity.as_str(), task))
             .collect();
@@ -1039,7 +1039,8 @@ mod tests {
             .expect("a.md must be queued");
         assert_eq!(a.task_type, "doc:index");
         assert_eq!(a.status, "pending");
-        let payload: db::DocIndexPayload = serde_json::from_str(&a.event).expect("valid payload");
+        let payload: synopsis_db::DocIndexPayload =
+            serde_json::from_str(&a.event).expect("valid payload");
         assert_eq!(
             payload.content_hash.as_deref(),
             Some(compute_content_hash("# Doc A\ncontent a\n").as_str())

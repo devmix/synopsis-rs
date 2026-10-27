@@ -10,10 +10,10 @@ use std::process::ExitCode;
 
 use thiserror::Error;
 
-use db::DbError;
 use embedding::EmbeddingError;
 use graph::GraphError;
 use synopsis_config::ConfigError;
+use synopsis_db::DbError;
 use synopsis_vectors::VectorsError;
 
 /// Boundary error of the `synopsis` CLI: wraps the upstream crate errors that

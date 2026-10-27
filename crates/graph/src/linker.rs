@@ -57,7 +57,7 @@
 //!
 //! - confidence ≥ `merge_confidence_threshold` (ontology key, default
 //!   [`DEFAULT_MERGE_CONFIDENCE_THRESHOLD`]) → the pair is **merged** through
-//!   `db::merge_entities` (one transaction): the canonical (survivor) is the
+//!   `synopsis_db::merge_entities` (one transaction): the canonical (survivor) is the
 //!   entity with the greater number of source documents, on a tie the longer
 //!   name (character count), on a further tie the lower id; both names are
 //!   recorded as aliases of the survivor and every dependent row is
@@ -92,14 +92,14 @@ use std::sync::Arc;
 
 use cel::Value;
 use cel::objects::{Key as CelKey, Map as CelMap};
-use db::utils::normalize;
-use db::{
-    ChunkEntityDao, ConnectionOrTx, Db, DbExecutor, Entity, EntityDao, EntityLink, EntityLinkDao,
-    EntitySourceDao, merge_entities,
-};
 use serde::{Deserialize, Serialize};
 use synopsis_config::ontology::{CrossDomainLinksConfig, LinkExpression, LinkMethod};
 use synopsis_config::preset::{LinkerConfig, LlmConfig};
+use synopsis_db::utils::normalize;
+use synopsis_db::{
+    ChunkEntityDao, ConnectionOrTx, Db, DbExecutor, Entity, EntityDao, EntityLink, EntityLinkDao,
+    EntitySourceDao, merge_entities,
+};
 use synopsis_llm::LlmClient;
 use synopsis_utils::text::{detect_script, match_key, stem_key};
 
@@ -295,7 +295,7 @@ fn create_bidirectional_link(
     confidence: f64,
     evidence: &str,
 ) -> Result<bool, GraphError> {
-    let created = db.with_conn(|conn| -> Result<bool, db::DbError> {
+    let created = db.with_conn(|conn| -> Result<bool, synopsis_db::DbError> {
         let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));
         let mut created = false;
         for (subject, target) in [(a_id, b_id), (b_id, a_id)] {
@@ -563,7 +563,7 @@ const LINKER_CACHE_TABLE: &str = "llm_linker_cache";
 ///
 /// One instance per unit of work, bound to either a pooled connection or an
 /// in-flight transaction via [`ConnectionOrTx`] — the same shape as the db
-/// crate's DAOs (cf. `db::AppKv`) and
+/// crate's DAOs (cf. `synopsis_db::AppKv`) and
 /// `ingestion::ner::llm_cache::LlmNerCache`. Entries map the LLM request
 /// signature key (see [`llm_cache_key`]) to a serialized [`LinkDecision`].
 pub struct LlmLinkerCache<'conn> {
@@ -1259,7 +1259,7 @@ mod tests {
     /// A file-backed cache database (the production shape: `Db::open_cache`
     /// on a real file), removed with its sidecars on drop.
     struct TempCacheDb {
-        db: db::Db,
+        db: synopsis_db::Db,
         path: std::path::PathBuf,
     }
 
@@ -1271,7 +1271,7 @@ mod tests {
                 "graph-linker-cache-{name}-{}-{id}",
                 std::process::id()
             ));
-            let db = db::Db::open_cache(&path).unwrap();
+            let db = synopsis_db::Db::open_cache(&path).unwrap();
             Self { db, path }
         }
     }
@@ -1285,7 +1285,7 @@ mod tests {
     }
 
     /// The decision-cache entries (key, value) in `llm_linker_cache`.
-    fn cached_decisions(cache: &db::Db) -> Vec<(String, String)> {
+    fn cached_decisions(cache: &synopsis_db::Db) -> Vec<(String, String)> {
         cache
             .with_conn(|conn| {
                 let mut stmt = conn
@@ -1442,7 +1442,7 @@ mod tests {
 
     #[test]
     fn llm_above_threshold_creates_link() {
-        let db = db::test_util::in_memory_db();
+        let db = synopsis_db::test_util::in_memory_db();
         insert_entities(
             &db,
             &[
@@ -1480,7 +1480,7 @@ mod tests {
 
     #[test]
     fn llm_below_threshold_no_link_but_cache_written() {
-        let db = db::test_util::in_memory_db();
+        let db = synopsis_db::test_util::in_memory_db();
         insert_entities(
             &db,
             &[
@@ -1526,7 +1526,7 @@ mod tests {
 
     #[test]
     fn llm_same_entity_false_gates_the_link() {
-        let db = db::test_util::in_memory_db();
+        let db = synopsis_db::test_util::in_memory_db();
         insert_entities(
             &db,
             &[
@@ -1560,7 +1560,7 @@ mod tests {
 
     #[test]
     fn llm_cache_hit_skips_the_call() {
-        let db = db::test_util::in_memory_db();
+        let db = synopsis_db::test_util::in_memory_db();
         insert_entities(
             &db,
             &[
@@ -1607,7 +1607,7 @@ mod tests {
 
     #[test]
     fn llm_call_failure_is_recorded_and_pipeline_alive() {
-        let db = db::test_util::in_memory_db();
+        let db = synopsis_db::test_util::in_memory_db();
         insert_entities(
             &db,
             &[
@@ -1658,7 +1658,7 @@ mod tests {
 
     #[test]
     fn llm_disabled_excludes_the_method() {
-        let db = db::test_util::in_memory_db();
+        let db = synopsis_db::test_util::in_memory_db();
         insert_entities(
             &db,
             &[
@@ -1696,7 +1696,7 @@ mod tests {
 
     #[test]
     fn llm_prompt_carries_up_to_three_chunk_contexts() {
-        let db = db::test_util::in_memory_db();
+        let db = synopsis_db::test_util::in_memory_db();
         let ids = insert_entities(
             &db,
             &[
@@ -1704,11 +1704,11 @@ mod tests {
                 ("PERSON", "Alice Smith", "it"),
             ],
         );
-        db.with_conn(|conn| -> Result<(), db::DbError> {
-            let documents = db::DocumentDao::new(ConnectionOrTx::Connection(conn));
+        db.with_conn(|conn| -> Result<(), synopsis_db::DbError> {
+            let documents = synopsis_db::DocumentDao::new(ConnectionOrTx::Connection(conn));
             let doc = documents.create("text", "doc.txt", None, None)?;
-            let chunks = db::ChunkDao::new(ConnectionOrTx::Connection(conn));
-            let links = db::ChunkEntityDao::new(ConnectionOrTx::Connection(conn));
+            let chunks = synopsis_db::ChunkDao::new(ConnectionOrTx::Connection(conn));
+            let links = synopsis_db::ChunkEntityDao::new(ConnectionOrTx::Connection(conn));
             // Entity A: FOUR chunks — only the first three may reach the prompt.
             for (i, text) in [
                 "alpha context",

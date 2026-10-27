@@ -2,7 +2,7 @@
 //!
 //! Unlike the unit tests in `src/`, this test exercises the PUBLIC crate-root
 //! API against REAL infrastructure: an in-memory SQLite database with a real
-//! FTS5 index (`db::test_util::in_memory_db`, the crates/db test pattern) and
+//! FTS5 index (`synopsis_db::test_util::in_memory_db`, the crates/db test pattern) and
 //! documents/chunks/entities seeded through the db DAOs. The only seams
 //! mocked are the model-level ones, which the product never exposes:
 //!
@@ -23,14 +23,14 @@
 
 use std::sync::Mutex;
 
-use db::test_util::in_memory_db;
-use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, EntityDao};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use search::{
     Enricher, HybridSearcher, LexicalSearcher, Reranker, SearchResult, Searcher, SemanticSearcher,
 };
 use serde_json::json;
 use synopsis_config::preset::SearchConfig;
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, DocumentDao, EntityDao};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 // ── test doubles ──────────────────────────────────────────────────────────

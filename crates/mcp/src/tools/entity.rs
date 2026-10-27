@@ -4,9 +4,9 @@
 //! identical field set and order. This module hoists it into one type (task
 //! 5.8, reviewer guidance) so the wire JSON is defined once.
 
-use db::Entity;
 use graph::EntityNode;
 use serde::Serialize;
+use synopsis_db::Entity;
 
 /// A brief entity reference, shared by the fact tools, the document tools
 /// and the entity dossier: field order follows the frozen contract

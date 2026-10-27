@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use db::{
+use synopsis_db::{
     ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityAliasDao, EntityDao, EntityLink,
     EntityLinkDao, FactDao, QueueTaskDao, QueueTaskType,
 };
@@ -107,7 +107,7 @@ fn fixture(tag: &str) -> Fixture {
 
 /// Seeds the fixture rows (see [`fixture`]).
 fn seed(db: &Db) {
-    db.with_conn(|conn| -> Result<(), db::DbError> {
+    db.with_conn(|conn| -> Result<(), synopsis_db::DbError> {
         let exec = ConnectionOrTx::Connection(conn);
         let doc = DocumentDao::new(exec).create("markdown", "/docs/a.md", None, None)?;
         let chunk = ChunkDao::new(exec).create(doc, "first chunk text", 0, None, None)?;
@@ -142,10 +142,10 @@ fn seed(db: &Db) {
             .enqueue(
                 QueueTaskType::DocIndex,
                 "/docs/a.md",
-                &db::DocIndexPayload {
+                &synopsis_db::DocIndexPayload {
                     source_path: "/docs".to_owned(),
                     content_hash: None,
-                    ops: vec![db::ReIndexOp::Full],
+                    ops: vec![synopsis_db::ReIndexOp::Full],
                 },
                 0,
             )

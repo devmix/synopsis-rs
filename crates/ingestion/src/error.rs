@@ -110,9 +110,9 @@ pub enum IngestionError {
     /// db crate is the source of truth for the lazily-created
     /// `llm_ner_cache` table (design D6). A broken database must not look
     /// empty — the failure propagates instead of degrading to a cache miss
-    /// (db convention, cf. `db::AppKv`).
+    /// (db convention, cf. `synopsis_db::AppKv`).
     #[error("storage error: {0}")]
-    Db(#[from] db::DbError),
+    Db(#[from] synopsis_db::DbError),
 
     /// Serializing an LLM-NER cache entry to JSON failed (ingestion-ner
     /// task 2.4). In practice unreachable for validated results (finite
@@ -274,10 +274,10 @@ pub enum IngestionError {
 
     /// A queue-task DAO failure (event-queue-incremental-linking task 1.2):
     /// the db crate is the source of truth for the `queue_tasks` state
-    /// machine. Producers and the worker call [`db::QueueTaskDao`] methods
-    /// that return [`db::QueueTaskError`].
+    /// machine. Producers and the worker call [`synopsis_db::QueueTaskDao`] methods
+    /// that return [`synopsis_db::QueueTaskError`].
     #[error("queue task: {0}")]
-    QueueTask(#[from] db::QueueTaskError),
+    QueueTask(#[from] synopsis_db::QueueTaskError),
 }
 
 #[cfg(test)]

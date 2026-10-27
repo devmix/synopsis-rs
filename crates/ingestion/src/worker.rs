@@ -30,7 +30,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use db::{ConnectionOrTx, Db, DocIndexPayload, QueueTask, QueueTaskDao, QueueTaskType, ReIndexOp};
+use synopsis_db::{
+    ConnectionOrTx, Db, DocIndexPayload, QueueTask, QueueTaskDao, QueueTaskType, ReIndexOp,
+};
 
 use crate::error::IngestionError;
 use crate::runner::Runner;
@@ -257,7 +259,7 @@ impl<'a> DocumentWorker<'a> {
     /// subsumes `ReEmbed`) → the full per-document pipeline.
     fn process_doc_index(&self, task: &QueueTask) -> Result<(), IngestionError> {
         let payload: DocIndexPayload =
-            serde_json::from_str(&task.event).map_err(db::QueueTaskError::Json)?;
+            serde_json::from_str(&task.event).map_err(synopsis_db::QueueTaskError::Json)?;
         if payload.ops.contains(&ReIndexOp::ReEmbed) && !payload.ops.contains(&ReIndexOp::Full) {
             self.runner.reembed_document(&task.identity)
         } else {
@@ -271,12 +273,15 @@ impl<'a> DocumentWorker<'a> {
     fn process_entity_link(&self, task: &QueueTask) -> Result<(), IngestionError> {
         use serde::de::Error as _;
         let doc_id: i64 = task.identity.parse().map_err(|_| {
-            IngestionError::QueueTask(db::QueueTaskError::Json(serde_json::Error::custom(
-                format!("invalid doc_id in entity:link identity: {}", task.identity),
-            )))
+            IngestionError::QueueTask(synopsis_db::QueueTaskError::Json(
+                serde_json::Error::custom(format!(
+                    "invalid doc_id in entity:link identity: {}",
+                    task.identity
+                )),
+            ))
         })?;
-        let payload: db::EntityLinkPayload =
-            serde_json::from_str(&task.event).map_err(db::QueueTaskError::Json)?;
+        let payload: synopsis_db::EntityLinkPayload =
+            serde_json::from_str(&task.event).map_err(synopsis_db::QueueTaskError::Json)?;
         self.runner.link_entities(doc_id, &payload.entity_ids)
     }
 
@@ -369,15 +374,15 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    use db::test_util::in_memory_db;
-    use db::{
-        ChunkDao, ConnectionOrTx, Db, DocIndexPayload, DocumentDao, EntityDao, QueueTaskDao,
-        QueueTaskType, ReIndexOp,
-    };
     use embedding::{EmbeddingError, EmbeddingProvider};
     use synopsis_config::DomainConfig;
     use synopsis_config::ontology::{GlobalConfig, GlobalNerConfig, SourceConfig, SourceType};
     use synopsis_config::preset::{IngestionConfig, LinkerConfig};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{
+        ChunkDao, ConnectionOrTx, Db, DocIndexPayload, DocumentDao, EntityDao, QueueTaskDao,
+        QueueTaskType, ReIndexOp,
+    };
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;
@@ -679,7 +684,7 @@ mod tests {
         }
 
         /// All `doc:*` tasks (test helper).
-        fn list_doc_tasks(&self) -> Vec<db::QueueTask> {
+        fn list_doc_tasks(&self) -> Vec<synopsis_db::QueueTask> {
             self.db
                 .with_conn(|conn| {
                     QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None)
@@ -692,7 +697,7 @@ mod tests {
         }
 
         /// All `documents` rows (test helper).
-        fn list_documents(&self) -> Vec<db::Document> {
+        fn list_documents(&self) -> Vec<synopsis_db::Document> {
             self.db
                 .with_conn(|conn| DocumentDao::new(ConnectionOrTx::Connection(conn)).list())
                 .unwrap()
@@ -750,7 +755,7 @@ mod tests {
                     QueueTaskDao::new(ConnectionOrTx::Connection(conn)).enqueue(
                         QueueTaskType::DocDelete,
                         path,
-                        &db::DocDeletePayload {
+                        &synopsis_db::DocDeletePayload {
                             source_path: String::new(),
                         },
                         now,
@@ -1437,7 +1442,7 @@ mod tests {
         assert_eq!(harness.list_documents().len(), 0, "no document is indexed");
         let tasks = harness.list_doc_tasks();
         assert_eq!(tasks.len(), 3, "{tasks:?}");
-        let by_name = |name: &str| -> &db::QueueTask {
+        let by_name = |name: &str| -> &synopsis_db::QueueTask {
             tasks.iter().find(|t| t.identity.ends_with(name)).unwrap()
         };
         let first = by_name("a.txt");

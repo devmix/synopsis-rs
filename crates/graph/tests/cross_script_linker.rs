@@ -31,14 +31,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use db::test_util::in_memory_db;
-use db::{
-    ConnectionOrTx, Db, DocumentDao, EntityAliasDao, EntityDao, EntityLink, EntityLinkDao,
-    EntitySourceDao, FactDao,
-};
 use graph::{LinkResult, build_entity_links};
 use synopsis_config::ontology::{CrossDomainLinksConfig, LinkMethod};
 use synopsis_config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{
+    ConnectionOrTx, Db, DocumentDao, EntityAliasDao, EntityDao, EntityLink, EntityLinkDao,
+    EntitySourceDao, FactDao,
+};
 
 /// A nonexistent prompts path: the `llm` method falls back to the embedded
 /// templates (the normal case, design D3).
@@ -107,7 +107,7 @@ fn insert_entities(db: &Db, rows: &[(&str, &str, &str)]) -> Vec<i64> {
 /// Link `count` distinct documents to `entity_id` (the canonical-selection
 /// input, design D7).
 fn seed_sources(db: &Db, entity_id: i64, count: i64) {
-    db.with_conn(|conn| -> Result<(), db::DbError> {
+    db.with_conn(|conn| -> Result<(), synopsis_db::DbError> {
         let documents = DocumentDao::new(ConnectionOrTx::Connection(conn));
         let sources = EntitySourceDao::new(ConnectionOrTx::Connection(conn));
         for i in 0..count {

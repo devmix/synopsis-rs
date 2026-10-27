@@ -119,7 +119,7 @@ Per-task acceptance (in addition to the recipe gates):
     references renamed; the ner/mod.rs:46 internal-module re-export preserved;
     6 rustfmt re-wraps in synopsis-llm/tests/client.rs; gates green).
 
-- [ ] 2.4 Rename `config` → `synopsis-config`
+- [x] 2.4 Rename `config` → `synopsis-config`
   - Dependencies: task 2.3.
   - File scope: root `Cargo.toml`; `crates/config/**` → `crates/synopsis-config/**`;
     dependents with a Cargo.toml entry (8): `crates/db`, `crates/llm`,
@@ -127,25 +127,43 @@ Per-task acceptance (in addition to the recipe gates):
     `crates/mcp`, `crates/cli`; all `.rs` files containing `config::`
     (~214 lines).
   - Acceptance: recipe gates + `rg '\bconfig::' -g '*.rs'` empty + metadata check.
+  - Revision history: implemented 2026-10-27, zero deviations (212 references,
+    78 files; 2 synopsis-vectors doc-comment-only renames in scope; 3 stale
+    crates/config prose paths deferred to 3.1 and listed there; gates green).
 
 - [ ] 2.5 Rename `db` → `synopsis-db` (user-approved diff exception, design D4)
   - Dependencies: task 2.4.
   - File scope: root `Cargo.toml`; `crates/db/**` → `crates/synopsis-db/**`;
     dependents with a Cargo.toml entry (5): `crates/ingestion`, `crates/graph`,
     `crates/search`, `crates/mcp`, `crates/cli`; all `.rs` files containing `db::`
-    (419 pre-rename matches, 417 of them crate references).
-  - Exclusions (the cli crate has an INTERNAL module `db` at
-    `crates/cli/src/db.rs` — the `db` subcommand, NOT the db crate):
+    (419 pre-rename matches: 416 crate references + 3 internal-module lines).
+  - Exclusions (INTERNAL modules named `db` — NOT the db crate):
+    (a) the cli crate's `db` subcommand module at `crates/cli/src/db.rs`:
     `crates/cli/src/serve/server.rs:105` `use crate::db::clear_dataset_tables;`
     and `crates/cli/src/main.rs:15` `use cli::db::{DbRequest, run_db};` must NOT
     be renamed (the `main.rs` line is renamed in task 2.11 as a `cli::`
-    self-reference, keeping the internal module name `db`). A blanket sed of
-    `\bdb::` would corrupt both — resolve every match (recipe step 5).
+    self-reference, keeping the internal module name `db`);
+    (b) the config crate's internal `db` module (re-exported at its root):
+    `crates/synopsis-config/src/lib.rs:35` `pub use db::{ID_BATCH_SIZE,
+    LINK_BATCH_SIZE};` must NOT be renamed (discovered in implementation —
+    a third internal line beyond the cli pair).
+    A blanket sed of `\bdb::` would corrupt all three — resolve every match
+    by the referenced item's definition (recipe step 5).
   - Note: this single atomic task produces ~850–900 diff lines — explicitly
     approved by the user (2026-10-27) as a mechanical-rename exception to the
     ~500-line rule. The diff MUST be 1:1 line replacements only (no logic).
-  - Acceptance: recipe gates + NO crate-reference `db::` remains (the 2
+  - Acceptance: recipe gates + NO crate-reference `db::` remains (the 3
     internal-module lines above are expected to remain) + metadata check.
+  - Revision history: implemented 2026-10-27. Deviations recorded: (1) the
+    third exclusion line (b) above was discovered during implementation and
+    correctly left untouched (net diff of that file zero); (2) rustfmt
+    re-sorted import groups and re-wrapped >100-char lines (same class as
+    tasks 2.2/2.3) — reverse-transform diff against HEAD confirmed the whole
+    diff is mechanical. 416 references renamed across 86 files; gates green.
+    Environment note: the disk was 100% full before the test gate; the
+    regenerable target/debug/incremental cache (~21 GB) was deleted to unblock
+    linking. One flaky cli serve_server test failed under that disk pressure
+    and passed on re-run.
 
 - [ ] 2.6 Rename `embedding` → `synopsis-embedding`
   - Dependencies: task 2.5.
@@ -260,8 +278,10 @@ Per-task acceptance (in addition to the recipe gates):
        `crate::utils::` ×7 + `db::utils::` ×6 (db's internal utils module),
        `llm::LlmNer` re-export in `crates/ingestion/src/ner/mod.rs` ×1 (the
        internal ner::llm module), `crate::db::` ×1 + `synopsis_cli::db::` ×1
-       (cli's internal db subcommand module), `crate::graph::` ×3 (graph's
-       internal graph module). Verify the match set equals exactly this
+       (cli's internal db subcommand module), `db::{ID_BATCH_SIZE,
+       LINK_BATCH_SIZE}` re-export in `crates/synopsis-config/src/lib.rs` ×1
+       (config's internal db module), `crate::graph::` ×3 (graph's internal
+       graph module). Verify the match set equals exactly this
        survivor list; any other `X::` match is a failure.
     3. `cargo build --release`; re-capture the 19 `--help` sections exactly as in
        task 1.1 to `/tmp/opencode/synopsis-help-after.txt`;

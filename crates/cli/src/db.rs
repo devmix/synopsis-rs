@@ -18,7 +18,7 @@
 //!   same `type` + `domain` precondition up front (a clear error, no
 //!   modification), prints the statistics, prompts `Confirm merge? [y/N]` on
 //!   stdin; only `y`/`Y` proceeds to the transactional
-//!   [`db::merge_entities`], which re-points the dependent rows, records
+//!   [`synopsis_db::merge_entities`], which re-points the dependent rows, records
 //!   both names as aliases of the survivor and deletes the duplicate row. A
 //!   summary (re-pointed counts, surviving name, recorded aliases) is
 //!   printed.
@@ -33,11 +33,11 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use db::{
+use synopsis_config::{Config, ConfigError, load};
+use synopsis_db::{
     ChunkDao, ConnectionOrTx, Db, DbError, DocumentDao, DocumentFilter, Entity, EntityDao,
     EntityFilter, EntityLinkDao, FactDao, MergeSummary, QueueTaskDao, merge_entities,
 };
-use synopsis_config::{Config, ConfigError, load};
 
 use crate::cli::DbAction;
 use crate::console::Console;
@@ -448,7 +448,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use db::EntityLink;
+    use synopsis_db::EntityLink;
 
     use super::*;
 
@@ -571,12 +571,12 @@ mod tests {
             )?;
             QueueTaskDao::new(exec)
                 .enqueue(
-                    db::QueueTaskType::DocIndex,
+                    synopsis_db::QueueTaskType::DocIndex,
                     "/docs/a.md",
-                    &db::DocIndexPayload {
+                    &synopsis_db::DocIndexPayload {
                         source_path: "/docs".to_owned(),
                         content_hash: None,
-                        ops: vec![db::ReIndexOp::Full],
+                        ops: vec![synopsis_db::ReIndexOp::Full],
                     },
                     100,
                 )

@@ -7,19 +7,21 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use db::{
-    ConnectionOrTx, DocumentDao, EntityAliasDao, EntityDao, EntityLink, EntityLinkDao,
-    EntitySourceDao, FactDao, FactSourceDao, test_util,
-};
 use graph::GraphIndex;
 use mcp::error::McpError;
 use mcp::tools::dossier::handle_get_entity_dossier;
 use serde_json::Value;
 use synopsis_config::preset::GraphConfig;
+use synopsis_db::{
+    ConnectionOrTx, DocumentDao, EntityAliasDao, EntityDao, EntityLink, EntityLinkDao,
+    EntitySourceDao, FactDao, FactSourceDao, test_util,
+};
 
 /// Seed an in-memory KB in one transaction; returns the db and the value
 /// the seeder produced (usually the created ids).
-fn seed_db<T>(seed: impl FnOnce(ConnectionOrTx<'_>) -> Result<T, db::DbError>) -> (db::Db, T) {
+fn seed_db<T>(
+    seed: impl FnOnce(ConnectionOrTx<'_>) -> Result<T, synopsis_db::DbError>,
+) -> (synopsis_db::Db, T) {
     let db = test_util::in_memory_db();
     let value = db
         .exec_tx(|tx| seed(ConnectionOrTx::Transaction(&*tx)))
@@ -28,17 +30,17 @@ fn seed_db<T>(seed: impl FnOnce(ConnectionOrTx<'_>) -> Result<T, db::DbError>) -
 }
 
 /// A ready graph index over the db (config default: enabled + loaded).
-fn ready_graph(db: &db::Db) -> GraphIndex {
+fn ready_graph(db: &synopsis_db::Db) -> GraphIndex {
     GraphIndex::from_db(db, &GraphConfig::default()).expect("graph builds")
 }
 
-fn call(db: &db::Db, graph: &GraphIndex, args: Option<Value>) -> Result<Value, McpError> {
+fn call(db: &synopsis_db::Db, graph: &GraphIndex, args: Option<Value>) -> Result<Value, McpError> {
     handle_get_entity_dossier(db, graph, args.as_ref())
 }
 
 /// The dossier fixture: Alice (hr) `works_at` Acme (hr) + a fact source +
 /// a linked document.
-fn seeded_dossier_db() -> (db::Db, (i64, i64, i64)) {
+fn seeded_dossier_db() -> (synopsis_db::Db, (i64, i64, i64)) {
     seed_db(|exec| {
         let entities = EntityDao::new(exec);
         let facts = FactDao::new(exec);

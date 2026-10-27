@@ -39,9 +39,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use db::{ConnectionOrTx, EntityDao, Fact, FactDao, FactFilter, FactSourceDao};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use synopsis_db::{ConnectionOrTx, EntityDao, Fact, FactDao, FactFilter, FactSourceDao};
 
 use crate::error::McpError;
 use crate::pagination::{DEFAULT_PAGE_SIZE, Page, decode_cursor, normalize_page_size};
@@ -189,7 +189,7 @@ struct SearchFactsResponse {
 /// `args` is the raw JSON argument object (`None` = no arguments). The
 /// result is the response payload the server serializes into the tool
 /// response's text block.
-pub fn handle_search_facts(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
+pub fn handle_search_facts(db: &synopsis_db::Db, args: Option<&Value>) -> Result<Value, McpError> {
     let args: SearchFactsArgs = deserialize_args(args, SEARCH_FACTS)?;
 
     let limit = parse_page_size(args.page_size.as_ref());
@@ -350,7 +350,10 @@ struct FactByIdResponse {
 /// `args` is the raw JSON argument object (`None` = no arguments). The
 /// result is the response payload the server serializes into the tool
 /// response's text block.
-pub fn handle_get_fact_by_id(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
+pub fn handle_get_fact_by_id(
+    db: &synopsis_db::Db,
+    args: Option<&Value>,
+) -> Result<Value, McpError> {
     let args: GetFactByIdArgs = deserialize_args(args, GET_FACT_BY_ID)?;
     let raw = args.fact_id.unwrap_or_default();
     if raw.is_empty() {
@@ -428,7 +431,7 @@ fn fact_info(fact: &Fact) -> FactInfo {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use db::{DocumentDao, FactSourceDao, test_util};
+    use synopsis_db::{DocumentDao, FactSourceDao, test_util};
 
     use super::*;
 
@@ -436,9 +439,9 @@ mod tests {
 
     /// Search-facts fixture: 3 entities (Alice, Engineering, NDA) + 2
     /// approved facts (Alice `works_in` Engineering, Alice `owns` NDA).
-    fn seeded_facts_db() -> db::Db {
+    fn seeded_facts_db() -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let entities = EntityDao::new(exec);
             let facts = FactDao::new(exec);
@@ -463,9 +466,9 @@ mod tests {
     }
 
     /// Pagination fixture: 3 entities + 2 approved facts.
-    fn seeded_pagination_db() -> db::Db {
+    fn seeded_pagination_db() -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let entities = EntityDao::new(exec);
             let facts = FactDao::new(exec);
@@ -489,9 +492,9 @@ mod tests {
     }
 
     /// `n` approved facts (Alice → Dept_X, distinct predicates).
-    fn seeded_n_facts_db(n: usize) -> db::Db {
+    fn seeded_n_facts_db(n: usize) -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let entities = EntityDao::new(exec);
             let facts = FactDao::new(exec);
@@ -523,7 +526,7 @@ mod tests {
 
     /// Set a fact's status directly (the DAO has no status update; the db
     /// crate's own tests use the same raw-SQL pattern).
-    fn set_fact_status(db: &db::Db, fact_id: i64, status: &str) {
+    fn set_fact_status(db: &synopsis_db::Db, fact_id: i64, status: &str) {
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE facts SET status = ? WHERE id = ?",
@@ -536,10 +539,10 @@ mod tests {
 
     /// Get-by-id fixture: Alice `works_at` Acme Corp (hr) + one source
     /// (document + quote). Returns (db, fact_id).
-    fn seeded_get_by_id_db() -> (db::Db, i64) {
+    fn seeded_get_by_id_db() -> (synopsis_db::Db, i64) {
         let db = test_util::in_memory_db();
         let fact_id = db
-            .exec_tx(|tx| -> Result<i64, db::DbError> {
+            .exec_tx(|tx| -> Result<i64, synopsis_db::DbError> {
                 let exec = ConnectionOrTx::Transaction(&*tx);
                 let entities = EntityDao::new(exec);
                 let documents = DocumentDao::new(exec);
@@ -557,11 +560,11 @@ mod tests {
         (db, fact_id)
     }
 
-    fn search(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
+    fn search(db: &synopsis_db::Db, args: Option<Value>) -> Result<Value, McpError> {
         handle_search_facts(db, args.as_ref())
     }
 
-    fn by_id(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
+    fn by_id(db: &synopsis_db::Db, args: Option<Value>) -> Result<Value, McpError> {
         handle_get_fact_by_id(db, args.as_ref())
     }
 
@@ -607,7 +610,7 @@ mod tests {
     #[test]
     fn facts_entity_name_filter_matches_subject_or_object() {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let entities = EntityDao::new(exec);
             let facts = FactDao::new(exec);
@@ -644,7 +647,7 @@ mod tests {
     #[test]
     fn facts_domain_filter() {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let entities = EntityDao::new(exec);
             let facts = FactDao::new(exec);
@@ -801,7 +804,7 @@ mod tests {
     #[test]
     fn facts_endpoint_optionality_shapes() {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let entities = EntityDao::new(exec);
             let facts = FactDao::new(exec);
@@ -932,7 +935,7 @@ mod tests {
     fn by_id_metadata_is_the_raw_string() {
         let db = test_util::in_memory_db();
         let fact_id = db
-            .exec_tx(|tx| -> Result<i64, db::DbError> {
+            .exec_tx(|tx| -> Result<i64, synopsis_db::DbError> {
                 let exec = ConnectionOrTx::Transaction(&*tx);
                 let entities = EntityDao::new(exec);
                 let facts = FactDao::new(exec);
@@ -985,7 +988,7 @@ mod tests {
     fn by_id_source_without_quote_omits_quote_field() {
         let db = test_util::in_memory_db();
         let fact_id = db
-            .exec_tx(|tx| -> Result<i64, db::DbError> {
+            .exec_tx(|tx| -> Result<i64, synopsis_db::DbError> {
                 let exec = ConnectionOrTx::Transaction(&*tx);
                 let entities = EntityDao::new(exec);
                 let documents = DocumentDao::new(exec);

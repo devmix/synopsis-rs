@@ -29,8 +29,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
-use db::{ChunkEntityDao, ConnectionOrTx, FactDao, FactSourceDao};
 use serde_json::Map;
+use synopsis_db::{ChunkEntityDao, ConnectionOrTx, FactDao, FactSourceDao};
 
 use crate::entities::{EntityChanges, Resolver};
 use crate::error::IngestionError;
@@ -248,14 +248,18 @@ mod tests {
 
     use std::collections::HashMap;
 
-    use db::test_util::in_memory_db;
-    use db::{ChunkDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, FactSourceDao};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ChunkDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, FactSourceDao};
 
     use super::*;
 
     /// Seeds a document + one chunk + two endpoint entities; returns
     /// `(doc_id, chunk_id, subject_id, object_id)`.
-    fn seed(db: &db::Db, subject_domain: &str, object_domain: &str) -> (i64, i64, i64, i64) {
+    fn seed(
+        db: &synopsis_db::Db,
+        subject_domain: &str,
+        object_domain: &str,
+    ) -> (i64, i64, i64, i64) {
         db.with_conn(|conn| {
             let exec = ConnectionOrTx::Connection(conn);
             let doc_id = DocumentDao::new(exec)

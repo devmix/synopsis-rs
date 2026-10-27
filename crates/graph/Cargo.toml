@@ -15,7 +15,7 @@ workspace = true
 # cel API verified against registry sources).
 [dependencies]
 synopsis_config = { workspace = true }
-db = { workspace = true }
+synopsis_db = { workspace = true }
 # utils::text (multilingual-entity-resolution D1/D7): script detection and the
 # resolution-tier keys for within-domain cross-script candidate generation.
 synopsis_utils = { workspace = true }

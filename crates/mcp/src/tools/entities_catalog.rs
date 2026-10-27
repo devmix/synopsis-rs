@@ -27,9 +27,9 @@
 
 use std::collections::HashMap;
 
-use db::{ConnectionOrTx, DbError, Entity, EntityAliasDao, EntityDao, EntityFilter};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use synopsis_db::{ConnectionOrTx, DbError, Entity, EntityAliasDao, EntityDao, EntityFilter};
 
 use crate::error::McpError;
 use crate::pagination::{DEFAULT_PAGE_SIZE, Page, decode_cursor, normalize_page_size};
@@ -144,7 +144,7 @@ fn metadata_field(metadata_json: Option<&str>) -> Option<Value> {
 /// One page of entities matching `filter`, as the response payload. Shared
 /// by both tools (the handlers differ only in argument parsing).
 fn list_entities(
-    db: &db::Db,
+    db: &synopsis_db::Db,
     tool: &'static str,
     filter: &EntityFilter,
     page_size: Option<&Value>,
@@ -257,7 +257,10 @@ struct CatalogEntitiesArgs {
 /// `args` is the raw JSON argument object (`None` = no arguments). The
 /// result is the response payload the server serializes into the tool
 /// response's text block.
-pub fn handle_catalog_entities(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
+pub fn handle_catalog_entities(
+    db: &synopsis_db::Db,
+    args: Option<&Value>,
+) -> Result<Value, McpError> {
     let args: CatalogEntitiesArgs = deserialize_args(args, CATALOG_ENTITIES)?;
     let filter = EntityFilter {
         entity_type: args
@@ -297,7 +300,7 @@ struct SearchEntitiesByTypeArgs {
 /// result is the response payload the server serializes into the tool
 /// response's text block.
 pub fn handle_search_entities_by_type(
-    db: &db::Db,
+    db: &synopsis_db::Db,
     args: Option<&Value>,
 ) -> Result<Value, McpError> {
     let args: SearchEntitiesByTypeArgs = deserialize_args(args, SEARCH_ENTITIES_BY_TYPE)?;
@@ -326,15 +329,15 @@ pub fn handle_search_entities_by_type(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use db::test_util;
+    use synopsis_db::test_util;
 
     use super::*;
 
     /// Catalog-entities fixture: 2 employees (Alice with description +
     /// metadata, Bob with description only) + 1 policy.
-    fn seeded_entities_db() -> db::Db {
+    fn seeded_entities_db() -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let entities = EntityDao::new(ConnectionOrTx::Transaction(&*tx));
             entities.create(
                 "employee",
@@ -360,9 +363,9 @@ mod tests {
     }
 
     /// `n` employees in the `hr` domain (pagination fixture).
-    fn seeded_n_employees_db(n: usize) -> db::Db {
+    fn seeded_n_employees_db(n: usize) -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let entities = EntityDao::new(ConnectionOrTx::Transaction(&*tx));
             for i in 0..n {
                 entities.create(
@@ -380,11 +383,11 @@ mod tests {
         db
     }
 
-    fn catalog(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
+    fn catalog(db: &synopsis_db::Db, args: Option<Value>) -> Result<Value, McpError> {
         handle_catalog_entities(db, args.as_ref())
     }
 
-    fn by_type(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
+    fn by_type(db: &synopsis_db::Db, args: Option<Value>) -> Result<Value, McpError> {
         handle_search_entities_by_type(db, args.as_ref())
     }
 
@@ -554,7 +557,7 @@ mod tests {
     #[test]
     fn entities_metadata_and_optionality_shapes() {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let entities = EntityDao::new(ConnectionOrTx::Transaction(&*tx));
             entities.create("employee", "Conf", "hr", Some("d"), Some(0.9), None)?;
             entities.create("employee", "BadMeta", "hr", None, None, Some("not-json{"))?;
@@ -626,7 +629,7 @@ mod tests {
     #[test]
     fn entities_aliases_field_mapping() {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let entities = EntityDao::new(exec);
             let aliases = EntityAliasDao::new(exec);
@@ -777,7 +780,7 @@ mod tests {
     #[test]
     fn by_type_domain_filter() {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let entities = EntityDao::new(ConnectionOrTx::Transaction(&*tx));
             entities.create("employee", "Alice", "hr", None, None, None)?;
             entities.create("employee", "Bob", "it", None, None, None)?;

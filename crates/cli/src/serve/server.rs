@@ -86,7 +86,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao, QueueTaskDao};
 use embedding::EmbeddingProvider;
 use graph::GraphIndex;
 use ingestion::worker::DocumentWorker;
@@ -97,6 +96,7 @@ use search::{
 };
 use synopsis_config::GlobalConfig;
 use synopsis_config::preset::{GraphConfig, SearchConfig};
+use synopsis_db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao, QueueTaskDao};
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndex, VectorsError, create_vector_engine};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -144,7 +144,7 @@ pub struct ServeRequest {
 /// index) and swaps it into [`mcp::Server::set_searcher`] — there is no
 /// in-place mutation (search design D8).
 pub struct PooledSearcher {
-    db: db::Db,
+    db: synopsis_db::Db,
     search_config: SearchConfig,
     graph_config: GraphConfig,
     embed: Arc<dyn EmbeddingProvider>,
@@ -156,7 +156,7 @@ impl PooledSearcher {
     /// Bind the handle to one serve session's collaborators.
     #[must_use]
     pub fn new(
-        db: db::Db,
+        db: synopsis_db::Db,
         search_config: SearchConfig,
         graph_config: GraphConfig,
         embed: Arc<dyn EmbeddingProvider>,

@@ -71,8 +71,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
-use db::{ConnectionOrTx, EntityAliasDao, EntityDao, EntitySourceDao};
 use synopsis_config::preset::ResolverConfig;
+use synopsis_db::{ConnectionOrTx, EntityAliasDao, EntityDao, EntitySourceDao};
 
 use super::cluster::{canonical_proto, cluster_batch, scope_entity_metadata};
 use super::similarity::{bigrams, jaro_winkler, match_key, normalize_name, stem_key};
@@ -803,9 +803,9 @@ mod tests {
     // Test code: unwrap/expect are intentional (fixtures are static).
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, Db, DocumentDao, EntityDao, EntityFilter, EntitySourceDao};
     use serde_json::{Map, Value};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ConnectionOrTx, Db, DocumentDao, EntityDao, EntityFilter, EntitySourceDao};
 
     use super::*;
 
@@ -898,7 +898,7 @@ mod tests {
             .unwrap()
     }
 
-    fn stored_entity(fixture: &Fixture, id: i64) -> db::Entity {
+    fn stored_entity(fixture: &Fixture, id: i64) -> synopsis_db::Entity {
         fixture
             .db
             .with_conn(|conn| {

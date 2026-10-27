@@ -103,7 +103,7 @@ impl DocumentFilter {
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ConnectionOrTx, Db, DocumentDao, DbError};
+/// # use synopsis_db::{ConnectionOrTx, Db, DocumentDao, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// let id = db.with_conn(|conn| -> Result<i64, DbError> {
 ///     let docs = DocumentDao::new(ConnectionOrTx::Connection(conn));

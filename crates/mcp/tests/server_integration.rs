@@ -15,7 +15,6 @@
 
 use std::sync::Arc;
 
-use db::{ChunkDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, test_util};
 use graph::GraphIndex;
 use rmcp::{
     ServiceExt,
@@ -28,6 +27,7 @@ use rmcp::{
 };
 use search::{SearchError, SearchResult, Searcher};
 use serde_json::{Map, Value, json};
+use synopsis_db::{ChunkDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, test_util};
 
 /// The 12 frozen tool names (`mcp-contract`), sorted for set comparison.
 const FROZEN_TOOL_NAMES: [&str; 12] = [
@@ -102,9 +102,9 @@ impl Searcher for StubSearcher {
 /// A seeded in-memory KB: 1 document (domain `hr`), 2 chunks, 2 entities,
 /// 1 fact — the counts the `/health` and `catalog_overview` assertions
 /// expect.
-fn seeded_db() -> db::Db {
+fn seeded_db() -> synopsis_db::Db {
     let db = test_util::in_memory_db();
-    let seeded = db.with_conn(|conn| -> Result<(), db::DbError> {
+    let seeded = db.with_conn(|conn| -> Result<(), synopsis_db::DbError> {
         let exec = ConnectionOrTx::Connection(conn);
         let doc = DocumentDao::new(exec).create(
             "markdown",

@@ -1,6 +1,6 @@
 //! Lexical (FTS5/BM25) sub-search leg.
 //!
-//! A thin wrapper over [`db::ChunkDao::search_fts`]: bm25 ranking, the domain
+//! A thin wrapper over [`synopsis_db::ChunkDao::search_fts`]: bm25 ranking, the domain
 //! filter and the limit clamping all live SQL-side in the DAO (it orders by
 //! `bm25()` and applies the domain `EXISTS` before `LIMIT`).
 //!
@@ -14,7 +14,7 @@
 //!   normalizing the input alone makes the filter case-insensitive without
 //!   touching the db crate.
 
-use db::{ChunkDao, FtsHit};
+use synopsis_db::{ChunkDao, FtsHit};
 
 use crate::{LexicalHit, SearchError, normalize_domain};
 
@@ -62,7 +62,7 @@ impl<'conn> LexicalSearcher<'conn> {
 /// `metadata_json` bag is carried for the result's `chunk_metadata`.
 impl From<FtsHit> for LexicalHit {
     fn from(hit: FtsHit) -> Self {
-        let db::Chunk {
+        let synopsis_db::Chunk {
             id,
             doc_id,
             chunk_text,
@@ -89,8 +89,8 @@ impl From<FtsHit> for LexicalHit {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, Db, DocumentDao};
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ConnectionOrTx, Db, DocumentDao};
 
     use super::*;
 
@@ -260,7 +260,7 @@ mod tests {
     // raw metadata_json is carried (chunk-metadata-persistence design D5).
     #[test]
     fn from_fts_hit_maps_all_fields() {
-        let chunk = db::Chunk {
+        let chunk = synopsis_db::Chunk {
             id: 42,
             doc_id: 7,
             chunk_text: "raw body".to_string(),

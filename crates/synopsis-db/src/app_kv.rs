@@ -30,7 +30,7 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{AppKv, ConnectionOrTx, Db, DbError};
+/// # use synopsis_db::{AppKv, ConnectionOrTx, Db, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// let value = db.with_conn(|conn| {
 ///     let kv = AppKv::new(ConnectionOrTx::Connection(conn));

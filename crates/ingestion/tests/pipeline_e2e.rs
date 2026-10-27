@@ -20,12 +20,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use db::test_util::in_memory_db;
-use db::{
-    Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, Document, DocumentDao, Entity, EntityDao,
-    EntityLinkDao, EntityLinkPayload, EntitySourceDao, FactDao, FactSourceDao, QueueTaskDao,
-    QueueTaskType,
-};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use ingestion::worker::DocumentWorker;
 use ingestion::{
@@ -40,6 +34,12 @@ use synopsis_config::ontology::{
     LinkMethod, NerMethod, SourceConfig, SourceType,
 };
 use synopsis_config::preset::{IngestionConfig, LinkerConfig, LlmConfig};
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{
+    Chunk, ChunkDao, ChunkEntityDao, ConnectionOrTx, Db, Document, DocumentDao, Entity, EntityDao,
+    EntityLinkDao, EntityLinkPayload, EntitySourceDao, FactDao, FactSourceDao, QueueTaskDao,
+    QueueTaskType,
+};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 /// One markdown document with two heading sections and one email each.
@@ -505,7 +505,7 @@ impl Harness {
             .unwrap()
     }
 
-    fn jobs(&self) -> Vec<db::QueueTask> {
+    fn jobs(&self) -> Vec<synopsis_db::QueueTask> {
         self.db
             .with_conn(|conn| QueueTaskDao::new(ConnectionOrTx::Connection(conn)).list(None, None))
             .expect("with_conn")
@@ -570,7 +570,7 @@ impl Harness {
     }
 
     /// All `entity:link` queue rows.
-    fn entity_link_tasks(&self) -> Vec<db::QueueTask> {
+    fn entity_link_tasks(&self) -> Vec<synopsis_db::QueueTask> {
         self.jobs()
             .into_iter()
             .filter(|task| task.task_type == "entity:link")
@@ -578,7 +578,7 @@ impl Harness {
     }
 
     /// All `entity_links` rows.
-    fn link_rows(&self) -> Vec<db::EntityLink> {
+    fn link_rows(&self) -> Vec<synopsis_db::EntityLink> {
         self.db
             .with_conn(|conn| EntityLinkDao::new(ConnectionOrTx::Connection(conn)).list_all())
             .unwrap()
@@ -586,7 +586,7 @@ impl Harness {
     }
 
     /// The `entity_ids` carried by an `entity:link` task payload.
-    fn link_payload_ids(&self, task: &db::QueueTask) -> Vec<i64> {
+    fn link_payload_ids(&self, task: &synopsis_db::QueueTask) -> Vec<i64> {
         serde_json::from_str::<EntityLinkPayload>(&task.event)
             .unwrap()
             .entity_ids

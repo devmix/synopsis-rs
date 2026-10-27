@@ -43,7 +43,7 @@ use crate::executor::{ConnectionOrTx, DbExecutor};
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ChunkEntityDao, ConnectionOrTx, Db, DbError};
+/// # use synopsis_db::{ChunkEntityDao, ConnectionOrTx, Db, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let links = ChunkEntityDao::new(ConnectionOrTx::Connection(conn));

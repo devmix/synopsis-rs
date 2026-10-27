@@ -20,8 +20,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use db::{ConnectionOrTx, Db, QueueTask, QueueTaskDao};
 use synopsis_config::{Config, ConfigError, load};
+use synopsis_db::{ConnectionOrTx, Db, QueueTask, QueueTaskDao};
 
 use crate::cli::QueueAction;
 use crate::console::{Color, Console};
@@ -237,7 +237,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use db::QueueTaskType;
+    use synopsis_db::QueueTaskType;
 
     use super::*;
 
@@ -317,15 +317,15 @@ mod tests {
         attempts: i32,
         last_error: Option<&str>,
     ) {
-        db.with_conn(|conn| -> Result<(), db::QueueTaskError> {
+        db.with_conn(|conn| -> Result<(), synopsis_db::QueueTaskError> {
             let tasks = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
             tasks.enqueue(
                 QueueTaskType::DocIndex,
                 identity,
-                &db::DocIndexPayload {
+                &synopsis_db::DocIndexPayload {
                     source_path: source.to_owned(),
                     content_hash: None,
-                    ops: vec![db::ReIndexOp::Full],
+                    ops: vec![synopsis_db::ReIndexOp::Full],
                 },
                 100,
             )?;
@@ -334,7 +334,7 @@ mod tests {
                  WHERE identity = ?4 AND type = 'doc:index'",
                 rusqlite::params![status, attempts, last_error, identity],
             )
-            .map_err(|e| db::QueueTaskError::Db(e.into()))?;
+            .map_err(|e| synopsis_db::QueueTaskError::Db(e.into()))?;
             Ok(())
         })
         .expect("with_conn")

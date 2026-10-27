@@ -16,12 +16,12 @@
 
 use std::collections::BTreeMap;
 
-use db::{
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use synopsis_db::{
     ChunkDao, ConnectionOrTx, Document, DocumentDao, DocumentFilter, EntityDao, EntityFilter,
     EntityLinkDao, FactDao,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::error::McpError;
 use crate::pagination::{DEFAULT_PAGE_SIZE, Page, decode_cursor, normalize_page_size};
@@ -65,7 +65,10 @@ struct OverviewResponse {
 /// Handle the `catalog_overview` tool call (design D2/D4).
 ///
 /// The frozen schema takes no parameters, so `args` is unused.
-pub fn handle_catalog_overview(db: &db::Db, _args: Option<&Value>) -> Result<Value, McpError> {
+pub fn handle_catalog_overview(
+    db: &synopsis_db::Db,
+    _args: Option<&Value>,
+) -> Result<Value, McpError> {
     let overview = db
         .with_conn(|conn| {
             let exec = ConnectionOrTx::Connection(conn);
@@ -150,7 +153,10 @@ struct DocumentsResponse {
 /// `args` is the raw JSON argument object (`None` = no arguments). The
 /// result is the response payload the server serializes into the tool
 /// response's text block.
-pub fn handle_catalog_documents(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
+pub fn handle_catalog_documents(
+    db: &synopsis_db::Db,
+    args: Option<&Value>,
+) -> Result<Value, McpError> {
     let args = parse_args(args)?;
 
     let limit = parse_page_size(args.page_size.as_ref());
@@ -276,15 +282,15 @@ fn to_value<T: Serialize>(tool: &'static str, response: T) -> Result<Value, McpE
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use db::{EntityLink, EntityLinkDao, test_util};
+    use synopsis_db::{EntityLink, EntityLinkDao, test_util};
 
     use super::*;
 
     /// Overview fixture: 2 documents (markdown + json), 3 chunks, 2 entities,
     /// 1 fact, 1 entity link.
-    fn seeded_overview_db() -> db::Db {
+    fn seeded_overview_db() -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let documents = DocumentDao::new(exec);
             let chunks = ChunkDao::new(exec);
@@ -337,9 +343,9 @@ mod tests {
 
     /// Documents fixture: 2 documents, one with array domains
     /// `["hr","policy"]`, one with `["engineering"]`.
-    fn seeded_documents_db() -> db::Db {
+    fn seeded_documents_db() -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let documents = DocumentDao::new(ConnectionOrTx::Transaction(&*tx));
             documents.create(
                 "markdown",
@@ -360,9 +366,9 @@ mod tests {
     }
 
     /// `n` documents without metadata (cursor-pagination fixture).
-    fn seeded_n_documents_db(n: usize) -> db::Db {
+    fn seeded_n_documents_db(n: usize) -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let documents = DocumentDao::new(ConnectionOrTx::Transaction(&*tx));
             for i in 0..n {
                 documents.create(
@@ -378,11 +384,11 @@ mod tests {
         db
     }
 
-    fn overview(db: &db::Db) -> Value {
+    fn overview(db: &synopsis_db::Db) -> Value {
         handle_catalog_overview(db, None).expect("overview must not fail")
     }
 
-    fn documents(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
+    fn documents(db: &synopsis_db::Db, args: Option<Value>) -> Result<Value, McpError> {
         handle_catalog_documents(db, args.as_ref())
     }
 
@@ -468,7 +474,7 @@ mod tests {
     #[test]
     fn overview_multi_edge_path_graph_counts() {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Transaction(&*tx);
             let entities = EntityDao::new(exec);
             let links = EntityLinkDao::new(exec);
@@ -726,7 +732,7 @@ mod tests {
     #[test]
     fn documents_metadata_shapes() {
         let db = test_util::in_memory_db();
-        db.exec_tx(|tx| -> Result<(), db::DbError> {
+        db.exec_tx(|tx| -> Result<(), synopsis_db::DbError> {
             let documents = DocumentDao::new(ConnectionOrTx::Transaction(&*tx));
             documents.create(
                 "markdown",

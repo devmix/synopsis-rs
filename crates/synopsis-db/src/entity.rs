@@ -118,7 +118,7 @@ impl EntityFilter {
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ConnectionOrTx, Db, EntityDao, DbError};
+/// # use synopsis_db::{ConnectionOrTx, Db, EntityDao, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let entities = EntityDao::new(ConnectionOrTx::Connection(conn));

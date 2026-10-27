@@ -71,12 +71,12 @@
 
 use std::collections::HashMap;
 
-use db::{
+use petgraph::graph::{DiGraph, EdgeIndex, NodeIndex};
+use synopsis_config::preset::GraphConfig;
+use synopsis_db::{
     ConnectionOrTx, Db, DbError, Entity, EntityDao, EntityLink, EntityLinkDao, Fact, FactDao,
     utils::normalize,
 };
-use petgraph::graph::{DiGraph, EdgeIndex, NodeIndex};
-use synopsis_config::preset::GraphConfig;
 
 use crate::error::GraphError;
 
@@ -409,7 +409,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use db::test_util::in_memory_db;
+    use synopsis_db::test_util::in_memory_db;
 
     /// Insert an entity through the DAO and return its id.
     fn seed_entity(db: &Db, entity_type: &str, name: &str, domain: &str) -> i64 {

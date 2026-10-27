@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use db::{ConnectionOrTx, Db, QueueTaskDao};
+use synopsis_db::{ConnectionOrTx, Db, QueueTaskDao};
 
 fn synopsis() -> Command {
     Command::new(env!("CARGO_BIN_EXE_synopsis"))
@@ -111,15 +111,15 @@ fn entity_link_fixture(tag: &str) -> Fixture {
 /// last_error) directly: the DAO only reaches `error` through the worker's
 /// failure path, which these tests do not exercise.
 fn seed(db: &Db, path: &str, source: &str, status: &str, attempts: i32, last_error: Option<&str>) {
-    db.with_conn(|conn| -> Result<(), db::QueueTaskError> {
+    db.with_conn(|conn| -> Result<(), synopsis_db::QueueTaskError> {
         let tasks = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
         tasks.enqueue(
-            db::QueueTaskType::DocIndex,
+            synopsis_db::QueueTaskType::DocIndex,
             path,
-            &db::DocIndexPayload {
+            &synopsis_db::DocIndexPayload {
                 source_path: source.to_owned(),
                 content_hash: None,
-                ops: vec![db::ReIndexOp::Full],
+                ops: vec![synopsis_db::ReIndexOp::Full],
             },
             0,
         )?;
@@ -128,7 +128,7 @@ fn seed(db: &Db, path: &str, source: &str, status: &str, attempts: i32, last_err
              WHERE identity = ?4 AND type = 'doc:index'",
             rusqlite::params![status, attempts, last_error, path],
         )
-        .map_err(|e| db::QueueTaskError::Db(e.into()))?;
+        .map_err(|e| synopsis_db::QueueTaskError::Db(e.into()))?;
         Ok(())
     })
     .expect("with_conn")
@@ -145,12 +145,12 @@ fn seed_entity_link(
     attempts: i32,
     last_error: Option<&str>,
 ) {
-    db.with_conn(|conn| -> Result<(), db::QueueTaskError> {
+    db.with_conn(|conn| -> Result<(), synopsis_db::QueueTaskError> {
         let tasks = QueueTaskDao::new(ConnectionOrTx::Connection(conn));
         tasks.enqueue(
-            db::QueueTaskType::EntityLink,
+            synopsis_db::QueueTaskType::EntityLink,
             identity,
-            &db::EntityLinkPayload { entity_ids },
+            &synopsis_db::EntityLinkPayload { entity_ids },
             0,
         )?;
         conn.execute(
@@ -158,7 +158,7 @@ fn seed_entity_link(
              WHERE identity = ?4 AND type = 'entity:link'",
             rusqlite::params![status, attempts, last_error, identity],
         )
-        .map_err(|e| db::QueueTaskError::Db(e.into()))?;
+        .map_err(|e| synopsis_db::QueueTaskError::Db(e.into()))?;
         Ok(())
     })
     .expect("with_conn")

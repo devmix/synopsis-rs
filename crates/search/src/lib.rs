@@ -5,7 +5,7 @@
 //! [`HybridSearcher`] composes the full pipeline (design D2/D5):
 //!
 //! 1. **Legs** — [`LexicalSearcher`] (FTS5/BM25 over
-//!    [`db::ChunkDao::search_fts`]) and [`SemanticSearcher`] (embedding
+//!    [`synopsis_db::ChunkDao::search_fts`]) and [`SemanticSearcher`] (embedding
 //!    provider + [`synopsis_vectors::VectorIndex`], with application-side domain
 //!    filtering and over-fetch, design D3). The legs run sequentially
 //!    (no task spawning or timeout plumbing; `timeout_ms` stays in the
@@ -215,11 +215,11 @@ pub struct SearchResult {
     /// empty until the finalize pipeline fills it.
     pub metadata: serde_json::Map<String, serde_json::Value>,
     /// Entities attached to the chunk; empty until the enricher fills it.
-    pub entities: Vec<db::Entity>,
+    pub entities: Vec<synopsis_db::Entity>,
 }
 
 /// Normalize a domain filter for matching: trim, collapse whitespace,
-/// lowercase ([`db::utils::normalize`]). A domain that is empty after
+/// lowercase ([`synopsis_db::utils::normalize`]). A domain that is empty after
 /// normalization means "no filter" (`None`).
 ///
 /// Stored domains are canonically lowercase (ontology XML), so normalizing
@@ -227,7 +227,7 @@ pub struct SearchResult {
 /// without changing the db crate's SQL contract.
 pub(crate) fn normalize_domain(domain: Option<&str>) -> Option<String> {
     domain
-        .map(db::utils::normalize)
+        .map(synopsis_db::utils::normalize)
         .filter(|normalized| !normalized.is_empty())
 }
 
@@ -245,7 +245,7 @@ pub(crate) fn document_domains(metadata_json: Option<&str>) -> Vec<String> {
     };
     match value.get("domain") {
         Some(serde_json::Value::String(domain)) => {
-            let normalized = db::utils::normalize(domain);
+            let normalized = synopsis_db::utils::normalize(domain);
             if normalized.is_empty() {
                 Vec::new()
             } else {
@@ -255,7 +255,7 @@ pub(crate) fn document_domains(metadata_json: Option<&str>) -> Vec<String> {
         Some(serde_json::Value::Array(items)) => items
             .iter()
             .filter_map(serde_json::Value::as_str)
-            .map(db::utils::normalize)
+            .map(synopsis_db::utils::normalize)
             .filter(|domain| !domain.is_empty())
             .collect(),
         _ => Vec::new(),

@@ -31,7 +31,7 @@ pub enum SearchError {
 
     /// A database access failed (chunk/document/entity DAOs).
     #[error("database error: {0}")]
-    Db(#[from] db::DbError),
+    Db(#[from] synopsis_db::DbError),
 
     /// Query embedding generation failed.
     #[error("embedding error: {0}")]

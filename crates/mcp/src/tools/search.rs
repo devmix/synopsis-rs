@@ -129,7 +129,7 @@ struct EntityRef {
 /// result is the frozen wire payload (`mcp-contract`) the server serializes
 /// into the tool response's text block.
 pub fn handle_search(
-    db: &db::Db,
+    db: &synopsis_db::Db,
     searcher: &(dyn Searcher + Send + Sync),
     args: Option<&Value>,
 ) -> Result<Value, McpError> {
@@ -173,7 +173,8 @@ pub fn handle_search(
     // excluded (a merge records the surviving name as an alias of itself).
     let alias_map = db
         .with_conn(|conn| {
-            let dao = db::EntityAliasDao::new(db::ConnectionOrTx::Connection(conn));
+            let dao =
+                synopsis_db::EntityAliasDao::new(synopsis_db::ConnectionOrTx::Connection(conn));
             let mut map: HashMap<i64, Vec<String>> = HashMap::new();
             for result in &results {
                 for entity in &result.entities {
@@ -242,10 +243,11 @@ fn parse_top_k(value: Option<&Value>) -> i32 {
 /// Whether `domain` is known to the knowledge base: the domain must appear as
 /// a `$.domain` string or array member of some document's `metadata_json`.
 /// Case-sensitive (exact-match).
-fn is_known_domain(db: &db::Db, domain: &str) -> Result<bool, McpError> {
+fn is_known_domain(db: &synopsis_db::Db, domain: &str) -> Result<bool, McpError> {
     let known = db
         .with_conn(|conn| {
-            db::DocumentDao::new(db::ConnectionOrTx::Connection(conn)).unique_domains()
+            synopsis_db::DocumentDao::new(synopsis_db::ConnectionOrTx::Connection(conn))
+                .unique_domains()
         })
         .and_then(|result| result)?;
     Ok(known.iter().any(|known| known == domain))
@@ -305,8 +307,8 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use db::{ConnectionOrTx, DocumentDao, EntityAliasDao, EntityDao, test_util};
     use search::{SearchError, SearchResult};
+    use synopsis_db::{ConnectionOrTx, DocumentDao, EntityAliasDao, EntityDao, test_util};
 
     use super::*;
 
@@ -411,7 +413,7 @@ mod tests {
             rank: 1,
             source_type: "hybrid".to_owned(),
             metadata,
-            entities: vec![db::Entity {
+            entities: vec![synopsis_db::Entity {
                 id: chunk_id * 100,
                 entity_type: "employee".to_owned(),
                 name: "Alice".to_owned(),
@@ -426,24 +428,29 @@ mod tests {
 
     /// An in-memory KB with documents covering the domains `hr`, `product`
     /// and `engineering` (string and array `$.domain` forms).
-    fn seeded_db() -> db::Db {
+    fn seeded_db() -> synopsis_db::Db {
         let db = test_util::in_memory_db();
-        let seeded: Result<Result<(), db::DbError>, db::DbError> = db.with_conn(|conn| {
-            let documents = DocumentDao::new(ConnectionOrTx::Connection(conn));
-            documents.create("json", "/docs/hr.md", Some(r#"{"domain":"hr"}"#), None)?;
-            documents.create(
-                "json",
-                "/docs/product.md",
-                Some(r#"{"domain":["product","engineering"]}"#),
-                None,
-            )?;
-            Ok(())
-        });
+        let seeded: Result<Result<(), synopsis_db::DbError>, synopsis_db::DbError> =
+            db.with_conn(|conn| {
+                let documents = DocumentDao::new(ConnectionOrTx::Connection(conn));
+                documents.create("json", "/docs/hr.md", Some(r#"{"domain":"hr"}"#), None)?;
+                documents.create(
+                    "json",
+                    "/docs/product.md",
+                    Some(r#"{"domain":["product","engineering"]}"#),
+                    None,
+                )?;
+                Ok(())
+            });
         seeded.unwrap().unwrap();
         db
     }
 
-    fn call(db: &db::Db, searcher: &StubSearcher, args: Option<Value>) -> Result<Value, McpError> {
+    fn call(
+        db: &synopsis_db::Db,
+        searcher: &StubSearcher,
+        args: Option<Value>,
+    ) -> Result<Value, McpError> {
         handle_search(db, searcher, args.as_ref())
     }
 
@@ -583,7 +590,7 @@ mod tests {
     fn entity_ref_carries_recorded_aliases() {
         let db = test_util::in_memory_db();
         let (alice, bob) = db
-            .exec_tx(|tx| -> Result<(i64, i64), db::DbError> {
+            .exec_tx(|tx| -> Result<(i64, i64), synopsis_db::DbError> {
                 let exec = ConnectionOrTx::Transaction(&*tx);
                 let entities = EntityDao::new(exec);
                 let aliases = EntityAliasDao::new(exec);
@@ -595,7 +602,7 @@ mod tests {
             })
             .expect("seed transaction commits");
 
-        let entity = |id: i64, name: &str| db::Entity {
+        let entity = |id: i64, name: &str| synopsis_db::Entity {
             id,
             entity_type: "employee".to_owned(),
             name: name.to_owned(),

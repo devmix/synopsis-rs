@@ -192,7 +192,7 @@ impl fmt::Display for DotExport<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use db::{Entity, EntityLink, Fact};
+    use synopsis_db::{Entity, EntityLink, Fact};
 
     // ── fixtures (same shape as the traverser tests) ─────────────────────
 

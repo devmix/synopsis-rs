@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn db_error_maps_to_graph_error() {
-        let graph_err = GraphError::from(db::DbError::NestedTransaction);
+        let graph_err = GraphError::from(synopsis_db::DbError::NestedTransaction);
         assert!(matches!(graph_err, GraphError::Db(..)));
         assert!(graph_err.to_string().starts_with("storage error"));
         assert!(std::error::Error::source(&graph_err).is_some());

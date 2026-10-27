@@ -46,7 +46,7 @@
 //!
 //! # Database access
 //!
-//! The provider owns an `Option<db::Db>` pool: `Some` enables caching,
+//! The provider owns an `Option<synopsis_db::Db>` pool: `Some` enables caching,
 //! `None` disables it. The cache holds its own pool independent of the
 //! pipeline's transaction — cache writes are plain autocommit statements,
 //! never part of a pipeline transaction. Each cache operation checks a
@@ -56,10 +56,10 @@
 
 use std::fmt;
 
-use db::{ConnectionOrTx, Db};
 use serde_json::{Map, Value};
 use synopsis_config::DomainConfig;
 use synopsis_config::preset::LlmConfig;
+use synopsis_db::{ConnectionOrTx, Db};
 use synopsis_llm::LlmClient;
 
 use super::regex::normalize;
@@ -284,11 +284,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use db::test_util::in_memory_db;
     use serde_json::json;
     use synopsis_config::ontology::{EntityDef, ExtractionDef, RelationDef};
     use synopsis_config::preset::ResponseFormat;
     use synopsis_config::{ConfidencePolicy, DomainConfig};
+    use synopsis_db::test_util::in_memory_db;
     use synopsis_llm::LlmError;
 
     use super::*;

@@ -114,7 +114,7 @@ mod test_util {
         Server::new(
             "synopsis-sse-test".to_owned(),
             "0.2.0".to_owned(),
-            db::test_util::in_memory_db(),
+            synopsis_db::test_util::in_memory_db(),
             Arc::new(StubSearcher),
             Arc::new(GraphIndex::Unavailable),
         )

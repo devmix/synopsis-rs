@@ -9,15 +9,22 @@
 
 use std::collections::HashSet;
 
-use db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, test_util};
 use mcp::error::McpError;
 use mcp::tools::documents::{handle_get_chunk_by_id, handle_get_document_context};
 use serde_json::Value;
+use synopsis_db::{
+    ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, test_util,
+};
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
 /// A document with `metadata_json`; returns its id.
-fn seed_document(db: &db::Db, source_type: &str, path: &str, metadata: Option<&str>) -> i64 {
+fn seed_document(
+    db: &synopsis_db::Db,
+    source_type: &str,
+    path: &str,
+    metadata: Option<&str>,
+) -> i64 {
     db.with_conn(|conn| {
         DocumentDao::new(ConnectionOrTx::Connection(conn)).create(source_type, path, metadata, None)
     })
@@ -27,7 +34,7 @@ fn seed_document(db: &db::Db, source_type: &str, path: &str, metadata: Option<&s
 
 /// A chunk of `doc_id`; returns its id.
 fn seed_chunk(
-    db: &db::Db,
+    db: &synopsis_db::Db,
     doc_id: i64,
     text: &str,
     sequence: i64,
@@ -42,7 +49,7 @@ fn seed_chunk(
 }
 
 /// An entity; returns its id.
-fn seed_entity(db: &db::Db, entity_type: &str, name: &str, domain: &str) -> i64 {
+fn seed_entity(db: &synopsis_db::Db, entity_type: &str, name: &str, domain: &str) -> i64 {
     db.with_conn(|conn| {
         EntityDao::new(ConnectionOrTx::Connection(conn)).create(
             entity_type,
@@ -58,7 +65,7 @@ fn seed_entity(db: &db::Db, entity_type: &str, name: &str, domain: &str) -> i64 
 }
 
 /// A chunk→entity link.
-fn link_chunk(db: &db::Db, chunk_id: i64, entity_id: i64) {
+fn link_chunk(db: &synopsis_db::Db, chunk_id: i64, entity_id: i64) {
     db.with_conn(|conn| {
         ChunkEntityDao::new(ConnectionOrTx::Connection(conn)).link(chunk_id, entity_id)
     })
@@ -67,7 +74,13 @@ fn link_chunk(db: &db::Db, chunk_id: i64, entity_id: i64) {
 }
 
 /// An approved fact; returns its id.
-fn seed_fact(db: &db::Db, subject: i64, predicate: &str, object: i64, domain: &str) -> i64 {
+fn seed_fact(
+    db: &synopsis_db::Db,
+    subject: i64,
+    predicate: &str,
+    object: i64,
+    domain: &str,
+) -> i64 {
     db.with_conn(|conn| {
         FactDao::new(ConnectionOrTx::Connection(conn)).create(
             Some(subject),
@@ -83,11 +96,11 @@ fn seed_fact(db: &db::Db, subject: i64, predicate: &str, object: i64, domain: &s
     .expect("fact insert")
 }
 
-fn doc_context(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
+fn doc_context(db: &synopsis_db::Db, args: Option<Value>) -> Result<Value, McpError> {
     handle_get_document_context(db, args.as_ref())
 }
 
-fn chunk_by_id(db: &db::Db, args: Option<Value>) -> Result<Value, McpError> {
+fn chunk_by_id(db: &synopsis_db::Db, args: Option<Value>) -> Result<Value, McpError> {
     handle_get_chunk_by_id(db, args.as_ref())
 }
 
@@ -331,7 +344,7 @@ fn doc_context_entities_deduplicated_across_chunks() {
 /// Facts fixture: two chunks, three entities, links (Alice+Acme → chunk
 /// 1, Bob+Acme → chunk 2), three approved facts. Returns (db, doc_id,
 /// [fact ids]).
-fn seeded_facts_fixture() -> (db::Db, i64, Vec<i64>) {
+fn seeded_facts_fixture() -> (synopsis_db::Db, i64, Vec<i64>) {
     let db = test_util::in_memory_db();
     let doc_id = seed_document(&db, "markdown", "/docs/team.md", None);
     let chunk1 = seed_chunk(&db, doc_id, "Alice works at Acme.", 1, (None, None));

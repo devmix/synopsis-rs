@@ -18,7 +18,7 @@ debug = false
 resolver = "3"
 members = [
     "crates/synopsis-config",
-    "crates/db",
+    "crates/synopsis-db",
     "crates/synopsis-vectors",
     "crates/synopsis-utils",
     "crates/synopsis-llm",
@@ -56,7 +56,7 @@ expect_used = "warn" # same as unwrap_used
 # utils-crate D1 adds utils as a leaf any crate may depend on):
 # config, db, vectors, utils, llm -> embedding, ingestion, graph -> search -> mcp -> cli
 synopsis_config = { package = "synopsis-config", path = "crates/synopsis-config" }
-db = { path = "crates/db" }
+synopsis_db = { package = "synopsis-db", path = "crates/synopsis-db" }
 synopsis_vectors = { package = "synopsis-vectors", path = "crates/synopsis-vectors" }
 synopsis_utils = { package = "synopsis-utils", path = "crates/synopsis-utils" }
 # Base tier (llm change D1): OpenAI-compatible LLM client; only internal

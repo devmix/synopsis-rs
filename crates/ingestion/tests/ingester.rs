@@ -16,13 +16,13 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use db::test_util::in_memory_db;
-use db::{
-    ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, FactSourceDao,
-};
 use embedding::{EmbeddingError, EmbeddingProvider};
 use serde_json::Map;
 use synopsis_config::preset::{ChunkingStrategy, IngestionConfig, MarkdownChunkerConfig};
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{
+    ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, FactSourceDao,
+};
 
 use ingestion::{
     Chunker, Document, DocumentChunk, DocumentMetadata, Ingester, IngestionError, MarkdownChunker,
@@ -422,7 +422,7 @@ fn write_file(root: &Path, name: &str, content: &str) {
 
 /// Wires an in-memory database with the mock collaborators.
 struct Harness {
-    db: db::Db,
+    db: synopsis_db::Db,
     cfg: IngestionConfig,
     source: TestSource,
     embed: Arc<MockEmbedding>,

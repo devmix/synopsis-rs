@@ -125,7 +125,7 @@ pub struct FtsHit {
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ChunkDao, ConnectionOrTx, Db, DbError};
+/// # use synopsis_db::{ChunkDao, ConnectionOrTx, Db, DbError};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let chunks = ChunkDao::new(ConnectionOrTx::Connection(conn));

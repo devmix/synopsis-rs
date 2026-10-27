@@ -12,7 +12,7 @@
 //!
 //! **Design:**
 //! - application-side domain filtering with over-fetch (design D3);
-//! - chunk resolution is per-id [`db::ChunkDao::get_by_id`]: the DAO has no
+//! - chunk resolution is per-id [`synopsis_db::ChunkDao::get_by_id`]: the DAO has no
 //!   batch `get_by_ids`, and the round-trips are cheap on local SQLite with a
 //!   count bounded by `topK × 3` (a batch method is a db-crate addition, out
 //!   of scope here);
@@ -32,8 +32,8 @@
 
 use std::collections::HashMap;
 
-use db::{ChunkDao, DocumentDao};
 use embedding::EmbeddingProvider;
+use synopsis_db::{ChunkDao, DocumentDao};
 use synopsis_vectors::VectorIndex;
 
 use crate::{SearchError, SemanticHit, document_domains, normalize_domain};
@@ -166,9 +166,9 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use db::test_util::in_memory_db;
-    use db::{ConnectionOrTx, Db, DocumentDao};
     use embedding::EmbeddingError;
+    use synopsis_db::test_util::in_memory_db;
+    use synopsis_db::{ConnectionOrTx, Db, DocumentDao};
     use synopsis_vectors::VectorsError;
 
     use super::*;
@@ -582,7 +582,7 @@ mod tests {
     /// temporarily disabled on the pooled connection (the state is otherwise
     /// unreachable under the enforced FK).
     fn insert_orphan_document_chunk(db: &Db, doc_id: i64, text: &str) -> i64 {
-        db.with_conn(|conn| -> Result<i64, db::DbError> {
+        db.with_conn(|conn| -> Result<i64, synopsis_db::DbError> {
             conn.execute_batch("PRAGMA foreign_keys = OFF")?;
             let chunks = ChunkDao::new(ConnectionOrTx::Connection(conn));
             let id = chunks.create(doc_id, text, 0, None, None)?;

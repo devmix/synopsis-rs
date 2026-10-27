@@ -16,7 +16,7 @@ axum = { workspace = true }
 # `config` is consumed by the 5.10 assembly (server name/version, graph
 # enablement); the 5.1 scaffold injects those as plain values.
 synopsis_config = { workspace = true }
-db = { workspace = true }
+synopsis_db = { workspace = true }
 graph = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
 search = { workspace = true }

@@ -195,12 +195,12 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use db::test_util::in_memory_db;
     use embedding::EmbeddingProvider;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use synopsis_config::onnx::{ModelInfo, OnnxModelsConfig};
     use synopsis_config::{Config, OnnxConfig};
+    use synopsis_db::test_util::in_memory_db;
     use synopsis_vectors::{UsearchEngine, VectorIndexConfig};
 
     use crate::serve::bootstrap::open_db;

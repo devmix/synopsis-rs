@@ -25,8 +25,8 @@
 use std::collections::HashSet;
 use std::time::SystemTime;
 
-use db::{AppKv, ChunkDao, ConnectionOrTx, Db, GcDao};
 use graph::LinkResult;
+use synopsis_db::{AppKv, ChunkDao, ConnectionOrTx, Db, GcDao};
 use synopsis_vectors::VectorIndex;
 
 use super::Runner;
@@ -243,11 +243,11 @@ mod tests {
 
     use std::fs;
 
-    use db::{AppKv, ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, FactDao};
     use graph::LinkResult;
     use synopsis_config::ontology::{
         CrossDomainLinksConfig, LinkExpression, LinkMethod, SourceType,
     };
+    use synopsis_db::{AppKv, ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, FactDao};
     use synopsis_vectors::VectorIndex;
 
     use super::{LAST_LINKING_RUN_KEY, OrphanCleanupStats};

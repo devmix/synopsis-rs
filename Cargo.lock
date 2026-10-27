@@ -439,7 +439,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "db",
  "embedding",
  "graph",
  "ingestion",
@@ -453,6 +452,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "synopsis-config",
+ "synopsis-db",
  "synopsis-utils",
  "synopsis-vectors",
  "tabled",
@@ -770,22 +770,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b1e3a325bc115f096c8b77bbf027a7c2592230e70be2d985be950d3d5e60ebe"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "db"
-version = "0.1.0"
-dependencies = [
- "include_dir",
- "libsqlite3-sys",
- "r2d2",
- "r2d2_sqlite",
- "rusqlite",
- "rusqlite_migration",
- "serde",
- "serde_json",
- "synopsis-config",
- "thiserror",
 ]
 
 [[package]]
@@ -1178,13 +1162,13 @@ name = "graph"
 version = "0.1.0"
 dependencies = [
  "cel",
- "db",
  "minijinja",
  "petgraph",
  "serde",
  "serde_json",
  "sha2",
  "synopsis-config",
+ "synopsis-db",
  "synopsis-llm",
  "synopsis-utils",
  "thiserror",
@@ -1574,7 +1558,6 @@ dependencies = [
 name = "ingestion"
 version = "0.1.0"
 dependencies = [
- "db",
  "embedding",
  "graph",
  "html-to-markdown-rs",
@@ -1586,6 +1569,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "synopsis-config",
+ "synopsis-db",
  "synopsis-llm",
  "synopsis-utils",
  "synopsis-vectors",
@@ -1906,7 +1890,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
- "db",
  "graph",
  "reqwest",
  "rmcp",
@@ -1915,6 +1898,7 @@ dependencies = [
  "serde_json",
  "sse-stream",
  "synopsis-config",
+ "synopsis-db",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -2986,11 +2970,11 @@ checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
 name = "search"
 version = "0.1.0"
 dependencies = [
- "db",
  "embedding",
  "graph",
  "serde_json",
  "synopsis-config",
+ "synopsis-db",
  "synopsis-utils",
  "synopsis-vectors",
  "thiserror",
@@ -3322,6 +3306,22 @@ dependencies = [
  "quick-xml",
  "regex",
  "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "synopsis-db"
+version = "0.1.0"
+dependencies = [
+ "include_dir",
+ "libsqlite3-sys",
+ "r2d2",
+ "r2d2_sqlite",
+ "rusqlite",
+ "rusqlite_migration",
+ "serde",
+ "serde_json",
+ "synopsis-config",
  "thiserror",
 ]
 

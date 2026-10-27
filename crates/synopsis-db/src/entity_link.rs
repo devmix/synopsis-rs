@@ -65,7 +65,7 @@ pub struct EntityLink {
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ConnectionOrTx, Db, DbError, EntityLink, EntityLinkDao};
+/// # use synopsis_db::{ConnectionOrTx, Db, DbError, EntityLink, EntityLinkDao};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let links = EntityLinkDao::new(ConnectionOrTx::Connection(conn));

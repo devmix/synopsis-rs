@@ -589,7 +589,7 @@ impl Runner {
 }
 
 /// Loads benchmark samples from the database after fill.
-pub fn load_samples_from_db(_db: &db::Db, ds: &super::generator::Dataset) -> Samples {
+pub fn load_samples_from_db(_db: &synopsis_db::Db, ds: &super::generator::Dataset) -> Samples {
     // Samples come from the generator (deterministic); the DB is available
     // for future validation or re-sampling.
     ds.samples.clone()

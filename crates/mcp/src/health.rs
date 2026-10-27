@@ -8,10 +8,10 @@
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{Json, http::StatusCode};
-use db::{
+use serde::Serialize;
+use synopsis_db::{
     ChunkDao, ConnectionOrTx, Db, DocumentDao, DocumentFilter, EntityDao, EntityFilter, FactDao,
 };
-use serde::Serialize;
 
 /// `GET /health` handler state: the db handle + service version.
 #[derive(Clone)]
@@ -82,8 +82,8 @@ fn degraded(version: &str) -> HealthStatus {
     }
 }
 
-fn counts(db: &Db) -> Result<KbCounters, db::DbError> {
-    db.with_conn(|conn| -> Result<KbCounters, db::DbError> {
+fn counts(db: &Db) -> Result<KbCounters, synopsis_db::DbError> {
+    db.with_conn(|conn| -> Result<KbCounters, synopsis_db::DbError> {
         let exec = ConnectionOrTx::Connection(conn);
         Ok(KbCounters {
             documents: DocumentDao::new(exec).count(&DocumentFilter::default())?,
@@ -113,12 +113,12 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use db::test_util;
+    use synopsis_db::test_util;
 
     /// A seeded in-memory KB: 1 document, 2 chunks, 3 entities, 4 facts.
     fn seeded_db() -> Db {
         let db = test_util::in_memory_db();
-        let seeded = db.with_conn(|conn| -> Result<(), db::DbError> {
+        let seeded = db.with_conn(|conn| -> Result<(), synopsis_db::DbError> {
             let exec = ConnectionOrTx::Connection(conn);
             let doc = DocumentDao::new(exec).create(
                 "markdown",

@@ -22,11 +22,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use db::test_util::in_memory_db;
-use db::{ConnectionOrTx, Db, EntityDao, EntityLinkDao, FactDao};
 use graph::build_entity_links;
 use synopsis_config::ontology::{LinkMethod, load_global_config};
 use synopsis_config::preset::{LinkerConfig, LlmConfig, ResponseFormat};
+use synopsis_db::test_util::in_memory_db;
+use synopsis_db::{ConnectionOrTx, Db, EntityDao, EntityLinkDao, FactDao};
 
 /// A nonexistent prompts path: the `llm` method falls back to the embedded
 /// templates (the normal case, design D3).
@@ -62,7 +62,7 @@ fn links_config() -> synopsis_config::ontology::CrossDomainLinksConfig {
 fn fixture_db() -> (Db, Vec<i64>) {
     let db = in_memory_db();
     let ids = db
-        .with_conn(|conn| -> Result<Vec<i64>, db::DbError> {
+        .with_conn(|conn| -> Result<Vec<i64>, synopsis_db::DbError> {
             let entities = EntityDao::new(ConnectionOrTx::Connection(conn));
             let mut ids: Vec<i64> = Vec::new();
             for (entity_type, name, domain) in [
@@ -90,7 +90,7 @@ fn fixture_db() -> (Db, Vec<i64>) {
     (db, ids)
 }
 
-fn all_links(db: &Db) -> Vec<db::EntityLink> {
+fn all_links(db: &Db) -> Vec<synopsis_db::EntityLink> {
     db.with_conn(|conn| EntityLinkDao::new(ConnectionOrTx::Connection(conn)).list_all())
         .unwrap()
         .unwrap()
@@ -121,7 +121,7 @@ fn cached_decisions(cache: &Db) -> Vec<(String, String)> {
 /// The prefix filter is applied in Rust (not a SQL `LIKE`) so this assertion
 /// does not reintroduce the old "decisions in app_kv" query shape.
 fn app_kv_llm_rows(db: &Db) -> Vec<String> {
-    db.with_conn(|conn| -> Result<Vec<String>, db::DbError> {
+    db.with_conn(|conn| -> Result<Vec<String>, synopsis_db::DbError> {
         // The knowledge DB does not even carry an `app_kv` table (task 1.9);
         // a query against it must yield nothing, not an error.
         let has_table: i64 = conn.query_row(
@@ -383,7 +383,7 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         "John equals (2) + John expression (2) + Acme llm (2)"
     );
 
-    let equals_rows: Vec<&db::EntityLink> = links
+    let equals_rows: Vec<&synopsis_db::EntityLink> = links
         .iter()
         .filter(|link| link.method == "equals")
         .collect();
@@ -397,7 +397,7 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
         );
     }
 
-    let expression_rows: Vec<&db::EntityLink> = links
+    let expression_rows: Vec<&synopsis_db::EntityLink> = links
         .iter()
         .filter(|link| link.method == "expression")
         .collect();
@@ -410,7 +410,8 @@ fn end_to_end_llm_linking_caching_and_template_invalidation() {
 
     // The llm link: created for the pair the mock answers same_entity=true
     // about (Acme), with the model's confidence and reasoning.
-    let llm_rows: Vec<&db::EntityLink> = links.iter().filter(|link| link.method == "llm").collect();
+    let llm_rows: Vec<&synopsis_db::EntityLink> =
+        links.iter().filter(|link| link.method == "llm").collect();
     assert_eq!(llm_rows.len(), 2, "the Acme pair, bidirectional");
     for link in &llm_rows {
         assert_eq!(link.relation_type, "same_entity");

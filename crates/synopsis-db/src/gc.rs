@@ -54,7 +54,7 @@ use crate::fact_source::FactSourceDao;
 /// # Examples
 ///
 /// ```no_run
-/// # use db::{ConnectionOrTx, Db, DbError, GcDao};
+/// # use synopsis_db::{ConnectionOrTx, Db, DbError, GcDao};
 /// # fn example(db: &Db) -> Result<(), DbError> {
 /// db.with_conn(|conn| -> Result<(), DbError> {
 ///     let gc = GcDao::new(ConnectionOrTx::Connection(conn));

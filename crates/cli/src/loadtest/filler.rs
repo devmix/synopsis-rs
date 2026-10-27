@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use db::Db;
 use embedding::EmbeddingProvider;
 use rusqlite::params;
+use synopsis_db::Db;
 use synopsis_vectors::VectorIndex;
 
 use super::generator::Dataset;
@@ -173,7 +173,7 @@ pub fn fill(
 }
 
 fn fill_scalar_tables(db: &Db, ds: &Dataset) -> Result<usize, String> {
-    let result: Result<usize, db::DbError> = db.exec_tx(|tx| {
+    let result: Result<usize, synopsis_db::DbError> = db.exec_tx(|tx| {
         let cleanups = [
             "DELETE FROM fact_sources",
             "DELETE FROM chunk_entities",
@@ -291,8 +291,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use db::test_util::in_memory_db;
     use embedding::EmbeddingProvider;
+    use synopsis_db::test_util::in_memory_db;
     use synopsis_vectors::{UsearchEngine, VectorIndexConfig};
 
     use super::super::generator::{Generator, Scale};

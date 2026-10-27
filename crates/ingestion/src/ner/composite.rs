@@ -52,11 +52,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use db::Db;
 use serde_json::{Map, Value};
 use synopsis_config::DomainConfig;
 use synopsis_config::ontology::NerMethod;
 use synopsis_config::preset::LlmConfig;
+use synopsis_db::Db;
 
 use super::regex::normalize;
 use super::{LlmNer, NerPrompts, NerProvider, NerResult, RegexNer};

@@ -63,7 +63,7 @@ mod root_api {
         let _constructor: fn(
             String,
             String,
-            db::Db,
+            synopsis_db::Db,
             SearcherHandle,
             Arc<graph::GraphIndex>,
         ) -> crate::Server = crate::Server::new;

@@ -3,7 +3,7 @@
 //! Extracted from the inline `#[cfg(test)]` module in `src/linker.rs` to
 //! shrink the source file. They exercise the public `build_entity_links`
 //! pipeline (the `equals` and `expression` methods) against an in-memory
-//! SQLite database (`db::test_util::in_memory_db`).
+//! SQLite database (`synopsis_db::test_util::in_memory_db`).
 //!
 //! The nine tests that reach private production items (the
 //! `cross_domain_pairs` fn and the `MockLlm` mock server) remain inline in
@@ -14,10 +14,10 @@
 
 #![allow(clippy::unwrap_used)]
 
-use db::{ConnectionOrTx, Db, EntityDao, EntityLink, EntityLinkDao};
 use graph::linker::build_entity_links;
 use synopsis_config::ontology::{CrossDomainLinksConfig, EqualsConfig, LinkExpression, LinkMethod};
 use synopsis_config::preset::LinkerConfig;
+use synopsis_db::{ConnectionOrTx, Db, EntityDao, EntityLink, EntityLinkDao};
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ fn all_links(db: &Db) -> Vec<EntityLink> {
 
 #[test]
 fn equals_links_matching_names_and_skips_short_or_different_names() {
-    let db = db::test_util::in_memory_db();
+    let db = synopsis_db::test_util::in_memory_db();
     insert_entities(
         &db,
         &[
@@ -124,7 +124,7 @@ fn equals_links_matching_names_and_skips_short_or_different_names() {
 
 #[test]
 fn equals_respects_configured_min_words() {
-    let db = db::test_util::in_memory_db();
+    let db = synopsis_db::test_util::in_memory_db();
     insert_entities(&db, &[("PERSON", "Alice", "hr"), ("PERSON", "Alice", "it")]);
 
     let config = CrossDomainLinksConfig {
@@ -146,7 +146,7 @@ fn equals_respects_configured_min_words() {
 
 #[test]
 fn expression_rule_creates_link_with_rule_attributes() {
-    let db = db::test_util::in_memory_db();
+    let db = synopsis_db::test_util::in_memory_db();
     let ids = insert_entities(
         &db,
         &[
@@ -159,7 +159,7 @@ fn expression_rule_creates_link_with_rule_attributes() {
         ],
     );
     db.with_conn(|conn| {
-        let facts = db::FactDao::new(ConnectionOrTx::Connection(conn));
+        let facts = synopsis_db::FactDao::new(ConnectionOrTx::Connection(conn));
         facts.create(
             Some(ids[0]),
             "works_at",
@@ -229,7 +229,7 @@ fn expression_priority_order_and_first_true_wins() {
     ];
 
     // Pair 1: A from "hr" — BOTH rules true; the higher priority must win.
-    let db1 = db::test_util::in_memory_db();
+    let db1 = synopsis_db::test_util::in_memory_db();
     insert_entities(&db1, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
     let r1 = build_entity_links(
         &db1,
@@ -249,7 +249,7 @@ fn expression_priority_order_and_first_true_wins() {
 
     // Pair 2: A from "it" — high false, low true: falls back in priority
     // order.
-    let db2 = db::test_util::in_memory_db();
+    let db2 = synopsis_db::test_util::in_memory_db();
     insert_entities(&db2, &[("PERSON", "U V", "it"), ("PERSON", "U V", "zz")]);
     let r2 = build_entity_links(
         &db2,
@@ -271,7 +271,7 @@ fn expression_priority_order_and_first_true_wins() {
 #[test]
 fn expression_errors_are_recorded_not_fatal() {
     // A parse error fails the whole method.
-    let db1 = db::test_util::in_memory_db();
+    let db1 = synopsis_db::test_util::in_memory_db();
     insert_entities(&db1, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
     let bad = LinkExpression {
         name: "broken".to_owned(),
@@ -299,7 +299,7 @@ fn expression_errors_are_recorded_not_fatal() {
 
     // A non-boolean result is a per-pair error (the `cel` crate cannot
     // type-check at compile time).
-    let db2 = db::test_util::in_memory_db();
+    let db2 = synopsis_db::test_util::in_memory_db();
     insert_entities(&db2, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
     let non_bool = LinkExpression {
         name: "string".to_owned(),
@@ -339,7 +339,7 @@ fn method_order_from_config_is_respected() {
         relation_type: DEFAULT_RELATION_TYPE.to_owned(),
     };
 
-    let db1 = db::test_util::in_memory_db();
+    let db1 = synopsis_db::test_util::in_memory_db();
     insert_entities(&db1, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
     let first = build_entity_links(
         &db1,
@@ -357,7 +357,7 @@ fn method_order_from_config_is_respected() {
     assert_eq!(first.links_skipped, 1);
     assert!(all_links(&db1).iter().all(|link| link.method == "equals"));
 
-    let db2 = db::test_util::in_memory_db();
+    let db2 = synopsis_db::test_util::in_memory_db();
     insert_entities(&db2, &[("PERSON", "X Y", "hr"), ("PERSON", "X Y", "it")]);
     let second = build_entity_links(
         &db2,
@@ -380,7 +380,7 @@ fn method_order_from_config_is_respected() {
 #[test]
 fn self_link_never_created() {
     // Same normalized domain (case/whitespace variants): no pair at all.
-    let db = db::test_util::in_memory_db();
+    let db = synopsis_db::test_util::in_memory_db();
     insert_entities(
         &db,
         &[

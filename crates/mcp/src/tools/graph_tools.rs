@@ -29,10 +29,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use db::{ConnectionOrTx, Entity, EntityDao, EntityLinkDao};
 use graph::{EntityNode, GraphIndex, TraverseOptions};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use synopsis_db::{ConnectionOrTx, Entity, EntityDao, EntityLinkDao};
 
 use crate::error::McpError;
 use crate::tools::entity::{EntityBrief, entity_brief, node_brief};
@@ -208,7 +208,7 @@ fn parse_depth(value: Option<&Value>) -> u32 {
 /// disambiguates the name lookup. A missing/ambiguous entity is a tool error.
 /// Same semantics as `dossier.rs`'s private resolver (design decision 7).
 fn resolve_entity(
-    db: &db::Db,
+    db: &synopsis_db::Db,
     id_str: &str,
     name: &str,
     domain: &str,
@@ -290,7 +290,7 @@ fn resolve_entity(
 /// arguments). The result is the frozen wire payload (`mcp-contract`) the
 /// server serializes into the tool response's text block.
 pub fn handle_get_entity_relations(
-    db: &db::Db,
+    db: &synopsis_db::Db,
     graph: &GraphIndex,
     args: Option<&Value>,
 ) -> Result<Value, McpError> {
@@ -389,7 +389,10 @@ pub fn handle_get_entity_relations(
 /// `db` is the injected database handle; `args` is the raw JSON argument
 /// object (`None` = no arguments). The result is the frozen wire payload
 /// (`mcp-contract`) the server serializes into the tool response's text block.
-pub fn handle_get_entity_links(db: &db::Db, args: Option<&Value>) -> Result<Value, McpError> {
+pub fn handle_get_entity_links(
+    db: &synopsis_db::Db,
+    args: Option<&Value>,
+) -> Result<Value, McpError> {
     let args: LinksArgs = deserialize_args(args, GET_ENTITY_LINKS)?;
     let entity = resolve_entity(
         db,

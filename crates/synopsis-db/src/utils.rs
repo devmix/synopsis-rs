@@ -1,4 +1,4 @@
-//! Small text helpers shared by the DAOs (design D6: local `db::utils`
+//! Small text helpers shared by the DAOs (design D6: local `synopsis_db::utils`
 //! module — a shared `utils` crate would be premature abstraction; extract
 //! only if a second consumer appears).
 
