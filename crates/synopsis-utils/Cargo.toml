@@ -1,5 +1,5 @@
 [package]
-name = "utils"
+name = "synopsis-utils"
 version.workspace = true
 edition.workspace = true
 

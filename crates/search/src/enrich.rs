@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet};
 
 use db::{ChunkEntityDao, DocumentDao};
-use utils::temporal::normalize_to_rfc3339;
+use synopsis_utils::temporal::normalize_to_rfc3339;
 
 use crate::{SearchError, SearchResult, document_domains};
 

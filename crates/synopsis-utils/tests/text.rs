@@ -1,4 +1,4 @@
-//! Integration tests for the `utils::text` module (change
+//! Integration tests for the `synopsis_utils::text` module (change
 //! `multilingual-entity-resolution`): normalization, article-stripping, and
 //! tier-key functions (task 3.1), plus script detection and stemming
 //! (task 1.1).
@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use utils::text::{
+use synopsis_utils::text::{
     Script, detect_script, match_key, normalize, stem_key, stem_name, stem_word, strip_articles,
 };
 

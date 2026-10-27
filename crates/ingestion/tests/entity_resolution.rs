@@ -2,13 +2,13 @@
 //! `multilingual-entity-resolution`, task 3.1).
 //!
 //! These tests live in the ingestion crate (not `utils`) because they pin the
-//! Jaro-Winkler value of a pair alongside its `utils::text` stem key — the JW
+//! Jaro-Winkler value of a pair alongside its `synopsis_utils::text` stem key — the JW
 //! home is `ingestion`, and `utils` (a leaf) cannot depend on `ingestion`.
 //!
 //! Generic words only (NDA): no subject-matter entity names.
 
 use ingestion::jaro_winkler;
-use utils::text::stem_key;
+use synopsis_utils::text::stem_key;
 
 /// A Russian case-variant pair the JW tier alone would miss (JW below the
 /// 0.85 merge threshold) but the stem tier settles: both forms stem to the

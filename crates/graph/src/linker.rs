@@ -14,7 +14,7 @@
 //! - **cross-domain** (same type + equal normalized name, different
 //!   normalized domain) — judged by all three methods;
 //! - **within-domain cross-script** (same type + normalized domain, different
-//!   dominant scripts per `utils::text::detect_script`, and tier-1/tier-2
+//!   dominant scripts per `synopsis_utils::text::detect_script`, and tier-1/tier-2
 //!   keys both distinct — i.e. not already resolved by the resolution
 //!   tiers) — judged by the `llm` method ONLY (equals/expression do not
 //!   apply within a domain), with the merge action described below.
@@ -101,7 +101,7 @@ use db::{
 };
 use llm::LlmClient;
 use serde::{Deserialize, Serialize};
-use utils::text::{detect_script, match_key, stem_key};
+use synopsis_utils::text::{detect_script, match_key, stem_key};
 
 use crate::cel::{CelEngine, register_data_functions, register_graph_functions};
 use crate::error::GraphError;

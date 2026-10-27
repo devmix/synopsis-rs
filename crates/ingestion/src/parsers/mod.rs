@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use ignore::{IncrementalIgnore, WalkBuilder};
-use utils::temporal::format_rfc3339;
+use synopsis_utils::temporal::format_rfc3339;
 
 use crate::error::IngestionError;
 
@@ -218,7 +218,7 @@ pub(crate) fn source_file_name(path: &Path, root: &Path) -> String {
 /// (`2026-08-23T12:34:56Z`). Returns `None` for instants before the Unix
 /// epoch (not representable as a `SystemTime` duration).
 ///
-/// Delegates to the workspace date/time seam (`utils::temporal`, jiff —
+/// Delegates to the workspace date/time seam (`synopsis_utils::temporal`, jiff —
 /// change utils-crate, design D4); the signature is kept so the per-format
 /// parsers and the ingester's facts/cleanup consumers stay unchanged.
 pub(crate) fn format_rfc3339_utc(time: SystemTime) -> Option<String> {

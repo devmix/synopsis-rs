@@ -24,7 +24,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use db::{ConnectionOrTx, Db, DocumentDao};
-use utils::temporal::format_backup_stamp;
+use synopsis_utils::temporal::format_backup_stamp;
 
 use crate::error::IngestionError;
 

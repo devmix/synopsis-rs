@@ -149,11 +149,11 @@ impl NerProvider for RegexNer {
 /// spaces. Crate-private: `LlmNer` reuses it for domain tagging
 /// (ingestion-ner task 2.5) instead of re-implementing the rule.
 ///
-/// Delegates to the shared normalization rule `utils::text::normalize`
+/// Delegates to the shared normalization rule `synopsis_utils::text::normalize`
 /// (design D1 of `multilingual-entity-resolution`): one canonical
 /// implementation, reused by the NER providers and the resolution tiers.
 pub(crate) fn normalize(text: &str) -> String {
-    utils::text::normalize(text)
+    synopsis_utils::text::normalize(text)
 }
 
 #[cfg(test)]

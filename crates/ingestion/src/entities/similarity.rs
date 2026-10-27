@@ -6,10 +6,10 @@
 //! # Design decisions
 //!
 //! - [`normalize_name`] delegates to the shared normalization rule
-//!   (`utils::text::normalize`) instead of re-implementing it: the NER
+//!   (`synopsis_utils::text::normalize`) instead of re-implementing it: the NER
 //!   providers and the resolution tiers all use the same rule (DRY, design D1
 //!   of `multilingual-entity-resolution`).
-//! - The tier keys ([`match_key`], [`stem_key`]) live in `utils::text`
+//! - The tier keys ([`match_key`], [`stem_key`]) live in `synopsis_utils::text`
 //!   (shared by `ingestion` and `graph`, which are siblings) and are
 //!   re-exported here; [`jaro_winkler`] and [`bigrams`] stay in this module
 //!   (the JW home).
@@ -21,16 +21,16 @@
 //!   random, the ordered slice makes blocking deterministic.
 
 /// The resolution tier keys, shared with the cross-script linker via
-/// `utils::text` (design D1): re-exported here so the resolution code imports
+/// `synopsis_utils::text` (design D1): re-exported here so the resolution code imports
 /// them alongside [`jaro_winkler`]/[`bigrams`].
-pub use utils::text::{match_key, stem_key};
+pub use synopsis_utils::text::{match_key, stem_key};
 
 /// Normalizes an entity name for matching: trims surrounding whitespace,
 /// lowercases, and collapses internal whitespace runs to single spaces.
 ///
-/// Delegates to the shared rule `utils::text::normalize`.
+/// Delegates to the shared rule `synopsis_utils::text::normalize`.
 pub fn normalize_name(name: &str) -> String {
-    utils::text::normalize(name)
+    synopsis_utils::text::normalize(name)
 }
 
 /// Rune-aware character bigrams of a normalized name, deduplicated and in

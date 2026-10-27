@@ -33,16 +33,24 @@ Mechanical recipe (applies to every task 2.x; `X` = the bare crate name,
    Never touch `[[bin]] name` (only exists in the cli crate, stays `synopsis`).
 3. Root `Cargo.toml`: `members` entry `"crates/X"` → `"crates/synopsis-X"`;
    `[workspace.dependencies]` palette entry `X = { path = "crates/X" }` →
-   `synopsis_X = { path = "crates/synopsis-X" }` (skip the palette entry if the
-   crate has none — only `cli` has none).
+   `synopsis_X = { package = "synopsis-X", path = "crates/synopsis-X" }`.
+   The explicit `package =` key is REQUIRED: cargo 1.96.0 does not normalize
+   underscore/hyphen for path-dependency keys and fails with "no matching
+   package named `synopsis_X`" without it (discovered in task 2.1). Skip the
+   palette entry if the crate has none — only `cli` has none.
 4. In every dependent crate listed in the task: `[dependencies]`/`[dev-dependencies]`
    entry `X = { workspace = true }` → `synopsis_X = { workspace = true }`
    (both sections, if present in both).
 5. In all `.rs` files (`src/`, `tests/`, anywhere): replace every identifier
-   reference `\bX::` with `synopsis_X::` — the pattern REQUIRES the `::` suffix
-   (word boundary + `::`), so prose like "the db crate", error strings, and config
-   keys are never touched. Example:
-   `rg --pcre2 -l '\bX::' -g '*.rs' | xargs sed -i 's/\bX::/synopsis_X::/g'`.
+   reference to the crate X with `synopsis_X::`. A blanket sed
+   (`rg --pcre2 -l '\bX::' -g '*.rs' | xargs sed -i 's/\bX::/synopsis_X::/g'`)
+   is only safe when NO crate has an internal module named X. Several do —
+   per-task exclusion lists are in the task bodies. For every match of
+   `\bX::` resolve whether it refers to the crate or to an internal module
+   (check where the referenced item is defined; `crate::X::` and
+   `parent::X::` paths are always internal) and rename ONLY the crate
+   references. Prose like "the db crate", error strings, and config keys are
+   never touched (the pattern still requires the `::` suffix).
 6. Gates (all must pass before staging): `cargo fmt`, then
    `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 7. Staging: stage exactly the expected files (root `Cargo.toml`,
@@ -61,8 +69,22 @@ Per-task acceptance (in addition to the recipe gates):
   - File scope: root `Cargo.toml`; `crates/utils/**` → `crates/synopsis-utils/**`;
     dependents with a Cargo.toml entry: `crates/embedding`, `crates/ingestion`,
     `crates/graph`, `crates/search`, `crates/cli`; all `.rs` files containing
-    `utils::` (~36 lines across embedding, ingestion, graph, search, cli).
-  - Acceptance: recipe gates + `rg '\butils::' -g '*.rs'` empty + metadata check.
+    `utils::` (~36 lines across search, db, ingestion, graph, embedding, and the
+    utils crate's own tests; cli has only a Cargo.toml entry).
+  - Exclusions (internal `utils` module of the db crate — NOT the utils crate,
+    must NOT be renamed): `crate::utils::` in `crates/db/src/**` (7 lines:
+    entity.rs ×3, document.rs, queue_task.rs, fact.rs ×2) and `db::utils::`
+    (6 lines: `crates/search/src/lib.rs` ×4, `crates/graph/src/linker.rs` ×1,
+    a `db::{…, utils::normalize}` grouped import in `crates/graph/src/graph.rs`
+    ×1).
+  - Acceptance: recipe gates + NO crate-reference `utils::` remains (the 13
+    internal-module lines above are expected to remain) + metadata check.
+  - Revision history: implemented 2026-10-27. Deviations recorded: (1) palette
+    entry required the `package = "synopsis-utils"` key (cargo path-dep
+    underscore/hyphen normalization) — recipe step 3 updated for all tasks;
+    (2) the 13 db-internal `utils::` lines were correctly left untouched (a
+    blanket sed would have broken the build); (3) the 23 genuine crate
+    references were replaced; gates green.
 
 - [ ] 2.2 Rename `vectors` → `synopsis-vectors`
   - Dependencies: task 2.1.
@@ -77,10 +99,20 @@ Per-task acceptance (in addition to the recipe gates):
   - Dependencies: task 2.2.
   - File scope: root `Cargo.toml`; `crates/llm/**` → `crates/synopsis-llm/**`;
     dependents with a Cargo.toml entry: `crates/ingestion`, `crates/graph`;
-    all `.rs` files containing `llm::` (~19 lines: `crates/llm/tests/client.rs`
-    self-references, `crates/ingestion/src/ner/llm.rs`, `crates/ingestion/src/ner/mod.rs`,
-    `crates/ingestion/src/error.rs`, `crates/graph/src/linker.rs`).
-  - Acceptance: recipe gates + `rg '\bllm::' -g '*.rs'` empty + metadata check.
+    all `.rs` files containing `llm::` (19 pre-rename matches).
+  - Exclusions (the ingestion crate has an INTERNAL module `ner::llm` at
+    `crates/ingestion/src/ner/llm.rs` — NOT the llm crate):
+    `crates/ingestion/src/ner/mod.rs:46` `pub use llm::LlmNer;` resolves to the
+    internal module (LlmNer is defined in `ner/llm.rs`) and must NOT be
+    renamed. All other matches ARE crate references and must be renamed:
+    `crates/llm/tests/client.rs` (11 self-references),
+    `crates/ingestion/src/ner/llm.rs` (5: `use llm::LlmClient;`,
+    `use llm::LlmError;`, 3 intra-doc links `llm::LlmClient…`),
+    `crates/ingestion/src/error.rs` (1: `llm::LlmError`),
+    `crates/graph/src/linker.rs` (1: `use llm::LlmClient;`).
+    Resolve every match by the item's definition (recipe step 5).
+  - Acceptance: recipe gates + NO crate-reference `llm::` remains (the 1
+    internal-module line above is expected to remain) + metadata check.
 
 - [ ] 2.4 Rename `config` → `synopsis-config`
   - Dependencies: task 2.3.
@@ -96,11 +128,19 @@ Per-task acceptance (in addition to the recipe gates):
   - File scope: root `Cargo.toml`; `crates/db/**` → `crates/synopsis-db/**`;
     dependents with a Cargo.toml entry (5): `crates/ingestion`, `crates/graph`,
     `crates/search`, `crates/mcp`, `crates/cli`; all `.rs` files containing `db::`
-    (~427 lines).
+    (419 pre-rename matches, 417 of them crate references).
+  - Exclusions (the cli crate has an INTERNAL module `db` at
+    `crates/cli/src/db.rs` — the `db` subcommand, NOT the db crate):
+    `crates/cli/src/serve/server.rs:105` `use crate::db::clear_dataset_tables;`
+    and `crates/cli/src/main.rs:15` `use cli::db::{DbRequest, run_db};` must NOT
+    be renamed (the `main.rs` line is renamed in task 2.11 as a `cli::`
+    self-reference, keeping the internal module name `db`). A blanket sed of
+    `\bdb::` would corrupt both — resolve every match (recipe step 5).
   - Note: this single atomic task produces ~850–900 diff lines — explicitly
     approved by the user (2026-10-27) as a mechanical-rename exception to the
     ~500-line rule. The diff MUST be 1:1 line replacements only (no logic).
-  - Acceptance: recipe gates + `rg '\bdb::' -g '*.rs'` empty + metadata check.
+  - Acceptance: recipe gates + NO crate-reference `db::` remains (the 2
+    internal-module lines above are expected to remain) + metadata check.
 
 - [ ] 2.6 Rename `embedding` → `synopsis-embedding`
   - Dependencies: task 2.5.
@@ -121,8 +161,15 @@ Per-task acceptance (in addition to the recipe gates):
   - Dependencies: task 2.7.
   - File scope: root `Cargo.toml`; `crates/graph/**` → `crates/synopsis-graph/**`;
     dependents with a Cargo.toml entry (4): `crates/ingestion`, `crates/search`,
-    `crates/mcp`, `crates/cli`; all `.rs` files containing `graph::` (~46 lines).
-  - Acceptance: recipe gates + `rg '\bgraph::' -g '*.rs'` empty + metadata check.
+    `crates/mcp`, `crates/cli`; all `.rs` files containing `graph::`
+    (46 pre-rename matches, 43 of them crate references).
+  - Exclusions (the graph crate has an INTERNAL module `graph` at
+    `crates/graph/src/graph.rs` — NOT the graph crate): `crate::graph::` in
+    `crates/graph/src/cel.rs:183`, `crates/graph/src/metrics.rs:64`,
+    `crates/graph/src/traverser.rs:63` must NOT be renamed. A blanket sed of
+    `\bgraph::` would corrupt all three — resolve every match (recipe step 5).
+  - Acceptance: recipe gates + NO crate-reference `graph::` remains (the 3
+    internal-module lines above are expected to remain) + metadata check.
 
 - [ ] 2.9 Rename `search` → `synopsis-search`
   - Dependencies: task 2.8.
@@ -143,8 +190,14 @@ Per-task acceptance (in addition to the recipe gates):
   - File scope: root `Cargo.toml` (`members` only — `cli` has NO
     `[workspace.dependencies]` palette entry); `crates/cli/**` →
     `crates/synopsis-cli/**` (`[package] name = "cli"` → `"synopsis-cli"`;
-    `[[bin]] name = "synopsis"` MUST stay unchanged). No other crate depends on
-    `cli`, and no `.rs` file references `cli::` — no identifier replacement.
+    `[[bin]] name = "synopsis"` MUST stay unchanged).
+  - Identifier replacements: no other crate depends on `cli`, but the cli
+    crate SELF-REFERENCES its own crate name in 24 places — integration tests
+    (`crates/cli/tests/**`: `use cli::error::CliError;`, `use cli::serve::…`,
+    doc comments) and `crates/cli/src/main.rs` (`use cli::db::{…}` etc.).
+    Replace every `cli::` self-reference with `synopsis_cli::` (24 lines).
+    Internal module names inside the paths (e.g. `cli::db::` →
+    `synopsis_cli::db::`) stay as-is — only the leading crate segment changes.
   - Acceptance: recipe gates + `cargo build --release` produces
     `target/release/synopsis` + `rg '\bcli::' -g '*.rs'` empty + metadata check
     (`synopsis-cli` present, `cli` absent).
@@ -190,8 +243,16 @@ Per-task acceptance (in addition to the recipe gates):
     1. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
        `cargo test` (the full suite includes the MCP differential tests against
        recorded fixtures — the fixtures themselves must be unchanged).
-    2. `rg '\b(db|config|vectors|utils|llm|embedding|ingestion|graph|search|mcp|cli)::' -g '*.rs'`
-       → 0 matches.
+    2. For every bare name X in (db, config, vectors, utils, llm, embedding,
+       ingestion, graph, search, mcp, cli): every remaining `X::` match in
+       `.rs` files must be an INTERNAL module path, never a crate reference.
+       Known expected survivors (documented in tasks 2.1/2.3/2.5/2.8/2.11):
+       `crate::utils::` ×7 + `db::utils::` ×6 (db's internal utils module),
+       `llm::LlmNer` re-export in `crates/ingestion/src/ner/mod.rs` ×1 (the
+       internal ner::llm module), `crate::db::` ×1 + `synopsis_cli::db::` ×1
+       (cli's internal db subcommand module), `crate::graph::` ×3 (graph's
+       internal graph module). Verify the match set equals exactly this
+       survivor list; any other `X::` match is a failure.
     3. `cargo build --release`; re-capture the 19 `--help` sections exactly as in
        task 1.1 to `/tmp/opencode/synopsis-help-after.txt`;
        `diff /tmp/opencode/synopsis-help-before.txt /tmp/opencode/synopsis-help-after.txt`

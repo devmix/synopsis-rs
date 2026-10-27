@@ -38,7 +38,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-utils = { workspace = true }
+synopsis_utils = { workspace = true }
 vectors = { workspace = true }
 
 [dev-dependencies]

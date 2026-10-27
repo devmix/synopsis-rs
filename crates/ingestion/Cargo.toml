@@ -14,7 +14,7 @@ workspace = true
 config = { workspace = true }
 # utils::temporal (change utils-crate, design D4): RFC3339 UTC formatting
 # for the parsers and the VACUUM snapshot naming in the ingester backup.
-utils = { workspace = true }
+synopsis_utils = { workspace = true }
 # thiserror for IngestionError (workspace convention, config-module D4).
 thiserror = { workspace = true }
 # Format-specific metadata bag: `serde_json::Map<String, Value>` (BTreeMap-

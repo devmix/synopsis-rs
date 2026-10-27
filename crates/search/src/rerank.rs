@@ -21,7 +21,7 @@
 //! - "now" comes from [`std::time::SystemTime`]; the recency window is
 //!   `recent_days × 86400` seconds;
 //! - timestamp parsing goes through the workspace date/time seam
-//!   [`utils::temporal::parse_epoch_seconds`], so the SQLite
+//!   [`synopsis_utils::temporal::parse_epoch_seconds`], so the SQLite
 //!   `CURRENT_TIMESTAMP` layout (`"YYYY-MM-DD HH:MM:SS"`) is also accepted
 //!   — a strict RFC3339-only parse would drop such values, notably for
 //!   `valid_to`, where an expired document would then escape the penalty.
@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use config::preset::SearchConfig;
-use utils::temporal::parse_epoch_seconds;
+use synopsis_utils::temporal::parse_epoch_seconds;
 
 use crate::SearchResult;
 
@@ -824,7 +824,8 @@ mod tests {
 
     /// RFC3339 (UTC, `Z`) for a unix timestamp.
     fn rfc3339_utc(secs: i64) -> String {
-        utils::temporal::format_rfc3339(UNIX_EPOCH + Duration::from_secs(secs as u64)).unwrap()
+        synopsis_utils::temporal::format_rfc3339(UNIX_EPOCH + Duration::from_secs(secs as u64))
+            .unwrap()
     }
 
     /// SQLite `CURRENT_TIMESTAMP` layout for a unix timestamp (the enricher

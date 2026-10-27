@@ -20,7 +20,7 @@ members = [
     "crates/config",
     "crates/db",
     "crates/vectors",
-    "crates/utils",
+    "crates/synopsis-utils",
     "crates/llm",
     "crates/embedding",
     "crates/ingestion",
@@ -58,7 +58,7 @@ expect_used = "warn" # same as unwrap_used
 config = { path = "crates/config" }
 db = { path = "crates/db" }
 vectors = { path = "crates/vectors" }
-utils = { path = "crates/utils" }
+synopsis_utils = { package = "synopsis-utils", path = "crates/synopsis-utils" }
 # Base tier (llm change D1): OpenAI-compatible LLM client; only internal
 # dependency is config (LlmConfig). graph/embedding depend on it, never
 # the other way around.

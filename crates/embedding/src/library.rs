@@ -370,14 +370,14 @@ fn write_entry<R: Read>(
 }
 
 /// The current time as an RFC 3339 UTC manifest timestamp
-/// (`utils::temporal::now_rfc3339`, the workspace date/time seam).
+/// (`synopsis_utils::temporal::now_rfc3339`, the workspace date/time seam).
 ///
 /// Crate-internal: used by the library cache manifest (`install_time`) and
 /// the model cache manifest ([`crate::model`] `installed_at`). Fails when the
 /// system clock precedes the Unix epoch — the manifests must never carry a
 /// silent epoch fallback.
 pub(crate) fn installed_at_now() -> Result<String, EmbeddingError> {
-    utils::temporal::now_rfc3339()
+    synopsis_utils::temporal::now_rfc3339()
         .ok_or_else(|| EmbeddingError::Model("system clock precedes the Unix epoch".to_string()))
 }
 
