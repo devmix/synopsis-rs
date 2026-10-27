@@ -10,14 +10,14 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cli::cli::{Cli, Subcommand};
-use cli::config_resolver::resolve_config_path;
-use cli::db::{DbRequest, run_db};
-use cli::loadtest::LoadTestRequest;
-use cli::model::{ModelRequest, run_model};
-use cli::onnx_runtime::{OnnxRuntimeRequest, run_onnx_runtime};
-use cli::queue::{QueueRequest, run_queue};
-use cli::serve::server::{ServeRequest, run_serve};
+use synopsis_cli::cli::{Cli, Subcommand};
+use synopsis_cli::config_resolver::resolve_config_path;
+use synopsis_cli::db::{DbRequest, run_db};
+use synopsis_cli::loadtest::LoadTestRequest;
+use synopsis_cli::model::{ModelRequest, run_model};
+use synopsis_cli::onnx_runtime::{OnnxRuntimeRequest, run_onnx_runtime};
+use synopsis_cli::queue::{QueueRequest, run_queue};
+use synopsis_cli::serve::server::{ServeRequest, run_serve};
 
 fn main() -> ExitCode {
     let cli = match Cli::parse() {
@@ -121,7 +121,7 @@ fn run_load_test(
         no_fill,
     };
 
-    match cli::loadtest::run_load_test(cfg_path, dataset, &req) {
+    match synopsis_cli::loadtest::run_load_test(cfg_path, dataset, &req) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");

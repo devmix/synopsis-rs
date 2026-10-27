@@ -260,7 +260,7 @@ Per-task acceptance (in addition to the recipe gates):
     >100-char signature line in mcp tools/search.rs (same mechanical class
     as tasks 2.2/2.3/2.5/2.6/2.8). Gates green (1606/1606).
 
-- [ ] 2.10 Rename `mcp` → `synopsis-mcp`
+- [x] 2.10 Rename `mcp` → `synopsis-mcp`
   - Dependencies: task 2.9.
   - File scope: root `Cargo.toml`; `crates/mcp/**` → `crates/synopsis-mcp/**`;
     dependent with a Cargo.toml entry (1): `crates/cli`; all `.rs` files
@@ -283,15 +283,33 @@ Per-task acceptance (in addition to the recipe gates):
     `crates/synopsis-cli/**` (`[package] name = "cli"` → `"synopsis-cli"`;
     `[[bin]] name = "synopsis"` MUST stay unchanged).
   - Identifier replacements: no other crate depends on `cli`, but the cli
-    crate SELF-REFERENCES its own crate name in 24 places — integration tests
-    (`crates/cli/tests/**`: `use cli::error::CliError;`, `use cli::serve::…`,
-    doc comments) and `crates/cli/src/main.rs` (`use cli::db::{…}` etc.).
-    Replace every `cli::` self-reference with `synopsis_cli::` (24 lines).
-    Internal module names inside the paths (e.g. `cli::db::` →
-    `synopsis_cli::db::`) stay as-is — only the leading crate segment changes.
+    crate SELF-REFERENCES its own crate name — 24 lines contain `\bcli::`:
+    20 are genuine crate self-references (21 occurrences; integration tests
+    `crates/cli/tests/**` and `crates/cli/src/main.rs`) and 4 are internal-
+    module references below. Replace every crate self-reference with
+    `synopsis_cli::`.
+  - Exclusions (the cli crate has an INTERNAL module named `cli` at
+    `crates/cli/src/cli.rs` — the clap argument definitions, `pub mod cli;`
+    in lib.rs:7 — NOT the crate; discovered in implementation):
+    (a) `use crate::cli::<Action>;` (one per file: `ModelAction` in
+    model.rs:37, `QueueAction` in queue.rs:26, `DbAction` in db.rs:42,
+    `OnnxRuntimeAction` in onnx_runtime.rs:30) ×4;
+    (b) the internal `cli` segment in the mixed line `main.rs:13` —
+    originally `use cli::cli::{Cli, Subcommand};`: ONLY the leading crate
+    segment changes (`use synopsis_cli::cli::{Cli, Subcommand};`), a blanket
+    sed of that line would produce `synopsis_cli::synopsis_cli::`.
+    (The `cli::db::` line in main.rs is the same class — leading segment
+    renamed, internal `db` segment kept: `synopsis_cli::db::{…}`.)
   - Acceptance: recipe gates + `cargo build --release` produces
-    `target/release/synopsis` + `rg '\bcli::' -g '*.rs'` empty + metadata check
+    `target/release/synopsis` + NO crate-reference `cli::` remains (the 5
+    internal-module lines above are expected to remain) + metadata check
     (`synopsis-cli` present, `cli` absent).
+  - Revision history: implemented 2026-10-27. 20 self-reference lines
+    (21 occurrences) renamed to `synopsis_cli::`; the 5 internal-module
+    survivor lines (a)+(b) discovered during implementation were correctly
+    left untouched (gates green confirm). `[[bin]] name = "synopsis"`
+    verified unchanged; `cargo build --release` produced
+    target/release/synopsis. Gates green (1606/1606).
 
 ## 3. Documentation and agent definitions
 
@@ -354,9 +372,13 @@ Per-task acceptance (in addition to the recipe gates):
        `pub use graph::{...}` re-export in `crates/synopsis-graph/src/lib.rs`
        ×1 (graph's internal graph module), `tools::search::handle_search`
        in `crates/mcp/src/server.rs` ×1 (mcp's internal tools::search
-       module), `use search::{add_rows, build_search_pool};` in
+       module),        `use search::{add_rows, build_search_pool};` in
        `crates/synopsis-vectors/src/usearch/mod.rs` ×1 (vectors' internal
-       usearch::search module). Verify the match set equals exactly this
+       usearch::search module), `use crate::cli::<Action>;` (one per file)
+       in `crates/synopsis-cli/src/{model,queue,db,onnx_runtime}.rs` ×4 +
+       the internal `cli` segment in
+       `use synopsis_cli::cli::{Cli, Subcommand};` (main.rs:13) ×1 (cli's
+       internal cli module). Verify the match set equals exactly this
        survivor list; any other `X::` match is a failure.
     3. `cargo build --release`; re-capture the 19 `--help` sections exactly as in
        task 1.1 to `/tmp/opencode/synopsis-help-after.txt`;

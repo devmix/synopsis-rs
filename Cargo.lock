@@ -434,36 +434,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "cli"
-version = "0.1.0"
-dependencies = [
- "axum",
- "clap",
- "notify",
- "owo-colors",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "synopsis-config",
- "synopsis-db",
- "synopsis-embedding",
- "synopsis-graph",
- "synopsis-ingestion",
- "synopsis-mcp",
- "synopsis-search",
- "synopsis-utils",
- "synopsis-vectors",
- "tabled",
- "terminal_size",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3199,6 +3169,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 dependencies = [
  "futures-core",
+]
+
+[[package]]
+name = "synopsis-cli"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "clap",
+ "notify",
+ "owo-colors",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "synopsis-config",
+ "synopsis-db",
+ "synopsis-embedding",
+ "synopsis-graph",
+ "synopsis-ingestion",
+ "synopsis-mcp",
+ "synopsis-search",
+ "synopsis-utils",
+ "synopsis-vectors",
+ "tabled",
+ "terminal_size",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

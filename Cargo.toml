@@ -27,7 +27,7 @@ members = [
     "crates/synopsis-graph",
     "crates/synopsis-search",
     "crates/synopsis-mcp",
-    "crates/cli",
+    "crates/synopsis-cli",
 ]
 
 [workspace.package]

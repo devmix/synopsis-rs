@@ -1,6 +1,6 @@
-//! Integration tests for `cli::serve::bootstrap` (moved verbatim from
+//! Integration tests for `synopsis_cli::serve::bootstrap` (moved verbatim from
 //! `crates/cli/src/serve/bootstrap.rs`, test-hygiene task 1.3). Import paths
-//! rewritten from `use super::*` to the public `cli::serve::bootstrap` API.
+//! rewritten from `use super::*` to the public `synopsis_cli::serve::bootstrap` API.
 
 // Test code: unwrap/expect are intentional (asserting on well-defined outcomes).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -20,8 +20,8 @@ use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_ingestion::Runner;
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndexConfig, VectorsError, create_vector_engine};
 
-use cli::error::CliError;
-use cli::serve::bootstrap::*;
+use synopsis_cli::error::CliError;
+use synopsis_cli::serve::bootstrap::*;
 
 /// A unique temporary directory that removes itself (and its contents)
 /// when dropped.

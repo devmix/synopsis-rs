@@ -1,8 +1,8 @@
-//! Integration tests for `cli::serve::server` (moved verbatim from
+//! Integration tests for `synopsis_cli::serve::server` (moved verbatim from
 //! `crates/cli/src/serve/server.rs`, test-hygiene phase-2 task 2.4). Import
-//! paths rewritten from `use super::*` to the public `cli::serve::server`
+//! paths rewritten from `use super::*` to the public `synopsis_cli::serve::server`
 //! API; the crate-private `SHUTDOWN_TIMEOUT` and the `pub(crate)`
-//! `recreate_vectors_engine` are reached through `cli::test_support`.
+//! `recreate_vectors_engine` are reached through `synopsis_cli::test_support`.
 
 // Test code: unwrap/expect are intentional (asserting on well-defined outcomes).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -29,10 +29,10 @@ use synopsis_vectors::{
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 
-use cli::error::CliError;
-use cli::serve::bootstrap::{Bootstrap, open_db};
-use cli::serve::server::{PooledSearcher, ServeRequest, serve_with_stop};
-use cli::test_support::{SHUTDOWN_TIMEOUT, recreate_vectors_engine};
+use synopsis_cli::error::CliError;
+use synopsis_cli::serve::bootstrap::{Bootstrap, open_db};
+use synopsis_cli::serve::server::{PooledSearcher, ServeRequest, serve_with_stop};
+use synopsis_cli::test_support::{SHUTDOWN_TIMEOUT, recreate_vectors_engine};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
