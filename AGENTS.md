@@ -53,6 +53,7 @@ Dependency graph (fixed by design D1): `config, db, vectors, utils, llm → embe
 | `cargo build --release` | → `target/release/synopsis` (the real server binary) |
 | `cargo zigbuild --release --target <t>` | cross-compile one of the 5 CI targets (needs Zig 0.16.0 + `cargo install --locked cargo-zigbuild`) |
 | `cargo llvm-cov --workspace --html` | coverage report — measure-first, **no gates** (see `COVERAGE.md`) |
+| `scripts/release.sh` | release automation (preflight checks, version-bump commit, annotated tag, push to `github` + `origin`; `--dry-run` prints the plan without pushing) |
 
 - Single crate: `cargo test -p <crate>` · single test: `cargo test -p <crate> -- <TestNameFilter>`
 - Run the server: `cargo run -p cli -- serve` (config auto-search: `<exeDir>/workspace/configs/` → parent dir → CWD; default preset `default`, port 8080). Subcommands: `serve`, `queue status|reset-retries`, `db stats|clear`, `model list|download|delete|info|benchmark`, `onnx-runtime install|status|uninstall`, `load-test`.
