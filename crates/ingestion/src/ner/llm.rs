@@ -9,7 +9,7 @@
 //! Extraction (design D5/D7): domains are processed in config order. Per
 //! domain: render system (with the JSON example) + user (type lists + clean
 //! content + the `CONTENT SECTION` fenced block), build the cache key, check
-//! the cache — on a miss call [`LlmClient::call`](llm::LlmClient::call) with
+//! the cache — on a miss call [`LlmClient::call`](synopsis_llm::LlmClient::call) with
 //! the generated schema and schema name `ner_result`, parse/validate, tag
 //! every entity/fact with the normalized domain name, and store the tagged
 //! result in the cache BEFORE merging it into the result (the composite
@@ -22,12 +22,12 @@
 //!   like `RegexNer`.
 //! - **Empty content short-circuits.** Empty/whitespace content returns
 //!   `Ok(None)` without I/O (design D2; avoids a wasted HTTP round-trip).
-//! - **No silent config defaults.** [`LlmClient::new`](llm::LlmClient::new)
+//! - **No silent config defaults.** [`LlmClient::new`](synopsis_llm::LlmClient::new)
 //!   fails fast on a negative temperature or a non-positive `max_tokens`
 //!   (llm crate design) instead of clamping them, so the validated config
 //!   values are used verbatim in the cache key.
 //! - **Schema is always passed to the call.** The mode decision lives inside
-//!   [`LlmClient`](llm::LlmClient) (`ResponseFormat`): in `json_object`
+//!   [`LlmClient`](synopsis_llm::LlmClient) (`ResponseFormat`): in `json_object`
 //!   mode the schema arguments are ignored, in `json_schema` mode the schema
 //!   is embedded under `ner_result`. Passing it unconditionally is
 //!   behavior-identical and keeps the call site uniform.
@@ -59,8 +59,8 @@ use std::fmt;
 use config::DomainConfig;
 use config::preset::LlmConfig;
 use db::{ConnectionOrTx, Db};
-use llm::LlmClient;
 use serde_json::{Map, Value};
+use synopsis_llm::LlmClient;
 
 use super::regex::normalize;
 use super::{
@@ -288,8 +288,8 @@ mod tests {
     use config::preset::ResponseFormat;
     use config::{ConfidencePolicy, DomainConfig};
     use db::test_util::in_memory_db;
-    use llm::LlmError;
     use serde_json::json;
+    use synopsis_llm::LlmError;
 
     use super::*;
     use crate::ner::{NerEntity, load_ner_prompts};

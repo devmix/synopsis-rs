@@ -1,8 +1,8 @@
-//! Integration tests for the [`llm::LlmClient`] call core.
+//! Integration tests for the [`synopsis_llm::LlmClient`] call core.
 //!
 //! Relocated from the inline test module in `src/client.rs` (change
 //! test-hygiene-phase-1, task 1.9): the 32 tests that use only the public
-//! API plus the docs-hidden `llm::test_support` seams. The two tests that
+//! API plus the docs-hidden `synopsis_llm::test_support` seams. The two tests that
 //! read the private `LlmClient.config` field stay inline in `src/client.rs`.
 //! `valid_config` and `config_with` are local copies of the inline helpers,
 //! which are shared with the stay-inline tests and therefore remain in
@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use config::preset::{LlmConfig, ResponseFormat};
-use llm::{LlmClient, LlmError};
+use synopsis_llm::{LlmClient, LlmError};
 
 /// A valid config pointing at `base_url`; every other field satisfies the
 /// constructor invariants.
@@ -456,9 +456,10 @@ fn call_429_is_retryable_and_exhausts_with_cause() {
     let config = config_with(&server.url, |c| c.max_retries = 0);
     let delays = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&delays);
-    let client = llm::test_support::with_sleeper(LlmClient::new(&config).unwrap(), move |d| {
-        recorded.lock().unwrap().push(d)
-    });
+    let client =
+        synopsis_llm::test_support::with_sleeper(LlmClient::new(&config).unwrap(), move |d| {
+            recorded.lock().unwrap().push(d)
+        });
 
     let err = client.call("s", "u", None, None).err().unwrap();
 
@@ -512,7 +513,7 @@ fn call_other_4xx_is_non_retryable() {
     let server = MockServer::start(move |_| (400, b"bad request".to_vec()));
     let delays = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&delays);
-    let client = llm::test_support::with_sleeper(
+    let client = synopsis_llm::test_support::with_sleeper(
         LlmClient::new(&valid_config(&server.url)).unwrap(),
         move |d| recorded.lock().unwrap().push(d),
     );
@@ -642,7 +643,7 @@ fn call_retries_429_then_succeeds() {
     });
     let delays = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&delays);
-    let client = llm::test_support::with_sleeper(
+    let client = synopsis_llm::test_support::with_sleeper(
         LlmClient::new(&valid_config(&server.url)).unwrap(),
         move |d| recorded.lock().unwrap().push(d),
     );
@@ -662,7 +663,7 @@ fn call_5xx_exhausts_retries_with_last_cause() {
     let delays = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&delays);
     // max_retries = 2
-    let client = llm::test_support::with_sleeper(
+    let client = synopsis_llm::test_support::with_sleeper(
         LlmClient::new(&valid_config(&server.url)).unwrap(),
         move |d| recorded.lock().unwrap().push(d),
     );
@@ -690,9 +691,10 @@ fn call_backoff_delays_grow_exponentially() {
     let config = config_with(&server.url, |c| c.max_retries = 3);
     let delays = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&delays);
-    let client = llm::test_support::with_sleeper(LlmClient::new(&config).unwrap(), move |d| {
-        recorded.lock().unwrap().push(d)
-    });
+    let client =
+        synopsis_llm::test_support::with_sleeper(LlmClient::new(&config).unwrap(), move |d| {
+            recorded.lock().unwrap().push(d)
+        });
 
     let err = client.call("s", "u", None, None).err().unwrap();
     assert_exhausted(&err, 4, |_| {});
@@ -724,7 +726,8 @@ fn call_json_schema_present_in_every_retried_request() {
     let config = config_with(&server.url, |c| {
         c.response_format = ResponseFormat::JsonSchema
     });
-    let client = llm::test_support::with_sleeper(LlmClient::new(&config).unwrap(), |_d| {});
+    let client =
+        synopsis_llm::test_support::with_sleeper(LlmClient::new(&config).unwrap(), |_d| {});
 
     client
         .call(
@@ -763,9 +766,10 @@ fn call_transport_error_is_retried_until_exhausted() {
     let config = config_with(&format!("http://127.0.0.1:{port}"), |c| c.max_retries = 1);
     let delays = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&delays);
-    let client = llm::test_support::with_sleeper(LlmClient::new(&config).unwrap(), move |d| {
-        recorded.lock().unwrap().push(d)
-    });
+    let client =
+        synopsis_llm::test_support::with_sleeper(LlmClient::new(&config).unwrap(), move |d| {
+            recorded.lock().unwrap().push(d)
+        });
 
     let err = client.call("s", "u", None, None).err().unwrap();
 
@@ -784,7 +788,8 @@ fn backoff_delay_stays_within_jitter_band_and_varies() {
     for retry in 1u32..=5 {
         let base_ms = 500u64 * 2u64.pow(retry - 1);
         for _ in 0..100 {
-            let got_ms = llm::test_support::backoff_delay(&client, retry).as_millis() as u64;
+            let got_ms =
+                synopsis_llm::test_support::backoff_delay(&client, retry).as_millis() as u64;
             assert!(
                 got_ms >= base_ms * 8 / 10 && got_ms < base_ms * 12 / 10,
                 "retry {retry}: {got_ms} ms outside [{}, {})",

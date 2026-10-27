@@ -129,7 +129,7 @@ pub enum IngestionError {
     /// exhaustion. The llm crate's error is the source of truth; the
     /// failure is fatal for the extraction call (no partial results).
     #[error("llm ner call: {0}")]
-    Llm(#[from] llm::LlmError),
+    Llm(#[from] synopsis_llm::LlmError),
 
     /// The model's NER response content is not the expected
     /// `{entities, relations}` JSON (ingestion-ner task 2.5). The pure

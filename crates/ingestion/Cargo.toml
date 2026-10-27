@@ -52,7 +52,7 @@ db = { workspace = true }
 # Synchronous OpenAI-compatible chat client for the LlmNer provider
 # (ingestion-ner task 2.5, design D5): per-domain structured calls with the
 # generated JSON schema under the `ner_result` name.
-llm = { workspace = true }
+synopsis_llm = { workspace = true }
 # Progress bar for the run tracker (task 3.1): stderr bar auto-hidden when
 # stderr is not a terminal, so headless runs stay quiet.
 indicatif = { workspace = true }

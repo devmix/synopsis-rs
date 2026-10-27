@@ -1,5 +1,5 @@
 [package]
-name = "llm"
+name = "synopsis-llm"
 version.workspace = true
 edition.workspace = true
 

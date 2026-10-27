@@ -86,7 +86,7 @@ Per-task acceptance (in addition to the recipe gates):
     blanket sed would have broken the build); (3) the 23 genuine crate
     references were replaced; gates green.
 
-- [ ] 2.2 Rename `vectors` → `synopsis-vectors`
+- [x] 2.2 Rename `vectors` → `synopsis-vectors`
   - Dependencies: task 2.1.
   - File scope: root `Cargo.toml`; `crates/vectors/**` → `crates/synopsis-vectors/**`;
     dependents with a Cargo.toml entry: `crates/ingestion`, `crates/search`,
@@ -94,6 +94,8 @@ Per-task acceptance (in addition to the recipe gates):
     `[dev-dependencies]` — update both); all `.rs` files containing `vectors::`
     (~43 lines).
   - Acceptance: recipe gates + `rg '\bvectors::' -g '*.rs'` empty + metadata check.
+  - Revision history: implemented 2026-10-27, zero deviations (43 references,
+    27 files; 5 config doc-comments renamed; 3 rustfmt rewraps; gates green).
 
 - [ ] 2.3 Rename `llm` → `synopsis-llm`
   - Dependencies: task 2.2.

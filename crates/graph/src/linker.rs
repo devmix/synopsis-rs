@@ -99,8 +99,8 @@ use db::{
     ChunkEntityDao, ConnectionOrTx, Db, DbExecutor, Entity, EntityDao, EntityLink, EntityLinkDao,
     EntitySourceDao, merge_entities,
 };
-use llm::LlmClient;
 use serde::{Deserialize, Serialize};
+use synopsis_llm::LlmClient;
 use synopsis_utils::text::{detect_script, match_key, stem_key};
 
 use crate::cel::{CelEngine, register_data_functions, register_graph_functions};

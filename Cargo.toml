@@ -21,7 +21,7 @@ members = [
     "crates/db",
     "crates/synopsis-vectors",
     "crates/synopsis-utils",
-    "crates/llm",
+    "crates/synopsis-llm",
     "crates/embedding",
     "crates/ingestion",
     "crates/graph",
@@ -62,7 +62,7 @@ synopsis_utils = { package = "synopsis-utils", path = "crates/synopsis-utils" }
 # Base tier (llm change D1): OpenAI-compatible LLM client; only internal
 # dependency is config (LlmConfig). graph/embedding depend on it, never
 # the other way around.
-llm = { path = "crates/llm" }
+synopsis_llm = { package = "synopsis-llm", path = "crates/synopsis-llm" }
 embedding = { path = "crates/embedding" }
 ingestion = { path = "crates/ingestion" }
 graph = { path = "crates/graph" }

@@ -1191,12 +1191,12 @@ dependencies = [
  "cel",
  "config",
  "db",
- "llm",
  "minijinja",
  "petgraph",
  "serde",
  "serde_json",
  "sha2",
+ "synopsis-llm",
  "synopsis-utils",
  "thiserror",
  "tracing",
@@ -1592,12 +1592,12 @@ dependencies = [
  "html-to-markdown-rs",
  "ignore",
  "indicatif",
- "llm",
  "minijinja",
  "regex",
  "serde",
  "serde_json",
  "sha2",
+ "synopsis-llm",
  "synopsis-utils",
  "synopsis-vectors",
  "thiserror",
@@ -1837,17 +1837,6 @@ name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
-
-[[package]]
-name = "llm"
-version = "0.1.0"
-dependencies = [
- "config",
- "serde",
- "serde_json",
- "thiserror",
- "ureq",
-]
 
 [[package]]
 name = "lock_api"
@@ -3334,6 +3323,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 dependencies = [
  "futures-core",
+]
+
+[[package]]
+name = "synopsis-llm"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
 ]
 
 [[package]]
