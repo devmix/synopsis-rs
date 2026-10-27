@@ -16,10 +16,10 @@
 
 use std::collections::HashMap;
 
-use ingestion::{NerEntity, Resolver};
 use serde_json::Map;
 use synopsis_db::test_util::in_memory_db;
 use synopsis_db::{ConnectionOrTx, Db, DocumentDao, EntityAliasDao, EntityDao};
+use synopsis_ingestion::{NerEntity, Resolver};
 
 const TYPE: &str = "person";
 const DOMAIN: &str = "x";

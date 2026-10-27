@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use graph::GraphIndex;
-use ingestion::ShutdownFlag;
 use search::Searcher;
 use synopsis_config::onnx::{ModelInfo, OnnxModelsConfig};
 use synopsis_config::preset::GraphConfig;
@@ -23,6 +22,7 @@ use synopsis_db::{
     ChunkDao, ConnectionOrTx, DocIndexPayload, DocumentDao, QueueTaskDao, QueueTaskType, ReIndexOp,
 };
 use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
+use synopsis_ingestion::ShutdownFlag;
 use synopsis_vectors::{
     ENGINE_USEARCH, VectorIndex, VectorIndexConfig, VectorsError, create_vector_engine,
 };
@@ -489,7 +489,9 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
                 "markdown",
                 &same_path,
                 None,
-                Some(&ingestion::ingester::compute_content_hash(same_content)),
+                Some(&synopsis_ingestion::ingester::compute_content_hash(
+                    same_content,
+                )),
             )?;
             dao.create("markdown", &gone_path, None, Some("old-hash"))?;
             // A live chunk keeps `same.md` out of the orphan sweep.
@@ -666,21 +668,21 @@ fn serve_startup_reconcile_jobs_are_processed_by_the_worker() {
         .expect("new.md must be indexed");
     assert_eq!(
         new_doc.content_hash.as_deref(),
-        Some(ingestion::ingester::compute_content_hash(new_content).as_str())
+        Some(synopsis_ingestion::ingester::compute_content_hash(new_content).as_str())
     );
     let changed_doc = docs_by_path
         .get(src.join("changed.md").to_string_lossy().as_ref())
         .expect("changed.md must be re-indexed");
     assert_eq!(
         changed_doc.content_hash.as_deref(),
-        Some(ingestion::ingester::compute_content_hash(changed_content).as_str())
+        Some(synopsis_ingestion::ingester::compute_content_hash(changed_content).as_str())
     );
     let same_doc = docs_by_path
         .get(src.join("same.md").to_string_lossy().as_ref())
         .expect("same.md must survive");
     assert_eq!(
         same_doc.content_hash.as_deref(),
-        Some(ingestion::ingester::compute_content_hash(same_content).as_str())
+        Some(synopsis_ingestion::ingester::compute_content_hash(same_content).as_str())
     );
     assert!(
         !docs_by_path.contains_key(src.join("gone.md").to_string_lossy().as_ref()),

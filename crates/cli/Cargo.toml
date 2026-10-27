@@ -21,7 +21,7 @@ synopsis_config = { workspace = true }
 synopsis_db = { workspace = true }
 synopsis_embedding = { workspace = true }
 graph = { workspace = true }
-ingestion = { workspace = true }
+synopsis_ingestion = { workspace = true }
 mcp = { workspace = true }
 rusqlite = { workspace = true }
 search = { workspace = true }

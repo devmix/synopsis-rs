@@ -165,7 +165,7 @@ Per-task acceptance (in addition to the recipe gates):
     linking. One flaky cli serve_server test failed under that disk pressure
     and passed on re-run.
 
-- [ ] 2.6 Rename `embedding` → `synopsis-embedding`
+- [x] 2.6 Rename `embedding` → `synopsis-embedding`
   - Dependencies: task 2.5.
   - File scope: root `Cargo.toml`; `crates/embedding/**` →
     `crates/synopsis-embedding/**`; dependents with a Cargo.toml entry (3):
@@ -184,8 +184,22 @@ Per-task acceptance (in addition to the recipe gates):
   - Dependencies: task 2.6.
   - File scope: root `Cargo.toml`; `crates/ingestion/**` →
     `crates/synopsis-ingestion/**`; dependent with a Cargo.toml entry (1):
-    `crates/cli`; all `.rs` files containing `ingestion::` (~52 lines, in cli).
+    `crates/cli`; all `.rs` files containing `ingestion::` — 52 matches
+    across 50 lines: 21 in cli, 29 self-references (27 lines) in the
+    ingestion crate's own src/tests, and 2 doc-comment references in
+    `crates/synopsis-db/src/app_kv.rs` and `crates/graph/src/linker.rs`
+    (`ingestion::ner::llm_cache::LlmNerCache`).
+    (search's only `ingestion` mention is a prose comment in its Cargo.toml —
+    never touched per recipe step 5.)
   - Acceptance: recipe gates + `rg '\bingestion::' -g '*.rs'` empty + metadata check.
+  - Revision history: implemented 2026-10-27. The file-scope line was
+    corrected from the planning estimate "~52 lines, in cli" to the actual
+    distribution (52 matches / 50 lines: 21 + 29 + 2) after implementation;
+    the orchestrator's
+    subagent reminder wrongly listed search as a dependent — the task body
+    (1 dependent: cli) was followed. rustfmt re-sorted import groups in a few
+    test files (same mechanical class as tasks 2.2/2.3/2.5/2.6). Gates green
+    (1606/1606).
 
 - [ ] 2.8 Rename `graph` → `synopsis-graph`
   - Dependencies: task 2.7.

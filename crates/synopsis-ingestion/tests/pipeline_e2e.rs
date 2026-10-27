@@ -7,9 +7,9 @@
 //! an in-memory SQLite database and an in-memory vector index. Every DB
 //! assertion goes through the db-crate DAOs.
 //!
-//! The file deliberately uses crate-root re-exports (`ingestion::Runner`,
-//! `ingestion::Ingester`, …) plus the queue modules (`ingestion::DocumentJobQueue`,
-//! `ingestion::worker::DocumentWorker`): the pipeline's public API surface
+//! The file deliberately uses crate-root re-exports (`synopsis_ingestion::Runner`,
+//! `synopsis_ingestion::Ingester`, …) plus the queue modules (`synopsis_ingestion::DocumentJobQueue`,
+//! `synopsis_ingestion::worker::DocumentWorker`): the pipeline's public API surface
 //! is part of what this test pins.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -20,12 +20,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ingestion::worker::DocumentWorker;
-use ingestion::{
-    CompositeNer, DocumentJobQueue, Ingester, IngestionError, JsonChunker, JsonSource,
-    MarkdownChunker, MarkdownSource, NerEntity, NerFact, NerPrompts, NerProvider, NerResult,
-    Registry, Resolver, Runner, RunnerParams, VectorSink, load_ner_prompts,
-};
 use serde_json::{Map, Value};
 use synopsis_config::DomainConfig;
 use synopsis_config::ontology::{
@@ -40,6 +34,12 @@ use synopsis_db::{
     QueueTaskType,
 };
 use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
+use synopsis_ingestion::worker::DocumentWorker;
+use synopsis_ingestion::{
+    CompositeNer, DocumentJobQueue, Ingester, IngestionError, JsonChunker, JsonSource,
+    MarkdownChunker, MarkdownSource, NerEntity, NerFact, NerPrompts, NerProvider, NerResult,
+    Registry, Resolver, Runner, RunnerParams, VectorSink, load_ner_prompts,
+};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 /// One markdown document with two heading sections and one email each.

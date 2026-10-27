@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ingestion::Runner;
 use synopsis_config::onnx::{
     ModelFile, ModelInfo, OnnxModelsConfig, OnnxPlatformConfig, OnnxRuntimeConfig,
 };
@@ -18,6 +17,7 @@ use synopsis_config::preset::{Config, EmbeddingsMode, LocalEmbedding};
 use synopsis_config::{ConfigError, GlobalConfig, OnnxConfig};
 use synopsis_db::Db;
 use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
+use synopsis_ingestion::Runner;
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndexConfig, VectorsError, create_vector_engine};
 
 use cli::error::CliError;

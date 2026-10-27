@@ -15,8 +15,8 @@
 //! and the canonical prototype is ranked by rune count, not UTF-8 byte length.
 //!
 //! All public items are re-exported at the crate root (task 2.9), so
-//! downstream crates reference `ingestion::Resolver`,
-//! `ingestion::jaro_winkler`, … directly.
+//! downstream crates reference `synopsis_ingestion::Resolver`,
+//! `synopsis_ingestion::jaro_winkler`, … directly.
 
 mod cluster;
 mod resolver;

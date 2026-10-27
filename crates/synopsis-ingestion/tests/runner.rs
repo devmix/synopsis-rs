@@ -4,7 +4,7 @@
 //! Relocated from `src/runner/mod.rs` (change test-hygiene-phase-1,
 //! task 1.12): the 13 unit tests that exercise [`Runner`] through the
 //! test-local fixtures. `walk_matched_files` is reached through the
-//! `ingestion::test_support` seam (design D3). The fixtures are local
+//! `synopsis_ingestion::test_support` seam (design D3). The fixtures are local
 //! copies of the ones kept inline in `src/runner/mod.rs`, which the
 //! `runner/cleanup.rs` inline tests import (task 1.12 Revision 1, design
 //! D4).
@@ -27,9 +27,9 @@ use synopsis_db::{ChunkDao, ConnectionOrTx, Db, DocumentDao, EntityDao, QueueTas
 use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
-use ingestion::runner::detect_source_type;
-use ingestion::worker::DocumentWorker;
-use ingestion::{
+use synopsis_ingestion::runner::detect_source_type;
+use synopsis_ingestion::worker::DocumentWorker;
+use synopsis_ingestion::{
     Chunker, Document, DocumentChunk, DocumentJobQueue, DocumentMetadata, IngestionError,
     NerPrompts, ParseResult, Parser, Registry, Runner, RunnerParams, Source, load_ner_prompts,
 };
@@ -60,7 +60,7 @@ impl Parser for TestSource {
     fn parse(&self, source_path: &Path) -> ParseResult {
         let mut documents = Vec::new();
         let mut errors = Vec::new();
-        ingestion::test_support::walk_matched_files(
+        synopsis_ingestion::test_support::walk_matched_files(
             source_path,
             |path| path.extension().is_some_and(|ext| ext == "txt"),
             |path| {

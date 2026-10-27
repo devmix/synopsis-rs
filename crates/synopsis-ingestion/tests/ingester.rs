@@ -4,7 +4,7 @@
 //! Relocated from `src/ingester/mod.rs` (change test-hygiene-phase-1,
 //! task 1.11): the 23 unit tests that exercise [`Ingester`] through the
 //! test-local `TestSource` / `Harness` fixtures. `walk_matched_files`
-//! is reached through the `ingestion::test_support` seam (design D3).
+//! is reached through the `synopsis_ingestion::test_support` seam (design D3).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -24,7 +24,7 @@ use synopsis_db::{
 };
 use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 
-use ingestion::{
+use synopsis_ingestion::{
     Chunker, Document, DocumentChunk, DocumentMetadata, Ingester, IngestionError, MarkdownChunker,
     MarkdownSource, NerEntity, NerFact, NerProvider, NerResult, ParseResult, Parser, ProgressStats,
     Resolver, Source, VectorSink,
@@ -72,7 +72,7 @@ impl Parser for TestSource {
         // errors after the walk: the visit closure may not touch the
         // `errors` vector the walk helper owns).
         let mut broken = Vec::new();
-        ingestion::test_support::walk_matched_files(
+        synopsis_ingestion::test_support::walk_matched_files(
             source_path,
             |path| path.extension().is_some_and(|ext| ext == "txt"),
             |path| {
@@ -142,7 +142,7 @@ impl Parser for BreadCrumbSource {
         // Per-file read failures are collected here and folded in after the
         // walk (the visit closure may not touch the `errors` the walk owns).
         let mut broken = Vec::new();
-        ingestion::test_support::walk_matched_files(
+        synopsis_ingestion::test_support::walk_matched_files(
             source_path,
             |path| path.extension().is_some_and(|ext| ext == "txt"),
             |path| {

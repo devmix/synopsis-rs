@@ -37,15 +37,15 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ingestion::chunkers::json::JsonChunker;
-use ingestion::chunkers::markdown::MarkdownChunker;
-use ingestion::chunkers::mediawiki::MediawikiChunker;
-use ingestion::sources::{
-    JsonSource, MarkdownSource, MediawikiSource, UnstructuredSource, WebpageSource,
-};
-use ingestion::{Document, DocumentChunk, IngestionError, ParseResult, Source};
 use serde_json::{Map, Value};
 use synopsis_config::preset::{ChunkingStrategy, JsonChunkerConfig, MarkdownChunkerConfig};
+use synopsis_ingestion::chunkers::json::JsonChunker;
+use synopsis_ingestion::chunkers::markdown::MarkdownChunker;
+use synopsis_ingestion::chunkers::mediawiki::MediawikiChunker;
+use synopsis_ingestion::sources::{
+    JsonSource, MarkdownSource, MediawikiSource, UnstructuredSource, WebpageSource,
+};
+use synopsis_ingestion::{Document, DocumentChunk, IngestionError, ParseResult, Source};
 
 /// A temporary source tree that removes itself on drop (the `pub(crate)`
 /// helper under `src/parsers` is not visible from integration tests).

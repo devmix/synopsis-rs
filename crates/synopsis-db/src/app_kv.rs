@@ -9,7 +9,7 @@
 //! (`migrations/cache/1-init/up.sql`, task 1.9, storage-layout-restructure);
 //! on a database that does not have it yet (e.g. a knowledge database) it is
 //! created lazily at runtime on first use — the same pattern as
-//! `ingestion::ner::llm_cache::LlmNerCache`. The LLM linker DECISIONS do not
+//! `synopsis_ingestion::ner::llm_cache::LlmNerCache`. The LLM linker DECISIONS do not
 //! live here: since task 1.10 they are stored in the dedicated
 //! `llm_linker_cache` table (see `graph::linker::LlmLinkerCache`).
 //!

@@ -27,8 +27,8 @@
 //! per-domain auto-publish threshold filter.
 //!
 //! All public items are available at the crate root (task 2.9), so
-//! downstream crates reference `ingestion::NerProvider`,
-//! `ingestion::CompositeNer`, … directly.
+//! downstream crates reference `synopsis_ingestion::NerProvider`,
+//! `synopsis_ingestion::CompositeNer`, … directly.
 
 use serde_json::{Map, Value};
 

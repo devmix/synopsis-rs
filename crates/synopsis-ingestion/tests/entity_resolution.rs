@@ -7,7 +7,7 @@
 //!
 //! Generic words only (NDA): no subject-matter entity names.
 
-use ingestion::jaro_winkler;
+use synopsis_ingestion::jaro_winkler;
 use synopsis_utils::text::stem_key;
 
 /// A Russian case-variant pair the JW tier alone would miss (JW below the

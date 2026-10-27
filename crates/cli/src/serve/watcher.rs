@@ -15,7 +15,7 @@
 //!
 //! Architectural notes:
 //! - **Threading.** The ingestion [`Runner`] borrows the source
-//!   [`ingestion::Registry`], whose `Box<dyn Source>` is `!Send + !Sync`, so
+//!   [`synopsis_ingestion::Registry`], whose `Box<dyn Source>` is `!Send + !Sync`, so
 //!   the `Runner` is `!Send + !Sync`. A spawned tokio task must be `Send`, so
 //!   the debounce loop can only deal in [`PathBuf`]s: it coalesces events into
 //!   batches and hands them out over a channel. The *caller* (the serve loop,
@@ -28,7 +28,7 @@
 //! - No manual sub-directory re-`Add` on directory-create events is needed:
 //!   `PollWatcher` re-walks every watched tree on each poll.
 //! - The event filter is derived from the registered parsers
-//!   ([`ingestion::Registry::supported_extensions`]), so it cannot drift
+//!   ([`synopsis_ingestion::Registry::supported_extensions`]), so it cannot drift
 //!   from what the pipeline actually ingests.
 //! - There is no `SetGraph`-style swap on the searcher + MCP server (the
 //!   search crate is immutable by design — the CLI rebuilds the searcher,
@@ -43,13 +43,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use graph::GraphIndex;
-use ingestion::ingester::compute_content_hash;
-use ingestion::{DocumentJobQueue, Registry, Runner};
 use notify::Watcher as _;
 use notify::{Event, EventKind, PollWatcher, RecursiveMode};
 use synopsis_config::preset::GraphConfig;
 use synopsis_config::{Config, load_global_config};
 use synopsis_db::Db;
+use synopsis_ingestion::ingester::compute_content_hash;
+use synopsis_ingestion::{DocumentJobQueue, Registry, Runner};
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -298,7 +298,7 @@ impl Watcher {
     ///
     /// `extensions` is the accept list of file extensions, taken from the
     /// registered parsers (e.g.
-    /// [`Registry::supported_extensions`](ingestion::Registry::supported_extensions));
+    /// [`Registry::supported_extensions`](synopsis_ingestion::Registry::supported_extensions));
     /// it is normalized (leading dot stripped, lowercased) before filtering,
     /// mirroring the parsers' own case-insensitive accepts checks.
     ///
@@ -362,7 +362,7 @@ impl Watcher {
     /// `<workspace_dir>/datasets/<name>/ontology` → `global.xml` → non-disabled
     /// sources, with a trailing `debounce`. The extension accept list is
     /// derived from the parsers registered in `registry`
-    /// ([`Registry::supported_extensions`](ingestion::Registry::supported_extensions)).
+    /// ([`Registry::supported_extensions`](synopsis_ingestion::Registry::supported_extensions)).
     ///
     /// # Errors
     ///
@@ -532,11 +532,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use ingestion::{
-        DocumentJobQueue, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource,
-        MediawikiChunker, MediawikiSource, NerPrompts, Registry, Runner, RunnerParams,
-        UnstructuredSource, WebpageSource, ingester::compute_content_hash, load_ner_prompts,
-    };
     use notify::event::{AccessKind, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind};
     use synopsis_config::DomainConfig;
     use synopsis_config::ontology::{
@@ -546,6 +541,11 @@ mod tests {
     use synopsis_db::test_util::in_memory_db;
     use synopsis_db::{ConnectionOrTx, DocumentDao, QueueTaskDao};
     use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
+    use synopsis_ingestion::{
+        DocumentJobQueue, JsonChunker, JsonSource, MarkdownChunker, MarkdownSource,
+        MediawikiChunker, MediawikiSource, NerPrompts, Registry, Runner, RunnerParams,
+        UnstructuredSource, WebpageSource, ingester::compute_content_hash, load_ner_prompts,
+    };
     use synopsis_vectors::{VectorIndex, VectorsError};
 
     use super::*;

@@ -51,7 +51,7 @@
 //! chunk a pure chunking artifact.
 //!
 //! Every public module item is re-exported at the crate root
-//! (`ingestion::MarkdownSource`, `ingestion::Registry`, …), so downstream
+//! (`synopsis_ingestion::MarkdownSource`, `synopsis_ingestion::Registry`, …), so downstream
 //! crates only need the root namespace.
 
 pub mod chunkers;

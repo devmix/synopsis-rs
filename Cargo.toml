@@ -23,7 +23,7 @@ members = [
     "crates/synopsis-utils",
     "crates/synopsis-llm",
     "crates/synopsis-embedding",
-    "crates/ingestion",
+    "crates/synopsis-ingestion",
     "crates/graph",
     "crates/search",
     "crates/mcp",
@@ -64,7 +64,7 @@ synopsis_utils = { package = "synopsis-utils", path = "crates/synopsis-utils" }
 # the other way around.
 synopsis_llm = { package = "synopsis-llm", path = "crates/synopsis-llm" }
 synopsis_embedding = { package = "synopsis-embedding", path = "crates/synopsis-embedding" }
-ingestion = { path = "crates/ingestion" }
+synopsis_ingestion = { package = "synopsis-ingestion", path = "crates/synopsis-ingestion" }
 graph = { path = "crates/graph" }
 search = { path = "crates/search" }
 mcp = { path = "crates/mcp" }

@@ -9,7 +9,7 @@
 //! Two hard constraints shape this module (both verified empirically
 //! against tokio 1.53):
 //!
-//! 1. The ingestion [`ingestion::Runner`] is `!Send` — it borrows the
+//! 1. The ingestion [`synopsis_ingestion::Runner`] is `!Send` — it borrows the
 //!    source registry, whose `Box<dyn Source>` objects carry no Send/Sync
 //!    bounds — so the ingestion work must stay on the thread that created
 //!    the runner: the main thread of [`run_serve`].
@@ -87,8 +87,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use graph::GraphIndex;
-use ingestion::worker::DocumentWorker;
-use ingestion::{DocumentJobQueue, Runner, RunnerParams, ShutdownFlag};
 use search::{
     Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
     Searcher, SemanticSearcher,
@@ -97,6 +95,8 @@ use synopsis_config::GlobalConfig;
 use synopsis_config::preset::{GraphConfig, SearchConfig};
 use synopsis_db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao, QueueTaskDao};
 use synopsis_embedding::EmbeddingProvider;
+use synopsis_ingestion::worker::DocumentWorker;
+use synopsis_ingestion::{DocumentJobQueue, Runner, RunnerParams, ShutdownFlag};
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndex, VectorsError, create_vector_engine};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -408,11 +408,12 @@ pub fn serve_with_stop(
     };
     let registry = bootstrap::build_registry(&config.ingestion.chunking)
         .map_err(|err| CliError::Unsupported(format!("source registry: {err}")))?;
-    let prompts = ingestion::load_ner_prompts(&config.paths.prompts_path).map_err(|err| {
-        CliError::Config(synopsis_config::ConfigError::Validation {
-            message: format!("NER prompts: {err}"),
-        })
-    })?;
+    let prompts =
+        synopsis_ingestion::load_ner_prompts(&config.paths.prompts_path).map_err(|err| {
+            CliError::Config(synopsis_config::ConfigError::Validation {
+                message: format!("NER prompts: {err}"),
+            })
+        })?;
     // The runner borrows the locals (same wiring as `build_runner`), so it
     // outlives any use of `boot` without pinning it.
     let runner = Runner::new(RunnerParams {
@@ -899,7 +900,7 @@ mod tests {
     }
 
     /// Type-level pin (fix-serve-signal-shutdown 1.1 review): the
-    /// [`ingestion::ShutdownFlag`] re-exported from the ingestion crate
+    /// [`synopsis_ingestion::ShutdownFlag`] re-exported from the ingestion crate
     /// root is the cooperative-cancel channel the serve wiring consumes —
     /// `Clone` is cheap (the `Arc` is cloned, the state shared) and the
     /// type is `Send + Sync` (shared across the signal task and the owner
@@ -907,8 +908,8 @@ mod tests {
     #[test]
     fn shutdown_flag_reexport_is_the_cooperative_cancel_channel() {
         fn assert_flag<T: Clone + Default + Send + Sync>() {}
-        assert_flag::<ingestion::ShutdownFlag>();
-        let flag = ingestion::ShutdownFlag::new();
+        assert_flag::<synopsis_ingestion::ShutdownFlag>();
+        let flag = synopsis_ingestion::ShutdownFlag::new();
         assert!(!flag.cancelled(), "a fresh flag is uncancelled");
         let clone = flag.clone();
         flag.cancel();

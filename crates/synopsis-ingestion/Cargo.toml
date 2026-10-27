@@ -1,5 +1,5 @@
 [package]
-name = "ingestion"
+name = "synopsis-ingestion"
 version.workspace = true
 edition.workspace = true
 

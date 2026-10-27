@@ -564,7 +564,7 @@ const LINKER_CACHE_TABLE: &str = "llm_linker_cache";
 /// One instance per unit of work, bound to either a pooled connection or an
 /// in-flight transaction via [`ConnectionOrTx`] — the same shape as the db
 /// crate's DAOs (cf. `synopsis_db::AppKv`) and
-/// `ingestion::ner::llm_cache::LlmNerCache`. Entries map the LLM request
+/// `synopsis_ingestion::ner::llm_cache::LlmNerCache`. Entries map the LLM request
 /// signature key (see [`llm_cache_key`]) to a serialized [`LinkDecision`].
 pub struct LlmLinkerCache<'conn> {
     exec: ConnectionOrTx<'conn>,

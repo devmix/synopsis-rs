@@ -440,7 +440,6 @@ dependencies = [
  "axum",
  "clap",
  "graph",
- "ingestion",
  "mcp",
  "notify",
  "owo-colors",
@@ -453,6 +452,7 @@ dependencies = [
  "synopsis-config",
  "synopsis-db",
  "synopsis-embedding",
+ "synopsis-ingestion",
  "synopsis-utils",
  "synopsis-vectors",
  "tabled",
@@ -1533,30 +1533,6 @@ dependencies = [
  "unicode-width",
  "unit-prefix",
  "web-time",
-]
-
-[[package]]
-name = "ingestion"
-version = "0.1.0"
-dependencies = [
- "graph",
- "html-to-markdown-rs",
- "ignore",
- "indicatif",
- "minijinja",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "synopsis-config",
- "synopsis-db",
- "synopsis-embedding",
- "synopsis-llm",
- "synopsis-utils",
- "synopsis-vectors",
- "thiserror",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -3323,6 +3299,30 @@ dependencies = [
  "tokenizers",
  "ureq",
  "zip",
+]
+
+[[package]]
+name = "synopsis-ingestion"
+version = "0.1.0"
+dependencies = [
+ "graph",
+ "html-to-markdown-rs",
+ "ignore",
+ "indicatif",
+ "minijinja",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "synopsis-config",
+ "synopsis-db",
+ "synopsis-embedding",
+ "synopsis-llm",
+ "synopsis-utils",
+ "synopsis-vectors",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
