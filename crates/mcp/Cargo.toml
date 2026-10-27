@@ -19,7 +19,7 @@ synopsis_config = { workspace = true }
 synopsis_db = { workspace = true }
 synopsis_graph = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
-search = { workspace = true }
+synopsis_search = { workspace = true }
 # Legacy SSE transport (add-legacy-sse-transport D3): sse-stream serializes the
 # SSE frames, tokio-stream adapts the mpsc receiver to the body stream, uuid
 # mints the session ids. All three are already in the lock via rmcp, so no new

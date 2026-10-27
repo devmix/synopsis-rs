@@ -24,10 +24,10 @@ use rmcp::{
     service::{RoleClient, RunningService},
     transport::StreamableHttpClientTransport,
 };
-use search::{SearchError, SearchResult, Searcher};
 use serde_json::{Map, Value, json};
 use synopsis_db::{ChunkDao, ConnectionOrTx, DocumentDao, EntityDao, FactDao, test_util};
 use synopsis_graph::GraphIndex;
+use synopsis_search::{SearchError, SearchResult, Searcher};
 
 /// The 12 frozen tool names (`mcp-contract`), sorted for set comparison.
 const FROZEN_TOOL_NAMES: [&str; 12] = [

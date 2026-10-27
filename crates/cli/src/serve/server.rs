@@ -86,10 +86,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use search::{
-    Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
-    Searcher, SemanticSearcher,
-};
 use synopsis_config::GlobalConfig;
 use synopsis_config::preset::{GraphConfig, SearchConfig};
 use synopsis_db::{ChunkDao, ChunkEntityDao, ConnectionOrTx, DocumentDao, FactDao, QueueTaskDao};
@@ -97,6 +93,10 @@ use synopsis_embedding::EmbeddingProvider;
 use synopsis_graph::GraphIndex;
 use synopsis_ingestion::worker::DocumentWorker;
 use synopsis_ingestion::{DocumentJobQueue, Runner, RunnerParams, ShutdownFlag};
+use synopsis_search::{
+    Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
+    Searcher, SemanticSearcher,
+};
 use synopsis_vectors::{ENGINE_USEARCH, VectorIndex, VectorsError, create_vector_engine};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;

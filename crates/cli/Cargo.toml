@@ -24,7 +24,7 @@ synopsis_graph = { workspace = true }
 synopsis_ingestion = { workspace = true }
 mcp = { workspace = true }
 rusqlite = { workspace = true }
-search = { workspace = true }
+synopsis_search = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

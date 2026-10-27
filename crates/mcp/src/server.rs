@@ -23,8 +23,8 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
-use search::Searcher;
 use serde_json::{Value, json};
+use synopsis_search::Searcher;
 
 use crate::error::McpError;
 use crate::health::{HealthState, handler as health_handler};
@@ -783,9 +783,9 @@ mod tests {
 
     use std::sync::Arc;
 
-    use search::{SearchError, SearchResult, Searcher};
     use synopsis_db::test_util;
     use synopsis_graph::GraphIndex;
+    use synopsis_search::{SearchError, SearchResult, Searcher};
 
     use super::Server;
 

@@ -201,7 +201,7 @@ Per-task acceptance (in addition to the recipe gates):
     test files (same mechanical class as tasks 2.2/2.3/2.5/2.6). Gates green
     (1606/1606).
 
-- [ ] 2.8 Rename `graph` → `synopsis-graph`
+- [x] 2.8 Rename `graph` → `synopsis-graph`
   - Dependencies: task 2.7.
   - File scope: root `Cargo.toml`; `crates/graph/**` →
     `crates/synopsis-graph/**`; dependents with a Cargo.toml entry (4):
@@ -233,10 +233,32 @@ Per-task acceptance (in addition to the recipe gates):
 
 - [ ] 2.9 Rename `search` → `synopsis-search`
   - Dependencies: task 2.8.
-  - File scope: root `Cargo.toml`; `crates/search/**` → `crates/synopsis-search/**`;
-    dependents with a Cargo.toml entry (2): `crates/mcp`, `crates/cli`; all `.rs`
-    files containing `search::` (~19 lines).
-  - Acceptance: recipe gates + `rg '\bsearch::' -g '*.rs'` empty + metadata check.
+  - File scope: root `Cargo.toml`; `crates/search/**` →
+    `crates/synopsis-search/**`; dependents with a Cargo.toml entry (2):
+    `crates/mcp`, `crates/cli`; all `.rs` files containing `search::` — 18
+    matches: 16 crate references across 12 files + 2 internal-module lines
+    below. (Planning estimate was ~19 lines.)
+  - Exclusions (NOT the search crate — the planning premise "no internal
+    module named `search`" did not hold; discovered in implementation,
+    resolved by the referenced item's definition per recipe step 5):
+    (a) mcp's INTERNAL module `tools::search` at
+    `crates/mcp/src/tools/search.rs`: the dispatch arm
+    `"search" => tools::search::handle_search(...)` at
+    `crates/mcp/src/server.rs:211`;
+    (b) synopsis-vectors' INTERNAL module `usearch::search` at
+    `crates/synopsis-vectors/src/usearch/search.rs`: `use
+    search::{add_rows, build_search_pool};` at
+    `crates/synopsis-vectors/src/usearch/mod.rs:150` (`mod search;` declared
+    in the same file).
+    Renaming either breaks compilation.
+  - Acceptance: recipe gates + NO crate-reference `search::` remains (the 2
+    internal-module lines above are expected to remain) + metadata check.
+  - Revision history: implemented 2026-10-27. 16 crate references renamed
+    across 12 files; the 2 internal-module exclusions (a)+(b) discovered
+    during implementation were correctly left untouched (gates green
+    confirm). rustfmt re-sorted import groups in 8 files and re-wrapped one
+    >100-char signature line in mcp tools/search.rs (same mechanical class
+    as tasks 2.2/2.3/2.5/2.6/2.8). Gates green (1606/1606).
 
 - [ ] 2.10 Rename `mcp` → `synopsis-mcp`
   - Dependencies: task 2.9.
@@ -321,8 +343,12 @@ Per-task acceptance (in addition to the recipe gates):
        `crate::graph::` ×3 (graph's internal graph module),
        `petgraph::graph::` ×4 (external petgraph crate, grep false positives),
        `pub use graph::{...}` re-export in `crates/synopsis-graph/src/lib.rs`
-       ×1 (graph's internal graph module). Verify the match set equals
-       exactly this survivor list; any other `X::` match is a failure.
+       ×1 (graph's internal graph module), `tools::search::handle_search`
+       in `crates/mcp/src/server.rs` ×1 (mcp's internal tools::search
+       module), `use search::{add_rows, build_search_pool};` in
+       `crates/synopsis-vectors/src/usearch/mod.rs` ×1 (vectors' internal
+       usearch::search module). Verify the match set equals exactly this
+       survivor list; any other `X::` match is a failure.
     3. `cargo build --release`; re-capture the 19 `--help` sections exactly as in
        task 1.1 to `/tmp/opencode/synopsis-help-after.txt`;
        `diff /tmp/opencode/synopsis-help-before.txt /tmp/opencode/synopsis-help-after.txt`

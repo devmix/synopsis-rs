@@ -16,10 +16,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use search::{
-    Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
-    Searcher, SemanticSearcher,
-};
 use synopsis_config::preset::{GraphConfig, SearchConfig};
 use synopsis_db::test_util::in_memory_db;
 use synopsis_db::{
@@ -27,6 +23,10 @@ use synopsis_db::{
 };
 use synopsis_embedding::{EmbeddingError, EmbeddingProvider};
 use synopsis_graph::Graph;
+use synopsis_search::{
+    Enricher, GraphExpander, HybridSearcher, LexicalSearcher, Reranker, SearchError, SearchResult,
+    Searcher, SemanticSearcher,
+};
 use synopsis_vectors::{VectorIndex, VectorsError};
 
 // ── fixtures ────────────────────────────────────────────────────────────────

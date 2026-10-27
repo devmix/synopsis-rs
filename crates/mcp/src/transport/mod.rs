@@ -72,15 +72,15 @@ mod test_util {
 
     use std::sync::Arc;
 
-    use search::{SearchError, SearchResult};
     use synopsis_graph::GraphIndex;
+    use synopsis_search::{SearchError, SearchResult};
 
     use crate::server::Server;
 
     /// A Searcher stub: the transport tests only need an injectable handle.
     pub struct StubSearcher;
 
-    impl search::Searcher for StubSearcher {
+    impl synopsis_search::Searcher for StubSearcher {
         fn hybrid_search(
             &self,
             _query: &str,

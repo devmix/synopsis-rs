@@ -444,7 +444,6 @@ dependencies = [
  "owo-colors",
  "reqwest",
  "rusqlite",
- "search",
  "serde",
  "serde_json",
  "sha2",
@@ -453,6 +452,7 @@ dependencies = [
  "synopsis-embedding",
  "synopsis-graph",
  "synopsis-ingestion",
+ "synopsis-search",
  "synopsis-utils",
  "synopsis-vectors",
  "tabled",
@@ -1831,13 +1831,13 @@ dependencies = [
  "base64 0.23.1",
  "reqwest",
  "rmcp",
- "search",
  "serde",
  "serde_json",
  "sse-stream",
  "synopsis-config",
  "synopsis-db",
  "synopsis-graph",
+ "synopsis-search",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -2906,20 +2906,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
 
 [[package]]
-name = "search"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "synopsis-config",
- "synopsis-db",
- "synopsis-embedding",
- "synopsis-graph",
- "synopsis-utils",
- "synopsis-vectors",
- "thiserror",
-]
-
-[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3334,6 +3320,20 @@ dependencies = [
  "synopsis-config",
  "thiserror",
  "ureq",
+]
+
+[[package]]
+name = "synopsis-search"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "synopsis-config",
+ "synopsis-db",
+ "synopsis-embedding",
+ "synopsis-graph",
+ "synopsis-utils",
+ "synopsis-vectors",
+ "thiserror",
 ]
 
 [[package]]

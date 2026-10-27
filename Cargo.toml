@@ -25,7 +25,7 @@ members = [
     "crates/synopsis-embedding",
     "crates/synopsis-ingestion",
     "crates/synopsis-graph",
-    "crates/search",
+    "crates/synopsis-search",
     "crates/mcp",
     "crates/cli",
 ]
@@ -66,7 +66,7 @@ synopsis_llm = { package = "synopsis-llm", path = "crates/synopsis-llm" }
 synopsis_embedding = { package = "synopsis-embedding", path = "crates/synopsis-embedding" }
 synopsis_ingestion = { package = "synopsis-ingestion", path = "crates/synopsis-ingestion" }
 synopsis_graph = { package = "synopsis-graph", path = "crates/synopsis-graph" }
-search = { path = "crates/search" }
+synopsis_search = { package = "synopsis-search", path = "crates/synopsis-search" }
 mcp = { path = "crates/mcp" }
 
 # Async runtime and HTTP/SSE transport (design D2)

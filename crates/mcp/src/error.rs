@@ -12,7 +12,7 @@ pub enum McpError {
     Db(#[from] synopsis_db::DbError),
     /// Search-pipeline failure (search crate).
     #[error(transparent)]
-    Search(#[from] search::SearchError),
+    Search(#[from] synopsis_search::SearchError),
     /// Knowledge-graph failure (graph crate).
     #[error(transparent)]
     Graph(#[from] synopsis_graph::GraphError),

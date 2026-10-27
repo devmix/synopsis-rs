@@ -51,7 +51,7 @@ mod root_api {
 
     /// The injected search contract handle (the `Server::new` parameter
     /// type; aliased so the constructor pin below stays readable).
-    type SearcherHandle = Arc<dyn search::Searcher + Send + Sync>;
+    type SearcherHandle = Arc<dyn synopsis_search::Searcher + Send + Sync>;
 
     /// The root re-exports resolve with the exact signatures the cli
     /// assembly will use. (Inside the crate the root is `crate::`; the

@@ -28,7 +28,7 @@
 //! # Public API
 //!
 //! Every public item is re-exported at the crate root
-//! (`search::HybridSearcher`, `search::SearchResult`, …), so downstream
+//! (`synopsis_search::HybridSearcher`, `synopsis_search::SearchResult`, …), so downstream
 //! crates only need the root namespace. [`Searcher`] is the object-safe
 //! contract (the MCP layer holds `&dyn Searcher`); [`HybridSearcher`] is
 //! its sole implementation.

@@ -9,10 +9,10 @@
 use std::sync::Arc;
 
 use rmcp::ServerHandler;
-use search::{SearchError, SearchResult, Searcher};
 use serde_json::{Map, Value, json};
 use synopsis_db::test_util;
 use synopsis_graph::GraphIndex;
+use synopsis_search::{SearchError, SearchResult, Searcher};
 
 use mcp::McpError;
 use mcp::server::{Server, tool_definitions};

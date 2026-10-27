@@ -20,9 +20,9 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use search::Searcher;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use synopsis_search::Searcher;
 
 use crate::error::McpError;
 
@@ -259,7 +259,10 @@ fn is_known_domain(db: &synopsis_db::Db, domain: &str) -> Result<bool, McpError>
 /// (the section context lives in the item's `metadata` field, the chunk's
 /// own bag). `alias_map` carries the recorded aliases per entity id (own
 /// name removed; the handler fetches it, batched per response).
-fn result_item(result: &search::SearchResult, alias_map: &HashMap<i64, Vec<String>>) -> ResultItem {
+fn result_item(
+    result: &synopsis_search::SearchResult,
+    alias_map: &HashMap<i64, Vec<String>>,
+) -> ResultItem {
     ResultItem {
         document_id: result.document_id,
         chunk_id: result.chunk_id,
@@ -307,8 +310,8 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use search::{SearchError, SearchResult};
     use synopsis_db::{ConnectionOrTx, DocumentDao, EntityAliasDao, EntityDao, test_util};
+    use synopsis_search::{SearchError, SearchResult};
 
     use super::*;
 
